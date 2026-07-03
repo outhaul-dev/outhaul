@@ -15,6 +15,7 @@ import (
 	"github.com/slipwaydev/slipway/internal/config"
 	"github.com/slipwaydev/slipway/internal/core"
 	"github.com/slipwaydev/slipway/internal/docker"
+	"github.com/slipwaydev/slipway/internal/github"
 	"github.com/slipwaydev/slipway/internal/logstream"
 	"github.com/slipwaydev/slipway/internal/secret"
 	"github.com/slipwaydev/slipway/internal/store"
@@ -42,12 +43,12 @@ type fakeCloner struct {
 	cloned []string
 }
 
-func (f *fakeCloner) Clone(_ context.Context, repoURL, dir string, out io.Writer) error {
+func (f *fakeCloner) Clone(_ context.Context, spec CloneSpec, dir string, out io.Writer) error {
 	if f.err != nil {
 		return f.err
 	}
-	f.cloned = append(f.cloned, repoURL)
-	fmt.Fprintf(out, "cloned %s into %s\n", repoURL, dir)
+	f.cloned = append(f.cloned, spec.URL)
+	fmt.Fprintf(out, "cloned %s into %s\n", spec.URL, dir)
 	return nil
 }
 
@@ -82,7 +83,7 @@ func newHarness(t *testing.T) *harness {
 		broker:  logstream.New(),
 	}
 	cfg := config.Config{DataDir: t.TempDir(), Network: "slipway"}
-	h.worker = NewWorker(st, h.docker, h.builder, h.cloner, h.broker, cfg)
+	h.worker = NewWorker(st, h.docker, h.builder, h.cloner, h.broker, &github.Fake{}, cfg)
 	h.worker.healthCheck = func(context.Context, string, time.Duration) bool { return true }
 	return h
 }
@@ -444,7 +445,7 @@ func waitForStatus(t *testing.T, h *harness, id int64, want core.DeployStatus, t
 // --- git args ---
 
 func TestCloneArgs(t *testing.T) {
-	got := cloneArgs("https://example.com/r.git", "/work/dep-1")
+	got := cloneArgs(CloneSpec{URL: "https://example.com/r.git"}, "/work/dep-1")
 	want := []string{"clone", "--depth", "1", "--single-branch", "https://example.com/r.git", "/work/dep-1"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("cloneArgs() = %v, want %v", got, want)
@@ -453,7 +454,7 @@ func TestCloneArgs(t *testing.T) {
 
 func TestGitCloneMissingBinary(t *testing.T) {
 	g := &Git{Bin: "git-does-not-exist-7a1b"}
-	err := g.Clone(context.Background(), "https://example.com/r.git", t.TempDir(), io.Discard)
+	err := g.Clone(context.Background(), CloneSpec{URL: "https://example.com/r.git"}, t.TempDir(), io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "git") {
 		t.Fatalf("expected a git-not-found error, got %v", err)
 	}

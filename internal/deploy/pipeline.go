@@ -11,6 +11,7 @@ import (
 	"github.com/slipwaydev/slipway/internal/builder"
 	"github.com/slipwaydev/slipway/internal/core"
 	"github.com/slipwaydev/slipway/internal/docker"
+	"github.com/slipwaydev/slipway/internal/github"
 	"github.com/slipwaydev/slipway/internal/traefik"
 )
 
@@ -71,8 +72,13 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 	}
 	defer os.RemoveAll(workDir)
 
-	logf(out, "Cloning repository...")
-	if err := w.cloner.Clone(ctx, app.RepoURL, workDir, out); err != nil {
+	logf(out, "Cloning repository (%s)...", app.Source)
+	spec, err := w.cloneSpec(ctx, app)
+	if err != nil {
+		w.fail(dep, core.StatusBuilding, "prepare clone: "+err.Error(), out)
+		return
+	}
+	if err := w.cloner.Clone(ctx, spec, workDir, out); err != nil {
 		w.fail(dep, core.StatusBuilding, "clone failed: "+err.Error(), out)
 		return
 	}
@@ -239,6 +245,49 @@ func (w *Worker) fail(dep core.Deployment, from core.DeployStatus, reason string
 	if !ok {
 		logf(out, "(deployment already advanced past %s; leaving its status unchanged)", from)
 	}
+}
+
+// cloneSpec builds the clone spec for an app, resolving credentials by source.
+func (w *Worker) cloneSpec(ctx context.Context, app core.App) (CloneSpec, error) {
+	spec := CloneSpec{URL: app.RepoURL, Branch: app.Branch}
+	switch app.Source {
+	case core.SourceSSH:
+		key, err := w.store.SSHPrivateKey(ctx, app.ID)
+		if err != nil {
+			return CloneSpec{}, fmt.Errorf("load ssh key: %w", err)
+		}
+		if key == "" {
+			return CloneSpec{}, fmt.Errorf("app has no ssh deploy key")
+		}
+		spec.Auth = Auth{Kind: AuthSSH, SSHKey: key}
+	case core.SourceGithub:
+		token, err := w.githubToken(ctx)
+		if err != nil {
+			return CloneSpec{}, err
+		}
+		spec.URL = "https://github.com/" + app.GithubRepo + ".git"
+		spec.Auth = Auth{Kind: AuthToken, Token: token}
+	}
+	return spec, nil
+}
+
+// githubToken mints a fresh installation access token from the configured App.
+func (w *Worker) githubToken(ctx context.Context) (string, error) {
+	ga, ok, err := w.store.GithubApp(ctx)
+	if err != nil {
+		return "", fmt.Errorf("load github app: %w", err)
+	}
+	if !ok {
+		return "", fmt.Errorf("github app not configured")
+	}
+	if ga.InstallationID == 0 {
+		return "", fmt.Errorf("github app not installed")
+	}
+	jwt, err := github.AppJWT(ga.PrivateKey, ga.AppID, time.Now())
+	if err != nil {
+		return "", fmt.Errorf("build app jwt: %w", err)
+	}
+	return w.gh.InstallationToken(ctx, jwt, ga.InstallationID)
 }
 
 // containerName is the deterministic name of an app's running container.
