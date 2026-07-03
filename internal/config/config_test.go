@@ -98,3 +98,23 @@ func TestLoadTLSEnabledWhenEmailSet(t *testing.T) {
 		t.Errorf("HealthTimeout = %v, want 90s", c.HealthTimeout)
 	}
 }
+
+func TestPublicURL(t *testing.T) {
+	c := Load(func(k string) string {
+		if k == "SLIPWAY_PUBLIC_URL" {
+			return "https://slip.example.com"
+		}
+		return ""
+	})
+	if c.PublicURL != "https://slip.example.com" {
+		t.Errorf("PublicURL = %q", c.PublicURL)
+	}
+	if !c.PublicURLSet() {
+		t.Error("PublicURLSet() = false, want true")
+	}
+
+	empty := Load(func(string) string { return "" })
+	if empty.PublicURLSet() {
+		t.Error("PublicURLSet() = true for empty, want false")
+	}
+}

@@ -24,6 +24,8 @@ type Config struct {
 	ACMEStaging   bool          // use the LE staging CA (avoid rate limits)
 	HTTPSPort     string        // host port for the websecure entrypoint
 	HealthTimeout time.Duration // deploy health-check deadline
+
+	PublicURL string // externally reachable base URL of the admin UI (for GitHub callbacks/webhooks); empty disables GitHub App setup
 }
 
 // Getenv matches os.Getenv; injected so Load is testable without touching the
@@ -43,6 +45,8 @@ func Load(getenv Getenv) Config {
 		ACMEStaging:   truthy(getenv("SLIPWAY_ACME_STAGING")),
 		HTTPSPort:     or(getenv("SLIPWAY_HTTPS_PORT"), "443"),
 		HealthTimeout: durationOr(getenv("SLIPWAY_HEALTH_TIMEOUT"), 60*time.Second),
+
+		PublicURL: getenv("SLIPWAY_PUBLIC_URL"),
 	}
 }
 
@@ -65,6 +69,9 @@ func or(v, fallback string) string {
 
 // TLSEnabled reports whether automatic HTTPS is configured (an ACME email set).
 func (c Config) TLSEnabled() bool { return c.ACMEEmail != "" }
+
+// PublicURLSet reports whether an externally reachable base URL is configured.
+func (c Config) PublicURLSet() bool { return c.PublicURL != "" }
 
 // SecretKeyPath is the env-encryption key file.
 func (c Config) SecretKeyPath() string { return filepath.Join(c.DataDir, "secret.key") }
