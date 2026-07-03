@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"log"
 	"net/http"
 	"regexp"
@@ -10,6 +12,8 @@ import (
 	"time"
 
 	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/slipwaydev/slipway/internal/github"
+	"github.com/slipwaydev/slipway/internal/sshkey"
 )
 
 // appContainerPrefix is prepended to an app's name to get its container name.
@@ -44,29 +48,116 @@ func (s *Server) handleAppsList(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, appRow{App: a, Latest: latest})
 	}
 
-	s.render(w, http.StatusOK, "apps", map[string]any{
-		"Title": "Apps",
-		"Apps":  rows,
-	})
+	data := map[string]any{"Title": "Apps", "Apps": rows}
+	for k, v := range s.githubRepoData(r) {
+		data[k] = v
+	}
+	s.render(w, http.StatusOK, "apps", data)
+}
+
+// githubRepoData returns template data describing GitHub App connectivity for
+// the create-app form: "GithubConnected" (bool) when an App is connected and
+// installed, and "GithubRepos" ([]github.Repo) when the repo list could be
+// fetched. Any failure along the way (missing key, token exchange, API error)
+// degrades gracefully to no repo dropdown rather than failing the page.
+func (s *Server) githubRepoData(r *http.Request) map[string]any {
+	data := map[string]any{}
+	ga, ok, err := s.store.GithubApp(r.Context())
+	if err != nil || !ok || ga.InstallationID == 0 {
+		return data
+	}
+	data["GithubConnected"] = true
+	jwt, err := github.AppJWT(ga.PrivateKey, ga.AppID, time.Now())
+	if err != nil {
+		return data
+	}
+	tok, err := s.gh.InstallationToken(r.Context(), jwt, ga.InstallationID)
+	if err != nil {
+		return data
+	}
+	repos, err := s.gh.ListRepos(r.Context(), tok)
+	if err != nil {
+		return data
+	}
+	data["GithubRepos"] = repos
+	return data
 }
 
 func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.FormValue("name"))
-	repo := strings.TrimSpace(r.FormValue("repo_url"))
 	domain := strings.TrimSpace(r.FormValue("domain"))
+	source := strings.TrimSpace(r.FormValue("source"))
+	branch := strings.TrimSpace(r.FormValue("branch"))
+	autoDeploy := r.FormValue("auto_deploy") != ""
+	if source == "" {
+		source = core.SourcePublic
+	}
+	if branch == "" {
+		branch = "main"
+	}
 
-	if verr := validateApp(name, repo, domain); verr != "" {
+	repo := strings.TrimSpace(r.FormValue("repo_url"))
+	githubRepo := strings.TrimSpace(r.FormValue("github_repo"))
+	if source == core.SourceGithub {
+		repo = "https://github.com/" + githubRepo + ".git"
+	}
+
+	if verr := validateApp(name, repo, domain, source, githubRepo); verr != "" {
 		s.renderAppsWithError(w, r, verr, name, repo, domain)
 		return
 	}
 
-	_, err := s.store.CreateApp(r.Context(), core.App{Name: name, RepoURL: repo, Domain: domain})
-	if err != nil {
+	app := core.App{
+		Name: name, RepoURL: repo, Domain: domain, Source: source,
+		Branch: branch, AutoDeploy: autoDeploy, GithubRepo: githubRepo,
+		WebhookSecret: newSecret(),
+	}
+	if source == core.SourceSSH {
+		priv, pub, err := sshkey.Generate()
+		if err != nil {
+			s.renderAppsWithError(w, r, "Could not generate SSH key: "+err.Error(), name, repo, domain)
+			return
+		}
+		app.SSHPrivateKey, app.SSHPublicKey = priv, pub
+	}
+
+	if _, err := s.store.CreateApp(r.Context(), app); err != nil {
 		// Most likely a duplicate name (UNIQUE constraint).
 		s.renderAppsWithError(w, r, "Could not create app: "+err.Error(), name, repo, domain)
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// newSecret returns a random hex token for a per-app webhook.
+func newSecret() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// handleAppSettings updates the mutable per-app deploy settings (branch and
+// auto-deploy-on-push).
+func (s *Server) handleAppSettings(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := s.store.GetApp(r.Context(), id); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	branch := strings.TrimSpace(r.FormValue("branch"))
+	if branch == "" {
+		branch = "main"
+	}
+	autoDeploy := r.FormValue("auto_deploy") != ""
+	if err := s.store.UpdateAppSettings(r.Context(), id, branch, autoDeploy); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
 // renderAppsWithError re-renders the apps list with the create form pre-filled
@@ -82,11 +173,15 @@ func (s *Server) renderAppsWithError(w http.ResponseWriter, r *http.Request, msg
 		latest, _ := s.store.LatestDeploymentForApp(r.Context(), a.ID)
 		rows = append(rows, appRow{App: a, Latest: latest})
 	}
-	s.render(w, http.StatusBadRequest, "apps", map[string]any{
+	data := map[string]any{
 		"Title": "Apps", "Apps": rows,
 		"Error": msg,
 		"Form":  map[string]string{"Name": name, "RepoURL": repo, "Domain": domain},
-	})
+	}
+	for k, v := range s.githubRepoData(r) {
+		data[k] = v
+	}
+	s.render(w, http.StatusBadRequest, "apps", data)
 }
 
 func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
@@ -127,13 +222,17 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 	if c, err := s.runtime.FindContainer(r.Context(), appContainerPrefix+app.Name); err == nil && c != nil {
 		runtimeState = c.State
 	}
-	s.render(w, http.StatusOK, "app", map[string]any{
+	data := map[string]any{
 		"Title":       app.Name,
 		"App":         app,
 		"Deployments": deployments,
 		"Env":         envRows,
 		"Runtime":     runtimeState,
-	})
+	}
+	if s.publicURL != "" {
+		data["WebhookURL"] = strings.TrimRight(s.publicURL, "/") + "/webhooks/app/" + app.WebhookSecret
+	}
+	s.render(w, http.StatusOK, "app", data)
 }
 
 func (s *Server) handleSetEnv(w http.ResponseWriter, r *http.Request) {
@@ -313,16 +412,33 @@ func deploymentPath(id int64) string {
 	return "/deployments/" + strconv.FormatInt(id, 10)
 }
 
-// validateApp returns an empty string when valid, else an error message.
-func validateApp(name, repo, domain string) string {
+// validateApp returns an empty string when valid, else an error message. The
+// repo-URL rule is relaxed per source: github needs an "owner/name" repo
+// selection, ssh needs a non-empty clone URL with no whitespace, and public
+// needs an http(s) URL.
+func validateApp(name, repo, domain, source, githubRepo string) string {
 	if !appNameRe.MatchString(name) {
 		return "Name must be lowercase letters, digits and hyphens (2–40 chars)."
 	}
-	if repo == "" || !(strings.HasPrefix(repo, "http://") || strings.HasPrefix(repo, "https://")) {
-		return "Repository must be a public http(s) Git URL."
-	}
 	if domain == "" || strings.ContainsAny(domain, " /") {
 		return "Domain must be a bare hostname (e.g. app.example.com)."
+	}
+	switch source {
+	case core.SourceGithub:
+		if !strings.Contains(githubRepo, "/") {
+			return "Select a GitHub repository (owner/name)."
+		}
+	case core.SourceSSH:
+		if repo == "" || strings.HasPrefix(repo, "-") || strings.ContainsAny(repo, " \t") {
+			return "Repository must be an SSH clone URL (e.g. git@github.com:owner/repo.git)."
+		}
+		if !strings.HasPrefix(repo, "ssh://") && !(strings.Contains(repo, "@") && strings.Contains(repo, ":")) {
+			return "Repository must be an SSH clone URL (e.g. git@github.com:owner/repo.git or ssh://…)."
+		}
+	default: // public
+		if repo == "" || !(strings.HasPrefix(repo, "http://") || strings.HasPrefix(repo, "https://")) {
+			return "Repository must be a public http(s) Git URL."
+		}
 	}
 	return ""
 }

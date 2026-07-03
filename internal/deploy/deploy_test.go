@@ -446,7 +446,7 @@ func waitForStatus(t *testing.T, h *harness, id int64, want core.DeployStatus, t
 
 func TestCloneArgs(t *testing.T) {
 	got := cloneArgs(CloneSpec{URL: "https://example.com/r.git"}, "/work/dep-1")
-	want := []string{"clone", "--depth", "1", "--single-branch", "https://example.com/r.git", "/work/dep-1"}
+	want := []string{"clone", "--depth", "1", "--single-branch", "--", "https://example.com/r.git", "/work/dep-1"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("cloneArgs() = %v, want %v", got, want)
 	}

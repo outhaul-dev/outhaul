@@ -89,7 +89,7 @@ func cloneArgs(spec CloneSpec, dir string) []string {
 	if spec.Branch != "" {
 		args = append(args, "--branch", spec.Branch)
 	}
-	return append(args, spec.URL, dir)
+	return append(args, "--", spec.URL, dir)
 }
 
 // tokenURL rewrites an https GitHub URL to embed an installation token. Other

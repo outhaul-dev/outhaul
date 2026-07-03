@@ -64,6 +64,8 @@ type testEnv struct {
 	gh       *github.Fake
 	http     *httptest.Server
 	client   *http.Client
+
+	sessionToken string // set by login(); attach to requests via authed()
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -140,6 +142,31 @@ func (e *testEnv) completeSetup(t *testing.T) {
 		t.Fatalf("setup submit status = %d, want 303", resp.StatusCode)
 	}
 	resp.Body.Close()
+}
+
+// login completes first-boot setup (creating the admin and a session) and
+// remembers the session token so authed() can attach it to requests built
+// directly with httptest.NewRequest (bypassing e.http/e.client, which is
+// needed by tests that also want the raw httptest.ResponseRecorder).
+func (e *testEnv) login(t *testing.T) {
+	t.Helper()
+	e.completeSetup(t)
+	u, err := url.Parse(e.http.URL)
+	if err != nil {
+		t.Fatalf("parse test server URL: %v", err)
+	}
+	for _, c := range e.client.Jar.Cookies(u) {
+		if c.Name == sessionCookie {
+			e.sessionToken = c.Value
+			return
+		}
+	}
+	t.Fatal("session cookie not found after login")
+}
+
+// authed attaches the session cookie obtained via login() to req.
+func (e *testEnv) authed(req *http.Request) {
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: e.sessionToken})
 }
 
 func TestHealthz(t *testing.T) {
