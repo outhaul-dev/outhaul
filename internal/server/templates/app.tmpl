@@ -17,6 +17,38 @@
 </section>
 
 <section class="panel">
+  <h2 class="panel-title">Environment</h2>
+  {{if .Env}}
+  <table class="table">
+    <thead><tr><th>Key</th><th>Value</th><th></th></tr></thead>
+    <tbody>
+      {{range .Env}}
+      <tr>
+        <td class="mono">{{.Key}}</td>
+        <td class="mono muted">{{if .IsSecret}}••••••{{else}}{{.Value}}{{end}}</td>
+        <td>
+          <form method="post" action="/apps/{{$.App.ID}}/env/delete" class="inline">
+            <input type="hidden" name="key" value="{{.Key}}">
+            <button type="submit" class="linkbtn">remove</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No environment variables.</p>
+  {{end}}
+  <form method="post" action="/apps/{{.App.ID}}/env" class="grid-form env-add">
+    <label class="field"><span>Key</span><input type="text" name="key" placeholder="LOG_LEVEL" required></label>
+    <label class="field"><span>Value</span><input type="text" name="value" placeholder="info"></label>
+    <label class="field"><span>Secret</span><input type="checkbox" name="secret"></label>
+    <button type="submit" class="btn btn-primary">Add</button>
+  </form>
+  <p class="muted env-note">Redeploy to apply env changes.</p>
+</section>
+
+<section class="panel">
   <h2 class="panel-title">Deployments</h2>
   {{if .Deployments}}
   <table class="table">

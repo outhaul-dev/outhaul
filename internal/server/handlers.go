@@ -13,6 +13,9 @@ import (
 // router identifiers, and URL segments.
 var appNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$`)
 
+// envKeyRe restricts env var names to conventional shell identifiers.
+var envKeyRe = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+
 func (s *Server) handleAppsList(w http.ResponseWriter, r *http.Request) {
 	apps, err := s.store.ListApps(r.Context())
 	if err != nil {
@@ -96,11 +99,77 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	envVars, err := s.store.ListEnv(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	type envRow struct {
+		Key      string
+		Value    string
+		IsSecret bool
+	}
+	envRows := make([]envRow, 0, len(envVars))
+	for _, v := range envVars {
+		row := envRow{Key: v.Key, IsSecret: v.IsSecret}
+		if !v.IsSecret {
+			row.Value = v.Value
+		}
+		envRows = append(envRows, row)
+	}
 	s.render(w, http.StatusOK, "app", map[string]any{
 		"Title":       app.Name,
 		"App":         app,
 		"Deployments": deployments,
+		"Env":         envRows,
 	})
+}
+
+func (s *Server) handleSetEnv(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := s.store.GetApp(r.Context(), id); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	key := strings.TrimSpace(r.FormValue("key"))
+	value := r.FormValue("value")
+	isSecret := r.FormValue("secret") != ""
+
+	if !envKeyRe.MatchString(key) {
+		http.Error(w, "Key must be UPPER_SNAKE_CASE (letters, digits, underscore).", http.StatusBadRequest)
+		return
+	}
+	if key == "PORT" {
+		http.Error(w, "PORT is managed by Slipway and cannot be set.", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.SetEnv(r.Context(), id, key, value, isSecret); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
+func (s *Server) handleDeleteEnv(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := s.store.GetApp(r.Context(), id); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	key := strings.TrimSpace(r.FormValue("key"))
+	if err := s.store.DeleteEnv(r.Context(), id, key); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
 func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {

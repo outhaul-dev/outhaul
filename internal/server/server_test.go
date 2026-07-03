@@ -278,3 +278,77 @@ func TestCancelDelegatesToWorker(t *testing.T) {
 
 // itoa is a tiny local helper for building request paths.
 func itoa(id int64) string { return strconv.FormatInt(id, 10) }
+
+func TestEnvAddListAndMask(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+
+	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/env", url.Values{
+		"key": {"LOG_LEVEL"}, "value": {"info"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("add env status = %d, want 303; body=%s", resp.StatusCode, body(t, resp))
+	}
+	resp.Body.Close()
+	resp = e.postForm(t, "/apps/"+itoa(app.ID)+"/env", url.Values{
+		"key": {"API_KEY"}, "value": {"s3cr3t"}, "secret": {"on"},
+	})
+	resp.Body.Close()
+
+	page := body(t, e.get(t, "/apps/"+itoa(app.ID)))
+	if !strings.Contains(page, "LOG_LEVEL") || !strings.Contains(page, "info") {
+		t.Error("normal env var not shown")
+	}
+	if !strings.Contains(page, "API_KEY") {
+		t.Error("secret key name should be shown")
+	}
+	if strings.Contains(page, "s3cr3t") {
+		t.Error("secret VALUE leaked into the page")
+	}
+}
+
+func TestEnvRejectsBadKey(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+
+	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/env", url.Values{"key": {"bad-key"}, "value": {"x"}})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp = e.postForm(t, "/apps/"+itoa(app.ID)+"/env", url.Values{"key": {"PORT"}, "value": {"9"}})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("PORT should be rejected, status = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestEnvDelete(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	e.store.SetEnv(context.Background(), app.ID, "K", "v", false)
+
+	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/env/delete", url.Values{"key": {"K"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("delete status = %d, want 303", resp.StatusCode)
+	}
+	resp.Body.Close()
+	vars, _ := e.store.ListEnv(context.Background(), app.ID)
+	if len(vars) != 0 {
+		t.Errorf("env not deleted: %v", vars)
+	}
+}
+
+func TestEnvDeleteMissingApp404(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	resp := e.postForm(t, "/apps/9999/env/delete", url.Values{"key": {"K"}})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
