@@ -57,6 +57,7 @@ a:hover { color: var(--link-hover); }
 .topnav { display: flex; align-items: center; gap: 18px; }
 .topnav a { color: var(--text-secondary); font-size: 12px; }
 .topnav a:hover { color: var(--text-primary); }
+.pagehead-actions { display: flex; align-items: center; gap: 18px; }
 .inline { display: inline; margin: 0; }
 .linkbtn {
   background: none; border: none; color: var(--text-secondary);

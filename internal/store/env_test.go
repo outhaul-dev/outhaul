@@ -115,6 +115,28 @@ func TestDeleteEnv(t *testing.T) {
 	}
 }
 
+func TestDeleteAppCascades(t *testing.T) {
+	st := openWithBox(t)
+	ctx := context.Background()
+	app, _ := st.CreateApp(ctx, core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	st.SetEnv(ctx, app.ID, "K", "v", false)
+	dep, _ := st.CreateDeployment(ctx, app.ID)
+
+	if err := st.DeleteApp(ctx, app.ID); err != nil {
+		t.Fatalf("DeleteApp: %v", err)
+	}
+	if _, err := st.GetApp(ctx, app.ID); err == nil {
+		t.Error("app still present after delete")
+	}
+	vars, _ := st.ListEnv(ctx, app.ID)
+	if len(vars) != 0 {
+		t.Errorf("env not cascaded: %v", vars)
+	}
+	if _, err := st.GetDeployment(ctx, dep.ID); err == nil {
+		t.Error("deployment not cascaded")
+	}
+}
+
 func TestEnvWithoutBoxErrors(t *testing.T) {
 	st, err := Open(filepath.Join(t.TempDir(), "test.db"), nil)
 	if err != nil {

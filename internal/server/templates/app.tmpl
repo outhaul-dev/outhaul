@@ -4,9 +4,13 @@
     <div class="crumbs"><a href="/">Apps</a> / {{.App.Name}}</div>
     <h1>{{.App.Name}}</h1>
   </div>
-  <form method="post" action="/apps/{{.App.ID}}/deploy" class="inline">
-    <button type="submit" class="btn btn-primary">Deploy</button>
-  </form>
+  <div class="pagehead-actions">
+    <span class="badge state-{{if eq .Runtime "running"}}running{{else}}stopped{{end}}">{{.Runtime}}</span>
+    <form method="post" action="/apps/{{.App.ID}}/deploy" class="inline"><button type="submit" class="btn btn-primary">Deploy</button></form>
+    <form method="post" action="/apps/{{.App.ID}}/stop" class="inline"><button type="submit" class="btn">Stop</button></form>
+    <form method="post" action="/apps/{{.App.ID}}/restart" class="inline"><button type="submit" class="btn">Restart</button></form>
+    <form method="post" action="/apps/{{.App.ID}}/delete" class="inline" onsubmit="return confirm('Delete {{.App.Name}} and all its deployments?');"><button type="submit" class="btn btn-danger">Delete</button></form>
+  </div>
 </div>
 
 <section class="panel">

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/slipwaydev/slipway/internal/docker"
 	"github.com/slipwaydev/slipway/internal/logstream"
 	"github.com/slipwaydev/slipway/internal/store"
 )
@@ -23,10 +24,19 @@ type Deployer interface {
 	Cancel(ctx context.Context, id int64) (bool, error)
 }
 
+// Runtime is the slice of the Docker client the server needs for app lifecycle.
+type Runtime interface {
+	FindContainer(ctx context.Context, name string) (*docker.Container, error)
+	StartContainer(ctx context.Context, id string) error
+	StopContainer(ctx context.Context, id string, timeout time.Duration) error
+	RemoveContainer(ctx context.Context, id string, force bool) error
+}
+
 // Server holds the HTTP layer's dependencies.
 type Server struct {
 	store    *store.Store
 	deployer Deployer
+	runtime  Runtime
 	broker   *logstream.Broker
 
 	pages      map[string]*template.Template
@@ -36,10 +46,11 @@ type Server struct {
 
 // New constructs a Server, parsing the embedded templates. setupToken guards the
 // first-boot admin-creation flow (printed by the caller as a one-time URL).
-func New(st *store.Store, d Deployer, br *logstream.Broker, setupToken string) (*Server, error) {
+func New(st *store.Store, d Deployer, rt Runtime, br *logstream.Broker, setupToken string) (*Server, error) {
 	s := &Server{
 		store:      st,
 		deployer:   d,
+		runtime:    rt,
 		broker:     br,
 		setupToken: setupToken,
 	}
@@ -89,6 +100,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /apps/{id}/deploy", s.requireAuth(s.handleDeploy))
 	mux.HandleFunc("POST /apps/{id}/env", s.requireAuth(s.handleSetEnv))
 	mux.HandleFunc("POST /apps/{id}/env/delete", s.requireAuth(s.handleDeleteEnv))
+	mux.HandleFunc("POST /apps/{id}/stop", s.requireAuth(s.handleStopApp))
+	mux.HandleFunc("POST /apps/{id}/restart", s.requireAuth(s.handleRestartApp))
+	mux.HandleFunc("POST /apps/{id}/delete", s.requireAuth(s.handleDeleteApp))
 	mux.HandleFunc("GET /deployments/{id}", s.requireAuth(s.handleDeploymentDetail))
 	mux.HandleFunc("GET /deployments/{id}/logs", s.requireAuth(s.handleLogsSSE))
 	mux.HandleFunc("POST /deployments/{id}/cancel", s.requireAuth(s.handleCancel))

@@ -55,6 +55,27 @@ func (s *Store) ListApps(ctx context.Context) ([]core.App, error) {
 	return apps, rows.Err()
 }
 
+// DeleteApp removes an app and its deployments and env vars.
+func (s *Store) DeleteApp(ctx context.Context, id int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM deployments WHERE app_id = ?`, id); err != nil {
+		return err
+	}
+	// app_env cascades on app delete, but delete explicitly too so the behavior
+	// is robust to a future migration dropping the cascade.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM app_env WHERE app_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM apps WHERE id = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // scanner is satisfied by both *sql.Row and *sql.Rows.
 type scanner interface {
 	Scan(dest ...any) error

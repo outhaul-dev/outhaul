@@ -87,7 +87,7 @@ func serve() error {
 
 	// HTTP server.
 	setupToken := server.NewToken()
-	srv, err := server.New(st, worker, broker, setupToken)
+	srv, err := server.New(st, worker, dc, broker, setupToken)
 	if err != nil {
 		stopWorker()
 		return fmt.Errorf("build server: %w", err)
