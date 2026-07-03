@@ -1,0 +1,275 @@
+package server
+
+import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/cookiejar"
+	"net/http/httptest"
+	"net/url"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/slipwaydev/slipway/internal/logstream"
+	"github.com/slipwaydev/slipway/internal/store"
+)
+
+type fakeDeployer struct {
+	notified  int
+	cancelled []int64
+}
+
+func (f *fakeDeployer) Notify() { f.notified++ }
+func (f *fakeDeployer) Cancel(_ context.Context, id int64) (bool, error) {
+	f.cancelled = append(f.cancelled, id)
+	return true, nil
+}
+
+type testEnv struct {
+	srv      *Server
+	deployer *fakeDeployer
+	broker   *logstream.Broker
+	store    *store.Store
+	http     *httptest.Server
+	client   *http.Client
+}
+
+func newTestEnv(t *testing.T) *testEnv {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	dep := &fakeDeployer{}
+	br := logstream.New()
+	srv, err := New(st, dep, br, "SETUPTOKEN")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{
+		Jar: jar,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse // don't follow; assert redirects ourselves
+		},
+	}
+	return &testEnv{srv: srv, deployer: dep, broker: br, store: st, http: ts, client: client}
+}
+
+func (e *testEnv) get(t *testing.T, path string) *http.Response {
+	t.Helper()
+	resp, err := e.client.Get(e.http.URL + path)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	return resp
+}
+
+func (e *testEnv) postForm(t *testing.T, path string, form url.Values) *http.Response {
+	t.Helper()
+	resp, err := e.client.PostForm(e.http.URL+path, form)
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	return resp
+}
+
+func body(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	return string(b)
+}
+
+// completeSetup runs the first-boot flow and leaves the client authenticated.
+func (e *testEnv) completeSetup(t *testing.T) {
+	t.Helper()
+	resp := e.postForm(t, "/setup", url.Values{
+		"token":    {"SETUPTOKEN"},
+		"username": {"admin"},
+		"password": {"supersecret"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("setup submit status = %d, want 303", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestHealthz(t *testing.T) {
+	e := newTestEnv(t)
+	resp := e.get(t, "/healthz")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if got := body(t, resp); got != "ok" {
+		t.Errorf("body = %q, want ok", got)
+	}
+}
+
+func TestUnauthenticatedRedirectsToLogin(t *testing.T) {
+	e := newTestEnv(t)
+	resp := e.get(t, "/")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "/login" {
+		t.Errorf("Location = %q, want /login", loc)
+	}
+}
+
+func TestLoginRedirectsToSetupWhenNoUser(t *testing.T) {
+	e := newTestEnv(t)
+	resp := e.get(t, "/login")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/setup" {
+		t.Fatalf("got %d -> %q, want 303 -> /setup", resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
+func TestSetupRejectsBadToken(t *testing.T) {
+	e := newTestEnv(t)
+	resp := e.get(t, "/setup?token=WRONG")
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if !strings.Contains(body(t, resp), "Invalid or missing setup token") {
+		t.Error("expected invalid-token message")
+	}
+}
+
+func TestSetupFormWithGoodToken(t *testing.T) {
+	e := newTestEnv(t)
+	resp := e.get(t, "/setup?token=SETUPTOKEN")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(body(t, resp), "Create the admin account") {
+		t.Error("expected setup form")
+	}
+}
+
+func TestFullFlowSetupCreateAppDeploy(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+
+	// Authenticated home page renders.
+	resp := e.get(t, "/")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("home status = %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(body(t, resp), "Apps") {
+		t.Error("home should render the apps page")
+	}
+
+	// Create an app.
+	resp = e.postForm(t, "/apps", url.Values{
+		"name":     {"web"},
+		"repo_url": {"https://example.com/web.git"},
+		"domain":   {"web.example.com"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("create app status = %d, want 303; body=%s", resp.StatusCode, body(t, resp))
+	}
+	resp.Body.Close()
+
+	app, err := e.store.GetAppByName(context.Background(), "web")
+	if err != nil {
+		t.Fatalf("app not persisted: %v", err)
+	}
+
+	// Trigger a deploy.
+	resp = e.postForm(t, "/apps/"+itoa(app.ID)+"/deploy", url.Values{})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("deploy status = %d, want 303", resp.StatusCode)
+	}
+	loc := resp.Header.Get("Location")
+	resp.Body.Close()
+	if !strings.HasPrefix(loc, "/deployments/") {
+		t.Fatalf("deploy redirect = %q, want /deployments/...", loc)
+	}
+	if e.deployer.notified == 0 {
+		t.Error("worker was not notified after deploy")
+	}
+
+	// Deployment detail page renders.
+	resp = e.get(t, loc)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("deployment page status = %d", resp.StatusCode)
+	}
+	if !strings.Contains(body(t, resp), "Build &amp; deploy log") {
+		t.Error("deployment page missing log panel")
+	}
+}
+
+func TestCreateAppRejectsInvalidName(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+
+	resp := e.postForm(t, "/apps", url.Values{
+		"name":     {"Web App!"},
+		"repo_url": {"https://example.com/web.git"},
+		"domain":   {"web.example.com"},
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	if !strings.Contains(body(t, resp), "lowercase") {
+		t.Error("expected a name-validation message")
+	}
+}
+
+func TestSSEReplaysHistoryAndCloses(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+
+	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	dep, _ := e.store.CreateDeployment(context.Background(), app.ID)
+
+	e.broker.Publish(dep.ID, "cloning...")
+	e.broker.Publish(dep.ID, "building...")
+	e.broker.Close(dep.ID) // terminal: SSE should replay then send done
+
+	resp := e.get(t, "/deployments/"+itoa(dep.ID)+"/logs")
+	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want text/event-stream", ct)
+	}
+	got := body(t, resp)
+	for _, want := range []string{"data: cloning...", "data: building...", "event: done"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("SSE body missing %q; got:\n%s", want, got)
+		}
+	}
+}
+
+func TestCancelDelegatesToWorker(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+
+	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	dep, _ := e.store.CreateDeployment(context.Background(), app.ID)
+
+	resp := e.postForm(t, "/deployments/"+itoa(dep.ID)+"/cancel", url.Values{})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("cancel status = %d, want 303", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if len(e.deployer.cancelled) != 1 || e.deployer.cancelled[0] != dep.ID {
+		t.Errorf("worker.Cancel not called with %d: %v", dep.ID, e.deployer.cancelled)
+	}
+}
+
+// itoa is a tiny local helper for building request paths.
+func itoa(id int64) string { return strconv.FormatInt(id, 10) }

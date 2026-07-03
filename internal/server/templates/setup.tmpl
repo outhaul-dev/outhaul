@@ -1,0 +1,27 @@
+{{define "content"}}
+<div class="authcard">
+  <h1 class="authtitle">slipway</h1>
+  {{if .Invalid}}
+    <p class="authsub">First-boot setup</p>
+    <div class="alert alert-error">
+      Invalid or missing setup token. Open the one-time setup URL printed in the
+      server logs on first start.
+    </div>
+  {{else}}
+    <p class="authsub">Create the admin account</p>
+    {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+    <form method="post" action="/setup" class="stack">
+      <input type="hidden" name="token" value="{{.Token}}">
+      <label class="field">
+        <span>Username</span>
+        <input type="text" name="username" autocomplete="username" autofocus required>
+      </label>
+      <label class="field">
+        <span>Password <em>(min 8 characters)</em></span>
+        <input type="password" name="password" autocomplete="new-password" required>
+      </label>
+      <button type="submit" class="btn btn-primary">Create account</button>
+    </form>
+  {{end}}
+</div>
+{{end}}

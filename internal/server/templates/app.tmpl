@@ -1,0 +1,42 @@
+{{define "content"}}
+<div class="pagehead">
+  <div>
+    <div class="crumbs"><a href="/">Apps</a> / {{.App.Name}}</div>
+    <h1>{{.App.Name}}</h1>
+  </div>
+  <form method="post" action="/apps/{{.App.ID}}/deploy" class="inline">
+    <button type="submit" class="btn btn-primary">Deploy</button>
+  </form>
+</div>
+
+<section class="panel">
+  <dl class="meta">
+    <div><dt>Domain</dt><dd><a href="http://{{.App.Domain}}" target="_blank" rel="noreferrer" class="mono">{{.App.Domain}}</a></dd></div>
+    <div><dt>Repository</dt><dd class="mono">{{.App.RepoURL}}</dd></div>
+  </dl>
+</section>
+
+<section class="panel">
+  <h2 class="panel-title">Deployments</h2>
+  {{if .Deployments}}
+  <table class="table">
+    <thead>
+      <tr><th>#</th><th>Status</th><th>Created</th><th>Finished</th><th></th></tr>
+    </thead>
+    <tbody>
+      {{range .Deployments}}
+      <tr>
+        <td class="mono">{{.ID}}</td>
+        <td><span class="badge {{stateClass .Status}}">{{.Status}}</span></td>
+        <td class="mono muted">{{fmtTime .CreatedAt}}</td>
+        <td class="mono muted">{{fmtTimePtr .FinishedAt}}</td>
+        <td><a href="/deployments/{{.ID}}" class="rowlink">logs →</a></td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No deployments yet. Click <strong>Deploy</strong> to build and launch this app.</p>
+  {{end}}
+</section>
+{{end}}

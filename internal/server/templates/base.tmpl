@@ -1,0 +1,26 @@
+{{define "base"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{if .Title}}{{.Title}} · {{end}}Slipway</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+  {{if .HideChrome}}{{else}}
+  <header class="topbar">
+    <a class="brand" href="/">slipway</a>
+    <nav class="topnav">
+      <a href="/">Apps</a>
+      <form method="post" action="/logout" class="inline">
+        <button type="submit" class="linkbtn">Sign out</button>
+      </form>
+    </nav>
+  </header>
+  {{end}}
+  <main class="container">
+    {{template "content" .}}
+  </main>
+</body>
+</html>{{end}}

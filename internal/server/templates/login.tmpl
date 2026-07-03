@@ -1,0 +1,18 @@
+{{define "content"}}
+<div class="authcard">
+  <h1 class="authtitle">slipway</h1>
+  <p class="authsub">Sign in to continue</p>
+  {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+  <form method="post" action="/login" class="stack">
+    <label class="field">
+      <span>Username</span>
+      <input type="text" name="username" autocomplete="username" autofocus required>
+    </label>
+    <label class="field">
+      <span>Password</span>
+      <input type="password" name="password" autocomplete="current-password" required>
+    </label>
+    <button type="submit" class="btn btn-primary">Sign in</button>
+  </form>
+</div>
+{{end}}

@@ -1,0 +1,55 @@
+{{define "content"}}
+<div class="pagehead">
+  <div>
+    <div class="crumbs"><a href="/">Apps</a> / <a href="/apps/{{.App.ID}}">{{.App.Name}}</a> / #{{.Deployment.ID}}</div>
+    <h1>Deployment #{{.Deployment.ID}} <span class="badge {{stateClass .Deployment.Status}}" id="status-badge">{{.Deployment.Status}}</span></h1>
+  </div>
+  {{if .Deployment.Status.CanCancel}}
+  <form method="post" action="/deployments/{{.Deployment.ID}}/cancel" class="inline">
+    <button type="submit" class="btn btn-danger">Cancel</button>
+  </form>
+  {{end}}
+</div>
+
+{{if .Deployment.Reason}}<div class="alert alert-error">{{.Deployment.Reason}}</div>{{end}}
+
+<section class="panel">
+  <div class="log-head">
+    <h2 class="panel-title">Build &amp; deploy log</h2>
+    <span class="log-status" id="stream-indicator">{{if .Live}}streaming…{{else}}complete{{end}}</span>
+  </div>
+  <pre class="log" id="log" data-id="{{.Deployment.ID}}" data-live="{{.Live}}"></pre>
+</section>
+
+<script>
+(function () {
+  var el = document.getElementById('log');
+  var indicator = document.getElementById('stream-indicator');
+  var id = el.getAttribute('data-id');
+  var live = el.getAttribute('data-live') === 'true';
+
+  var es = new EventSource('/deployments/' + id + '/logs');
+
+  es.addEventListener('log', function (e) {
+    var atBottom = (el.scrollTop + el.clientHeight) >= (el.scrollHeight - 4);
+    el.textContent += e.data + '\n';
+    if (atBottom) { el.scrollTop = el.scrollHeight; }
+  });
+
+  es.addEventListener('done', function () {
+    es.close();
+    if (live) {
+      // The deployment finished while we were watching; reload to show the
+      // final status and reason.
+      window.location.reload();
+    } else if (indicator) {
+      indicator.textContent = 'complete';
+    }
+  });
+
+  es.onerror = function () {
+    if (indicator) { indicator.textContent = 'disconnected'; }
+  };
+})();
+</script>
+{{end}}

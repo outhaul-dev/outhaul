@@ -1,0 +1,52 @@
+{{define "content"}}
+<div class="pagehead">
+  <h1>Apps</h1>
+</div>
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+<section class="panel">
+  <h2 class="panel-title">New app</h2>
+  <form method="post" action="/apps" class="grid-form">
+    <label class="field">
+      <span>Name</span>
+      <input type="text" name="name" placeholder="web" value="{{with .Form}}{{.Name}}{{end}}" required>
+    </label>
+    <label class="field">
+      <span>Git URL</span>
+      <input type="text" name="repo_url" placeholder="https://github.com/owner/repo.git" value="{{with .Form}}{{.RepoURL}}{{end}}" required>
+    </label>
+    <label class="field">
+      <span>Domain</span>
+      <input type="text" name="domain" placeholder="web.example.com" value="{{with .Form}}{{.Domain}}{{end}}" required>
+    </label>
+    <button type="submit" class="btn btn-primary">Create app</button>
+  </form>
+</section>
+
+<section class="panel">
+  <h2 class="panel-title">Deployed apps</h2>
+  {{if .Apps}}
+  <table class="table">
+    <thead>
+      <tr><th>Name</th><th>Domain</th><th>Repository</th><th>Status</th></tr>
+    </thead>
+    <tbody>
+      {{range .Apps}}
+      <tr>
+        <td><a href="/apps/{{.ID}}" class="rowlink">{{.Name}}</a></td>
+        <td><a href="http://{{.Domain}}" target="_blank" rel="noreferrer" class="mono">{{.Domain}}</a></td>
+        <td class="mono muted truncate">{{.RepoURL}}</td>
+        <td>
+          {{if .Latest}}<span class="badge {{stateClass .Latest.Status}}">{{.Latest.Status}}</span>
+          {{else}}<span class="badge state-stopped">never deployed</span>{{end}}
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No apps yet. Create one above to deploy your first service.</p>
+  {{end}}
+</section>
+{{end}}
