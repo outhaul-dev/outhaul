@@ -238,7 +238,7 @@ func TestPipelineHealthyCutsOver(t *testing.T) {
 	if c.Labels["traefik.enable"] != "true" {
 		t.Errorf("canonical container should have traefik enabled: %v", c.Labels)
 	}
-	if tmp, _ := h.docker.FindContainer(ctx, "slipway-app-web-"+itoa64(dep.ID)); tmp != nil {
+	if tmp, _ := h.docker.FindContainer(ctx, "slipway-deploy-"+itoa64(dep.ID)); tmp != nil {
 		t.Error("temp container was not cleaned up")
 	}
 }
@@ -264,7 +264,7 @@ func TestPipelineTempRemovedWhenOldRemovalFails(t *testing.T) {
 	if got := h.status(t, dep.ID); got.Status != core.StatusFailed {
 		t.Fatalf("status = %q, want failed", got.Status)
 	}
-	if tmp, _ := h.docker.FindContainer(ctx, "slipway-app-web-"+itoa64(dep.ID)); tmp != nil {
+	if tmp, _ := h.docker.FindContainer(ctx, "slipway-deploy-"+itoa64(dep.ID)); tmp != nil {
 		t.Error("temp container leaked when old removal failed")
 	}
 }
@@ -290,8 +290,28 @@ func TestPipelineCutoverFailureReportsAppDown(t *testing.T) {
 	if !strings.Contains(got.Reason, "cutover") {
 		t.Errorf("reason = %q, want it to mention cutover (app down)", got.Reason)
 	}
-	if tmp, _ := h.docker.FindContainer(ctx, "slipway-app-web-"+itoa64(dep.ID)); tmp != nil {
+	if tmp, _ := h.docker.FindContainer(ctx, "slipway-deploy-"+itoa64(dep.ID)); tmp != nil {
 		t.Error("temp container leaked after cutover-create failure")
+	}
+}
+
+func TestPipelineAbortsIfAppDeletedDuringDeploy(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	app := h.app(t, "web")
+	// Simulate the app being deleted during the health poll.
+	h.worker.healthCheck = func(context.Context, string, time.Duration) bool {
+		_ = h.store.DeleteApp(ctx, app.ID)
+		return true
+	}
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(ctx, dep)
+
+	if c, _ := h.docker.FindContainer(ctx, "slipway-app-web"); c != nil {
+		t.Error("canonical container was created for a deleted app (orphan)")
+	}
+	if tmp, _ := h.docker.FindContainer(ctx, "slipway-deploy-"+itoa64(dep.ID)); tmp != nil {
+		t.Error("temp container leaked after app-deleted abort")
 	}
 }
 

@@ -2,7 +2,7 @@
 
 A single-binary, self-hosted PaaS. Point it at a fresh VPS, push a public Git
 repo, and it clones, builds (Nixpacks), and runs your app behind Traefik on a
-domain you choose — no Node, no Postgres, one ~23 MB Go binary and a SQLite file.
+domain you choose — no Node, no Postgres, one ~22 MB Go binary and a SQLite file.
 
 Slipway is a deliberately minimal alternative to Dokploy/Coolify.
 

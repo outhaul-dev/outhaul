@@ -108,7 +108,11 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 	}
 
 	// --- start new container, invisible to Traefik, and health-check it ---
-	tempName := containerName(app.Name) + fmt.Sprintf("-%d", dep.ID)
+	// Named on the globally-unique deployment ID (not the app name) so it can
+	// never collide with a canonical name: app names permit trailing
+	// "-<digits>", so "slipway-app-<name>-<depID>" could equal the canonical
+	// name of an app literally named "<name>-<depID>".
+	tempName := fmt.Sprintf("slipway-deploy-%d", dep.ID)
 	logf(out, "Starting new container and waiting for it to become healthy...")
 	newID, err := w.createContainer(ctx, app, image, tempName, runtimeEnv, false)
 	if err != nil {
@@ -132,6 +136,15 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 	if !w.healthCheck(ctx, healthURL, w.cfg.HealthTimeout) {
 		cleanupContainer(newID)
 		w.fail(dep, core.StatusDeploying, "health check failed: app did not respond within the timeout", out)
+		return
+	}
+
+	// The app may have been deleted while we were building/health-checking (a
+	// deploying deployment is not cancellable). If so, abort before recreating
+	// the canonical container, or we'd orphan a container for a gone app.
+	if _, err := w.store.GetApp(ctx, app.ID); err != nil {
+		cleanupContainer(newID)
+		w.fail(dep, core.StatusDeploying, "app was deleted during deploy", out)
 		return
 	}
 
@@ -171,13 +184,22 @@ func (w *Worker) createContainer(ctx context.Context, app core.App, image, name 
 			"slipway.app":     app.Name,
 		}
 	}
+	// Only the canonical (Traefik-routed) container should survive a host
+	// reboot or Docker restart. The temp health-check container carries
+	// runtime env (including secrets); if Slipway crashes between create and
+	// cleanup, an "unless-stopped" temp container would restart forever since
+	// crash recovery only touches DB rows, not orphaned Docker state.
+	restart := ""
+	if traefikOn {
+		restart = "unless-stopped"
+	}
 	spec := docker.ContainerSpec{
 		Name:          name,
 		Image:         image,
 		Labels:        labels,
 		Env:           env,
 		Networks:      []string{w.cfg.Network},
-		RestartPolicy: "unless-stopped",
+		RestartPolicy: restart,
 	}
 	id, err := w.docker.CreateContainer(ctx, spec)
 	if err != nil {

@@ -3,7 +3,7 @@
 Slipway is an open-source, self-hosted PaaS: a single Go binary plus SQLite that
 turns a fresh VPS into a git-push-to-deploy platform by orchestrating Docker and
 Traefik. It is positioned as a minimal alternative to Dokploy/Coolify — one
-~25 MB binary, no Node, no Postgres, installed with `curl | sh`.
+~22 MB binary, no Node, no Postgres, installed with `curl | sh`.
 
 This document is the source of truth for the **locked architecture**, the
 **package layout**, and the **deployment state machine**. Get the state machine

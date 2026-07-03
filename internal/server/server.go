@@ -41,7 +41,7 @@ type Server struct {
 
 	pages      map[string]*template.Template
 	setupToken string
-	secure     bool // set Secure flag on cookies (behind TLS); false in M1
+	secure     bool // Secure cookie flag; the admin UI is served directly over HTTP (not behind Traefik), so this stays false
 }
 
 // New constructs a Server, parsing the embedded templates. setupToken guards the
