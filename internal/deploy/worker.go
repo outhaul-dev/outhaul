@@ -37,6 +37,8 @@ type Worker struct {
 	broker  *logstream.Broker
 	cfg     config.Config
 
+	healthCheck HealthChecker
+
 	notify chan struct{}
 	sem    chan struct{}
 	wg     sync.WaitGroup
@@ -54,6 +56,9 @@ func NewWorker(st *store.Store, dc docker.Client, b builder.Builder, cl Cloner, 
 		cloner:  cl,
 		broker:  br,
 		cfg:     cfg,
+
+		healthCheck: httpPoll,
+
 		notify:  make(chan struct{}, 1),
 		sem:     make(chan struct{}, maxConcurrent),
 		cancels: map[int64]context.CancelFunc{},

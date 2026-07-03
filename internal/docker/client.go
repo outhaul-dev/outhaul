@@ -63,6 +63,10 @@ type Client interface {
 	// FindContainer returns the container with the given name, or nil if none.
 	FindContainer(ctx context.Context, name string) (*Container, error)
 
+	// ContainerIP returns the container's IPv4 address on the named network, or
+	// "" if it is not attached to that network.
+	ContainerIP(ctx context.Context, id, network string) (string, error)
+
 	// CreateContainer creates (does not start) a container and returns its ID.
 	CreateContainer(ctx context.Context, spec ContainerSpec) (string, error)
 

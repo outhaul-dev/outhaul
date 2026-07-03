@@ -107,12 +107,48 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 		return
 	}
 
-	// --- start container ---
-	logf(out, "Starting container...")
-	if err := w.startContainer(ctx, app, image, runtimeEnv, out); err != nil {
+	// --- start new container, invisible to Traefik, and health-check it ---
+	tempName := containerName(app.Name) + fmt.Sprintf("-%d", dep.ID)
+	logf(out, "Starting new container and waiting for it to become healthy...")
+	newID, err := w.createContainer(ctx, app, image, tempName, runtimeEnv, false)
+	if err != nil {
 		w.fail(dep, core.StatusDeploying, "start failed: "+err.Error(), out)
 		return
 	}
+	// cleanupContainer removes a container regardless of pipeline cancellation
+	// (e.g. graceful shutdown cancels ctx), so temp containers never leak.
+	cleanupContainer := func(id string) {
+		rmCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = w.docker.RemoveContainer(rmCtx, id, true)
+	}
+	ip, err := w.docker.ContainerIP(ctx, newID, w.cfg.Network)
+	if err != nil || ip == "" {
+		cleanupContainer(newID)
+		w.fail(dep, core.StatusDeploying, "could not resolve container IP", out)
+		return
+	}
+	healthURL := fmt.Sprintf("http://%s:%d/", ip, AppPort)
+	if !w.healthCheck(ctx, healthURL, w.cfg.HealthTimeout) {
+		cleanupContainer(newID)
+		w.fail(dep, core.StatusDeploying, "health check failed: app did not respond within the timeout", out)
+		return
+	}
+
+	// --- healthy: cut over. Remove old, create canonical, then drop the temp. ---
+	logf(out, "Healthy. Cutting over to the new container...")
+	if err := w.removeContainerByName(ctx, containerName(app.Name)); err != nil {
+		cleanupContainer(newID)
+		w.fail(dep, core.StatusDeploying, "remove previous container: "+err.Error(), out)
+		return
+	}
+	if _, err := w.createContainer(ctx, app, image, containerName(app.Name), runtimeEnv, true); err != nil {
+		cleanupContainer(newID)
+		logf(out, "ERROR: cutover failed — the app has NO running container until the next successful deploy")
+		w.fail(dep, core.StatusDeploying, "cutover failed (app is down): "+err.Error(), out)
+		return
+	}
+	cleanupContainer(newID) // canonical is up; drop the temp
 
 	// --- deploying -> running ---
 	if _, err := w.store.SetStatus(context.Background(), dep.ID, core.StatusDeploying, core.StatusRunning, ""); err != nil {
@@ -121,40 +157,51 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 	logf(out, "Done. %s is live at http://%s", app.Name, app.Domain)
 }
 
-// startContainer replaces any existing container for the app with a fresh one
-// built from image, wired with Traefik labels and joined to the shared network.
-func (w *Worker) startContainer(ctx context.Context, app core.App, image string, env []string, out io.Writer) error {
-	name := containerName(app.Name)
-
-	if existing, err := w.docker.FindContainer(ctx, name); err != nil {
-		return fmt.Errorf("inspect existing container: %w", err)
-	} else if existing != nil {
-		logf(out, "Removing previous container %s", name)
-		if existing.Running() {
-			_ = w.docker.StopContainer(ctx, existing.ID, stopTimeout)
-		}
-		if err := w.docker.RemoveContainer(ctx, existing.ID, true); err != nil {
-			return fmt.Errorf("remove previous container: %w", err)
+// createContainer creates and starts a container for the app. When traefikOn is
+// true it carries the app's routing labels; otherwise Traefik ignores it
+// (traefik.enable=false) — used for the health-check phase.
+func (w *Worker) createContainer(ctx context.Context, app core.App, image, name string, env []string, traefikOn bool) (string, error) {
+	var labels map[string]string
+	if traefikOn {
+		labels = traefik.Labels(app, AppPort, w.cfg.TLSEnabled())
+	} else {
+		labels = map[string]string{
+			"traefik.enable":  "false",
+			"slipway.managed": "true",
+			"slipway.app":     app.Name,
 		}
 	}
-
 	spec := docker.ContainerSpec{
-		Name:  name,
-		Image: image,
-		// TLS wiring lands in a later task; pass w.cfg.TLSEnabled() then.
-		Labels:        traefik.Labels(app, AppPort, false),
+		Name:          name,
+		Image:         image,
+		Labels:        labels,
 		Env:           env,
 		Networks:      []string{w.cfg.Network},
 		RestartPolicy: "unless-stopped",
 	}
 	id, err := w.docker.CreateContainer(ctx, spec)
 	if err != nil {
-		return fmt.Errorf("create container: %w", err)
+		return "", fmt.Errorf("create container: %w", err)
 	}
 	if err := w.docker.StartContainer(ctx, id); err != nil {
-		return fmt.Errorf("start container: %w", err)
+		return "", fmt.Errorf("start container: %w", err)
 	}
-	return nil
+	return id, nil
+}
+
+// removeContainerByName stops and removes the named container if it exists.
+func (w *Worker) removeContainerByName(ctx context.Context, name string) error {
+	existing, err := w.docker.FindContainer(ctx, name)
+	if err != nil {
+		return fmt.Errorf("inspect container: %w", err)
+	}
+	if existing == nil {
+		return nil
+	}
+	if existing.Running() {
+		_ = w.docker.StopContainer(ctx, existing.ID, stopTimeout)
+	}
+	return w.docker.RemoveContainer(ctx, existing.ID, true)
 }
 
 // fail records a terminal failure with a guarded transition. If the guard does

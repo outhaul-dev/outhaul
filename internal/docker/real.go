@@ -92,6 +92,20 @@ func (r *real) FindContainer(ctx context.Context, name string) (*Container, erro
 	return nil, nil
 }
 
+func (r *real) ContainerIP(ctx context.Context, id, network string) (string, error) {
+	info, err := r.cli.ContainerInspect(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if info.NetworkSettings == nil {
+		return "", nil
+	}
+	if ep, ok := info.NetworkSettings.Networks[network]; ok && ep != nil {
+		return ep.IPAddress, nil
+	}
+	return "", nil
+}
+
 func (r *real) CreateContainer(ctx context.Context, spec ContainerSpec) (string, error) {
 	exposed, bindings, err := portConfig(spec.Ports)
 	if err != nil {

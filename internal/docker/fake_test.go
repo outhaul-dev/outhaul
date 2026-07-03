@@ -53,6 +53,22 @@ func TestFakeRejectsDuplicateName(t *testing.T) {
 	}
 }
 
+func TestFakeContainerIP(t *testing.T) {
+	ctx := context.Background()
+	f := NewFake()
+	id, _ := f.CreateContainer(ctx, ContainerSpec{Name: "c1", Image: "img"})
+	ip, err := f.ContainerIP(ctx, id, "slipway")
+	if err != nil {
+		t.Fatalf("ContainerIP: %v", err)
+	}
+	if ip == "" {
+		t.Error("expected a non-empty IP")
+	}
+	if _, err := f.ContainerIP(ctx, "missing", "slipway"); err == nil {
+		t.Error("expected error for unknown container")
+	}
+}
+
 func TestFakeFindReturnsCopy(t *testing.T) {
 	// Callers must not be able to mutate Fake's internal state via the returned
 	// container; that would hide bugs where production code relies on re-reading.
