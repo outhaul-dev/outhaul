@@ -17,6 +17,7 @@ type Fake struct {
 	Networks   map[string]bool
 	Containers map[string]*Container // keyed by ID
 	Pulled     []string              // images pulled, in order
+	Created    []ContainerSpec       // specs passed to CreateContainer, in order
 
 	// FailPull, when set, makes PullImage return an error for matching refs.
 	FailPull func(ref string) error
@@ -70,6 +71,7 @@ func (f *Fake) CreateContainer(_ context.Context, spec ContainerSpec) (string, e
 	if f.byName(spec.Name) != nil {
 		return "", fmt.Errorf("container name %q already in use", spec.Name)
 	}
+	f.Created = append(f.Created, spec)
 	f.seq++
 	id := fmt.Sprintf("ctr%d", f.seq)
 	f.Containers[id] = &Container{
