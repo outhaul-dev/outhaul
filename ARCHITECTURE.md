@@ -63,6 +63,30 @@ HTTPS is Traefik + Let's Encrypt HTTP-01, enabled by setting
 `SLIPWAY_ACME_EMAIL`, with a config-hash drift check that recreates the
 Traefik container when its desired config changes.
 
+### Milestone 3 (done)
+
+Private repos and auto-deploy on push — listed above as deferred — are now
+implemented. Still deferred: multiple users/teams, databases-as-a-service,
+metrics, multi-server.
+
+Design decisions from M3: private-repo access goes through a **GitHub App**,
+set up via GitHub's manifest flow (the operator submits a pre-filled manifest,
+GitHub redirects back with a temporary code that is exchanged for the App's
+credentials — no manual "create an app" form-filling). Clones authenticate
+with a short-lived **installation access token** minted from the App's
+private key, so no long-lived user PAT is ever stored. As a fallback/general
+path, each app also gets a per-app **SSH deploy key** (Ed25519, generated with
+`sshkey`, private half encrypted at rest the same way as other secrets) that
+can be added to a repo directly. Push notifications arrive via a **generic
+per-app webhook** (`internal/webhook`): a per-app HMAC secret authenticates
+the payload with a constant-time comparison, and `webhook.ParsePush` extracts
+the pushed branch independent of the Git host's payload shape. Auto-deploy is
+gated by two per-app settings — a target branch and an on/off toggle — so a
+push only enqueues a deploy when both match; tag pushes and pushes to other
+branches no-op. `SLIPWAY_PUBLIC_URL` supplies the externally reachable base
+URL the GitHub App manifest and webhook URLs are built from; GitHub App setup
+is unavailable until it is configured.
+
 ---
 
 ## Package layout
@@ -111,10 +135,24 @@ slipway/
     logstream/               # in-memory pub/sub broker: build/deploy log lines -> SSE subscribers
         broker.go
 
+    sshkey/                   # per-app Ed25519 deploy keypair generation
+        keygen.go             # Generate: private key encrypted at rest, public key for the repo host
+
+    webhook/                  # generic push-webhook parsing + HMAC signature verification
+        parse.go              # ParsePush: extract repo + branch from a push payload
+        verify.go             # constant-time signature check against the per-app secret
+
+    github/                   # GitHub App: manifest flow, JWT, installation-token client
+        manifest.go           # BuildManifest: pre-filled App-creation manifest JSON
+        jwt.go                # AppJWT: RS256 App JWT (stdlib crypto, no external deps)
+        client.go             # Client interface: exchange manifest code, mint installation tokens
+        real.go               # HTTP-backed implementation
+        fake.go               # in-memory fake for unit tests
+
     deploy/                   # the worker/orchestrator — drives the state machine
         worker.go             # dispatcher loop: claim queued work, per-app serialization, concurrency across apps
         pipeline.go           # one deployment: clone -> build -> start container -> health -> running
-        git.go                # shallow clone of a public repo into a temp workdir
+        git.go                # clone a repo (public, SSH deploy key, or GitHub App installation token)
 
     server/
         server.go             # http.ServeMux, route table, middleware, graceful Shutdown

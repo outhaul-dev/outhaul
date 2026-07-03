@@ -6,14 +6,15 @@ domain you choose — no Node, no Postgres, one ~22 MB Go binary and a SQLite fi
 
 Slipway is a deliberately minimal alternative to Dokploy/Coolify.
 
-> **Status: Milestone 2 (production-ready app).** The thinnest end-to-end path
+> **Status: Milestone 3 (git automation).** The thinnest end-to-end path
 > works: log in, create an app, click Deploy, watch the build stream live, and
 > reach the app on its domain. M2 adds automatic HTTPS (Let's Encrypt), env
 > vars & secrets (encrypted at rest), health-gated deploys that never promote a
-> broken build, and app lifecycle (stop/restart/delete). See
+> broken build, and app lifecycle (stop/restart/delete). M3 adds private repos
+> (via a GitHub App + per-app SSH deploy keys) and auto-deploy on push (via
+> webhooks), with a per-app branch and auto-deploy toggle. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and what is intentionally
-> not built yet (webhooks, GitHub App, private repos, multiple users,
-> databases, metrics, multi-server).
+> not built yet (multiple users, databases, metrics, multi-server).
 
 ## Running
 
@@ -44,6 +45,7 @@ No config files — defaults with `SLIPWAY_*` environment overrides:
 | `SLIPWAY_ACME_STAGING`  | `false`              | Use the LE staging CA (testing)            |
 | `SLIPWAY_HTTPS_PORT`    | `443`                | Host port for HTTPS                        |
 | `SLIPWAY_HEALTH_TIMEOUT`| `60s`                | Deploy health-check deadline               |
+| `SLIPWAY_PUBLIC_URL`    | (empty)              | Public base URL of the admin UI; enables GitHub App + webhook URLs |
 
 Apps are expected to listen on `$PORT` (Slipway sets it and points Traefik at it).
 
