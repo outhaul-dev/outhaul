@@ -127,6 +127,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /github/callback", s.handleGithubCallback)
 	mux.HandleFunc("GET /github/setup", s.handleGithubSetup)
 
+	// Webhook endpoints are called by GitHub/Gitea/GitLab directly (no session
+	// cookie); each verifies its own HMAC signature or token instead.
+	mux.HandleFunc("POST /webhooks/github", s.handleGithubWebhook)
+	mux.HandleFunc("POST /webhooks/app/{token}", s.handleAppWebhook)
+
 	return mux
 }
 
