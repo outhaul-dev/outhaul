@@ -2,17 +2,37 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"time"
 
 	"github.com/slipwaydev/slipway/internal/core"
 )
 
-// CreateApp inserts an app and returns it with ID and CreatedAt populated.
+// appCols is the column list read into core.App by scanApp (excludes the
+// write-only ssh_private_key, which is fetched separately and decrypted).
+const appCols = `id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_secret, ssh_public_key, github_repo`
+
+// CreateApp inserts an app and returns it with ID and CreatedAt populated. The
+// SSH private key (if any) is encrypted at rest.
 func (s *Store) CreateApp(ctx context.Context, app core.App) (core.App, error) {
 	app.CreatedAt = time.Now().UTC()
+	if app.Source == "" {
+		app.Source = core.SourcePublic
+	}
+	if app.Branch == "" {
+		app.Branch = "main"
+	}
+	encKey, err := s.sealMaybe(app.SSHPrivateKey)
+	if err != nil {
+		return core.App{}, err
+	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO apps (name, repo_url, domain, created_at) VALUES (?, ?, ?, ?)`,
-		app.Name, app.RepoURL, app.Domain, fmtTime(app.CreatedAt))
+		`INSERT INTO apps
+		   (name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_secret, ssh_private_key, ssh_public_key, github_repo)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		app.Name, app.RepoURL, app.Domain, fmtTime(app.CreatedAt),
+		app.Branch, boolToInt(app.AutoDeploy), app.Source, app.WebhookSecret, encKey, app.SSHPublicKey, app.GithubRepo)
 	if err != nil {
 		return core.App{}, err
 	}
@@ -21,29 +41,37 @@ func (s *Store) CreateApp(ctx context.Context, app core.App) (core.App, error) {
 		return core.App{}, err
 	}
 	app.ID = id
+	app.SSHPrivateKey = "" // never keep the plaintext around
 	return app, nil
 }
 
+// sealMaybe encrypts a non-empty value; empty stays empty.
+func (s *Store) sealMaybe(v string) (string, error) {
+	if v == "" {
+		return "", nil
+	}
+	if s.box == nil {
+		return "", fmt.Errorf("store: no secret box configured; cannot store secret")
+	}
+	return s.box.Seal([]byte(v))
+}
+
 func (s *Store) GetApp(ctx context.Context, id int64) (core.App, error) {
-	row := s.db.QueryRowContext(ctx,
-		`SELECT id, name, repo_url, domain, created_at FROM apps WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT `+appCols+` FROM apps WHERE id = ?`, id)
 	return scanApp(row)
 }
 
 func (s *Store) GetAppByName(ctx context.Context, name string) (core.App, error) {
-	row := s.db.QueryRowContext(ctx,
-		`SELECT id, name, repo_url, domain, created_at FROM apps WHERE name = ?`, name)
+	row := s.db.QueryRowContext(ctx, `SELECT `+appCols+` FROM apps WHERE name = ?`, name)
 	return scanApp(row)
 }
 
 func (s *Store) ListApps(ctx context.Context) ([]core.App, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, name, repo_url, domain, created_at FROM apps ORDER BY name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+appCols+` FROM apps ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-
 	var apps []core.App
 	for rows.Next() {
 		app, err := scanApp(rows)
@@ -53,6 +81,60 @@ func (s *Store) ListApps(ctx context.Context) ([]core.App, error) {
 		apps = append(apps, app)
 	}
 	return apps, rows.Err()
+}
+
+// AppByWebhookSecret finds the app whose generic-webhook token matches secret.
+func (s *Store) AppByWebhookSecret(ctx context.Context, secret string) (core.App, error) {
+	if secret == "" {
+		return core.App{}, sql.ErrNoRows
+	}
+	row := s.db.QueryRowContext(ctx, `SELECT `+appCols+` FROM apps WHERE webhook_secret = ?`, secret)
+	return scanApp(row)
+}
+
+// AppsByGithubRepo returns all apps sourced from the given "owner/name".
+func (s *Store) AppsByGithubRepo(ctx context.Context, fullName string) ([]core.App, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+appCols+` FROM apps WHERE source = ? AND github_repo = ?`, core.SourceGithub, fullName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var apps []core.App
+	for rows.Next() {
+		app, err := scanApp(rows)
+		if err != nil {
+			return nil, err
+		}
+		apps = append(apps, app)
+	}
+	return apps, rows.Err()
+}
+
+// SSHPrivateKey returns the decrypted deploy private key for an app.
+func (s *Store) SSHPrivateKey(ctx context.Context, appID int64) (string, error) {
+	var enc string
+	if err := s.db.QueryRowContext(ctx, `SELECT ssh_private_key FROM apps WHERE id = ?`, appID).Scan(&enc); err != nil {
+		return "", err
+	}
+	if enc == "" {
+		return "", nil
+	}
+	if s.box == nil {
+		return "", fmt.Errorf("store: no secret box configured; cannot read ssh key")
+	}
+	plain, err := s.box.Open(enc)
+	if err != nil {
+		return "", fmt.Errorf("decrypt ssh key: %w", err)
+	}
+	return string(plain), nil
+}
+
+// UpdateAppSettings updates the mutable per-app deploy settings.
+func (s *Store) UpdateAppSettings(ctx context.Context, id int64, branch string, autoDeploy bool) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE apps SET branch = ?, auto_deploy = ? WHERE id = ?`, branch, boolToInt(autoDeploy), id)
+	return err
 }
 
 // DeleteApp removes an app and its deployments and env vars.
@@ -83,10 +165,12 @@ type scanner interface {
 
 func scanApp(row scanner) (core.App, error) {
 	var (
-		app       core.App
-		createdAt string
+		app        core.App
+		createdAt  string
+		autoDeploy int
 	)
-	if err := row.Scan(&app.ID, &app.Name, &app.RepoURL, &app.Domain, &createdAt); err != nil {
+	if err := row.Scan(&app.ID, &app.Name, &app.RepoURL, &app.Domain, &createdAt,
+		&app.Branch, &autoDeploy, &app.Source, &app.WebhookSecret, &app.SSHPublicKey, &app.GithubRepo); err != nil {
 		return core.App{}, err
 	}
 	t, err := parseTime(createdAt)
@@ -94,5 +178,6 @@ func scanApp(row scanner) (core.App, error) {
 		return core.App{}, err
 	}
 	app.CreatedAt = t
+	app.AutoDeploy = autoDeploy != 0
 	return app, nil
 }
