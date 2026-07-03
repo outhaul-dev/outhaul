@@ -50,7 +50,7 @@ metrics, multi-server.
 
 ## Package layout
 
-Single module `github.com/jamessmart/slipway` (adjust path to the real remote).
+Single module `github.com/slipwaydev/slipway`.
 `main.go` at the root; everything else under `internal/` so nothing is importable
 by third parties. Dependencies point inward: `core` depends on nothing; `server`
 and `deploy` wire the rest together.
