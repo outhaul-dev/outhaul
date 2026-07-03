@@ -15,6 +15,7 @@ import (
 
 	"github.com/slipwaydev/slipway/internal/core"
 	"github.com/slipwaydev/slipway/internal/docker"
+	"github.com/slipwaydev/slipway/internal/github"
 	"github.com/slipwaydev/slipway/internal/logstream"
 	"github.com/slipwaydev/slipway/internal/secret"
 	"github.com/slipwaydev/slipway/internal/store"
@@ -60,6 +61,7 @@ type testEnv struct {
 	runtime  *fakeRuntime
 	broker   *logstream.Broker
 	store    *store.Store
+	gh       *github.Fake
 	http     *httptest.Server
 	client   *http.Client
 }
@@ -79,7 +81,8 @@ func newTestEnv(t *testing.T) *testEnv {
 	dep := &fakeDeployer{}
 	rt := &fakeRuntime{}
 	br := logstream.New()
-	srv, err := New(st, dep, rt, br, "SETUPTOKEN")
+	gh := &github.Fake{}
+	srv, err := New(st, dep, rt, br, gh, "https://slip.example.com", "SETUPTOKEN")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -94,7 +97,7 @@ func newTestEnv(t *testing.T) *testEnv {
 			return http.ErrUseLastResponse // don't follow; assert redirects ourselves
 		},
 	}
-	return &testEnv{srv: srv, deployer: dep, runtime: rt, broker: br, store: st, http: ts, client: client}
+	return &testEnv{srv: srv, deployer: dep, runtime: rt, broker: br, store: st, gh: gh, http: ts, client: client}
 }
 
 func (e *testEnv) get(t *testing.T, path string) *http.Response {

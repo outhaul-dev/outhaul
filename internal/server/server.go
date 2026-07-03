@@ -6,14 +6,18 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"html/template"
 	"io/fs"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/slipwaydev/slipway/internal/core"
 	"github.com/slipwaydev/slipway/internal/docker"
+	"github.com/slipwaydev/slipway/internal/github"
 	"github.com/slipwaydev/slipway/internal/logstream"
 	"github.com/slipwaydev/slipway/internal/store"
 )
@@ -38,21 +42,31 @@ type Server struct {
 	deployer Deployer
 	runtime  Runtime
 	broker   *logstream.Broker
+	gh       github.Client
 
 	pages      map[string]*template.Template
 	setupToken string
+	publicURL  string
 	secure     bool // Secure cookie flag; the admin UI is served directly over HTTP (not behind Traefik), so this stays false
+
+	stateMu     sync.Mutex
+	stateTokens map[string]time.Time // CSRF states for the GitHub App manifest flow
 }
 
 // New constructs a Server, parsing the embedded templates. setupToken guards the
 // first-boot admin-creation flow (printed by the caller as a one-time URL).
-func New(st *store.Store, d Deployer, rt Runtime, br *logstream.Broker, setupToken string) (*Server, error) {
+// publicURL is Slipway's externally reachable base URL, used to build the
+// GitHub App manifest's callback and webhook URLs.
+func New(st *store.Store, d Deployer, rt Runtime, br *logstream.Broker, gh github.Client, publicURL, setupToken string) (*Server, error) {
 	s := &Server{
-		store:      st,
-		deployer:   d,
-		runtime:    rt,
-		broker:     br,
-		setupToken: setupToken,
+		store:       st,
+		deployer:    d,
+		runtime:     rt,
+		broker:      br,
+		gh:          gh,
+		publicURL:   publicURL,
+		setupToken:  setupToken,
+		stateTokens: map[string]time.Time{},
 	}
 	if err := s.parseTemplates(); err != nil {
 		return nil, err
@@ -63,7 +77,7 @@ func New(st *store.Store, d Deployer, rt Runtime, br *logstream.Broker, setupTok
 // parseTemplates builds one template set per page, each combining base.tmpl with
 // the page template (so every page can define its own "content" block).
 func (s *Server) parseTemplates() error {
-	pages := []string{"login", "setup", "apps", "app", "deployment"}
+	pages := []string{"login", "setup", "apps", "app", "deployment", "github_connect"}
 	s.pages = make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.New("base").Funcs(templateFuncs())
@@ -106,6 +120,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /deployments/{id}", s.requireAuth(s.handleDeploymentDetail))
 	mux.HandleFunc("GET /deployments/{id}/logs", s.requireAuth(s.handleLogsSSE))
 	mux.HandleFunc("POST /deployments/{id}/cancel", s.requireAuth(s.handleCancel))
+
+	mux.HandleFunc("GET /github/connect", s.requireAuth(s.handleGithubConnect))
+	// callback and setup are called by GitHub directly (no session cookie); the
+	// callback is guarded by the one-time CSRF state instead.
+	mux.HandleFunc("GET /github/callback", s.handleGithubCallback)
+	mux.HandleFunc("GET /github/setup", s.handleGithubSetup)
 
 	return mux
 }
@@ -150,4 +170,39 @@ func parseID(s string) (int64, bool) {
 		return 0, false
 	}
 	return id, true
+}
+
+const githubStateTTL = 10 * time.Minute
+
+// newGithubState mints and stores a CSRF token for the manifest round-trip.
+func (s *Server) newGithubState() string {
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	tok := hex.EncodeToString(b)
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	// Opportunistic GC of expired states.
+	for k, exp := range s.stateTokens {
+		if time.Now().After(exp) {
+			delete(s.stateTokens, k)
+		}
+	}
+	s.stateTokens[tok] = time.Now().Add(githubStateTTL)
+	return tok
+}
+
+// consumeGithubState validates and removes a state token (one-time use).
+func (s *Server) consumeGithubState(tok string) bool {
+	if tok == "" {
+		return false
+	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	exp, ok := s.stateTokens[tok]
+	if !ok || time.Now().After(exp) {
+		delete(s.stateTokens, tok)
+		return false
+	}
+	delete(s.stateTokens, tok)
+	return true
 }
