@@ -52,7 +52,7 @@ func serve() error {
 	}
 
 	// Store + crash recovery.
-	st, err := store.Open(cfg.DBPath())
+	st, err := store.Open(cfg.DBPath(), nil)
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}

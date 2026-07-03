@@ -10,17 +10,20 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/slipwaydev/slipway/internal/secret"
 	_ "modernc.org/sqlite"
 )
 
 // Store wraps the database handle.
 type Store struct {
-	db *sql.DB
+	db  *sql.DB
+	box *secret.Box // encrypts app_env values; may be nil for non-env callers
 }
 
 // Open opens (creating if needed) the SQLite database at path, applies pragmas,
-// and runs embedded migrations.
-func Open(path string) (*Store, error) {
+// runs embedded migrations, and uses box to encrypt/decrypt env values. box may
+// be nil for callers that never touch app_env.
+func Open(path string, box *secret.Box) (*Store, error) {
 	dsn := "file:" + url.PathEscape(path) +
 		"?_pragma=busy_timeout(5000)" +
 		"&_pragma=journal_mode(WAL)" +
@@ -35,7 +38,7 @@ func Open(path string) (*Store, error) {
 	// is not a throughput concern for M1.
 	db.SetMaxOpenConns(1)
 
-	s := &Store{db: db}
+	s := &Store{db: db, box: box}
 	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)

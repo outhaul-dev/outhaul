@@ -14,6 +14,7 @@ import (
 
 	"github.com/slipwaydev/slipway/internal/core"
 	"github.com/slipwaydev/slipway/internal/logstream"
+	"github.com/slipwaydev/slipway/internal/secret"
 	"github.com/slipwaydev/slipway/internal/store"
 )
 
@@ -39,7 +40,11 @@ type testEnv struct {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	box, err := secret.Load(filepath.Join(t.TempDir(), "key"))
+	if err != nil {
+		t.Fatalf("secret.Load: %v", err)
+	}
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"), box)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
