@@ -139,9 +139,10 @@ func (w *Worker) startContainer(ctx context.Context, app core.App, image string,
 	}
 
 	spec := docker.ContainerSpec{
-		Name:          name,
-		Image:         image,
-		Labels:        traefik.Labels(app, AppPort),
+		Name:  name,
+		Image: image,
+		// TLS wiring lands in a later task; pass w.cfg.TLSEnabled() then.
+		Labels:        traefik.Labels(app, AppPort, false),
 		Env:           env,
 		Networks:      []string{w.cfg.Network},
 		RestartPolicy: "unless-stopped",

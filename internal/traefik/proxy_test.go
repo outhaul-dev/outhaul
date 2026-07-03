@@ -2,6 +2,7 @@ package traefik
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -123,6 +124,129 @@ func TestEnsureProxyConfiguresDockerProviderAndEntrypoint(t *testing.T) {
 	}
 	if !foundSock {
 		t.Errorf("traefik should mount the docker socket, mounts=%v", spec.Mounts)
+	}
+}
+
+func tlsProxyConfig() ProxyConfig {
+	pc := testProxyConfig()
+	pc.TLSEnabled = true
+	pc.ACMEEmail = "ops@example.com"
+	pc.HTTPSPort = "443"
+	pc.ACMEStorageDir = "/var/lib/slipway/traefik/acme"
+	return pc
+}
+
+func TestEnsureProxyTLSFlagsAndMount(t *testing.T) {
+	ctx := context.Background()
+	rec := &recordingFake{Fake: docker.NewFake()}
+	if err := EnsureProxy(ctx, rec, tlsProxyConfig(), nil); err != nil {
+		t.Fatalf("EnsureProxy: %v", err)
+	}
+	joined := strings.Join(rec.created.Cmd, " ")
+	for _, want := range []string{
+		"--entrypoints.websecure.address=:443",
+		"--certificatesresolvers.le.acme.httpchallenge=true",
+		"--certificatesresolvers.le.acme.email=ops@example.com",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("traefik cmd missing %q; got %v", want, rec.created.Cmd)
+		}
+	}
+	found443 := false
+	for _, p := range rec.created.Ports {
+		if p.HostPort == "443" && p.ContainerPort == "443" {
+			found443 = true
+		}
+	}
+	if !found443 {
+		t.Errorf("traefik should publish :443, ports=%v", rec.created.Ports)
+	}
+	foundAcme := false
+	for _, m := range rec.created.Mounts {
+		if strings.Contains(m.Target, "/etc/traefik/acme") {
+			foundAcme = true
+		}
+	}
+	if !foundAcme {
+		t.Errorf("traefik should mount the acme dir, mounts=%v", rec.created.Mounts)
+	}
+}
+
+func TestEnsureProxyStagingUsesStagingCA(t *testing.T) {
+	ctx := context.Background()
+	rec := &recordingFake{Fake: docker.NewFake()}
+	pc := tlsProxyConfig()
+	pc.ACMEStaging = true
+	if err := EnsureProxy(ctx, rec, pc, nil); err != nil {
+		t.Fatalf("EnsureProxy: %v", err)
+	}
+	if !strings.Contains(strings.Join(rec.created.Cmd, " "), "acme-staging") {
+		t.Errorf("staging CA server not configured: %v", rec.created.Cmd)
+	}
+}
+
+func TestEnsureProxyRecreatesOnConfigDrift(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+
+	if err := EnsureProxy(ctx, f, testProxyConfig(), nil); err != nil {
+		t.Fatalf("EnsureProxy http: %v", err)
+	}
+	before, _ := f.FindContainer(ctx, "slipway-traefik")
+
+	if err := EnsureProxy(ctx, f, tlsProxyConfig(), nil); err != nil {
+		t.Fatalf("EnsureProxy tls: %v", err)
+	}
+	after, _ := f.FindContainer(ctx, "slipway-traefik")
+	if after == nil {
+		t.Fatal("traefik container missing after drift recreate")
+	}
+	if after.ID == before.ID {
+		t.Error("expected traefik to be recreated on config drift (new container)")
+	}
+	if after.Labels["slipway.config-hash"] == before.Labels["slipway.config-hash"] {
+		t.Error("config hash should differ after enabling TLS")
+	}
+}
+
+func TestEnsureProxyRecreatesOnImageChange(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+	pc := testProxyConfig()
+	if err := EnsureProxy(ctx, f, pc, nil); err != nil {
+		t.Fatalf("EnsureProxy: %v", err)
+	}
+	before, _ := f.FindContainer(ctx, pc.ContainerName)
+
+	pc.Image = "traefik:v3.4" // operator bumps the pinned image
+	if err := EnsureProxy(ctx, f, pc, nil); err != nil {
+		t.Fatalf("EnsureProxy after image bump: %v", err)
+	}
+	after, _ := f.FindContainer(ctx, pc.ContainerName)
+	if after.ID == before.ID {
+		t.Error("image bump should recreate the traefik container")
+	}
+	if after.Image != "traefik:v3.4" {
+		t.Errorf("traefik image = %q, want traefik:v3.4", after.Image)
+	}
+}
+
+func TestEnsureProxyKeepsOldContainerWhenPullFails(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+	if err := EnsureProxy(ctx, f, testProxyConfig(), nil); err != nil {
+		t.Fatalf("EnsureProxy: %v", err)
+	}
+	before, _ := f.FindContainer(ctx, "slipway-traefik")
+
+	// Config drifts (TLS on) but the image pull now fails.
+	f.FailPull = func(string) error { return errors.New("registry down") }
+	if err := EnsureProxy(ctx, f, tlsProxyConfig(), nil); err == nil {
+		t.Fatal("expected EnsureProxy to fail when the pull fails")
+	}
+	after, _ := f.FindContainer(ctx, "slipway-traefik")
+	if after == nil || after.ID != before.ID {
+		t.Error("old traefik container must survive a failed pull (no teardown before pull)")
 	}
 }
 
