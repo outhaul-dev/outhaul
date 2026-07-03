@@ -3,7 +3,10 @@
 // all rooted at a single data directory.
 package config
 
-import "path/filepath"
+import (
+	"path/filepath"
+	"time"
+)
 
 // DefaultTraefikImage is the Traefik image Slipway pulls and manages. Pinned to
 // a major version so upgrades are deliberate.
@@ -16,6 +19,11 @@ type Config struct {
 	DockerHost   string // Docker endpoint; empty means "use the SDK's env default"
 	TraefikImage string // image used for the managed Traefik container
 	Network      string // shared Docker network app containers + Traefik join
+
+	ACMEEmail     string        // Let's Encrypt account email; empty disables TLS
+	ACMEStaging   bool          // use the LE staging CA (avoid rate limits)
+	HTTPSPort     string        // host port for the websecure entrypoint
+	HealthTimeout time.Duration // deploy health-check deadline
 }
 
 // Getenv matches os.Getenv; injected so Load is testable without touching the
@@ -30,6 +38,11 @@ func Load(getenv Getenv) Config {
 		DockerHost:   getenv("SLIPWAY_DOCKER_HOST"), // empty is a valid value: defer to SDK
 		TraefikImage: or(getenv("SLIPWAY_TRAEFIK_IMAGE"), DefaultTraefikImage),
 		Network:      or(getenv("SLIPWAY_NETWORK"), "slipway"),
+
+		ACMEEmail:     getenv("SLIPWAY_ACME_EMAIL"),
+		ACMEStaging:   truthy(getenv("SLIPWAY_ACME_STAGING")),
+		HTTPSPort:     or(getenv("SLIPWAY_HTTPS_PORT"), "443"),
+		HealthTimeout: durationOr(getenv("SLIPWAY_HEALTH_TIMEOUT"), 60*time.Second),
 	}
 }
 
@@ -48,4 +61,32 @@ func or(v, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+// TLSEnabled reports whether automatic HTTPS is configured (an ACME email set).
+func (c Config) TLSEnabled() bool { return c.ACMEEmail != "" }
+
+// SecretKeyPath is the env-encryption key file.
+func (c Config) SecretKeyPath() string { return filepath.Join(c.DataDir, "secret.key") }
+
+// AcmeDir is the host directory bind-mounted into Traefik for acme.json.
+func (c Config) AcmeDir() string { return filepath.Join(c.DataDir, "traefik", "acme") }
+
+func truthy(v string) bool {
+	switch v {
+	case "1", "true", "TRUE", "yes", "on":
+		return true
+	}
+	return false
+}
+
+func durationOr(v string, fallback time.Duration) time.Duration {
+	if v == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return fallback
+	}
+	return d
 }
