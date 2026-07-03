@@ -42,6 +42,23 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 
 	logf(out, "Deploying %s (%s) to %s", app.Name, app.RepoURL, app.Domain)
 
+	envVars, err := w.store.ListEnv(ctx, app.ID)
+	if err != nil {
+		w.fail(dep, core.StatusBuilding, "load env: "+err.Error(), out)
+		return
+	}
+	buildEnv := map[string]string{"PORT": fmt.Sprintf("%d", AppPort)}
+	runtimeEnv := []string{fmt.Sprintf("PORT=%d", AppPort)}
+	for _, v := range envVars {
+		if v.Key == "PORT" {
+			continue // PORT is managed by the pipeline (also rejected at the UI layer)
+		}
+		runtimeEnv = append(runtimeEnv, v.Key+"="+v.Value)
+		if !v.IsSecret {
+			buildEnv[v.Key] = v.Value
+		}
+	}
+
 	// --- clone ---
 	workDir := filepath.Join(w.cfg.WorkDir(), fmt.Sprintf("dep-%d", dep.ID))
 	if err := os.RemoveAll(workDir); err != nil {
@@ -66,7 +83,7 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 	req := builder.BuildRequest{
 		ContextDir: workDir,
 		ImageTag:   image,
-		Env:        map[string]string{"PORT": fmt.Sprintf("%d", AppPort)},
+		Env:        buildEnv,
 	}
 	if err := w.builder.Build(ctx, req, out); err != nil {
 		w.fail(dep, core.StatusBuilding, "build failed: "+err.Error(), out)
@@ -92,7 +109,7 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 
 	// --- start container ---
 	logf(out, "Starting container...")
-	if err := w.startContainer(ctx, app, image, out); err != nil {
+	if err := w.startContainer(ctx, app, image, runtimeEnv, out); err != nil {
 		w.fail(dep, core.StatusDeploying, "start failed: "+err.Error(), out)
 		return
 	}
@@ -106,7 +123,7 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 
 // startContainer replaces any existing container for the app with a fresh one
 // built from image, wired with Traefik labels and joined to the shared network.
-func (w *Worker) startContainer(ctx context.Context, app core.App, image string, out io.Writer) error {
+func (w *Worker) startContainer(ctx context.Context, app core.App, image string, env []string, out io.Writer) error {
 	name := containerName(app.Name)
 
 	if existing, err := w.docker.FindContainer(ctx, name); err != nil {
@@ -125,7 +142,7 @@ func (w *Worker) startContainer(ctx context.Context, app core.App, image string,
 		Name:          name,
 		Image:         image,
 		Labels:        traefik.Labels(app, AppPort),
-		Env:           []string{fmt.Sprintf("PORT=%d", AppPort)},
+		Env:           env,
 		Networks:      []string{w.cfg.Network},
 		RestartPolicy: "unless-stopped",
 	}

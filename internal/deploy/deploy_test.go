@@ -22,10 +22,14 @@ import (
 
 // --- test doubles ---
 
-type fakeBuilder struct{ err error }
+type fakeBuilder struct {
+	err     error
+	lastReq builder.BuildRequest
+}
 
 func (f *fakeBuilder) Name() string { return "fake" }
 func (f *fakeBuilder) Build(_ context.Context, req builder.BuildRequest, out io.Writer) error {
+	f.lastReq = req
 	if f.err != nil {
 		return f.err
 	}
@@ -361,6 +365,85 @@ func TestGitCloneMissingBinary(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "git") {
 		t.Fatalf("expected a git-not-found error, got %v", err)
 	}
+}
+
+func TestPipelineInjectsEnvSecretsRuntimeOnly(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	app := h.app(t, "web")
+	if err := h.store.SetEnv(ctx, app.ID, "LOG_LEVEL", "debug", false); err != nil {
+		t.Fatalf("SetEnv: %v", err)
+	}
+	if err := h.store.SetEnv(ctx, app.ID, "API_KEY", "s3cr3t", true); err != nil {
+		t.Fatalf("SetEnv: %v", err)
+	}
+	dep := h.claimedDeployment(t, app.ID)
+
+	h.worker.runPipeline(ctx, dep)
+
+	// Build env: non-secret present, secret absent, PORT present.
+	be := h.builder.lastReq.Env
+	if be["LOG_LEVEL"] != "debug" {
+		t.Errorf("build env missing LOG_LEVEL: %v", be)
+	}
+	if _, ok := be["API_KEY"]; ok {
+		t.Error("secret leaked into build env")
+	}
+	if be["PORT"] == "" {
+		t.Error("build env missing PORT")
+	}
+
+	// Runtime env (on the canonical container spec): all three present.
+	spec := lastCreatedNamed(t, h, "slipway-app-web")
+	if !contains(spec.Env, "LOG_LEVEL=debug") {
+		t.Errorf("runtime env missing LOG_LEVEL: %v", spec.Env)
+	}
+	if !contains(spec.Env, "API_KEY=s3cr3t") {
+		t.Errorf("runtime env missing secret API_KEY: %v", spec.Env)
+	}
+	if !containsPrefix(spec.Env, "PORT=") {
+		t.Errorf("runtime env missing PORT: %v", spec.Env)
+	}
+}
+
+func TestPipelineIgnoresUserPort(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	app := h.app(t, "web")
+	if err := h.store.SetEnv(ctx, app.ID, "PORT", "3000", false); err != nil {
+		t.Fatalf("SetEnv: %v", err)
+	}
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(ctx, dep)
+
+	spec := lastCreatedNamed(t, h, "slipway-app-web")
+	ports := 0
+	for _, e := range spec.Env {
+		if e == "PORT=3000" {
+			t.Errorf("user PORT leaked into runtime env: %v", spec.Env)
+		}
+		if len(e) >= 5 && e[:5] == "PORT=" {
+			ports++
+		}
+	}
+	if ports != 1 {
+		t.Errorf("expected exactly one PORT entry, got %d: %v", ports, spec.Env)
+	}
+	if h.builder.lastReq.Env["PORT"] != "8080" {
+		t.Errorf("build PORT = %q, want 8080", h.builder.lastReq.Env["PORT"])
+	}
+}
+
+// lastCreatedNamed returns the most recent Created spec with the given name.
+func lastCreatedNamed(t *testing.T, h *harness, name string) docker.ContainerSpec {
+	t.Helper()
+	for i := len(h.docker.Created) - 1; i >= 0; i-- {
+		if h.docker.Created[i].Name == name {
+			return h.docker.Created[i]
+		}
+	}
+	t.Fatalf("no created container named %q; created=%v", name, h.docker.Created)
+	return docker.ContainerSpec{}
 }
 
 func contains(ss []string, want string) bool {
