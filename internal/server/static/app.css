@@ -57,6 +57,7 @@ a:hover { color: var(--link-hover); }
 .topnav { display: flex; align-items: center; gap: 18px; }
 .topnav a { color: var(--text-secondary); font-size: 12px; }
 .topnav a:hover { color: var(--text-primary); }
+.pagehead-actions { display: flex; align-items: center; gap: 18px; }
 .inline { display: inline; margin: 0; }
 .linkbtn {
   background: none; border: none; color: var(--text-secondary);
@@ -108,6 +109,8 @@ a:hover { color: var(--link-hover); }
 .grid-form {
   display: grid; grid-template-columns: 1fr 1.6fr 1.2fr auto; gap: 12px; align-items: end;
 }
+.env-add { margin-top: 14px; }
+.env-note { margin-top: 8px; }
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field > span { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-tertiary); }
 .field > span em { text-transform: none; letter-spacing: 0; color: var(--text-muted); font-style: normal; }

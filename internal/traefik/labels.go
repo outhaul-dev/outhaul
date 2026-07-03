@@ -11,22 +11,33 @@ import (
 )
 
 // Labels returns the Docker-provider labels that make Traefik route the app's
-// domain to its container on the given internal port. M1 uses the plain HTTP
-// entrypoint ("web"); TLS is a later seam.
+// domain to its container on the given internal port. The plain HTTP
+// entrypoint ("web") is always configured; when tlsEnabled is true, a second
+// "websecure" router is added, sharing the same service, terminating TLS via
+// the "le" (Let's Encrypt) certificate resolver.
 //
 // The "slipway.*" labels are ownership markers Slipway uses to recognise the
 // containers it manages (they are ignored by Traefik).
-func Labels(app core.App, port int) map[string]string {
+func Labels(app core.App, port int, tlsEnabled bool) map[string]string {
 	router := routerName(app.Name)
-	return map[string]string{
+	labels := map[string]string{
 		"traefik.enable":  "true",
 		"slipway.managed": "true",
 		"slipway.app":     app.Name,
 
-		"traefik.http.routers." + router + ".rule":        fmt.Sprintf("Host(`%s`)", app.Domain),
-		"traefik.http.routers." + router + ".entrypoints": "web",
+		"traefik.http.routers." + router + ".rule":                      fmt.Sprintf("Host(`%s`)", app.Domain),
+		"traefik.http.routers." + router + ".entrypoints":               "web",
 		"traefik.http.services." + router + ".loadbalancer.server.port": strconv.Itoa(port),
 	}
+	if tlsEnabled {
+		tls := router + "-tls"
+		labels["traefik.http.routers."+tls+".rule"] = fmt.Sprintf("Host(`%s`)", app.Domain)
+		labels["traefik.http.routers."+tls+".entrypoints"] = "websecure"
+		labels["traefik.http.routers."+tls+".tls"] = "true"
+		labels["traefik.http.routers."+tls+".tls.certresolver"] = "le"
+		labels["traefik.http.routers."+tls+".service"] = router
+	}
+	return labels
 }
 
 // routerName namespaces Traefik router/service names per app so two apps never

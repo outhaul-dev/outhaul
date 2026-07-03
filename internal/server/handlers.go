@@ -1,17 +1,26 @@
 package server
 
 import (
+	"context"
+	"log"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/slipwaydev/slipway/internal/core"
 )
 
+// appContainerPrefix is prepended to an app's name to get its container name.
+const appContainerPrefix = "slipway-app-"
+
 // appNameRe restricts app names to values safe as container names, Traefik
 // router identifiers, and URL segments.
 var appNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$`)
+
+// envKeyRe restricts env var names to conventional shell identifiers.
+var envKeyRe = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
 
 func (s *Server) handleAppsList(w http.ResponseWriter, r *http.Request) {
 	apps, err := s.store.ListApps(r.Context())
@@ -96,11 +105,151 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	envVars, err := s.store.ListEnv(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	type envRow struct {
+		Key      string
+		Value    string
+		IsSecret bool
+	}
+	envRows := make([]envRow, 0, len(envVars))
+	for _, v := range envVars {
+		row := envRow{Key: v.Key, IsSecret: v.IsSecret}
+		if !v.IsSecret {
+			row.Value = v.Value
+		}
+		envRows = append(envRows, row)
+	}
+	runtimeState := "absent"
+	if c, err := s.runtime.FindContainer(r.Context(), appContainerPrefix+app.Name); err == nil && c != nil {
+		runtimeState = c.State
+	}
 	s.render(w, http.StatusOK, "app", map[string]any{
 		"Title":       app.Name,
 		"App":         app,
 		"Deployments": deployments,
+		"Env":         envRows,
+		"Runtime":     runtimeState,
 	})
+}
+
+func (s *Server) handleSetEnv(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := s.store.GetApp(r.Context(), id); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	key := strings.TrimSpace(r.FormValue("key"))
+	value := r.FormValue("value")
+	isSecret := r.FormValue("secret") != ""
+
+	if !envKeyRe.MatchString(key) {
+		http.Error(w, "Key must be UPPER_SNAKE_CASE (letters, digits, underscore).", http.StatusBadRequest)
+		return
+	}
+	if key == "PORT" {
+		http.Error(w, "PORT is managed by Slipway and cannot be set.", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.SetEnv(r.Context(), id, key, value, isSecret); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
+func (s *Server) handleDeleteEnv(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := s.store.GetApp(r.Context(), id); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	key := strings.TrimSpace(r.FormValue("key"))
+	if err := s.store.DeleteEnv(r.Context(), id, key); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
+func (s *Server) handleStopApp(w http.ResponseWriter, r *http.Request) {
+	s.appLifecycle(w, r, func(ctx context.Context, cid string) error {
+		return s.runtime.StopContainer(ctx, cid, 10*time.Second)
+	})
+}
+
+func (s *Server) handleRestartApp(w http.ResponseWriter, r *http.Request) {
+	s.appLifecycle(w, r, func(ctx context.Context, cid string) error {
+		_ = s.runtime.StopContainer(ctx, cid, 10*time.Second) // ignore: already-stopped is fine
+		return s.runtime.StartContainer(ctx, cid)
+	})
+}
+
+func (s *Server) appLifecycle(w http.ResponseWriter, r *http.Request, action func(ctx context.Context, containerID string) error) {
+	id, ok := parseID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	app, err := s.store.GetApp(r.Context(), id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	c, err := s.runtime.FindContainer(r.Context(), appContainerPrefix+app.Name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if c == nil {
+		http.Error(w, "No container for this app. Deploy it first.", http.StatusConflict)
+		return
+	}
+	if err := action(r.Context(), c.ID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
+func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	app, err := s.store.GetApp(r.Context(), id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	// Best-effort container removal; proceed with the row delete regardless,
+	// but log failures so an orphaned container isn't silently lost.
+	c, ferr := s.runtime.FindContainer(r.Context(), appContainerPrefix+app.Name)
+	if ferr != nil {
+		log.Printf("delete app %d: could not inspect container (any container is now orphaned): %v", id, ferr)
+	} else if c != nil {
+		_ = s.runtime.StopContainer(r.Context(), c.ID, 10*time.Second)
+		if rerr := s.runtime.RemoveContainer(r.Context(), c.ID, true); rerr != nil {
+			log.Printf("delete app %d: could not remove container %s: %v", id, c.ID, rerr)
+		}
+	}
+	if err := s.store.DeleteApp(r.Context(), id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {

@@ -2,15 +2,18 @@
 
 A single-binary, self-hosted PaaS. Point it at a fresh VPS, push a public Git
 repo, and it clones, builds (Nixpacks), and runs your app behind Traefik on a
-domain you choose — no Node, no Postgres, one ~23 MB Go binary and a SQLite file.
+domain you choose — no Node, no Postgres, one ~22 MB Go binary and a SQLite file.
 
 Slipway is a deliberately minimal alternative to Dokploy/Coolify.
 
-> **Status: Milestone 1 (walking skeleton).** The thinnest end-to-end path works:
-> log in, create an app, click Deploy, watch the build stream live, and reach the
-> app on its domain. See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and
-> what is intentionally not built yet (TLS/ACME, webhooks, private repos, env
-> vars, multiple users, databases, metrics, multi-server).
+> **Status: Milestone 2 (production-ready app).** The thinnest end-to-end path
+> works: log in, create an app, click Deploy, watch the build stream live, and
+> reach the app on its domain. M2 adds automatic HTTPS (Let's Encrypt), env
+> vars & secrets (encrypted at rest), health-gated deploys that never promote a
+> broken build, and app lifecycle (stop/restart/delete). See
+> [ARCHITECTURE.md](ARCHITECTURE.md) for the design and what is intentionally
+> not built yet (webhooks, GitHub App, private repos, multiple users,
+> databases, metrics, multi-server).
 
 ## Running
 
@@ -37,6 +40,10 @@ No config files — defaults with `SLIPWAY_*` environment overrides:
 | `SLIPWAY_DOCKER_HOST`   | (SDK env default)    | Docker endpoint                           |
 | `SLIPWAY_TRAEFIK_IMAGE` | `traefik:v3.3`       | Managed Traefik image                     |
 | `SLIPWAY_NETWORK`       | `slipway`            | Shared Docker network for app containers  |
+| `SLIPWAY_ACME_EMAIL`    | (empty)              | Let's Encrypt email; set to enable HTTPS   |
+| `SLIPWAY_ACME_STAGING`  | `false`              | Use the LE staging CA (testing)            |
+| `SLIPWAY_HTTPS_PORT`    | `443`                | Host port for HTTPS                        |
+| `SLIPWAY_HEALTH_TIMEOUT`| `60s`                | Deploy health-check deadline               |
 
 Apps are expected to listen on `$PORT` (Slipway sets it and points Traefik at it).
 

@@ -11,9 +11,12 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/slipwaydev/slipway/internal/docker"
 	"github.com/slipwaydev/slipway/internal/logstream"
+	"github.com/slipwaydev/slipway/internal/secret"
 	"github.com/slipwaydev/slipway/internal/store"
 )
 
@@ -28,9 +31,33 @@ func (f *fakeDeployer) Cancel(_ context.Context, id int64) (bool, error) {
 	return true, nil
 }
 
+type fakeRuntime struct {
+	container *docker.Container
+	started   []string
+	stopped   []string
+	removed   []string
+}
+
+func (f *fakeRuntime) FindContainer(_ context.Context, name string) (*docker.Container, error) {
+	return f.container, nil
+}
+func (f *fakeRuntime) StartContainer(_ context.Context, id string) error {
+	f.started = append(f.started, id)
+	return nil
+}
+func (f *fakeRuntime) StopContainer(_ context.Context, id string, _ time.Duration) error {
+	f.stopped = append(f.stopped, id)
+	return nil
+}
+func (f *fakeRuntime) RemoveContainer(_ context.Context, id string, _ bool) error {
+	f.removed = append(f.removed, id)
+	return nil
+}
+
 type testEnv struct {
 	srv      *Server
 	deployer *fakeDeployer
+	runtime  *fakeRuntime
 	broker   *logstream.Broker
 	store    *store.Store
 	http     *httptest.Server
@@ -39,15 +66,20 @@ type testEnv struct {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	box, err := secret.Load(filepath.Join(t.TempDir(), "key"))
+	if err != nil {
+		t.Fatalf("secret.Load: %v", err)
+	}
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"), box)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
 
 	dep := &fakeDeployer{}
+	rt := &fakeRuntime{}
 	br := logstream.New()
-	srv, err := New(st, dep, br, "SETUPTOKEN")
+	srv, err := New(st, dep, rt, br, "SETUPTOKEN")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -62,7 +94,7 @@ func newTestEnv(t *testing.T) *testEnv {
 			return http.ErrUseLastResponse // don't follow; assert redirects ourselves
 		},
 	}
-	return &testEnv{srv: srv, deployer: dep, broker: br, store: st, http: ts, client: client}
+	return &testEnv{srv: srv, deployer: dep, runtime: rt, broker: br, store: st, http: ts, client: client}
 }
 
 func (e *testEnv) get(t *testing.T, path string) *http.Response {
@@ -273,3 +305,158 @@ func TestCancelDelegatesToWorker(t *testing.T) {
 
 // itoa is a tiny local helper for building request paths.
 func itoa(id int64) string { return strconv.FormatInt(id, 10) }
+
+func TestEnvAddListAndMask(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+
+	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/env", url.Values{
+		"key": {"LOG_LEVEL"}, "value": {"info"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("add env status = %d, want 303; body=%s", resp.StatusCode, body(t, resp))
+	}
+	resp.Body.Close()
+	resp = e.postForm(t, "/apps/"+itoa(app.ID)+"/env", url.Values{
+		"key": {"API_KEY"}, "value": {"s3cr3t"}, "secret": {"on"},
+	})
+	resp.Body.Close()
+
+	page := body(t, e.get(t, "/apps/"+itoa(app.ID)))
+	if !strings.Contains(page, "LOG_LEVEL") || !strings.Contains(page, "info") {
+		t.Error("normal env var not shown")
+	}
+	if !strings.Contains(page, "API_KEY") {
+		t.Error("secret key name should be shown")
+	}
+	if strings.Contains(page, "s3cr3t") {
+		t.Error("secret VALUE leaked into the page")
+	}
+}
+
+func TestEnvRejectsBadKey(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+
+	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/env", url.Values{"key": {"bad-key"}, "value": {"x"}})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	resp = e.postForm(t, "/apps/"+itoa(app.ID)+"/env", url.Values{"key": {"PORT"}, "value": {"9"}})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("PORT should be rejected, status = %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestEnvDelete(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	e.store.SetEnv(context.Background(), app.ID, "K", "v", false)
+
+	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/env/delete", url.Values{"key": {"K"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("delete status = %d, want 303", resp.StatusCode)
+	}
+	resp.Body.Close()
+	vars, _ := e.store.ListEnv(context.Background(), app.ID)
+	if len(vars) != 0 {
+		t.Errorf("env not deleted: %v", vars)
+	}
+}
+
+func TestEnvDeleteMissingApp404(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	resp := e.postForm(t, "/apps/9999/env/delete", url.Values{"key": {"K"}})
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestStopApp(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	e.runtime.container = &docker.Container{ID: "ctr1", Name: "slipway-app-web", State: "running"}
+
+	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/stop", url.Values{})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("stop status = %d, want 303", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if len(e.runtime.stopped) != 1 || e.runtime.stopped[0] != "ctr1" {
+		t.Errorf("StopContainer not called: %v", e.runtime.stopped)
+	}
+}
+
+func TestRestartApp(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	e.runtime.container = &docker.Container{ID: "ctr1", Name: "slipway-app-web", State: "running"}
+
+	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/restart", url.Values{})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("restart status = %d, want 303", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if len(e.runtime.stopped) != 1 || len(e.runtime.started) != 1 {
+		t.Errorf("restart should stop then start: stopped=%v started=%v", e.runtime.stopped, e.runtime.started)
+	}
+}
+
+func TestStopAppNoContainer409(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	// e.runtime.container stays nil → no container
+	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/stop", url.Values{})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("stop with no container = %d, want 409", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestDeleteApp(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	e.runtime.container = &docker.Container{ID: "ctr1", Name: "slipway-app-web", State: "running"}
+
+	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/delete", url.Values{})
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/" {
+		t.Fatalf("delete redirect = %d -> %q, want 303 -> /", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	resp.Body.Close()
+	if len(e.runtime.removed) != 1 {
+		t.Errorf("container not removed: %v", e.runtime.removed)
+	}
+	if _, err := e.store.GetApp(context.Background(), app.ID); err == nil {
+		t.Error("app row not deleted")
+	}
+}
+
+func TestDeleteAppWhenContainerGone(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	// container is nil (already gone); delete must still remove the row and redirect to /
+	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/delete", url.Values{})
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/" {
+		t.Fatalf("delete = %d -> %q, want 303 -> /", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	resp.Body.Close()
+	if len(e.runtime.removed) != 0 {
+		t.Errorf("no container should be removed when none exists: %v", e.runtime.removed)
+	}
+	if _, err := e.store.GetApp(context.Background(), app.ID); err == nil {
+		t.Error("app row not deleted")
+	}
+}

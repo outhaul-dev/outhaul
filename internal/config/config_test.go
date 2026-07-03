@@ -3,6 +3,7 @@ package config
 import (
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestLoadDefaults(t *testing.T) {
@@ -64,5 +65,36 @@ func TestDBPathDerivesFromDataDir(t *testing.T) {
 	want := filepath.Join("/data/slip", "slipway.db")
 	if got := c.DBPath(); got != want {
 		t.Errorf("DBPath() = %q, want %q", got, want)
+	}
+}
+
+func TestLoadTLSAndHealthDefaults(t *testing.T) {
+	c := Load(func(string) string { return "" })
+	if c.TLSEnabled() {
+		t.Error("TLS should be disabled with no ACME email")
+	}
+	if c.HTTPSPort != "443" {
+		t.Errorf("HTTPSPort default = %q, want 443", c.HTTPSPort)
+	}
+	if c.HealthTimeout != 60*time.Second {
+		t.Errorf("HealthTimeout default = %v, want 60s", c.HealthTimeout)
+	}
+}
+
+func TestLoadTLSEnabledWhenEmailSet(t *testing.T) {
+	env := map[string]string{
+		"SLIPWAY_ACME_EMAIL":     "ops@example.com",
+		"SLIPWAY_ACME_STAGING":   "true",
+		"SLIPWAY_HEALTH_TIMEOUT": "90s",
+	}
+	c := Load(func(k string) string { return env[k] })
+	if !c.TLSEnabled() {
+		t.Error("TLS should be enabled when ACME email is set")
+	}
+	if !c.ACMEStaging {
+		t.Error("ACMEStaging should be true")
+	}
+	if c.HealthTimeout != 90*time.Second {
+		t.Errorf("HealthTimeout = %v, want 90s", c.HealthTimeout)
 	}
 }

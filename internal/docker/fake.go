@@ -18,9 +18,13 @@ type Fake struct {
 	Containers map[string]*Container // keyed by ID
 	Pulled     []string              // images pulled, in order
 	Created    []ContainerSpec       // specs passed to CreateContainer, in order
+	IPs        map[string]string     // container ID -> IP (test-settable)
 
 	// FailPull, when set, makes PullImage return an error for matching refs.
 	FailPull func(ref string) error
+
+	FailCreate func(spec ContainerSpec) error
+	FailRemove func(id string) error
 }
 
 // NewFake returns an empty Fake.
@@ -28,6 +32,7 @@ func NewFake() *Fake {
 	return &Fake{
 		Networks:   map[string]bool{},
 		Containers: map[string]*Container{},
+		IPs:        map[string]string{},
 	}
 }
 
@@ -68,6 +73,11 @@ func (f *Fake) FindContainer(_ context.Context, name string) (*Container, error)
 func (f *Fake) CreateContainer(_ context.Context, spec ContainerSpec) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.FailCreate != nil {
+		if err := f.FailCreate(spec); err != nil {
+			return "", err
+		}
+	}
 	if f.byName(spec.Name) != nil {
 		return "", fmt.Errorf("container name %q already in use", spec.Name)
 	}
@@ -81,6 +91,7 @@ func (f *Fake) CreateContainer(_ context.Context, spec ContainerSpec) (string, e
 		State:  "created",
 		Labels: spec.Labels,
 	}
+	f.IPs[id] = fmt.Sprintf("10.88.0.%d", f.seq)
 	return id, nil
 }
 
@@ -109,11 +120,25 @@ func (f *Fake) StopContainer(_ context.Context, id string, _ time.Duration) erro
 func (f *Fake) RemoveContainer(_ context.Context, id string, _ bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.FailRemove != nil {
+		if err := f.FailRemove(id); err != nil {
+			return err
+		}
+	}
 	if _, ok := f.Containers[id]; !ok {
 		return fmt.Errorf("no such container: %s", id)
 	}
 	delete(f.Containers, id)
 	return nil
+}
+
+func (f *Fake) ContainerIP(_ context.Context, id, _ string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.Containers[id]; !ok {
+		return "", fmt.Errorf("no such container: %s", id)
+	}
+	return f.IPs[id], nil
 }
 
 func (f *Fake) Close() error { return nil }

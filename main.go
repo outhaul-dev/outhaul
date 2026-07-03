@@ -18,6 +18,7 @@ import (
 	"github.com/slipwaydev/slipway/internal/deploy"
 	"github.com/slipwaydev/slipway/internal/docker"
 	"github.com/slipwaydev/slipway/internal/logstream"
+	"github.com/slipwaydev/slipway/internal/secret"
 	"github.com/slipwaydev/slipway/internal/server"
 	"github.com/slipwaydev/slipway/internal/store"
 	"github.com/slipwaydev/slipway/internal/traefik"
@@ -50,9 +51,16 @@ func serve() error {
 	if err := os.MkdirAll(cfg.WorkDir(), 0o755); err != nil {
 		return fmt.Errorf("create data dir %s: %w", cfg.DataDir, err)
 	}
+	if err := os.MkdirAll(cfg.AcmeDir(), 0o700); err != nil {
+		return fmt.Errorf("create acme dir: %w", err)
+	}
+	box, err := secret.Load(cfg.SecretKeyPath())
+	if err != nil {
+		return fmt.Errorf("load secret key: %w", err)
+	}
 
 	// Store + crash recovery.
-	st, err := store.Open(cfg.DBPath())
+	st, err := store.Open(cfg.DBPath(), box)
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
@@ -87,7 +95,7 @@ func serve() error {
 
 	// HTTP server.
 	setupToken := server.NewToken()
-	srv, err := server.New(st, worker, broker, setupToken)
+	srv, err := server.New(st, worker, dc, broker, setupToken)
 	if err != nil {
 		stopWorker()
 		return fmt.Errorf("build server: %w", err)
@@ -134,16 +142,25 @@ func ensureInfra(dc docker.Client, cfg config.Config) {
 		return
 	}
 	pc := traefik.ProxyConfig{
-		ContainerName: "slipway-traefik",
-		Image:         cfg.TraefikImage,
-		Network:       cfg.Network,
-		HTTPPort:      "80",
+		ContainerName:  "slipway-traefik",
+		Image:          cfg.TraefikImage,
+		Network:        cfg.Network,
+		HTTPPort:       "80",
+		TLSEnabled:     cfg.TLSEnabled(),
+		ACMEEmail:      cfg.ACMEEmail,
+		ACMEStaging:    cfg.ACMEStaging,
+		HTTPSPort:      cfg.HTTPSPort,
+		ACMEStorageDir: cfg.AcmeDir(),
 	}
 	if err := traefik.EnsureProxy(ctx, dc, pc, os.Stdout); err != nil {
 		log.Printf("WARNING: could not ensure Traefik proxy: %v", err)
 		return
 	}
-	log.Printf("Traefik proxy ready on :80 (network %q)", cfg.Network)
+	if cfg.TLSEnabled() {
+		log.Printf("Traefik proxy ready on :80 and :%s (TLS via Let's Encrypt) on network %q", cfg.HTTPSPort, cfg.Network)
+	} else {
+		log.Printf("Traefik proxy ready on :80 (network %q; set SLIPWAY_ACME_EMAIL to enable HTTPS)", cfg.Network)
+	}
 }
 
 // shutdown performs graceful shutdown: stop the worker first so in-flight

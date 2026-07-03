@@ -42,6 +42,23 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 
 	logf(out, "Deploying %s (%s) to %s", app.Name, app.RepoURL, app.Domain)
 
+	envVars, err := w.store.ListEnv(ctx, app.ID)
+	if err != nil {
+		w.fail(dep, core.StatusBuilding, "load env: "+err.Error(), out)
+		return
+	}
+	buildEnv := map[string]string{"PORT": fmt.Sprintf("%d", AppPort)}
+	runtimeEnv := []string{fmt.Sprintf("PORT=%d", AppPort)}
+	for _, v := range envVars {
+		if v.Key == "PORT" {
+			continue // PORT is managed by the pipeline (also rejected at the UI layer)
+		}
+		runtimeEnv = append(runtimeEnv, v.Key+"="+v.Value)
+		if !v.IsSecret {
+			buildEnv[v.Key] = v.Value
+		}
+	}
+
 	// --- clone ---
 	workDir := filepath.Join(w.cfg.WorkDir(), fmt.Sprintf("dep-%d", dep.ID))
 	if err := os.RemoveAll(workDir); err != nil {
@@ -66,7 +83,7 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 	req := builder.BuildRequest{
 		ContextDir: workDir,
 		ImageTag:   image,
-		Env:        map[string]string{"PORT": fmt.Sprintf("%d", AppPort)},
+		Env:        buildEnv,
 	}
 	if err := w.builder.Build(ctx, req, out); err != nil {
 		w.fail(dep, core.StatusBuilding, "build failed: "+err.Error(), out)
@@ -90,12 +107,61 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 		return
 	}
 
-	// --- start container ---
-	logf(out, "Starting container...")
-	if err := w.startContainer(ctx, app, image, out); err != nil {
+	// --- start new container, invisible to Traefik, and health-check it ---
+	// Named on the globally-unique deployment ID (not the app name) so it can
+	// never collide with a canonical name: app names permit trailing
+	// "-<digits>", so "slipway-app-<name>-<depID>" could equal the canonical
+	// name of an app literally named "<name>-<depID>".
+	tempName := fmt.Sprintf("slipway-deploy-%d", dep.ID)
+	logf(out, "Starting new container and waiting for it to become healthy...")
+	newID, err := w.createContainer(ctx, app, image, tempName, runtimeEnv, false)
+	if err != nil {
 		w.fail(dep, core.StatusDeploying, "start failed: "+err.Error(), out)
 		return
 	}
+	// cleanupContainer removes a container regardless of pipeline cancellation
+	// (e.g. graceful shutdown cancels ctx), so temp containers never leak.
+	cleanupContainer := func(id string) {
+		rmCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = w.docker.RemoveContainer(rmCtx, id, true)
+	}
+	ip, err := w.docker.ContainerIP(ctx, newID, w.cfg.Network)
+	if err != nil || ip == "" {
+		cleanupContainer(newID)
+		w.fail(dep, core.StatusDeploying, "could not resolve container IP", out)
+		return
+	}
+	healthURL := fmt.Sprintf("http://%s:%d/", ip, AppPort)
+	if !w.healthCheck(ctx, healthURL, w.cfg.HealthTimeout) {
+		cleanupContainer(newID)
+		w.fail(dep, core.StatusDeploying, "health check failed: app did not respond within the timeout", out)
+		return
+	}
+
+	// The app may have been deleted while we were building/health-checking (a
+	// deploying deployment is not cancellable). If so, abort before recreating
+	// the canonical container, or we'd orphan a container for a gone app.
+	if _, err := w.store.GetApp(ctx, app.ID); err != nil {
+		cleanupContainer(newID)
+		w.fail(dep, core.StatusDeploying, "app was deleted during deploy", out)
+		return
+	}
+
+	// --- healthy: cut over. Remove old, create canonical, then drop the temp. ---
+	logf(out, "Healthy. Cutting over to the new container...")
+	if err := w.removeContainerByName(ctx, containerName(app.Name)); err != nil {
+		cleanupContainer(newID)
+		w.fail(dep, core.StatusDeploying, "remove previous container: "+err.Error(), out)
+		return
+	}
+	if _, err := w.createContainer(ctx, app, image, containerName(app.Name), runtimeEnv, true); err != nil {
+		cleanupContainer(newID)
+		logf(out, "ERROR: cutover failed — the app has NO running container until the next successful deploy")
+		w.fail(dep, core.StatusDeploying, "cutover failed (app is down): "+err.Error(), out)
+		return
+	}
+	cleanupContainer(newID) // canonical is up; drop the temp
 
 	// --- deploying -> running ---
 	if _, err := w.store.SetStatus(context.Background(), dep.ID, core.StatusDeploying, core.StatusRunning, ""); err != nil {
@@ -104,39 +170,60 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 	logf(out, "Done. %s is live at http://%s", app.Name, app.Domain)
 }
 
-// startContainer replaces any existing container for the app with a fresh one
-// built from image, wired with Traefik labels and joined to the shared network.
-func (w *Worker) startContainer(ctx context.Context, app core.App, image string, out io.Writer) error {
-	name := containerName(app.Name)
-
-	if existing, err := w.docker.FindContainer(ctx, name); err != nil {
-		return fmt.Errorf("inspect existing container: %w", err)
-	} else if existing != nil {
-		logf(out, "Removing previous container %s", name)
-		if existing.Running() {
-			_ = w.docker.StopContainer(ctx, existing.ID, stopTimeout)
-		}
-		if err := w.docker.RemoveContainer(ctx, existing.ID, true); err != nil {
-			return fmt.Errorf("remove previous container: %w", err)
+// createContainer creates and starts a container for the app. When traefikOn is
+// true it carries the app's routing labels; otherwise Traefik ignores it
+// (traefik.enable=false) — used for the health-check phase.
+func (w *Worker) createContainer(ctx context.Context, app core.App, image, name string, env []string, traefikOn bool) (string, error) {
+	var labels map[string]string
+	if traefikOn {
+		labels = traefik.Labels(app, AppPort, w.cfg.TLSEnabled())
+	} else {
+		labels = map[string]string{
+			"traefik.enable":  "false",
+			"slipway.managed": "true",
+			"slipway.app":     app.Name,
 		}
 	}
-
+	// Only the canonical (Traefik-routed) container should survive a host
+	// reboot or Docker restart. The temp health-check container carries
+	// runtime env (including secrets); if Slipway crashes between create and
+	// cleanup, an "unless-stopped" temp container would restart forever since
+	// crash recovery only touches DB rows, not orphaned Docker state.
+	restart := ""
+	if traefikOn {
+		restart = "unless-stopped"
+	}
 	spec := docker.ContainerSpec{
 		Name:          name,
 		Image:         image,
-		Labels:        traefik.Labels(app, AppPort),
-		Env:           []string{fmt.Sprintf("PORT=%d", AppPort)},
+		Labels:        labels,
+		Env:           env,
 		Networks:      []string{w.cfg.Network},
-		RestartPolicy: "unless-stopped",
+		RestartPolicy: restart,
 	}
 	id, err := w.docker.CreateContainer(ctx, spec)
 	if err != nil {
-		return fmt.Errorf("create container: %w", err)
+		return "", fmt.Errorf("create container: %w", err)
 	}
 	if err := w.docker.StartContainer(ctx, id); err != nil {
-		return fmt.Errorf("start container: %w", err)
+		return "", fmt.Errorf("start container: %w", err)
 	}
-	return nil
+	return id, nil
+}
+
+// removeContainerByName stops and removes the named container if it exists.
+func (w *Worker) removeContainerByName(ctx context.Context, name string) error {
+	existing, err := w.docker.FindContainer(ctx, name)
+	if err != nil {
+		return fmt.Errorf("inspect container: %w", err)
+	}
+	if existing == nil {
+		return nil
+	}
+	if existing.Running() {
+		_ = w.docker.StopContainer(ctx, existing.ID, stopTimeout)
+	}
+	return w.docker.RemoveContainer(ctx, existing.ID, true)
 }
 
 // fail records a terminal failure with a guarded transition. If the guard does

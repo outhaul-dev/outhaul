@@ -3,7 +3,7 @@
 Slipway is an open-source, self-hosted PaaS: a single Go binary plus SQLite that
 turns a fresh VPS into a git-push-to-deploy platform by orchestrating Docker and
 Traefik. It is positioned as a minimal alternative to Dokploy/Coolify — one
-~25 MB binary, no Node, no Postgres, installed with `curl | sh`.
+~22 MB binary, no Node, no Postgres, installed with `curl | sh`.
 
 This document is the source of truth for the **locked architecture**, the
 **package layout**, and the **deployment state machine**. Get the state machine
@@ -45,6 +45,23 @@ build logs live to the browser via SSE → app reachable on its domain. Plus
 **Out of M1 (leave seams, don't build):** TLS/ACME, webhooks, GitHub App,
 private repos, env-var management, multiple users/teams, databases-as-a-service,
 metrics, multi-server.
+
+### Milestone 2 (done)
+
+TLS/ACME, env-var management, and app lifecycle (stop/restart/delete) — listed
+above as out-of-scope for M1 — are now implemented. Still deferred: webhooks,
+GitHub App, private repos, multiple users/teams, databases-as-a-service,
+metrics, multi-server.
+
+Design decisions from M2: env values are encrypted at rest with NaCl
+`secretbox` and a local `secret.key`, and secrets are injected into the
+runtime container only, never into the build. Deploys are health-gated — the
+new container is polled before cutover, so a failed build never disrupts the
+running app. App runtime state is derived from Docker rather than stored as a
+desired-state column; the `unless-stopped` restart policy handles reboot.
+HTTPS is Traefik + Let's Encrypt HTTP-01, enabled by setting
+`SLIPWAY_ACME_EMAIL`, with a config-hash drift check that recreates the
+Traefik container when its desired config changes.
 
 ---
 
