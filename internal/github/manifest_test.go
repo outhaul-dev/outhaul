@@ -23,6 +23,12 @@ func TestBuildManifest(t *testing.T) {
 	if m["redirect_url"] != "https://slip.example.com/github/callback" {
 		t.Errorf("redirect_url = %v", m["redirect_url"])
 	}
+	if m["setup_url"] != "https://slip.example.com/github/setup" {
+		t.Errorf("setup_url = %v", m["setup_url"])
+	}
+	if m["setup_on_update"] != true {
+		t.Errorf("setup_on_update = %v, want true", m["setup_on_update"])
+	}
 	hook := m["hook_attributes"].(map[string]any)
 	if hook["url"] != "https://slip.example.com/webhooks/github" {
 		t.Errorf("hook url = %v", hook["url"])

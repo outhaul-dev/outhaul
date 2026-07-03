@@ -20,9 +20,11 @@ type ManifestParams struct {
 func BuildManifest(p ManifestParams) (string, error) {
 	base := strings.TrimRight(p.PublicURL, "/")
 	m := map[string]any{
-		"name":         p.Name,
-		"url":          base,
-		"redirect_url": base + "/github/callback",
+		"name":            p.Name,
+		"url":             base,
+		"redirect_url":    base + "/github/callback",
+		"setup_url":       base + "/github/setup",
+		"setup_on_update": true,
 		"hook_attributes": map[string]any{
 			"url": base + "/webhooks/github",
 		},
