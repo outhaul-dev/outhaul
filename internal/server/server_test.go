@@ -341,6 +341,21 @@ func appForm(name, domain string) url.Values {
 	return url.Values{"name": {name}, "domain": {domain}, "source": {"public"}, "repo_url": {"https://github.com/o/" + name + ".git"}, "branch": {"main"}}
 }
 
+func TestAppDetailShowsConnectAndStats(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	e.postForm(t, "/apps", appForm("web", "web.example.com")).Body.Close()
+	app, _ := e.store.GetAppByName(context.Background(), "web")
+
+	page := body(t, e.get(t, "/apps/"+itoa(app.ID)))
+	if !strings.Contains(page, "not live") {
+		t.Error("app detail should show placeholder metric stats marked not-live")
+	}
+	if !strings.Contains(page, "/webhooks/app/"+app.WebhookSecret) {
+		t.Error("app detail should show the connect-repo webhook URL")
+	}
+}
+
 func TestEnvAddListAndMask(t *testing.T) {
 	e := newTestEnv(t)
 	e.completeSetup(t)
