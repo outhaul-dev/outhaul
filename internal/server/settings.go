@@ -15,9 +15,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		data["GithubSlug"] = ga.Slug
 		data["GithubInstalled"] = ga.InstallationID != 0
 	}
-	if e := r.URL.Query().Get("err"); e != "" {
-		data["Error"] = e
-	}
 	if r.URL.Query().Get("ok") != "" {
 		data["Notice"] = "Password updated."
 	}
