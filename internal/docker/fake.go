@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -24,11 +25,27 @@ type Fake struct {
 	LogTails   []int                 // tail values passed to ContainerLogs, in order
 	Stats      map[string]Stats      // container ID -> stats sample (test-settable)
 
+	Volumes map[string]map[string]string // volume name -> labels (test-settable)
+	Execs   []ExecCall                   // ExecContainer invocations, in order
+	Runs    []ContainerSpec              // RunContainer specs, in order
+
+	// OnExec, when set, supplies ExecContainer's output and exit code.
+	OnExec func(id string, cmd, env []string) (stdout, stderr string, exit int, err error)
+	// OnRun, when set, supplies RunContainer's stdout and exit code.
+	OnRun func(spec ContainerSpec) (stdout string, exit int, err error)
+
 	// FailPull, when set, makes PullImage return an error for matching refs.
 	FailPull func(ref string) error
 
 	FailCreate func(spec ContainerSpec) error
 	FailRemove func(id string) error
+}
+
+// ExecCall records one ExecContainer invocation.
+type ExecCall struct {
+	ContainerID string
+	Cmd         []string
+	Env         []string
 }
 
 // NewFake returns an empty Fake.
@@ -39,6 +56,7 @@ func NewFake() *Fake {
 		IPs:        map[string]string{},
 		Logs:       map[string]string{},
 		Stats:      map[string]Stats{},
+		Volumes:    map[string]map[string]string{},
 	}
 }
 
@@ -183,6 +201,69 @@ func (f *Fake) ContainerIP(_ context.Context, id, _ string) (string, error) {
 		return "", fmt.Errorf("no such container: %s", id)
 	}
 	return f.IPs[id], nil
+}
+
+func (f *Fake) ExecContainer(_ context.Context, id string, cmd, env []string, stdout, stderr io.Writer) (int, error) {
+	f.mu.Lock()
+	if _, ok := f.Containers[id]; !ok {
+		f.mu.Unlock()
+		return 0, fmt.Errorf("no such container: %s", id)
+	}
+	f.Execs = append(f.Execs, ExecCall{ContainerID: id, Cmd: cmd, Env: env})
+	hook := f.OnExec
+	f.mu.Unlock()
+	if hook == nil {
+		return 0, nil
+	}
+	out, errOut, exit, err := hook(id, cmd, env)
+	if err != nil {
+		return 0, err
+	}
+	if stdout != nil {
+		io.WriteString(stdout, out)
+	}
+	if stderr != nil {
+		io.WriteString(stderr, errOut)
+	}
+	return exit, nil
+}
+
+func (f *Fake) ListVolumes(_ context.Context, match map[string]string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var names []string
+	for name, labels := range f.Volumes {
+		ok := true
+		for k, v := range match {
+			if labels[k] != v {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+func (f *Fake) RunContainer(_ context.Context, spec ContainerSpec, stdout, _ io.Writer) (int, error) {
+	f.mu.Lock()
+	f.Runs = append(f.Runs, spec)
+	hook := f.OnRun
+	f.mu.Unlock()
+	if hook == nil {
+		return 0, nil
+	}
+	out, exit, err := hook(spec)
+	if err != nil {
+		return 0, err
+	}
+	if stdout != nil {
+		io.WriteString(stdout, out)
+	}
+	return exit, nil
 }
 
 func (f *Fake) Close() error { return nil }

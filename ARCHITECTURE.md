@@ -223,6 +223,40 @@ so. Deliberate seams: scheduled/S3 backups and restore (Dokploy's cron +
 destinations model), more engines (a table row each), image upgrades, and a
 database metrics panel.
 
+### Scheduled backups to S3-compatible storage (done)
+
+Operators register **destinations** — S3-compatible buckets (AWS, MinIO, R2,
+B2, Wasabi, …) — once on the settings page, then attach **backup schedules**
+to databases and compose apps: a 5-field cron expression, a key prefix, and a
+retention count (design in `docs/superpowers/specs/2026-07-04-backups.md`).
+This is Dokploy's backups model with two deliberate substitutions. First, no
+rclone: Dokploy shells out to it for transfers, but Outhaul's S3 surface is
+three calls (put, list, delete), so `internal/blobstore` implements them
+directly with stdlib SigV4 signing — verified against AWS's published test
+vector — the same house call as the hand-rolled GitHub App JWT. Path-style
+addressing always; single-PUT uploads cap one archive at 5 GB (multipart is a
+seam). Second, no cron library: `internal/cron` is a ~100-line 5-field parser
+(vixie dom/dow OR-semantics) and the `internal/backup` manager just ticks
+once a minute and runs whatever matches, in goroutines with a per-backup
+in-flight guard.
+
+Database backups run the engine's own tool **inside the database container**
+via docker exec (`pg_dump -Fc --no-acl --no-owner`, `mysqldump
+--single-transaction` — Dokploy's commands; the tools ship in the official
+images so the host needs nothing), gzipped in Go, staged under the work dir,
+then uploaded to `<prefix>/<name>/<timestamp>`. Redis is excluded, as in
+Dokploy — no dump tooling; it's cache-shaped. App backups are Dokploy's
+volume-backups feature: each **named volume** of a compose stack (found by
+its compose-project label) is tarred by a transient `busybox` container and
+uploaded as its own object; bind mounts aren't covered, and nixpacks apps are
+excluded honestly — Outhaul gives them no volumes, so there is nothing to
+back up. After a successful run, retention prunes each directory to the
+newest N objects (timestamps sort lexicographically). Every run lands in a
+history table (capped at 20 rows per schedule) shown on the target's page
+next to Run-now/pause/remove; destinations have a Test button that writes and
+deletes a probe object. Deliberate seams: restore UI, multipart uploads,
+stop-during-tar consistency locks, non-S3 destinations.
+
 Design decisions from M3: private-repo access goes through a **GitHub App**,
 set up via GitHub's manifest flow (the operator submits a pre-filled manifest,
 GitHub redirects back with a temporary code that is exchanged for the App's
@@ -276,6 +310,7 @@ slipway/
         projects.go           # Project CRUD (guarded delete, app counts)
         project_env.go        # project-level shared env vars (encrypted at rest)
         databases.go          # managed-database CRUD (password encrypted at rest, recover-on-boot)
+        backups.go            # S3 destinations (secret encrypted), backup schedules, run history
         deployments.go        # Deployment CRUD + queue ops (claim, recover-on-boot, rollbacks)
 
     docker/                   # Docker behind an interface (fake for tests)
@@ -319,6 +354,16 @@ slipway/
         engines.go            # engine table: images, ports, env/credentials, connection URLs
         manager.go            # provision/start/stop/remove; the server's Databases interface
 
+    cron/                     # 5-field cron expression parsing + minute matching (no deps)
+        cron.go
+
+    blobstore/                # S3-compatible object storage via stdlib SigV4 (no SDK)
+        blobstore.go          # Client interface (Put/List/Delete), path-style requests, Probe
+        sigv4.go              # AWS Signature V4 signing, tested against the AWS test vector
+
+    backup/                   # the backup scheduler/executor
+        manager.go            # minute ticker -> cron match -> dump/tar -> upload -> prune
+
     deploy/                   # the worker/orchestrator — drives the state machine
         worker.go             # dispatcher loop: claim queued work, per-app serialization, concurrency across apps
         pipeline.go           # one nixpacks deployment: clone -> build -> start container -> health -> running
@@ -330,6 +375,7 @@ slipway/
         auth.go               # argon2id, session cookies, first-boot setup token
         handlers.go           # apps list/create, deploy trigger, deployment detail
         databases.go          # managed-database pages: create, detail, lifecycle, settings
+        backups.go            # backup schedules + destinations (create/test/delete, run-now)
         sse.go                # SSE handlers: build logs (logstream broker) + runtime container logs (docker follow)
         stats.go              # live app metrics: aggregated docker-stats snapshot, polled by the app page
         templates/*.tmpl      # html/template, embedded

@@ -26,9 +26,12 @@ Outhaul is a deliberately minimal alternative to Dokploy/Coolify.
 > hold **managed databases** (PostgreSQL, MySQL, Redis): one click provisions
 > a container with generated credentials and persistent data, reachable by
 > apps over the internal network (and optionally on a published host port).
-> See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and what is
-> intentionally not built yet (multiple users, database backups, metrics
-> history/alerts, multi-server).
+> **Scheduled backups** ship database dumps and compose stacks' named volumes
+> to any S3-compatible bucket (AWS, MinIO, R2, B2, …) on cron schedules with
+> retention, run history, and one-click manual runs. See
+> [ARCHITECTURE.md](ARCHITECTURE.md) for the design and what is intentionally
+> not built yet (multiple users, backup restore UI, metrics history/alerts,
+> multi-server).
 
 ## Running
 

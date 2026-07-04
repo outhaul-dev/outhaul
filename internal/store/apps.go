@@ -174,7 +174,7 @@ func (s *Store) UpdateAppComposePath(ctx context.Context, id int64, composePath 
 	return err
 }
 
-// DeleteApp removes an app and its deployments and env vars.
+// DeleteApp removes an app and its deployments, env vars, and backups.
 func (s *Store) DeleteApp(ctx context.Context, id int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -190,6 +190,9 @@ func (s *Store) DeleteApp(ctx context.Context, id int64) error {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM compose_domains WHERE app_id = ?`, id); err != nil {
+		return err
+	}
+	if err := deleteBackupsForTargetTx(ctx, tx, core.BackupTargetApp, id); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM apps WHERE id = ?`, id); err != nil {

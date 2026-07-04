@@ -68,6 +68,19 @@ func (f *fakeDatabases) Remove(_ context.Context, d core.Database) error {
 	return nil
 }
 
+// fakeBackups records backup-manager calls from the handlers.
+type fakeBackups struct {
+	ran     []int64 // backup IDs passed to RunNow
+	tested  []string
+	testErr error // returned by TestDestination when set
+}
+
+func (f *fakeBackups) RunNow(b core.Backup) { f.ran = append(f.ran, b.ID) }
+func (f *fakeBackups) TestDestination(_ context.Context, d core.Destination) error {
+	f.tested = append(f.tested, d.Name)
+	return f.testErr
+}
+
 type fakeRuntime struct {
 	container *docker.Container
 	stack     []docker.Container // returned by ListContainers (compose apps)
@@ -120,6 +133,7 @@ type testEnv struct {
 	runtime   *fakeRuntime
 	compose   *compose.Fake
 	databases *fakeDatabases
+	backups   *fakeBackups
 	broker    *logstream.Broker
 	store     *store.Store
 	gh        *github.Fake
@@ -145,9 +159,10 @@ func newTestEnv(t *testing.T) *testEnv {
 	rt := &fakeRuntime{}
 	cp := &compose.Fake{}
 	dbm := &fakeDatabases{}
+	bk := &fakeBackups{}
 	br := logstream.New()
 	gh := &github.Fake{}
-	srv, err := New(st, dep, rt, cp, dbm, br, gh, "https://slip.example.com", "SETUPTOKEN")
+	srv, err := New(st, dep, rt, cp, dbm, bk, br, gh, "https://slip.example.com", "SETUPTOKEN")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -162,7 +177,7 @@ func newTestEnv(t *testing.T) *testEnv {
 			return http.ErrUseLastResponse // don't follow; assert redirects ourselves
 		},
 	}
-	return &testEnv{srv: srv, deployer: dep, runtime: rt, compose: cp, databases: dbm, broker: br, store: st, gh: gh, http: ts, client: client}
+	return &testEnv{srv: srv, deployer: dep, runtime: rt, compose: cp, databases: dbm, backups: bk, broker: br, store: st, gh: gh, http: ts, client: client}
 }
 
 func (e *testEnv) get(t *testing.T, path string) *http.Response {

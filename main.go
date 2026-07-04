@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/slipwaydev/slipway/internal/backup"
 	"github.com/slipwaydev/slipway/internal/builder"
 	"github.com/slipwaydev/slipway/internal/compose"
 	"github.com/slipwaydev/slipway/internal/config"
@@ -106,9 +107,13 @@ func serve() error {
 	// Database manager (databases-as-a-service).
 	dbm := dbaas.NewManager(st, dc, cfg.Network, cfg.DatabasesDir())
 
+	// Backup scheduler (dumps + volume tarballs to S3-compatible storage).
+	backups := backup.NewManager(st, dc, cfg.WorkDir())
+	go backups.Run(workerCtx)
+
 	// HTTP server.
 	setupToken := server.NewToken()
-	srv, err := server.New(st, worker, dc, compose.NewDocker(), dbm, broker, ghClient, cfg.PublicURL, setupToken)
+	srv, err := server.New(st, worker, dc, compose.NewDocker(), dbm, backups, broker, ghClient, cfg.PublicURL, setupToken)
 	if err != nil {
 		stopWorker()
 		return fmt.Errorf("build server: %w", err)

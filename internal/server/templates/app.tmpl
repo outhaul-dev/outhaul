@@ -76,6 +76,8 @@
   </form>
   <p class="muted env-note">Each domain routes to one compose service's container port; several domains may share a service. Redeploy to apply domain changes.</p>
 </section>
+
+{{template "backups" .}}
 {{end}}
 
 <section class="panel">

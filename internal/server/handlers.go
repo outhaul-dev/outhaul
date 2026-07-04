@@ -367,6 +367,18 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 	if s.publicURL != "" {
 		data["WebhookURL"] = strings.TrimRight(s.publicURL, "/") + "/webhooks/app/" + app.WebhookSecret
 	}
+	// Volume backups only make sense for compose stacks; nixpacks apps are
+	// stateless, so their page omits the panel.
+	if app.Kind == core.KindCompose {
+		panel, err := s.backupPanelData(r.Context(), core.BackupTargetApp, app.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		for k, v := range panel {
+			data[k] = v
+		}
+	}
 	s.render(w, http.StatusOK, "app", data)
 }
 

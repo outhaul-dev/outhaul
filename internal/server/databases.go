@@ -121,6 +121,18 @@ func (s *Server) renderDatabase(w http.ResponseWriter, r *http.Request, status i
 		"ExternalURL":    dbaas.ExternalURL(d, host),
 		"EnvExample":     strings.ToUpper(strings.ReplaceAll(d.Name, "-", "_")) + "_URL",
 	}
+	// Redis is cache-shaped and has no dump tooling (matching Dokploy); its
+	// page omits the backups panel entirely.
+	if d.Engine != core.EngineRedis {
+		panel, err := s.backupPanelData(r.Context(), core.BackupTargetDatabase, d.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		for k, v := range panel {
+			data[k] = v
+		}
+	}
 	if errMsg != "" {
 		data["Error"] = errMsg
 	}

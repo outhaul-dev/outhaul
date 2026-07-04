@@ -139,6 +139,11 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); box-sh
 .row-actions { display: flex; gap: 12px; align-items: center; }
 .h1-note { font-size: 13px; font-weight: 400; font-family: var(--font-mono); }
 
+/* One backup schedule: meta row + its recent runs. */
+.backup { margin-bottom: 20px; }
+.backup-head { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.backup-actions { display: flex; gap: 12px; align-items: center; margin-left: auto; }
+
 /* Badges */
 .badge {
   display: inline-block; font-family: var(--font-mono); font-size: 11px;

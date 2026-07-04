@@ -4,9 +4,15 @@ import (
 	"net/http"
 )
 
-// handleSettings renders the settings hub: GitHub App connection status and the
-// change-password form.
+// handleSettings renders the settings hub: GitHub App connection status,
+// backup destinations, and the change-password form.
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	s.renderSettings(w, r, http.StatusOK, "")
+}
+
+// renderSettings renders the settings page (also used to redisplay it with an
+// error after a rejected destination change).
+func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, status int, errMsg string) {
 	data := map[string]any{"Title": "Settings", "Active": "settings"}
 	if !s.publicURLSet() {
 		data["NeedsPublicURL"] = true
@@ -15,10 +21,22 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		data["GithubSlug"] = ga.Slug
 		data["GithubInstalled"] = ga.InstallationID != 0
 	}
+	dests, err := s.store.ListDestinations(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	data["Destinations"] = dests
 	if r.URL.Query().Get("ok") != "" {
 		data["Notice"] = "Password updated."
 	}
-	s.render(w, http.StatusOK, "settings", data)
+	if name := r.URL.Query().Get("tested"); name != "" {
+		data["Notice"] = "Destination " + name + " is reachable and writable."
+	}
+	if errMsg != "" {
+		data["Error"] = errMsg
+	}
+	s.render(w, status, "settings", data)
 }
 
 // handleChangePassword verifies the current password and stores a new hash.

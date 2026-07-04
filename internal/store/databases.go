@@ -82,11 +82,21 @@ func (s *Store) SetDatabaseExtPort(ctx context.Context, id int64, port int) erro
 	return err
 }
 
-// DeleteDatabase removes the row. The caller is responsible for the container
-// and data directory (see dbaas.Manager.Remove).
+// DeleteDatabase removes the row and its backup schedules. The caller is
+// responsible for the container and data directory (see dbaas.Manager.Remove).
 func (s *Store) DeleteDatabase(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM databases WHERE id = ?`, id)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := deleteBackupsForTargetTx(ctx, tx, core.BackupTargetDatabase, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM databases WHERE id = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // RecoverCreatingDatabases marks databases stuck in creating as failed — the

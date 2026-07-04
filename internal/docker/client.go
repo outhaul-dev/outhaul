@@ -17,11 +17,14 @@ type PortMapping struct {
 	Proto         string // "tcp" (default) or "udp"
 }
 
-// Mount is a host bind mount (used to give Traefik the Docker socket).
+// Mount attaches storage to a container: a host bind mount by default (used
+// to give Traefik the Docker socket and databases their data dirs), or a
+// named Docker volume when Volume is set (used by backup helper containers).
 type Mount struct {
-	Source   string
+	Source   string // host path, or the volume name when Volume is true
 	Target   string
 	ReadOnly bool
+	Volume   bool
 }
 
 // ContainerSpec describes a container to create.
@@ -105,6 +108,23 @@ type Client interface {
 
 	// RemoveContainer removes a container (force removes even if running).
 	RemoveContainer(ctx context.Context, id string, force bool) error
+
+	// ExecContainer runs cmd inside a running container with extra env vars,
+	// streaming the command's stdout and stderr to the given writers (either
+	// may be nil), and returns its exit code. Used to run dump tools that ship
+	// inside database images (pg_dump, mysqldump).
+	ExecContainer(ctx context.Context, id string, cmd, env []string, stdout, stderr io.Writer) (int, error)
+
+	// ListVolumes returns the names of Docker volumes whose labels include
+	// every key=value in match. Used to enumerate a compose stack's named
+	// volumes via its com.docker.compose.project label.
+	ListVolumes(ctx context.Context, match map[string]string) ([]string, error)
+
+	// RunContainer runs a one-shot container to completion: create from spec,
+	// stream its stdout/stderr to the writers (either may be nil) while it
+	// runs, wait for exit, remove it, and return the exit code. Used for
+	// backup helper containers that tar a volume to stdout.
+	RunContainer(ctx context.Context, spec ContainerSpec, stdout, stderr io.Writer) (int, error)
 
 	// Close releases any client resources.
 	Close() error

@@ -90,6 +90,8 @@
 })();
 </script>
 
+{{if ne .Database.Engine "redis"}}{{template "backups" .}}{{end}}
+
 <section class="panel">
   <h2 class="panel-title">Settings</h2>
   <form method="post" action="/databases/{{.Database.ID}}/settings" class="grid-form">
