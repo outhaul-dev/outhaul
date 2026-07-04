@@ -69,6 +69,21 @@ Private repos and auto-deploy on push — listed above as deferred — are now
 implemented. Still deferred: multiple users/teams, databases-as-a-service,
 metrics, multi-server.
 
+### Projects (done)
+
+Apps are grouped into **projects** — Dokploy-style workspaces (a product, a
+client) — via a `projects` table and an `apps.project_id` column. A `default`
+project is created by migration and backfilled with existing apps, so app
+creation never requires a project step first. Deliberate divergences from
+Dokploy, argued in `docs/superpowers/specs/2026-07-04-projects-design.md`:
+no organization layer (single-admin), no environment layer yet (a seam, the
+same retrofit path Dokploy took), and project deletion is guarded rather than
+cascading — a project must be emptied of apps before it can be deleted, since
+deleting an app tears down a live container. Deployments, webhooks, env vars,
+and the worker never see a project; apps remain the deployable unit. There is
+no DB-level FK on `apps.project_id` (SQLite can't add a `NOT NULL` FK column
+without a table rebuild); the store enforces the reference instead.
+
 Design decisions from M3: private-repo access goes through a **GitHub App**,
 set up via GitHub's manifest flow (the operator submits a pre-filled manifest,
 GitHub redirects back with a temporary code that is exchanged for the App's
@@ -107,6 +122,7 @@ slipway/
 
     core/                     # PURE domain: no I/O, no deps. The testable heart.
         app.go                # App model
+        project.go            # Project model (workspace grouping apps)
         deployment.go         # Deployment model, DeployStatus enum
         statemachine.go       # legal transitions, terminal/active predicates
         statemachine_test.go  # table-driven
@@ -116,6 +132,7 @@ slipway/
         migrate.go            # embedded migrations, run on startup
         migrations/*.sql
         apps.go               # App CRUD
+        projects.go           # Project CRUD (guarded delete, app counts)
         deployments.go        # Deployment CRUD + queue ops (claim, recover-on-boot)
 
     docker/                   # Docker behind an interface (fake for tests)

@@ -77,11 +77,13 @@ func New(st *store.Store, d Deployer, rt Runtime, br *logstream.Broker, gh githu
 // parseTemplates builds one template set per page, each combining base.tmpl with
 // the page template (so every page can define its own "content" block).
 func (s *Server) parseTemplates() error {
-	pages := []string{"login", "setup", "overview", "apps", "app", "deployment", "deployments", "github_connect", "settings", "placeholder"}
+	pages := []string{"login", "setup", "overview", "projects", "project", "apps", "app", "deployment", "deployments", "github_connect", "settings", "placeholder"}
 	s.pages = make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.New("base").Funcs(templateFuncs())
-		t, err := t.ParseFS(templatesFS, "templates/base.tmpl", "templates/"+p+".tmpl")
+		// appform.tmpl is a shared partial (the create-app form, used by the
+		// Apps and project-detail pages); parsing it into every set is harmless.
+		t, err := t.ParseFS(templatesFS, "templates/base.tmpl", "templates/appform.tmpl", "templates/"+p+".tmpl")
 		if err != nil {
 			return err
 		}
@@ -109,6 +111,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /logout", s.handleLogout)
 
 	mux.HandleFunc("GET /{$}", s.requireAuth(s.handleOverview))
+	mux.HandleFunc("GET /projects", s.requireAuth(s.handleProjectsList))
+	mux.HandleFunc("POST /projects", s.requireAuth(s.handleCreateProject))
+	mux.HandleFunc("GET /projects/{id}", s.requireAuth(s.handleProjectDetail))
+	mux.HandleFunc("POST /projects/{id}/settings", s.requireAuth(s.handleProjectSettings))
+	mux.HandleFunc("POST /projects/{id}/delete", s.requireAuth(s.handleDeleteProject))
 	mux.HandleFunc("GET /apps", s.requireAuth(s.handleAppsList))
 	mux.HandleFunc("POST /apps", s.requireAuth(s.handleCreateApp))
 	mux.HandleFunc("GET /apps/{id}", s.requireAuth(s.handleAppDetail))

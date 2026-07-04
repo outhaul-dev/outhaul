@@ -11,7 +11,7 @@ import (
 
 // appCols is the column list read into core.App by scanApp (excludes the
 // write-only ssh_private_key, which is fetched separately and decrypted).
-const appCols = `id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_secret, ssh_public_key, github_repo`
+const appCols = `id, project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_secret, ssh_public_key, github_repo`
 
 // CreateApp inserts an app and returns it with ID and CreatedAt populated. The
 // SSH private key (if any) is encrypted at rest.
@@ -23,15 +23,18 @@ func (s *Store) CreateApp(ctx context.Context, app core.App) (core.App, error) {
 	if app.Branch == "" {
 		app.Branch = "main"
 	}
+	if app.ProjectID == 0 {
+		app.ProjectID = core.DefaultProjectID
+	}
 	encKey, err := s.sealMaybe(app.SSHPrivateKey)
 	if err != nil {
 		return core.App{}, err
 	}
 	res, err := s.db.ExecContext(ctx,
 		`INSERT INTO apps
-		   (name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_secret, ssh_private_key, ssh_public_key, github_repo)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		app.Name, app.RepoURL, app.Domain, fmtTime(app.CreatedAt),
+		   (project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_secret, ssh_private_key, ssh_public_key, github_repo)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		app.ProjectID, app.Name, app.RepoURL, app.Domain, fmtTime(app.CreatedAt),
 		app.Branch, boolToInt(app.AutoDeploy), app.Source, app.WebhookSecret, encKey, app.SSHPublicKey, app.GithubRepo)
 	if err != nil {
 		return core.App{}, err
@@ -68,6 +71,25 @@ func (s *Store) GetAppByName(ctx context.Context, name string) (core.App, error)
 
 func (s *Store) ListApps(ctx context.Context) ([]core.App, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+appCols+` FROM apps ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var apps []core.App
+	for rows.Next() {
+		app, err := scanApp(rows)
+		if err != nil {
+			return nil, err
+		}
+		apps = append(apps, app)
+	}
+	return apps, rows.Err()
+}
+
+// ListAppsByProject returns the apps in one project, ordered by name.
+func (s *Store) ListAppsByProject(ctx context.Context, projectID int64) ([]core.App, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+appCols+` FROM apps WHERE project_id = ? ORDER BY name`, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +191,7 @@ func scanApp(row scanner) (core.App, error) {
 		createdAt  string
 		autoDeploy int
 	)
-	if err := row.Scan(&app.ID, &app.Name, &app.RepoURL, &app.Domain, &createdAt,
+	if err := row.Scan(&app.ID, &app.ProjectID, &app.Name, &app.RepoURL, &app.Domain, &createdAt,
 		&app.Branch, &autoDeploy, &app.Source, &app.WebhookSecret, &app.SSHPublicKey, &app.GithubRepo); err != nil {
 		return core.App{}, err
 	}

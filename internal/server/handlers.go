@@ -33,10 +33,21 @@ func (s *Server) handleAppsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	projects, err := s.store.ListProjects(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	projectNames := make(map[int64]string, len(projects))
+	for _, p := range projects {
+		projectNames[p.ID] = p.Name
+	}
+
 	// Attach each app's latest deployment status for the list view.
 	type appRow struct {
 		core.App
-		Latest *core.Deployment
+		ProjectName string
+		Latest      *core.Deployment
 	}
 	rows := make([]appRow, 0, len(apps))
 	for _, a := range apps {
@@ -45,10 +56,13 @@ func (s *Server) handleAppsList(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		rows = append(rows, appRow{App: a, Latest: latest})
+		rows = append(rows, appRow{App: a, ProjectName: projectNames[a.ProjectID], Latest: latest})
 	}
 
-	data := map[string]any{"Title": "Apps", "Active": "apps", "Apps": rows}
+	data := map[string]any{
+		"Title": "Apps", "Active": "apps", "Apps": rows,
+		"Projects": projects, "SelectedProject": selectedProject(projects),
+	}
 	for k, v := range s.githubRepoData(r) {
 		data[k] = v
 	}
@@ -102,6 +116,21 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		repo = "https://github.com/" + githubRepo + ".git"
 	}
 
+	projectID := core.DefaultProjectID
+	if v := strings.TrimSpace(r.FormValue("project_id")); v != "" {
+		id, ok := parseID(v)
+		if !ok {
+			s.renderAppsWithError(w, r, "Choose a project for the app.", name, repo, domain)
+			return
+		}
+		projectID = id
+	}
+	// No DB-level FK on apps.project_id, so the reference is validated here.
+	if _, err := s.store.GetProject(r.Context(), projectID); err != nil {
+		s.renderAppsWithError(w, r, "Choose a project for the app.", name, repo, domain)
+		return
+	}
+
 	if verr := validateApp(name, repo, domain, source, githubRepo); verr != "" {
 		s.renderAppsWithError(w, r, verr, name, repo, domain)
 		return
@@ -110,7 +139,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	app := core.App{
 		Name: name, RepoURL: repo, Domain: domain, Source: source,
 		Branch: branch, AutoDeploy: autoDeploy, GithubRepo: githubRepo,
-		WebhookSecret: newSecret(),
+		WebhookSecret: newSecret(), ProjectID: projectID,
 	}
 	if source == core.SourceSSH {
 		priv, pub, err := sshkey.Generate()
@@ -126,7 +155,13 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		s.renderAppsWithError(w, r, "Could not create app: "+err.Error(), name, repo, domain)
 		return
 	}
-	http.Redirect(w, r, "/apps", http.StatusSeeOther)
+	// The project-detail form asks to land back on its project; anything else
+	// (or a tampered value) falls back to the apps list.
+	ret := r.FormValue("return")
+	if !strings.HasPrefix(ret, "/projects/") {
+		ret = "/apps"
+	}
+	http.Redirect(w, r, ret, http.StatusSeeOther)
 }
 
 // newSecret returns a random hex token for a per-app webhook.
@@ -164,17 +199,24 @@ func (s *Server) handleAppSettings(w http.ResponseWriter, r *http.Request) {
 // and an error message.
 func (s *Server) renderAppsWithError(w http.ResponseWriter, r *http.Request, msg, name, repo, domain string) {
 	apps, _ := s.store.ListApps(r.Context())
+	projects, _ := s.store.ListProjects(r.Context())
+	projectNames := make(map[int64]string, len(projects))
+	for _, p := range projects {
+		projectNames[p.ID] = p.Name
+	}
 	type appRow struct {
 		core.App
-		Latest *core.Deployment
+		ProjectName string
+		Latest      *core.Deployment
 	}
 	rows := make([]appRow, 0, len(apps))
 	for _, a := range apps {
 		latest, _ := s.store.LatestDeploymentForApp(r.Context(), a.ID)
-		rows = append(rows, appRow{App: a, Latest: latest})
+		rows = append(rows, appRow{App: a, ProjectName: projectNames[a.ProjectID], Latest: latest})
 	}
 	data := map[string]any{
 		"Title": "Apps", "Active": "apps", "Apps": rows,
+		"Projects": projects, "SelectedProject": selectedProject(projects),
 		"Error": msg,
 		"Form":  map[string]string{"Name": name, "RepoURL": repo, "Domain": domain},
 	}
@@ -229,6 +271,10 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 		"Deployments": deployments,
 		"Env":         envRows,
 		"Runtime":     runtimeState,
+	}
+	// Breadcrumb context; tolerate a missing project rather than 500 the page.
+	if p, err := s.store.GetProject(r.Context(), app.ProjectID); err == nil {
+		data["Project"] = p
 	}
 	if s.publicURL != "" {
 		data["WebhookURL"] = strings.TrimRight(s.publicURL, "/") + "/webhooks/app/" + app.WebhookSecret

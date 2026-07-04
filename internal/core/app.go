@@ -12,6 +12,7 @@ const (
 // App is a deployable unit: a Git repo served on a domain.
 type App struct {
 	ID        int64
+	ProjectID int64  // workspace this app belongs to (DefaultProjectID if unset)
 	Name      string // unique, human/URL friendly; also used to name containers
 	RepoURL   string // Git URL to clone (https or ssh, per Source)
 	Domain    string // host Traefik routes to this app

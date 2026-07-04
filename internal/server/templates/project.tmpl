@@ -1,0 +1,73 @@
+{{define "content"}}
+<div class="pagehead">
+  <div>
+    <div class="crumbs"><a href="/projects">Projects</a> / {{.Project.Name}}</div>
+    <h1>{{.Project.Name}}</h1>
+  </div>
+</div>
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+<section class="panel">
+  <dl class="meta">
+    <div><dt>Description</dt><dd>{{if .Project.Description}}{{.Project.Description}}{{else}}—{{end}}</dd></div>
+    <div><dt>Apps</dt><dd>{{.AppCount}}</dd></div>
+    <div><dt>Created</dt><dd>{{fmtTime .Project.CreatedAt}}</dd></div>
+  </dl>
+</section>
+
+<section class="panel">
+  <h2 class="panel-title">Apps in this project</h2>
+  {{if .Apps}}
+  <table class="table">
+    <thead>
+      <tr><th>Name</th><th>Domain</th><th>Repository</th><th>Branch</th><th>Status</th></tr>
+    </thead>
+    <tbody>
+      {{range .Apps}}
+      <tr>
+        <td><a href="/apps/{{.ID}}" class="rowlink">{{.Name}}</a></td>
+        <td><a href="http://{{.Domain}}" target="_blank" rel="noreferrer" class="mono">{{.Domain}}</a></td>
+        <td class="mono muted truncate">{{.RepoURL}}</td>
+        <td class="mono muted">{{.Branch}}</td>
+        <td>
+          {{if .Latest}}<span class="badge {{stateClass .Latest.Status}}">{{.Latest.Status}}</span>
+          {{else}}<span class="badge state-stopped">never deployed</span>{{end}}
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No apps in this project yet. Create one below.</p>
+  {{end}}
+</section>
+
+{{template "appform" .}}
+
+<section class="panel">
+  <h2 class="panel-title">Project settings</h2>
+  <form method="post" action="/projects/{{.Project.ID}}/settings" class="grid-form">
+    <label class="field">
+      <span>Name</span>
+      <input type="text" name="name" value="{{.Project.Name}}" required>
+    </label>
+    <label class="field">
+      <span>Description</span>
+      <input type="text" name="description" value="{{.Project.Description}}">
+    </label>
+    <button type="submit" class="btn">Save settings</button>
+  </form>
+</section>
+
+<section class="panel">
+  <h2 class="panel-title">Danger zone</h2>
+  {{if .Apps}}
+  <p class="env-note">This project still has {{.AppCount}} app{{if ne .AppCount 1}}s{{end}}. Delete them before deleting the project.</p>
+  {{else}}
+  <form method="post" action="/projects/{{.Project.ID}}/delete" class="inline" onsubmit="return confirm('Delete project {{.Project.Name}}?');">
+    <button type="submit" class="btn btn-danger">Delete project</button>
+  </form>
+  {{end}}
+</section>
+{{end}}
