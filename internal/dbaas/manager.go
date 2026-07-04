@@ -1,6 +1,7 @@
 package dbaas
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/slipwaydev/slipway/internal/core"
@@ -26,6 +28,11 @@ func ContainerName(dbName string) string { return containerPrefix + dbName }
 // provisionTimeout bounds one provision attempt, image pull included.
 const provisionTimeout = 15 * time.Minute
 
+// helperImage deletes data directories the engine chowned to a
+// container-internal uid, which Outhaul cannot remove when it runs as an
+// unprivileged service user.
+const helperImage = "busybox:stable"
+
 // stopTimeout is how long an engine gets to shut down cleanly.
 const stopTimeout = 30 * time.Second
 
@@ -37,6 +44,10 @@ type Manager struct {
 	network string // shared Docker network the container joins
 	dataDir string // host root for per-database data directories
 
+	// removeAll is os.RemoveAll, injected so tests can force the
+	// unprivileged-user fallback path in removeData.
+	removeAll func(string) error
+
 	// provisionDone, when non-nil, is signalled after each async provision
 	// attempt finishes (tests use it to wait deterministically).
 	provisionDone chan struct{}
@@ -44,7 +55,7 @@ type Manager struct {
 
 // NewManager wires a Manager. dataDir is config.DatabasesDir().
 func NewManager(st *store.Store, dc docker.Client, network, dataDir string) *Manager {
-	return &Manager{store: st, docker: dc, network: network, dataDir: dataDir}
+	return &Manager{store: st, docker: dc, network: network, dataDir: dataDir, removeAll: os.RemoveAll}
 }
 
 // DataPath is the host directory holding a database's persistent data.
@@ -163,8 +174,42 @@ func (m *Manager) Remove(ctx context.Context, d core.Database) error {
 			return err
 		}
 	}
-	if err := os.RemoveAll(m.DataPath(d.Name)); err != nil {
-		return fmt.Errorf("remove data dir: %w", err)
+	if err := m.removeData(ctx, d.Name); err != nil {
+		return err
 	}
 	return m.store.DeleteDatabase(ctx, d.ID)
+}
+
+// removeData deletes a database's data directory. Engines chown their data to
+// a container-internal uid, so when Outhaul runs as an unprivileged user a
+// plain removal fails with EACCES; in that case the (root) daemon does it for
+// us via a helper container that mounts the databases root and removes the
+// one subtree.
+func (m *Manager) removeData(ctx context.Context, name string) error {
+	err := m.removeAll(m.DataPath(name))
+	if err == nil {
+		return nil
+	}
+	if perr := m.docker.PullImage(ctx, helperImage, io.Discard); perr != nil {
+		return fmt.Errorf("remove data dir: %w (helper pull: %v)", err, perr)
+	}
+	var stderr bytes.Buffer
+	spec := docker.ContainerSpec{
+		Name:  "slipway-db-rm-" + name,
+		Image: helperImage,
+		Cmd:   []string{"rm", "-rf", "/data/" + name},
+		Labels: map[string]string{
+			"slipway.managed": "true",
+			"slipway.role":    "helper",
+		},
+		Mounts: []docker.Mount{{Source: m.dataDir, Target: "/data"}},
+	}
+	exit, rerr := m.docker.RunContainer(ctx, spec, io.Discard, &stderr)
+	if rerr != nil {
+		return fmt.Errorf("remove data dir helper: %w", rerr)
+	}
+	if exit != 0 {
+		return fmt.Errorf("remove data dir helper exited %d: %s", exit, strings.TrimSpace(stderr.String()))
+	}
+	return nil
 }
