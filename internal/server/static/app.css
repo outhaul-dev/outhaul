@@ -132,6 +132,12 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); box-sh
 .btn-primary:hover { background: var(--accent-hover); }
 .btn-danger { background: var(--danger-bg); color: var(--danger); border-color: var(--danger-bd); }
 .btn-danger:hover { border-color: var(--danger); }
+/* Quiet secondary action (e.g. per-deployment Rollback). */
+.btn-quiet { background: transparent; color: inherit; border-color: var(--border); }
+.btn-quiet:hover { border-color: var(--accent); color: var(--accent); }
+.table .btn-quiet { font-size: 12px; padding: 2px 10px; }
+.row-actions { display: flex; gap: 12px; align-items: center; }
+.h1-note { font-size: 13px; font-weight: 400; font-family: var(--font-mono); }
 
 /* Badges */
 .badge {

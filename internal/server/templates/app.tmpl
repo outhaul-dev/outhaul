@@ -270,11 +270,18 @@
     <tbody>
       {{range .Deployments}}
       <tr>
-        <td class="mono">{{.ID}}</td>
+        <td class="mono">{{.ID}}{{if .RollbackOf}} <span class="muted" title="reused the image built by deployment #{{.RollbackOf}}">↩ #{{.RollbackOf}}</span>{{end}}</td>
         <td><span class="badge {{stateClass .Status}}">{{.Status}}</span></td>
         <td class="mono muted">{{fmtTime .CreatedAt}}</td>
         <td class="mono muted">{{buildDur .}}</td>
-        <td><a href="/deployments/{{.ID}}" class="rowlink">logs →</a></td>
+        <td class="row-actions">
+          {{if and .Status.IsTerminal .Image (ne $.App.Kind "compose")}}
+          <form method="post" action="/deployments/{{.ID}}/rollback" class="inline" onsubmit="return confirm('Roll back {{$.App.Name}} to the image built by deployment #{{.ID}}? Current env vars and domain settings will apply.');">
+            <button type="submit" class="btn btn-quiet">Rollback</button>
+          </form>
+          {{end}}
+          <a href="/deployments/{{.ID}}" class="rowlink">logs →</a>
+        </td>
       </tr>
       {{end}}
     </tbody>

@@ -21,7 +21,8 @@ Outhaul is a deliberately minimal alternative to Dokploy/Coolify.
 > paths** scope auto-deploy to pushes that change matching files. The app page
 > live-tails **runtime container logs** (per service for compose stacks) and
 > shows **live metrics** (CPU, memory, network, and uptime, aggregated across
-> a compose stack). See
+> a compose stack). Any past deployment with a built image can be **rolled
+> back** to in one click — no rebuild, same health-gated cutover. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and what is intentionally
 > not built yet (multiple users, databases, metrics history/alerts,
 > multi-server).

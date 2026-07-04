@@ -602,6 +602,42 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, deploymentPath(dep.ID), http.StatusSeeOther)
 }
 
+// handleRollback enqueues a deployment that reuses the source deployment's
+// built image instead of cloning and building. Env vars, domain, and routing
+// are the app's current settings — only the image is rolled back.
+func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	src, err := s.store.GetDeployment(r.Context(), id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	app, err := s.store.GetApp(r.Context(), src.AppID)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if app.Kind == core.KindCompose {
+		http.Error(w, "compose stacks cannot be rolled back: they have no per-deployment image", http.StatusBadRequest)
+		return
+	}
+	if src.Image == "" {
+		http.Error(w, "this deployment never finished a build, so there is no image to roll back to", http.StatusBadRequest)
+		return
+	}
+	dep, err := s.store.CreateRollback(r.Context(), app.ID, src.Image, src.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.deployer.Notify()
+	http.Redirect(w, r, deploymentPath(dep.ID), http.StatusSeeOther)
+}
+
 func (s *Server) handleDeploymentDetail(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(r.PathValue("id"))
 	if !ok {

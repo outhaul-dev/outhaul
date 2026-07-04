@@ -65,29 +65,35 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 		}
 	}
 
-	// --- clone ---
-	workDir, cleanup, err := w.cloneWorkDir(ctx, dep, app, out)
-	if err != nil {
-		w.fail(dep, core.StatusBuilding, err.Error(), out)
-		return
-	}
-	defer cleanup()
+	// --- clone + build (skipped for rollbacks, which arrive with an image) ---
+	image := dep.Image
+	if image == "" {
+		workDir, cleanup, err := w.cloneWorkDir(ctx, dep, app, out)
+		if err != nil {
+			w.fail(dep, core.StatusBuilding, err.Error(), out)
+			return
+		}
+		defer cleanup()
 
-	// --- build ---
-	image := fmt.Sprintf("slipway/%s:%d", app.Name, dep.ID)
-	logf(out, "Building image %s with %s...", image, w.builder.Name())
-	req := builder.BuildRequest{
-		ContextDir: workDir,
-		ImageTag:   image,
-		Env:        buildEnv,
-	}
-	if err := w.builder.Build(ctx, req, out); err != nil {
-		w.fail(dep, core.StatusBuilding, "build failed: "+err.Error(), out)
-		return
-	}
-	if err := w.store.SetImage(context.Background(), dep.ID, image); err != nil {
-		w.fail(dep, core.StatusBuilding, "record image: "+err.Error(), out)
-		return
+		image = fmt.Sprintf("slipway/%s:%d", app.Name, dep.ID)
+		logf(out, "Building image %s with %s...", image, w.builder.Name())
+		req := builder.BuildRequest{
+			ContextDir: workDir,
+			ImageTag:   image,
+			Env:        buildEnv,
+		}
+		if err := w.builder.Build(ctx, req, out); err != nil {
+			w.fail(dep, core.StatusBuilding, "build failed: "+err.Error(), out)
+			return
+		}
+		if err := w.store.SetImage(context.Background(), dep.ID, image); err != nil {
+			w.fail(dep, core.StatusBuilding, "record image: "+err.Error(), out)
+			return
+		}
+	} else {
+		// Env vars, domain, and routing are the app's CURRENT settings — only
+		// the image is rolled back (see the rollback spec).
+		logf(out, "Rolling back to image %s (built by deployment #%d); nothing to clone or build.", image, dep.RollbackOf)
 	}
 
 	// --- building -> deploying ---

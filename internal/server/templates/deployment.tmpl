@@ -2,11 +2,15 @@
 <div class="pagehead">
   <div>
     <div class="crumbs"><a href="/apps">Apps</a> / <a href="/apps/{{.App.ID}}">{{.App.Name}}</a> / #{{.Deployment.ID}}</div>
-    <h1>Deployment #{{.Deployment.ID}} <span class="badge {{stateClass .Deployment.Status}}" id="status-badge">{{.Deployment.Status}}</span></h1>
+    <h1>Deployment #{{.Deployment.ID}} <span class="badge {{stateClass .Deployment.Status}}" id="status-badge">{{.Deployment.Status}}</span>{{if .Deployment.RollbackOf}} <span class="muted h1-note">↩ rollback of #{{.Deployment.RollbackOf}}</span>{{end}}</h1>
   </div>
   {{if .Deployment.Status.CanCancel}}
   <form method="post" action="/deployments/{{.Deployment.ID}}/cancel" class="inline">
     <button type="submit" class="btn btn-danger">Cancel</button>
+  </form>
+  {{else if and .Deployment.Status.IsTerminal .Deployment.Image (ne .App.Kind "compose")}}
+  <form method="post" action="/deployments/{{.Deployment.ID}}/rollback" class="inline" onsubmit="return confirm('Roll back {{.App.Name}} to the image built by deployment #{{.Deployment.ID}}? Current env vars and domain settings will apply.');">
+    <button type="submit" class="btn btn-quiet">Rollback to this deployment</button>
   </form>
   {{end}}
 </div>

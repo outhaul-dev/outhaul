@@ -165,6 +165,29 @@ uptime is the longest-running container's. The endpoint returns pre-formatted
 display strings so formatting stays in testable Go. History, graphs,
 threshold alerts, and host-level metrics are deliberately deferred.
 
+### Rollback (done)
+
+Every deployment row on the app page (and the deployment detail page) offers
+**Rollback** once it has a built image — Dokploy's registry-based rollbacks
+without the registry (design in `docs/superpowers/specs/2026-07-04-rollback.md`).
+Dokploy tags and pushes each deploy's image to a configured registry and links
+the deployment record to the tag; Outhaul already tags every nixpacks build
+`slipway/<app>:<depID>`, records it on the row, and never prunes images, so
+the rollback material is on the host — single-server means a registry buys
+nothing. A rollback is an ordinary deployment enqueued with the source's
+image and `rollback_of` pre-set (`POST /deployments/{id}/rollback`); the
+pipeline sees the pre-set image and skips clone+build, then shares everything
+downstream — health-gated blue-green cutover, cancel, crash recovery, per-app
+serialization. Only the image is rolled back: env vars, domain, and routing
+are the app's *current* settings (Dokploy snapshots config per deploy; one
+state model is worth the divergence, and the deploy log says which image was
+reused). Compose stacks can't roll back — `compose build` leaves no
+per-deployment image handle — matching Dokploy's own limitation, and the
+existing Deploy button is the "redeploy" (rebuild the branch head,
+health-gated). Dokploy's Swarm-based auto-rollback has no equivalent because
+it isn't needed: a failed deploy never touches the live container. Per-deploy
+config snapshots and image retention/cleanup are deliberate seams.
+
 Design decisions from M3: private-repo access goes through a **GitHub App**,
 set up via GitHub's manifest flow (the operator submits a pre-filled manifest,
 GitHub redirects back with a temporary code that is exchanged for the App's
@@ -216,7 +239,7 @@ slipway/
         apps.go               # App CRUD
         projects.go           # Project CRUD (guarded delete, app counts)
         project_env.go        # project-level shared env vars (encrypted at rest)
-        deployments.go        # Deployment CRUD + queue ops (claim, recover-on-boot)
+        deployments.go        # Deployment CRUD + queue ops (claim, recover-on-boot, rollbacks)
 
     docker/                   # Docker behind an interface (fake for tests)
         client.go             # Client interface: PullImage, Create/Start/Stop/Remove, Inspect, EnsureNetwork
