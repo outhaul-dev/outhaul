@@ -356,6 +356,17 @@ func TestAppDetailShowsConnectAndStats(t *testing.T) {
 	}
 }
 
+func TestAppsListShowsBranch(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	e.postForm(t, "/apps", appForm("web", "web.example.com")).Body.Close()
+
+	page := body(t, e.get(t, "/apps"))
+	if !strings.Contains(page, "main") {
+		t.Error("apps list should show the app's branch")
+	}
+}
+
 func TestEnvAddListAndMask(t *testing.T) {
 	e := newTestEnv(t)
 	e.completeSetup(t)
