@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strconv"
@@ -166,6 +167,54 @@ type demuxedLogs struct {
 func (d *demuxedLogs) Close() error {
 	d.src.Close()
 	return d.PipeReader.Close()
+}
+
+func (r *real) ContainerStats(ctx context.Context, id string) (Stats, error) {
+	resp, err := r.cli.ContainerStats(ctx, id, false)
+	if err != nil {
+		return Stats{}, err
+	}
+	defer resp.Body.Close()
+	var raw container.StatsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return Stats{}, fmt.Errorf("decode stats: %w", err)
+	}
+	s := statsFromAPI(raw)
+	if info, err := r.cli.ContainerInspect(ctx, id); err == nil && info.State != nil {
+		if t, err := time.Parse(time.RFC3339Nano, info.State.StartedAt); err == nil {
+			s.StartedAt = t
+		}
+	}
+	return s, nil
+}
+
+// statsFromAPI reduces Docker's raw stats sample the way the docker CLI does.
+func statsFromAPI(raw container.StatsResponse) Stats {
+	var s Stats
+	cpuDelta := float64(raw.CPUStats.CPUUsage.TotalUsage) - float64(raw.PreCPUStats.CPUUsage.TotalUsage)
+	sysDelta := float64(raw.CPUStats.SystemUsage) - float64(raw.PreCPUStats.SystemUsage)
+	online := float64(raw.CPUStats.OnlineCPUs)
+	if online == 0 {
+		online = float64(len(raw.CPUStats.CPUUsage.PercpuUsage))
+	}
+	if cpuDelta > 0 && sysDelta > 0 {
+		s.CPUPercent = cpuDelta / sysDelta * online * 100
+	}
+	// Usage includes reclaimable page cache; subtract it (cgroup v1 names the
+	// counter total_inactive_file, v2 names it inactive_file).
+	mem := raw.MemoryStats.Usage
+	if v, ok := raw.MemoryStats.Stats["total_inactive_file"]; ok && v < mem {
+		mem -= v
+	} else if v, ok := raw.MemoryStats.Stats["inactive_file"]; ok && v < mem {
+		mem -= v
+	}
+	s.MemUsage = mem
+	s.MemLimit = raw.MemoryStats.Limit
+	for _, n := range raw.Networks {
+		s.NetRx += n.RxBytes
+		s.NetTx += n.TxBytes
+	}
+	return s
 }
 
 func (r *real) CreateContainer(ctx context.Context, spec ContainerSpec) (string, error) {

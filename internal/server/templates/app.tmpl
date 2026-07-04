@@ -81,15 +81,55 @@
 <section class="panel">
   <div class="log-head">
     <h2 class="panel-title">Metrics</h2>
-    <span class="not-live">not live</span>
+    <span class="log-status" id="metrics-indicator">connecting…</span>
   </div>
   <div class="stats">
-    <div class="stat"><div class="stat-label">CPU</div><div class="stat-value">—<span class="unit">%</span></div><div class="stat-sub">coming soon</div></div>
-    <div class="stat"><div class="stat-label">Memory</div><div class="stat-value">—<span class="unit">MB</span></div><div class="stat-sub">coming soon</div></div>
-    <div class="stat"><div class="stat-label">Net I/O</div><div class="stat-value">—<span class="unit">MB/s</span></div><div class="stat-sub">coming soon</div></div>
-    <div class="stat"><div class="stat-label">Uptime</div><div class="stat-value">—</div><div class="stat-sub">coming soon</div></div>
+    <div class="stat"><div class="stat-label">CPU</div><div class="stat-value" id="metric-cpu">—<span class="unit">%</span></div><div class="stat-sub">100% = one core</div></div>
+    <div class="stat"><div class="stat-label">Memory</div><div class="stat-value" id="metric-mem">—</div><div class="stat-sub" id="metric-mem-sub">usage</div></div>
+    <div class="stat"><div class="stat-label">Net I/O</div><div class="stat-value" id="metric-net">—</div><div class="stat-sub">received · sent, total</div></div>
+    <div class="stat"><div class="stat-label">Uptime</div><div class="stat-value" id="metric-uptime">—</div><div class="stat-sub">since container start</div></div>
   </div>
 </section>
+
+<script>
+(function () {
+  var indicator = document.getElementById('metrics-indicator');
+  var cpu = document.getElementById('metric-cpu');
+  var mem = document.getElementById('metric-mem');
+  var memSub = document.getElementById('metric-mem-sub');
+  var net = document.getElementById('metric-net');
+  var uptime = document.getElementById('metric-uptime');
+
+  function dashes() {
+    cpu.innerHTML = '—<span class="unit">%</span>';
+    mem.textContent = '—';
+    memSub.textContent = 'usage';
+    net.textContent = '—';
+    uptime.textContent = '—';
+  }
+
+  function poll() {
+    fetch('/apps/{{.App.ID}}/stats', {headers: {'Accept': 'application/json'}})
+      .then(function (r) { if (!r.ok) { throw new Error(r.status); } return r.json(); })
+      .then(function (s) {
+        if (!s.running) { dashes(); indicator.textContent = 'not running'; return; }
+        cpu.innerHTML = '';
+        cpu.appendChild(document.createTextNode(s.cpu));
+        var u = document.createElement('span'); u.className = 'unit'; u.textContent = '%';
+        cpu.appendChild(u);
+        mem.textContent = s.mem;
+        memSub.textContent = s.memSub || 'usage';
+        net.textContent = s.net;
+        uptime.textContent = s.uptime || '—';
+        indicator.textContent = s.containers > 1 ? 'live · ' + s.containers + ' containers' : 'live';
+      })
+      .catch(function () { dashes(); indicator.textContent = 'unavailable'; });
+  }
+
+  poll();
+  setInterval(poll, 5000);
+})();
+</script>
 
 <section class="panel">
   <div class="log-head">

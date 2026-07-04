@@ -37,6 +37,17 @@ type ContainerSpec struct {
 	RestartPolicy string // e.g. "unless-stopped"; empty means Docker default
 }
 
+// Stats is a point-in-time sample of a running container's resource usage,
+// with the same semantics as the docker stats CLI.
+type Stats struct {
+	CPUPercent float64   // 100 = one core fully busy (can exceed 100 on multi-core)
+	MemUsage   uint64    // bytes, reclaimable page cache excluded
+	MemLimit   uint64    // bytes; the host total when the container is unlimited
+	NetRx      uint64    // cumulative bytes received across interfaces
+	NetTx      uint64    // cumulative bytes sent
+	StartedAt  time.Time // when the container last started (zero if unknown)
+}
+
 // Container is a minimal view of an existing container.
 type Container struct {
 	ID     string
@@ -77,6 +88,11 @@ type Client interface {
 	// closed. The stream is plain text (Docker's multiplexing framing is
 	// stripped).
 	ContainerLogs(ctx context.Context, id string, tail int) (io.ReadCloser, error)
+
+	// ContainerStats samples the container's live resource usage once. The
+	// daemon primes CPU% with two internal readings, so a call takes about a
+	// second.
+	ContainerStats(ctx context.Context, id string) (Stats, error)
 
 	// CreateContainer creates (does not start) a container and returns its ID.
 	CreateContainer(ctx context.Context, spec ContainerSpec) (string, error)

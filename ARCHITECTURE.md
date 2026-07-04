@@ -146,6 +146,25 @@ still serves its logs — post-mortem debugging is the point. Failures
 EventSource clients can't read non-200 bodies. Search, time-range filters,
 log-level parsing, ANSI rendering, and download are deliberately deferred.
 
+### Live app metrics (done)
+
+The app page's Metrics panel shows live CPU, memory, network I/O, and uptime
+for the app's running containers — Dokploy's container monitoring, minus its
+metrics store (design in `docs/superpowers/specs/2026-07-04-live-metrics.md`).
+Dokploy polls the Docker stats API on a refresh interval and persists samples
+for graphs and alerts; Outhaul keeps the data source and the poll model but
+skips persistence entirely — the browser polls `GET /apps/{id}/stats` every
+5s while the page is open, and each poll takes one one-shot
+`docker.Client.ContainerStats` sample per container (the daemon primes CPU%
+internally, so no state is kept between polls). Values match `docker stats`
+semantics: CPU% where 100 = one core, memory usage minus reclaimable page
+cache, cumulative network totals. Compose stacks aggregate across their
+running containers — CPU/memory/network sum, memory limit is the max (an
+unlimited container reports the host total; summing would double-count it),
+uptime is the longest-running container's. The endpoint returns pre-formatted
+display strings so formatting stays in testable Go. History, graphs,
+threshold alerts, and host-level metrics are deliberately deferred.
+
 Design decisions from M3: private-repo access goes through a **GitHub App**,
 set up via GitHub's manifest flow (the operator submits a pre-filled manifest,
 GitHub redirects back with a temporary code that is exchanged for the App's
@@ -247,6 +266,7 @@ slipway/
         auth.go               # argon2id, session cookies, first-boot setup token
         handlers.go           # apps list/create, deploy trigger, deployment detail
         sse.go                # SSE handlers: build logs (logstream broker) + runtime container logs (docker follow)
+        stats.go              # live app metrics: aggregated docker-stats snapshot, polled by the app page
         templates/*.tmpl      # html/template, embedded
         static/*              # CSS (from the design system), embedded
         embed.go              # embed.FS for templates + static

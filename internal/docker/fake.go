@@ -22,6 +22,7 @@ type Fake struct {
 	IPs        map[string]string     // container ID -> IP (test-settable)
 	Logs       map[string]string     // container ID -> log content (test-settable)
 	LogTails   []int                 // tail values passed to ContainerLogs, in order
+	Stats      map[string]Stats      // container ID -> stats sample (test-settable)
 
 	// FailPull, when set, makes PullImage return an error for matching refs.
 	FailPull func(ref string) error
@@ -37,6 +38,7 @@ func NewFake() *Fake {
 		Containers: map[string]*Container{},
 		IPs:        map[string]string{},
 		Logs:       map[string]string{},
+		Stats:      map[string]Stats{},
 	}
 }
 
@@ -163,6 +165,15 @@ func (f *Fake) ContainerLogs(_ context.Context, id string, tail int) (io.ReadClo
 	}
 	f.LogTails = append(f.LogTails, tail)
 	return io.NopCloser(strings.NewReader(f.Logs[id])), nil
+}
+
+func (f *Fake) ContainerStats(_ context.Context, id string) (Stats, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.Containers[id]; !ok {
+		return Stats{}, fmt.Errorf("no such container: %s", id)
+	}
+	return f.Stats[id], nil
 }
 
 func (f *Fake) ContainerIP(_ context.Context, id, _ string) (string, error) {

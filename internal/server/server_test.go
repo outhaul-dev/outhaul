@@ -40,8 +40,9 @@ type fakeRuntime struct {
 	started   []string
 	stopped   []string
 	removed   []string
-	logs      map[string]string // container ID -> content for ContainerLogs
-	logTails  []int             // tail values passed to ContainerLogs
+	logs      map[string]string       // container ID -> content for ContainerLogs
+	logTails  []int                   // tail values passed to ContainerLogs
+	stats     map[string]docker.Stats // container ID -> sample for ContainerStats
 }
 
 func (f *fakeRuntime) FindContainer(_ context.Context, name string) (*docker.Container, error) {
@@ -69,6 +70,14 @@ func (f *fakeRuntime) ContainerLogs(_ context.Context, id string, tail int) (io.
 		return nil, fmt.Errorf("no such container: %s", id)
 	}
 	return io.NopCloser(strings.NewReader(content)), nil
+}
+
+func (f *fakeRuntime) ContainerStats(_ context.Context, id string) (docker.Stats, error) {
+	st, ok := f.stats[id]
+	if !ok {
+		return docker.Stats{}, fmt.Errorf("no such container: %s", id)
+	}
+	return st, nil
 }
 
 type testEnv struct {
@@ -366,8 +375,8 @@ func TestAppDetailShowsConnectAndStats(t *testing.T) {
 	app, _ := e.store.GetAppByName(context.Background(), "web")
 
 	page := body(t, e.get(t, "/apps/"+itoa(app.ID)))
-	if !strings.Contains(page, "not live") {
-		t.Error("app detail should show placeholder metric stats marked not-live")
+	if !strings.Contains(page, `id="metric-cpu"`) {
+		t.Error("app detail should show the live metric stats")
 	}
 	if !strings.Contains(page, "/webhooks/app/"+app.WebhookSecret) {
 		t.Error("app detail should show the connect-repo webhook URL")
