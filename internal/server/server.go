@@ -77,7 +77,7 @@ func New(st *store.Store, d Deployer, rt Runtime, br *logstream.Broker, gh githu
 // parseTemplates builds one template set per page, each combining base.tmpl with
 // the page template (so every page can define its own "content" block).
 func (s *Server) parseTemplates() error {
-	pages := []string{"login", "setup", "overview", "apps", "app", "deployment", "deployments", "github_connect", "placeholder"}
+	pages := []string{"login", "setup", "overview", "apps", "app", "deployment", "deployments", "github_connect", "settings", "placeholder"}
 	s.pages = make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.New("base").Funcs(templateFuncs())
@@ -123,6 +123,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /deployments/{id}", s.requireAuth(s.handleDeploymentDetail))
 	mux.HandleFunc("GET /deployments/{id}/logs", s.requireAuth(s.handleLogsSSE))
 	mux.HandleFunc("POST /deployments/{id}/cancel", s.requireAuth(s.handleCancel))
+
+	mux.HandleFunc("GET /settings", s.requireAuth(s.handleSettings))
+	mux.HandleFunc("POST /settings/password", s.requireAuth(s.handleChangePassword))
 
 	mux.HandleFunc("GET /github/connect", s.requireAuth(s.handleGithubConnect))
 	// callback and setup are called by GitHub directly (no session cookie); the
