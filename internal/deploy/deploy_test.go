@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/slipwaydev/slipway/internal/builder"
+	"github.com/slipwaydev/slipway/internal/compose"
 	"github.com/slipwaydev/slipway/internal/config"
 	"github.com/slipwaydev/slipway/internal/core"
 	"github.com/slipwaydev/slipway/internal/docker"
@@ -41,6 +43,7 @@ func (f *fakeBuilder) Build(_ context.Context, req builder.BuildRequest, out io.
 type fakeCloner struct {
 	err    error
 	cloned []string
+	files  map[string]string // repo files to materialize in the clone dir
 }
 
 func (f *fakeCloner) Clone(_ context.Context, spec CloneSpec, dir string, out io.Writer) error {
@@ -48,6 +51,15 @@ func (f *fakeCloner) Clone(_ context.Context, spec CloneSpec, dir string, out io
 		return f.err
 	}
 	f.cloned = append(f.cloned, spec.URL)
+	for name, content := range f.files {
+		p := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			return err
+		}
+	}
 	fmt.Fprintf(out, "cloned %s into %s\n", spec.URL, dir)
 	return nil
 }
@@ -58,6 +70,7 @@ type harness struct {
 	store   *store.Store
 	docker  *docker.Fake
 	builder *fakeBuilder
+	compose *compose.Fake
 	cloner  *fakeCloner
 	broker  *logstream.Broker
 	worker  *Worker
@@ -79,11 +92,12 @@ func newHarness(t *testing.T) *harness {
 		store:   st,
 		docker:  docker.NewFake(),
 		builder: &fakeBuilder{},
+		compose: &compose.Fake{},
 		cloner:  &fakeCloner{},
 		broker:  logstream.New(),
 	}
 	cfg := config.Config{DataDir: t.TempDir(), Network: "slipway"}
-	h.worker = NewWorker(st, h.docker, h.builder, h.cloner, h.broker, &github.Fake{}, cfg)
+	h.worker = NewWorker(st, h.docker, h.builder, h.compose, h.cloner, h.broker, &github.Fake{}, cfg)
 	h.worker.healthCheck = func(context.Context, string, time.Duration) bool { return true }
 	return h
 }

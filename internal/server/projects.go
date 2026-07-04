@@ -97,20 +97,22 @@ func (s *Server) renderProject(w http.ResponseWriter, r *http.Request, status in
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	type appRow struct {
-		core.App
-		Latest *core.Deployment
-	}
-	rows := make([]appRow, 0, len(apps))
-	for _, a := range apps {
-		latest, err := s.store.LatestDeploymentForApp(r.Context(), a.ID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		rows = append(rows, appRow{App: a, Latest: latest})
+	rows, err := s.appRows(r.Context(), apps, nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	projects, err := s.store.ListProjects(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	envVars, err := s.store.ListProjectEnv(r.Context(), p.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	dbs, err := s.store.ListDatabasesByProject(r.Context(), p.ID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -121,6 +123,8 @@ func (s *Server) renderProject(w http.ResponseWriter, r *http.Request, status in
 		"Project":         p,
 		"Apps":            rows,
 		"AppCount":        len(rows),
+		"Databases":       dbs,
+		"Env":             maskEnv(envVars),
 		"Projects":        projects,
 		"SelectedProject": p.ID,
 		"Return":          "/projects/" + strconv.FormatInt(p.ID, 10),
@@ -174,6 +178,51 @@ func (s *Server) handleProjectSettings(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/projects/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
+// handleSetProjectEnv upserts a shared variable. Apps consume shared variables
+// only via ${{project.KEY}} references in their own env values, resolved on
+// each app's next deploy — so unlike app env, a project-level PORT is harmless
+// and allowed.
+func (s *Server) handleSetProjectEnv(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	p, err := s.store.GetProject(r.Context(), id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	key := strings.TrimSpace(r.FormValue("key"))
+	if !envKeyRe.MatchString(key) {
+		s.renderProject(w, r, http.StatusBadRequest, p, "Key must be UPPER_SNAKE_CASE (letters, digits, underscore).")
+		return
+	}
+	if err := s.store.SetProjectEnv(r.Context(), id, key, r.FormValue("value"), r.FormValue("secret") != ""); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/projects/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
+func (s *Server) handleDeleteProjectEnv(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := s.store.GetProject(r.Context(), id); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	key := strings.TrimSpace(r.FormValue("key"))
+	if err := s.store.DeleteProjectEnv(r.Context(), id, key); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/projects/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
 // handleDeleteProject deletes an empty project; a project that still has apps
 // is refused and the page redisplayed with an alert (the store enforces the
 // guard, so a racing app creation cannot slip through).
@@ -191,8 +240,9 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.DeleteProject(r.Context(), id); err != nil {
 		if errors.Is(err, store.ErrProjectNotEmpty) {
 			apps, _ := s.store.ListAppsByProject(r.Context(), id)
+			dbs, _ := s.store.ListDatabasesByProject(r.Context(), id)
 			s.renderProject(w, r, http.StatusConflict, p,
-				fmt.Sprintf("This project still has %d app(s). Delete them before deleting the project.", len(apps)))
+				fmt.Sprintf("This project still has %d app(s) and %d database(s). Delete them before deleting the project.", len(apps), len(dbs)))
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)

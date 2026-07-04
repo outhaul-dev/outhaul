@@ -8,7 +8,7 @@ import (
 	"github.com/slipwaydev/slipway/internal/core"
 )
 
-const deploymentCols = `id, app_id, status, reason, image, created_at, started_at, finished_at`
+const deploymentCols = `id, app_id, status, reason, image, rollback_of, created_at, started_at, finished_at`
 
 // CreateDeployment inserts a new attempt in the queued state.
 func (s *Store) CreateDeployment(ctx context.Context, appID int64) (core.Deployment, error) {
@@ -24,6 +24,25 @@ func (s *Store) CreateDeployment(ctx context.Context, appID int64) (core.Deploym
 		return core.Deployment{}, err
 	}
 	return core.Deployment{ID: id, AppID: appID, Status: core.StatusQueued, CreatedAt: now}, nil
+}
+
+// CreateRollback inserts a queued attempt that reuses a previous deployment's
+// image. The pre-set image is what makes the pipeline skip the clone and
+// build; rollbackOf records provenance for the UI.
+func (s *Store) CreateRollback(ctx context.Context, appID int64, image string, rollbackOf int64) (core.Deployment, error) {
+	now := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO deployments (app_id, status, image, rollback_of, created_at) VALUES (?, ?, ?, ?, ?)`,
+		appID, core.StatusQueued, image, rollbackOf, fmtTime(now))
+	if err != nil {
+		return core.Deployment{}, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return core.Deployment{}, err
+	}
+	return core.Deployment{ID: id, AppID: appID, Status: core.StatusQueued,
+		Image: image, RollbackOf: rollbackOf, CreatedAt: now}, nil
 }
 
 func (s *Store) GetDeployment(ctx context.Context, id int64) (core.Deployment, error) {
@@ -191,7 +210,7 @@ func scanDeployment(row scanner) (core.Deployment, error) {
 		finishedAt sql.NullString
 	)
 	if err := row.Scan(&d.ID, &d.AppID, &d.Status, &d.Reason, &d.Image,
-		&createdAt, &startedAt, &finishedAt); err != nil {
+		&d.RollbackOf, &createdAt, &startedAt, &finishedAt); err != nil {
 		return core.Deployment{}, err
 	}
 	t, err := parseTime(createdAt)

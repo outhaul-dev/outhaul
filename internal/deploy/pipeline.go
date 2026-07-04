@@ -41,11 +41,16 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 		return
 	}
 
+	if app.Kind == core.KindCompose {
+		w.runComposePipeline(ctx, dep, app, out)
+		return
+	}
+
 	logf(out, "Deploying %s (%s) to %s", app.Name, app.RepoURL, app.Domain)
 
-	envVars, err := w.store.ListEnv(ctx, app.ID)
+	envVars, err := w.loadEnv(ctx, app)
 	if err != nil {
-		w.fail(dep, core.StatusBuilding, "load env: "+err.Error(), out)
+		w.fail(dep, core.StatusBuilding, err.Error(), out)
 		return
 	}
 	buildEnv := map[string]string{"PORT": fmt.Sprintf("%d", AppPort)}
@@ -60,44 +65,35 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 		}
 	}
 
-	// --- clone ---
-	workDir := filepath.Join(w.cfg.WorkDir(), fmt.Sprintf("dep-%d", dep.ID))
-	if err := os.RemoveAll(workDir); err != nil {
-		w.fail(dep, core.StatusBuilding, "prepare work dir: "+err.Error(), out)
-		return
-	}
-	if err := os.MkdirAll(workDir, 0o755); err != nil {
-		w.fail(dep, core.StatusBuilding, "prepare work dir: "+err.Error(), out)
-		return
-	}
-	defer os.RemoveAll(workDir)
+	// --- clone + build (skipped for rollbacks, which arrive with an image) ---
+	image := dep.Image
+	if image == "" {
+		workDir, cleanup, err := w.cloneWorkDir(ctx, dep, app, out)
+		if err != nil {
+			w.fail(dep, core.StatusBuilding, err.Error(), out)
+			return
+		}
+		defer cleanup()
 
-	logf(out, "Cloning repository (%s)...", app.Source)
-	spec, err := w.cloneSpec(ctx, app)
-	if err != nil {
-		w.fail(dep, core.StatusBuilding, "prepare clone: "+err.Error(), out)
-		return
-	}
-	if err := w.cloner.Clone(ctx, spec, workDir, out); err != nil {
-		w.fail(dep, core.StatusBuilding, "clone failed: "+err.Error(), out)
-		return
-	}
-
-	// --- build ---
-	image := fmt.Sprintf("slipway/%s:%d", app.Name, dep.ID)
-	logf(out, "Building image %s with %s...", image, w.builder.Name())
-	req := builder.BuildRequest{
-		ContextDir: workDir,
-		ImageTag:   image,
-		Env:        buildEnv,
-	}
-	if err := w.builder.Build(ctx, req, out); err != nil {
-		w.fail(dep, core.StatusBuilding, "build failed: "+err.Error(), out)
-		return
-	}
-	if err := w.store.SetImage(context.Background(), dep.ID, image); err != nil {
-		w.fail(dep, core.StatusBuilding, "record image: "+err.Error(), out)
-		return
+		image = fmt.Sprintf("slipway/%s:%d", app.Name, dep.ID)
+		logf(out, "Building image %s with %s...", image, w.builder.Name())
+		req := builder.BuildRequest{
+			ContextDir: workDir,
+			ImageTag:   image,
+			Env:        buildEnv,
+		}
+		if err := w.builder.Build(ctx, req, out); err != nil {
+			w.fail(dep, core.StatusBuilding, "build failed: "+err.Error(), out)
+			return
+		}
+		if err := w.store.SetImage(context.Background(), dep.ID, image); err != nil {
+			w.fail(dep, core.StatusBuilding, "record image: "+err.Error(), out)
+			return
+		}
+	} else {
+		// Env vars, domain, and routing are the app's CURRENT settings — only
+		// the image is rolled back (see the rollback spec).
+		logf(out, "Rolling back to image %s (built by deployment #%d); nothing to clone or build.", image, dep.RollbackOf)
 	}
 
 	// --- building -> deploying ---
@@ -174,6 +170,47 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 		logf(out, "WARNING: could not record running status: %v", err)
 	}
 	logf(out, "Done. %s is live at http://%s", app.Name, app.Domain)
+}
+
+// loadEnv loads an app's env vars with ${{project.KEY}} references resolved
+// against its project's shared variables. Errors come back ready to be used
+// as a failure reason.
+func (w *Worker) loadEnv(ctx context.Context, app core.App) ([]core.EnvVar, error) {
+	appVars, err := w.store.ListEnv(ctx, app.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load env: %w", err)
+	}
+	projectVars, err := w.store.ListProjectEnv(ctx, app.ProjectID)
+	if err != nil {
+		return nil, fmt.Errorf("load project env: %w", err)
+	}
+	return core.ResolveEnv(appVars, projectVars)
+}
+
+// cloneWorkDir creates the per-deploy work dir and clones the app's repo into
+// it. The returned cleanup removes the dir and is non-nil exactly when err is
+// nil. Errors come back ready to be used as a failure reason.
+func (w *Worker) cloneWorkDir(ctx context.Context, dep core.Deployment, app core.App, out io.Writer) (string, func(), error) {
+	workDir := filepath.Join(w.cfg.WorkDir(), fmt.Sprintf("dep-%d", dep.ID))
+	if err := os.RemoveAll(workDir); err != nil {
+		return "", nil, fmt.Errorf("prepare work dir: %w", err)
+	}
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		return "", nil, fmt.Errorf("prepare work dir: %w", err)
+	}
+	cleanup := func() { os.RemoveAll(workDir) }
+
+	logf(out, "Cloning repository (%s)...", app.Source)
+	spec, err := w.cloneSpec(ctx, app)
+	if err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("prepare clone: %w", err)
+	}
+	if err := w.cloner.Clone(ctx, spec, workDir, out); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("clone failed: %w", err)
+	}
+	return workDir, cleanup, nil
 }
 
 // createContainer creates and starts a container for the app. When traefikOn is

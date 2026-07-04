@@ -13,14 +13,31 @@ Outhaul is a deliberately minimal alternative to Dokploy/Coolify.
 > broken build, and app lifecycle (stop/restart/delete). M3 adds private repos
 > (via a GitHub App + per-app SSH deploy keys) and auto-deploy on push (via
 > webhooks), with a per-app branch and auto-deploy toggle. Apps are grouped
-> into Dokploy-style **projects** (workspaces for a product or client). See
+> into Dokploy-style **projects** (workspaces for a product or client), which
+> also hold **shared environment variables** that apps reference as
+> `${{project.KEY}}`. Repos
+> with a `docker-compose.yml` deploy as **compose stacks** (multi-service,
+> with any number of domains routed to the stack's services), and **watch
+> paths** scope auto-deploy to pushes that change matching files. The app page
+> live-tails **runtime container logs** (per service for compose stacks) and
+> shows **live metrics** (CPU, memory, network, and uptime, aggregated across
+> a compose stack). Any past deployment with a built image can be **rolled
+> back** to in one click — no rebuild, same health-gated cutover. Projects can
+> hold **managed databases** (PostgreSQL, MySQL, Redis): one click provisions
+> a container with generated credentials and persistent data, reachable by
+> apps over the internal network (and optionally on a published host port).
+> **Scheduled backups** ship database dumps and compose stacks' named volumes
+> to any S3-compatible bucket (AWS, MinIO, R2, B2, …) on cron schedules with
+> retention, run history, and one-click manual runs. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and what is intentionally
-> not built yet (multiple users, databases, metrics, multi-server).
+> not built yet (multiple users, backup restore UI, metrics history/alerts,
+> multi-server).
 
 ## Running
 
 Requirements on the host: a reachable **Docker** daemon, **git**, and
-**[nixpacks](https://nixpacks.com)** on `PATH`.
+**[nixpacks](https://nixpacks.com)** on `PATH`. Compose apps additionally
+need the **docker CLI with the compose v2 plugin** (`docker compose`).
 
 ```sh
 go build -o slipway .

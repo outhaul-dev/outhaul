@@ -1,0 +1,60 @@
+{{define "backups"}}
+<section class="panel">
+  <h2 class="panel-title">Backups</h2>
+  {{if .Backups}}
+  {{range .Backups}}
+  <div class="backup">
+    <div class="backup-head">
+      <span class="mono">{{.Schedule}}</span>
+      <span class="muted">→ {{.Destination}}{{if .Prefix}} <span class="mono">/{{.Prefix}}</span>{{end}}</span>
+      <span class="muted">keep {{if .Retention}}{{.Retention}}{{else}}all{{end}}</span>
+      {{if not .Enabled}}<span class="badge state-stopped">paused</span>{{end}}
+      <span class="backup-actions">
+        <form method="post" action="/backups/{{.ID}}/run" class="inline"><button type="submit" class="btn btn-quiet">Run now</button></form>
+        <form method="post" action="/backups/{{.ID}}/toggle" class="inline"><button type="submit" class="linkbtn">{{if .Enabled}}pause{{else}}resume{{end}}</button></form>
+        <form method="post" action="/backups/{{.ID}}/delete" class="inline" onsubmit="return confirm('Remove this backup schedule? Objects already in the bucket are kept.');"><button type="submit" class="linkbtn">remove</button></form>
+      </span>
+    </div>
+    {{if .Runs}}
+    <table class="table">
+      <thead><tr><th>Started</th><th>Status</th><th>Size</th><th>Object</th></tr></thead>
+      <tbody>
+        {{range .Runs}}
+        <tr>
+          <td class="muted">{{fmtTime .StartedAt}}</td>
+          <td><span class="badge {{runStateClass .Status}}">{{.Status}}</span>{{if .Reason}} <span class="muted">{{.Reason}}</span>{{end}}</td>
+          <td class="mono muted">{{fmtSize .SizeBytes}}</td>
+          <td class="mono muted truncate">{{if .ObjectKey}}{{.ObjectKey}}{{else}}—{{end}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <p class="empty">No runs yet — it fires on schedule, or Run now.</p>
+    {{end}}
+  </div>
+  {{end}}
+  {{else}}
+  <p class="empty">No backup schedules.</p>
+  {{end}}
+
+  {{if .Destinations}}
+  <form method="post" action="/backups" class="grid-form env-add">
+    <input type="hidden" name="target_kind" value="{{.BackupKind}}">
+    <input type="hidden" name="target_id" value="{{.BackupTargetID}}">
+    <label class="field"><span>Destination</span>
+      <select name="destination_id">
+        {{range .Destinations}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
+      </select>
+    </label>
+    <label class="field"><span>Schedule (cron)</span><input type="text" name="schedule" placeholder="0 3 * * *" required></label>
+    <label class="field"><span>Prefix (optional)</span><input type="text" name="prefix" placeholder="prod"></label>
+    <label class="field"><span>Retention</span><input type="text" name="retention" placeholder="7" inputmode="numeric"></label>
+    <button type="submit" class="btn btn-primary">Add backup</button>
+  </form>
+  <p class="muted env-note">Cron is 5 fields in server time (<span class="mono">0 3 * * *</span> = daily 03:00). Retention keeps the newest N archives per directory; empty or 0 keeps everything.</p>
+  {{else}}
+  <p class="muted env-note">Add an S3-compatible destination in <a href="/settings">Settings</a> first — backups need somewhere to go.</p>
+  {{end}}
+</section>
+{{end}}

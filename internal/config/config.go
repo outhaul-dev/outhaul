@@ -79,6 +79,10 @@ func (c Config) SecretKeyPath() string { return filepath.Join(c.DataDir, "secret
 // AcmeDir is the host directory bind-mounted into Traefik for acme.json.
 func (c Config) AcmeDir() string { return filepath.Join(c.DataDir, "traefik", "acme") }
 
+// DatabasesDir is the root under which each managed database gets a
+// per-database data directory, bind-mounted into its container.
+func (c Config) DatabasesDir() string { return filepath.Join(c.DataDir, "databases") }
+
 func truthy(v string) bool {
 	switch v {
 	case "1", "true", "TRUE", "yes", "on":

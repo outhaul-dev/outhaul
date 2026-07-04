@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/slipwaydev/slipway/internal/compose"
 	"github.com/slipwaydev/slipway/internal/core"
 	"github.com/slipwaydev/slipway/internal/docker"
 	"github.com/slipwaydev/slipway/internal/github"
@@ -32,15 +34,69 @@ func (f *fakeDeployer) Cancel(_ context.Context, id int64) (bool, error) {
 	return true, nil
 }
 
+// fakeDatabases records lifecycle calls from the handlers; it never touches a
+// store or container, so tests assert on the calls (and set row state
+// themselves when a page needs it).
+type fakeDatabases struct {
+	provisioned []core.Database
+	started     []int64
+	stopped     []int64
+	removed     []int64
+	failWith    error // returned by Start/Stop/Remove when set
+}
+
+func (f *fakeDatabases) Provision(d core.Database) { f.provisioned = append(f.provisioned, d) }
+func (f *fakeDatabases) Start(_ context.Context, d core.Database) error {
+	if f.failWith != nil {
+		return f.failWith
+	}
+	f.started = append(f.started, d.ID)
+	return nil
+}
+func (f *fakeDatabases) Stop(_ context.Context, d core.Database) error {
+	if f.failWith != nil {
+		return f.failWith
+	}
+	f.stopped = append(f.stopped, d.ID)
+	return nil
+}
+func (f *fakeDatabases) Remove(_ context.Context, d core.Database) error {
+	if f.failWith != nil {
+		return f.failWith
+	}
+	f.removed = append(f.removed, d.ID)
+	return nil
+}
+
+// fakeBackups records backup-manager calls from the handlers.
+type fakeBackups struct {
+	ran     []int64 // backup IDs passed to RunNow
+	tested  []string
+	testErr error // returned by TestDestination when set
+}
+
+func (f *fakeBackups) RunNow(b core.Backup) { f.ran = append(f.ran, b.ID) }
+func (f *fakeBackups) TestDestination(_ context.Context, d core.Destination) error {
+	f.tested = append(f.tested, d.Name)
+	return f.testErr
+}
+
 type fakeRuntime struct {
 	container *docker.Container
+	stack     []docker.Container // returned by ListContainers (compose apps)
 	started   []string
 	stopped   []string
 	removed   []string
+	logs      map[string]string       // container ID -> content for ContainerLogs
+	logTails  []int                   // tail values passed to ContainerLogs
+	stats     map[string]docker.Stats // container ID -> sample for ContainerStats
 }
 
 func (f *fakeRuntime) FindContainer(_ context.Context, name string) (*docker.Container, error) {
 	return f.container, nil
+}
+func (f *fakeRuntime) ListContainers(_ context.Context, _ map[string]string) ([]docker.Container, error) {
+	return f.stack, nil
 }
 func (f *fakeRuntime) StartContainer(_ context.Context, id string) error {
 	f.started = append(f.started, id)
@@ -54,16 +110,35 @@ func (f *fakeRuntime) RemoveContainer(_ context.Context, id string, _ bool) erro
 	f.removed = append(f.removed, id)
 	return nil
 }
+func (f *fakeRuntime) ContainerLogs(_ context.Context, id string, tail int) (io.ReadCloser, error) {
+	f.logTails = append(f.logTails, tail)
+	content, ok := f.logs[id]
+	if !ok {
+		return nil, fmt.Errorf("no such container: %s", id)
+	}
+	return io.NopCloser(strings.NewReader(content)), nil
+}
+
+func (f *fakeRuntime) ContainerStats(_ context.Context, id string) (docker.Stats, error) {
+	st, ok := f.stats[id]
+	if !ok {
+		return docker.Stats{}, fmt.Errorf("no such container: %s", id)
+	}
+	return st, nil
+}
 
 type testEnv struct {
-	srv      *Server
-	deployer *fakeDeployer
-	runtime  *fakeRuntime
-	broker   *logstream.Broker
-	store    *store.Store
-	gh       *github.Fake
-	http     *httptest.Server
-	client   *http.Client
+	srv       *Server
+	deployer  *fakeDeployer
+	runtime   *fakeRuntime
+	compose   *compose.Fake
+	databases *fakeDatabases
+	backups   *fakeBackups
+	broker    *logstream.Broker
+	store     *store.Store
+	gh        *github.Fake
+	http      *httptest.Server
+	client    *http.Client
 
 	sessionToken string // set by login(); attach to requests via authed()
 }
@@ -82,9 +157,12 @@ func newTestEnv(t *testing.T) *testEnv {
 
 	dep := &fakeDeployer{}
 	rt := &fakeRuntime{}
+	cp := &compose.Fake{}
+	dbm := &fakeDatabases{}
+	bk := &fakeBackups{}
 	br := logstream.New()
 	gh := &github.Fake{}
-	srv, err := New(st, dep, rt, br, gh, "https://slip.example.com", "SETUPTOKEN")
+	srv, err := New(st, dep, rt, cp, dbm, bk, br, gh, "https://slip.example.com", "SETUPTOKEN")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -99,7 +177,7 @@ func newTestEnv(t *testing.T) *testEnv {
 			return http.ErrUseLastResponse // don't follow; assert redirects ourselves
 		},
 	}
-	return &testEnv{srv: srv, deployer: dep, runtime: rt, broker: br, store: st, gh: gh, http: ts, client: client}
+	return &testEnv{srv: srv, deployer: dep, runtime: rt, compose: cp, databases: dbm, backups: bk, broker: br, store: st, gh: gh, http: ts, client: client}
 }
 
 func (e *testEnv) get(t *testing.T, path string) *http.Response {
@@ -348,8 +426,8 @@ func TestAppDetailShowsConnectAndStats(t *testing.T) {
 	app, _ := e.store.GetAppByName(context.Background(), "web")
 
 	page := body(t, e.get(t, "/apps/"+itoa(app.ID)))
-	if !strings.Contains(page, "not live") {
-		t.Error("app detail should show placeholder metric stats marked not-live")
+	if !strings.Contains(page, `id="metric-cpu"`) {
+		t.Error("app detail should show the live metric stats")
 	}
 	if !strings.Contains(page, "/webhooks/app/"+app.WebhookSecret) {
 		t.Error("app detail should show the connect-repo webhook URL")

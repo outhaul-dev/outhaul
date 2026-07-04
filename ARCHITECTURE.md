@@ -79,10 +79,183 @@ Dokploy, argued in `docs/superpowers/specs/2026-07-04-projects-design.md`:
 no organization layer (single-admin), no environment layer yet (a seam, the
 same retrofit path Dokploy took), and project deletion is guarded rather than
 cascading — a project must be emptied of apps before it can be deleted, since
-deleting an app tears down a live container. Deployments, webhooks, env vars,
-and the worker never see a project; apps remain the deployable unit. There is
-no DB-level FK on `apps.project_id` (SQLite can't add a `NOT NULL` FK column
-without a table rebuild); the store enforces the reference instead.
+deleting an app tears down a live container. Deployments and webhooks never
+see a project; apps remain the deployable unit. There is no DB-level FK on
+`apps.project_id` (SQLite can't add a `NOT NULL` FK column without a table
+rebuild); the store enforces the reference instead.
+
+Projects also hold **shared environment variables** (Dokploy's model, design
+in `docs/superpowers/specs/2026-07-04-project-env.md`): a per-project
+dictionary (`project_env`, encrypted at rest like `app_env`, edited from a
+Shared variables panel on the project page) that apps opt into by writing
+`${{project.KEY}}` inside their own env values. The worker resolves
+references at deploy time in both pipelines (`core.ResolveEnv`): nothing is
+injected unreferenced, a reference to an undefined shared variable fails the
+deploy (never ship a literal placeholder), and a value that pulled in a
+secret shared variable is treated as secret — kept out of the nixpacks build
+env. Resolution is one level deep; changes apply on each app's next deploy.
+
+### Docker Compose apps + watch paths (done)
+
+Apps now carry a **kind** — `nixpacks` (the default; everything above) or
+`compose` — chosen at creation. A compose app's repo ships a
+`docker-compose.yml` (path configurable) and deploys as a whole stack by
+shelling out to `docker compose` (v2 plugin, a new host requirement for
+compose apps only) behind a `compose.Runner` interface with a fake, mirroring
+the Nixpacks builder. The pipeline maps onto the same state machine:
+`building` = clone + write `.env` (all env vars, for `${VAR}` interpolation,
+Dokploy's layout) + `compose build`; `deploying` = `compose up -d --wait`
+with the health timeout as the gate. **No blue-green for stacks** — compose
+recreates containers in place (Dokploy behaves the same); the single-app
+cutover is unchanged. Exposing a stack is opt-in and multi-domain (Dokploy's
+model): a compose app has any number of `compose_domains` rows, each routing
+one host to one service's container port, managed from a Domains panel on the
+app page. The pipeline layers a generated `slipway.override.yml` over the
+user's file (never rewriting it), attaching each published service to the
+shared network and giving it one Traefik router per domain (named
+`slipway-<app>-d<domainID>`, unique and stable) plus `traefik.docker.network`.
+Domain edits apply on the next deploy, when the override is regenerated.
+Lifecycle is label-based (`docker compose -p slipway-<name> stop|restart|down`)
+so stop/restart/delete need no retained checkout; deletion keeps named
+volumes. Raw pasted-YAML compose and Swarm mode are deferred (seams in
+`docs/superpowers/specs/2026-07-04-compose-design.md`; multi-domain design in
+`2026-07-04-compose-multidomain.md`).
+
+**Watch paths** control *when* a push redeploys, for both kinds: per-app glob
+patterns (`*`/`?` within a segment, `**` across, `[seq]`; a small built-in
+matcher, no dependency) tested against the changed files a push webhook
+reports. No patterns = every push to the branch deploys (unchanged default);
+with patterns, a push that touches no matching file is skipped. A payload
+carrying no file info fails open and deploys — not knowing what changed must
+never silently drop a release (Dokploy crashes on that case; issue #4081).
+
+### Runtime container logs (done)
+
+The app page live-tails the *running* containers' stdout+stderr — Dokploy's
+log viewer, adapted to the house SSE mechanism (design in
+`docs/superpowers/specs/2026-07-04-runtime-logs.md`). Unlike build logs there
+is no broker or history: the Docker daemon is the log store, so
+`GET /apps/{id}/logs` opens its own follow stream per request
+(`docker.Client.ContainerLogs`, which strips Docker's multiplexing framing),
+replays a whitelisted tail (100/500/1000/5000 lines) and follows until the
+container stops or the browser disconnects. Logs are per-container, as in
+Dokploy: nixpacks apps tail their single container, compose apps pick one
+service from a selector (resolved via compose labels). A stopped container
+still serves its logs — post-mortem debugging is the point. Failures
+("deploy first", unknown service) travel as in-stream `err` events because
+EventSource clients can't read non-200 bodies. Search, time-range filters,
+log-level parsing, ANSI rendering, and download are deliberately deferred.
+
+### Live app metrics (done)
+
+The app page's Metrics panel shows live CPU, memory, network I/O, and uptime
+for the app's running containers — Dokploy's container monitoring, minus its
+metrics store (design in `docs/superpowers/specs/2026-07-04-live-metrics.md`).
+Dokploy polls the Docker stats API on a refresh interval and persists samples
+for graphs and alerts; Outhaul keeps the data source and the poll model but
+skips persistence entirely — the browser polls `GET /apps/{id}/stats` every
+5s while the page is open, and each poll takes one one-shot
+`docker.Client.ContainerStats` sample per container (the daemon primes CPU%
+internally, so no state is kept between polls). Values match `docker stats`
+semantics: CPU% where 100 = one core, memory usage minus reclaimable page
+cache, cumulative network totals. Compose stacks aggregate across their
+running containers — CPU/memory/network sum, memory limit is the max (an
+unlimited container reports the host total; summing would double-count it),
+uptime is the longest-running container's. The endpoint returns pre-formatted
+display strings so formatting stays in testable Go. History, graphs,
+threshold alerts, and host-level metrics are deliberately deferred.
+
+### Rollback (done)
+
+Every deployment row on the app page (and the deployment detail page) offers
+**Rollback** once it has a built image — Dokploy's registry-based rollbacks
+without the registry (design in `docs/superpowers/specs/2026-07-04-rollback.md`).
+Dokploy tags and pushes each deploy's image to a configured registry and links
+the deployment record to the tag; Outhaul already tags every nixpacks build
+`slipway/<app>:<depID>`, records it on the row, and never prunes images, so
+the rollback material is on the host — single-server means a registry buys
+nothing. A rollback is an ordinary deployment enqueued with the source's
+image and `rollback_of` pre-set (`POST /deployments/{id}/rollback`); the
+pipeline sees the pre-set image and skips clone+build, then shares everything
+downstream — health-gated blue-green cutover, cancel, crash recovery, per-app
+serialization. Only the image is rolled back: env vars, domain, and routing
+are the app's *current* settings (Dokploy snapshots config per deploy; one
+state model is worth the divergence, and the deploy log says which image was
+reused). Compose stacks can't roll back — `compose build` leaves no
+per-deployment image handle — matching Dokploy's own limitation, and the
+existing Deploy button is the "redeploy" (rebuild the branch head,
+health-gated). Dokploy's Swarm-based auto-rollback has no equivalent because
+it isn't needed: a failed deploy never touches the live container. Per-deploy
+config snapshots and image retention/cleanup are deliberate seams.
+
+### Databases as a service (done)
+
+Projects can hold managed **databases** — PostgreSQL, MySQL, or Redis — next
+to their apps (design in `docs/superpowers/specs/2026-07-04-databases.md`).
+This is Dokploy's databases feature trimmed to Outhaul's shape: one form field
+set (name + engine + optional image + optional external port) instead of five
+credential fields, with the user/database name defaulting to the database's
+name and the password always generated server-side (stored encrypted, same
+secretbox scheme as env values). Each database is a plain container named
+`slipway-db-<name>` on the shared network, so apps connect internally by
+hostname (`postgres://user:pass@slipway-db-shop:5432/shop`); the database page
+shows the ready-to-paste URL and nothing is auto-injected — wiring it into
+apps is a copy-paste into project shared env (`${{project.KEY}}`), which is
+also Dokploy's model. An optional **external port** publishes the engine's
+port on the host for outside access — raw TCP publish rather than Traefik,
+which is HTTP-only (Dokploy bypasses its proxy here too).
+
+Provisioning (pull → create → start) runs in a background goroutine owned by
+`internal/dbaas.Manager` — the databases counterpart of the deploy worker; the
+server calls it through a small interface and never creates containers
+itself. The row's stored status (`creating → running/failed`) exists only
+because "being created" and "failed to create" aren't observable from Docker;
+everything else derives from the container, which carries
+`restart: unless-stopped` so Docker owns reboots (no Swarm, no HA — matching
+the rest of Outhaul). Data lives in a bind mount under
+`<data-dir>/databases/<name>` rather than a named volume, keeping all state
+rsync-able in one directory; because of that, reprovisioning (retry after a
+failed pull, or applying a changed external port) can simply remove and
+recreate the container. Rows stuck in `creating` after a binary restart are
+recovered as failed on boot, like interrupted deployments. Deleting a
+database removes container, data directory, and row — the confirm dialog says
+so. Deliberate seams: scheduled/S3 backups and restore (Dokploy's cron +
+destinations model), more engines (a table row each), image upgrades, and a
+database metrics panel.
+
+### Scheduled backups to S3-compatible storage (done)
+
+Operators register **destinations** — S3-compatible buckets (AWS, MinIO, R2,
+B2, Wasabi, …) — once on the settings page, then attach **backup schedules**
+to databases and compose apps: a 5-field cron expression, a key prefix, and a
+retention count (design in `docs/superpowers/specs/2026-07-04-backups.md`).
+This is Dokploy's backups model with two deliberate substitutions. First, no
+rclone: Dokploy shells out to it for transfers, but Outhaul's S3 surface is
+three calls (put, list, delete), so `internal/blobstore` implements them
+directly with stdlib SigV4 signing — verified against AWS's published test
+vector — the same house call as the hand-rolled GitHub App JWT. Path-style
+addressing always; single-PUT uploads cap one archive at 5 GB (multipart is a
+seam). Second, no cron library: `internal/cron` is a ~100-line 5-field parser
+(vixie dom/dow OR-semantics) and the `internal/backup` manager just ticks
+once a minute and runs whatever matches, in goroutines with a per-backup
+in-flight guard.
+
+Database backups run the engine's own tool **inside the database container**
+via docker exec (`pg_dump -Fc --no-acl --no-owner`, `mysqldump
+--single-transaction` — Dokploy's commands; the tools ship in the official
+images so the host needs nothing), gzipped in Go, staged under the work dir,
+then uploaded to `<prefix>/<name>/<timestamp>`. Redis is excluded, as in
+Dokploy — no dump tooling; it's cache-shaped. App backups are Dokploy's
+volume-backups feature: each **named volume** of a compose stack (found by
+its compose-project label) is tarred by a transient `busybox` container and
+uploaded as its own object; bind mounts aren't covered, and nixpacks apps are
+excluded honestly — Outhaul gives them no volumes, so there is nothing to
+back up. After a successful run, retention prunes each directory to the
+newest N objects (timestamps sort lexicographically). Every run lands in a
+history table (capped at 20 rows per schedule) shown on the target's page
+next to Run-now/pause/remove; destinations have a Test button that writes and
+deletes a probe object. Deliberate seams: restore UI, multipart uploads,
+stop-during-tar consistency locks, non-S3 destinations.
 
 Design decisions from M3: private-repo access goes through a **GitHub App**,
 set up via GitHub's manifest flow (the operator submits a pre-filled manifest,
@@ -122,6 +295,8 @@ slipway/
 
     core/                     # PURE domain: no I/O, no deps. The testable heart.
         app.go                # App model
+        database.go           # managed Database model (engine, credentials, lifecycle status)
+        env.go                # EnvVar model + ResolveEnv (${{project.KEY}} references)
         project.go            # Project model (workspace grouping apps)
         deployment.go         # Deployment model, DeployStatus enum
         statemachine.go       # legal transitions, terminal/active predicates
@@ -133,7 +308,10 @@ slipway/
         migrations/*.sql
         apps.go               # App CRUD
         projects.go           # Project CRUD (guarded delete, app counts)
-        deployments.go        # Deployment CRUD + queue ops (claim, recover-on-boot)
+        project_env.go        # project-level shared env vars (encrypted at rest)
+        databases.go          # managed-database CRUD (password encrypted at rest, recover-on-boot)
+        backups.go            # S3 destinations (secret encrypted), backup schedules, run history
+        deployments.go        # Deployment CRUD + queue ops (claim, recover-on-boot, rollbacks)
 
     docker/                   # Docker behind an interface (fake for tests)
         client.go             # Client interface: PullImage, Create/Start/Stop/Remove, Inspect, EnsureNetwork
@@ -149,6 +327,11 @@ slipway/
         builder.go            # Builder interface: Build(ctx, BuildRequest) streaming logs -> image tag
         nixpacks.go           # shells out to `nixpacks build`; requires nixpacks on PATH at runtime
 
+    compose/                  # docker compose stacks behind a Runner interface (fake for tests)
+        compose.go            # Runner: Build/Up (files) + Stop/Restart/Down (label-based, -p only)
+        override.go           # Override: generated slipway.override.yml publishing services on their domains
+        fake.go               # in-memory fake for unit tests
+
     logstream/               # in-memory pub/sub broker: build/deploy log lines -> SSE subscribers
         broker.go
 
@@ -156,7 +339,8 @@ slipway/
         keygen.go             # Generate: private key encrypted at rest, public key for the repo host
 
     webhook/                  # generic push-webhook parsing + HMAC signature verification
-        parse.go              # ParsePush: extract repo + branch from a push payload
+        parse.go              # ParsePush: extract repo + branch + changed files from a push payload
+        match.go              # watch-path glob matching (*, **, ?, [seq]) against changed files
         verify.go             # constant-time signature check against the per-app secret
 
     github/                   # GitHub App: manifest flow, JWT, installation-token client
@@ -166,16 +350,34 @@ slipway/
         real.go               # HTTP-backed implementation
         fake.go               # in-memory fake for unit tests
 
+    dbaas/                    # managed database containers (databases-as-a-service)
+        engines.go            # engine table: images, ports, env/credentials, connection URLs
+        manager.go            # provision/start/stop/remove; the server's Databases interface
+
+    cron/                     # 5-field cron expression parsing + minute matching (no deps)
+        cron.go
+
+    blobstore/                # S3-compatible object storage via stdlib SigV4 (no SDK)
+        blobstore.go          # Client interface (Put/List/Delete), path-style requests, Probe
+        sigv4.go              # AWS Signature V4 signing, tested against the AWS test vector
+
+    backup/                   # the backup scheduler/executor
+        manager.go            # minute ticker -> cron match -> dump/tar -> upload -> prune
+
     deploy/                   # the worker/orchestrator — drives the state machine
         worker.go             # dispatcher loop: claim queued work, per-app serialization, concurrency across apps
-        pipeline.go           # one deployment: clone -> build -> start container -> health -> running
+        pipeline.go           # one nixpacks deployment: clone -> build -> start container -> health -> running
+        pipeline_compose.go   # one compose deployment: clone -> .env/override -> compose build -> up --wait
         git.go                # clone a repo (public, SSH deploy key, or GitHub App installation token)
 
     server/
         server.go             # http.ServeMux, route table, middleware, graceful Shutdown
         auth.go               # argon2id, session cookies, first-boot setup token
         handlers.go           # apps list/create, deploy trigger, deployment detail
-        sse.go                # SSE handler bridging logstream -> browser
+        databases.go          # managed-database pages: create, detail, lifecycle, settings
+        backups.go            # backup schedules + destinations (create/test/delete, run-now)
+        sse.go                # SSE handlers: build logs (logstream broker) + runtime container logs (docker follow)
+        stats.go              # live app metrics: aggregated docker-stats snapshot, polled by the app page
         templates/*.tmpl      # html/template, embedded
         static/*              # CSS (from the design system), embedded
         embed.go              # embed.FS for templates + static

@@ -55,3 +55,42 @@ func TestParsePushMalformed(t *testing.T) {
 		t.Error("expected error for malformed body")
 	}
 }
+
+// TestParsePushChangedFiles pins the changed-file extraction feeding watch
+// paths: the union of added/modified/removed across commits, deduplicated.
+func TestParsePushChangedFiles(t *testing.T) {
+	body := `{
+		"ref": "refs/heads/main",
+		"repository": {"full_name": "owner/repo"},
+		"commits": [
+			{"added": ["src/new.js"], "modified": ["README.md"], "removed": []},
+			{"added": [], "modified": ["README.md", "src/app.js"], "removed": ["old.txt"]}
+		]
+	}`
+	ev, err := ParsePush([]byte(body))
+	if err != nil {
+		t.Fatalf("ParsePush: %v", err)
+	}
+	want := []string{"src/new.js", "README.md", "src/app.js", "old.txt"}
+	if len(ev.Changed) != len(want) {
+		t.Fatalf("Changed = %v, want %v", ev.Changed, want)
+	}
+	for i, f := range want {
+		if ev.Changed[i] != f {
+			t.Errorf("Changed[%d] = %q, want %q", i, ev.Changed[i], f)
+		}
+	}
+}
+
+// Commits with missing file arrays (Dokploy issue #4081 crashes there) must
+// parse cleanly to an empty Changed, which the deploy gate fails open on.
+func TestParsePushThinPayloadHasNoChangedFiles(t *testing.T) {
+	body := `{"ref":"refs/heads/main","repository":{"full_name":"o/r"},"commits":[{"id":"abc"}]}`
+	ev, err := ParsePush([]byte(body))
+	if err != nil {
+		t.Fatalf("ParsePush: %v", err)
+	}
+	if len(ev.Changed) != 0 {
+		t.Errorf("Changed = %v, want empty", ev.Changed)
+	}
+}

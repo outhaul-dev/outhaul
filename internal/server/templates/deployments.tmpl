@@ -11,7 +11,7 @@
     <tbody>
       {{range .Deployments}}
       <tr>
-        <td class="mono">{{.ID}}</td>
+        <td class="mono">{{.ID}}{{if .RollbackOf}} <span class="muted" title="reused the image built by deployment #{{.RollbackOf}}">↩ #{{.RollbackOf}}</span>{{end}}</td>
         <td><a href="/apps/{{.AppID}}" class="rowlink">{{.AppName}}</a></td>
         <td><span class="badge {{stateClass .Status}}">{{.Status}}</span></td>
         <td class="mono muted">{{fmtTime .CreatedAt}}</td>

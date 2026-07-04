@@ -2,7 +2,7 @@
 <div class="pagehead">
   <div>
     <div class="crumbs"><a href="/projects">Projects</a> / {{with .Project}}<a href="/projects/{{.ID}}">{{.Name}}</a> / {{end}}{{.App.Name}}</div>
-    <h1>{{.App.Name}}</h1>
+    <h1>{{.App.Name}}{{if eq .App.Kind "compose"}} <span class="badge">Compose</span>{{end}}</h1>
   </div>
   <div class="pagehead-actions">
     <span class="badge state-{{if eq .Runtime "running"}}running{{else}}stopped{{end}}">{{.Runtime}}</span>
@@ -15,32 +15,201 @@
 
 <section class="panel">
   <dl class="meta">
-    <div><dt>Domain</dt><dd><a href="http://{{.App.Domain}}" target="_blank" rel="noreferrer" class="mono">{{.App.Domain}}</a></dd></div>
+    {{if eq .App.Kind "compose"}}
+    <div><dt>Domains</dt><dd>{{if .Domains}}{{range .Domains}}<div><a href="http://{{.Domain}}" target="_blank" rel="noreferrer" class="mono">{{.Domain}}</a> <span class="muted mono">→ {{.Service}}:{{.Port}}</span></div>{{end}}{{else}}<span class="muted">— internal only</span>{{end}}</dd></div>
+    {{else}}
+    <div><dt>Domain</dt><dd>{{if .App.Domain}}<a href="http://{{.App.Domain}}" target="_blank" rel="noreferrer" class="mono">{{.App.Domain}}</a>{{else}}<span class="muted">— internal only</span>{{end}}</dd></div>
+    {{end}}
     <div><dt>Repository</dt><dd class="mono">{{.App.RepoURL}}</dd></div>
+    {{if eq .App.Kind "compose"}}<div><dt>Compose file</dt><dd class="mono">{{.App.ComposePath}}</dd></div>{{end}}
   </dl>
 </section>
+
+{{if eq .App.Kind "compose"}}
+<section class="panel">
+  <h2 class="panel-title">Services</h2>
+  {{if .Stack}}
+  <table class="table">
+    <thead><tr><th>Service</th><th>State</th></tr></thead>
+    <tbody>
+      {{range .Stack}}
+      <tr>
+        <td class="mono">{{.Service}}</td>
+        <td><span class="badge state-{{if eq .State "running"}}running{{else}}stopped{{end}}">{{.State}}</span></td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No stack containers yet. Deploy to bring the stack up.</p>
+  {{end}}
+</section>
+
+<section class="panel">
+  <h2 class="panel-title">Domains</h2>
+  {{if .Domains}}
+  <table class="table">
+    <thead><tr><th>Domain</th><th>Service</th><th>Port</th><th></th></tr></thead>
+    <tbody>
+      {{range .Domains}}
+      <tr>
+        <td><a href="http://{{.Domain}}" target="_blank" rel="noreferrer" class="mono">{{.Domain}}</a></td>
+        <td class="mono">{{.Service}}</td>
+        <td class="mono">{{.Port}}</td>
+        <td>
+          <form method="post" action="/apps/{{$.App.ID}}/domains/{{.ID}}/delete" class="inline">
+            <button type="submit" class="linkbtn">remove</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No domains — the stack is internal-only until a service is published on one.</p>
+  {{end}}
+  <form method="post" action="/apps/{{.App.ID}}/domains" class="grid-form env-add">
+    <label class="field"><span>Domain</span><input type="text" name="domain" placeholder="shop.example.com" required></label>
+    <label class="field"><span>Service</span><input type="text" name="service" placeholder="web" required></label>
+    <label class="field"><span>Port</span><input type="text" name="port" placeholder="3000" inputmode="numeric" required></label>
+    <button type="submit" class="btn btn-primary">Add</button>
+  </form>
+  <p class="muted env-note">Each domain routes to one compose service's container port; several domains may share a service. Redeploy to apply domain changes.</p>
+</section>
+
+{{template "backups" .}}
+{{end}}
 
 <section class="panel">
   <div class="log-head">
     <h2 class="panel-title">Metrics</h2>
-    <span class="not-live">not live</span>
+    <span class="log-status" id="metrics-indicator">connecting…</span>
   </div>
   <div class="stats">
-    <div class="stat"><div class="stat-label">CPU</div><div class="stat-value">—<span class="unit">%</span></div><div class="stat-sub">coming soon</div></div>
-    <div class="stat"><div class="stat-label">Memory</div><div class="stat-value">—<span class="unit">MB</span></div><div class="stat-sub">coming soon</div></div>
-    <div class="stat"><div class="stat-label">Net I/O</div><div class="stat-value">—<span class="unit">MB/s</span></div><div class="stat-sub">coming soon</div></div>
-    <div class="stat"><div class="stat-label">Uptime</div><div class="stat-value">—</div><div class="stat-sub">coming soon</div></div>
+    <div class="stat"><div class="stat-label">CPU</div><div class="stat-value" id="metric-cpu">—<span class="unit">%</span></div><div class="stat-sub">100% = one core</div></div>
+    <div class="stat"><div class="stat-label">Memory</div><div class="stat-value" id="metric-mem">—</div><div class="stat-sub" id="metric-mem-sub">usage</div></div>
+    <div class="stat"><div class="stat-label">Net I/O</div><div class="stat-value" id="metric-net">—</div><div class="stat-sub">received · sent, total</div></div>
+    <div class="stat"><div class="stat-label">Uptime</div><div class="stat-value" id="metric-uptime">—</div><div class="stat-sub">since container start</div></div>
   </div>
 </section>
+
+<script>
+(function () {
+  var indicator = document.getElementById('metrics-indicator');
+  var cpu = document.getElementById('metric-cpu');
+  var mem = document.getElementById('metric-mem');
+  var memSub = document.getElementById('metric-mem-sub');
+  var net = document.getElementById('metric-net');
+  var uptime = document.getElementById('metric-uptime');
+
+  function dashes() {
+    cpu.innerHTML = '—<span class="unit">%</span>';
+    mem.textContent = '—';
+    memSub.textContent = 'usage';
+    net.textContent = '—';
+    uptime.textContent = '—';
+  }
+
+  function poll() {
+    fetch('/apps/{{.App.ID}}/stats', {headers: {'Accept': 'application/json'}})
+      .then(function (r) { if (!r.ok) { throw new Error(r.status); } return r.json(); })
+      .then(function (s) {
+        if (!s.running) { dashes(); indicator.textContent = 'not running'; return; }
+        cpu.innerHTML = '';
+        cpu.appendChild(document.createTextNode(s.cpu));
+        var u = document.createElement('span'); u.className = 'unit'; u.textContent = '%';
+        cpu.appendChild(u);
+        mem.textContent = s.mem;
+        memSub.textContent = s.memSub || 'usage';
+        net.textContent = s.net;
+        uptime.textContent = s.uptime || '—';
+        indicator.textContent = s.containers > 1 ? 'live · ' + s.containers + ' containers' : 'live';
+      })
+      .catch(function () { dashes(); indicator.textContent = 'unavailable'; });
+  }
+
+  poll();
+  setInterval(poll, 5000);
+})();
+</script>
+
+<section class="panel">
+  <div class="log-head">
+    <h2 class="panel-title">Runtime logs</h2>
+    <div class="log-controls">
+      {{if and (eq .App.Kind "compose") .Stack}}
+      <select id="log-service" title="Compose service">
+        {{range .Stack}}<option value="{{.Service}}">{{.Service}}</option>{{end}}
+      </select>
+      {{end}}
+      <select id="log-tail" title="Lines to tail">
+        <option value="100">100 lines</option>
+        <option value="500">500 lines</option>
+        <option value="1000">1000 lines</option>
+        <option value="5000">5000 lines</option>
+      </select>
+      <span class="log-status" id="runtime-indicator">connecting…</span>
+    </div>
+  </div>
+  <pre class="log" id="runtime-log" data-id="{{.App.ID}}"></pre>
+</section>
+
+<script>
+(function () {
+  var el = document.getElementById('runtime-log');
+  var indicator = document.getElementById('runtime-indicator');
+  var svcSel = document.getElementById('log-service');
+  var tailSel = document.getElementById('log-tail');
+  var id = el.getAttribute('data-id');
+  var es = null;
+
+  function open() {
+    if (es) { es.close(); }
+    el.textContent = '';
+    indicator.textContent = 'connecting…';
+    var qs = 'tail=' + tailSel.value;
+    if (svcSel) { qs += '&service=' + encodeURIComponent(svcSel.value); }
+    es = new EventSource('/apps/' + id + '/logs?' + qs);
+    es.onopen = function () { indicator.textContent = 'streaming…'; };
+    es.addEventListener('log', function (e) {
+      var atBottom = (el.scrollTop + el.clientHeight) >= (el.scrollHeight - 4);
+      el.textContent += e.data + '\n';
+      if (atBottom) { el.scrollTop = el.scrollHeight; }
+    });
+    es.addEventListener('err', function (e) {
+      es.close();
+      el.textContent = e.data;
+      indicator.textContent = 'unavailable';
+    });
+    es.addEventListener('done', function () {
+      es.close();
+      indicator.textContent = 'stopped';
+    });
+    es.onerror = function () { indicator.textContent = 'disconnected'; };
+  }
+
+  if (svcSel) { svcSel.addEventListener('change', open); }
+  tailSel.addEventListener('change', open);
+  open();
+})();
+</script>
 
 <section class="panel">
   <h2 class="panel-title">Deploy settings</h2>
   <form method="post" action="/apps/{{.App.ID}}/settings" class="grid-form">
     <label class="field"><span>Source</span><input type="text" value="{{.App.Source}}" disabled></label>
     <label class="field"><span>Branch</span><input type="text" name="branch" value="{{.App.Branch}}"></label>
+    {{if eq .App.Kind "compose"}}
+    <label class="field"><span>Compose file</span><input type="text" name="compose_path" value="{{.App.ComposePath}}"></label>
+    {{end}}
     <label class="field-check"><input type="checkbox" name="auto_deploy" {{if .App.AutoDeploy}}checked{{end}}> <span>Auto-deploy on push</span></label>
+    <label class="field field-wide">
+      <span>Watch paths</span>
+      <textarea name="watch_paths" rows="3" placeholder="src/**&#10;package.json">{{joinLines .App.WatchPaths}}</textarea>
+    </label>
     <button type="submit" class="btn">Save</button>
   </form>
+  <p class="muted env-note">Watch paths: one glob per line (<span class="mono">*</span> within a folder, <span class="mono">**</span> across folders). When set, a push only auto-deploys if it changed a matching file; leave empty to deploy on every push to the branch.</p>
 </section>
 
 <section class="panel">
@@ -90,7 +259,7 @@
     <label class="field"><span>Secret</span><input type="checkbox" name="secret"></label>
     <button type="submit" class="btn btn-primary">Add</button>
   </form>
-  <p class="muted env-note">Redeploy to apply env changes.</p>
+  <p class="muted env-note">Values may reference the project's shared variables as <span class="mono">{{"${{project.KEY}}"}}</span>, resolved on deploy. Redeploy to apply env changes.</p>
 </section>
 
 <section class="panel">
@@ -103,11 +272,18 @@
     <tbody>
       {{range .Deployments}}
       <tr>
-        <td class="mono">{{.ID}}</td>
+        <td class="mono">{{.ID}}{{if .RollbackOf}} <span class="muted" title="reused the image built by deployment #{{.RollbackOf}}">↩ #{{.RollbackOf}}</span>{{end}}</td>
         <td><span class="badge {{stateClass .Status}}">{{.Status}}</span></td>
         <td class="mono muted">{{fmtTime .CreatedAt}}</td>
         <td class="mono muted">{{buildDur .}}</td>
-        <td><a href="/deployments/{{.ID}}" class="rowlink">logs →</a></td>
+        <td class="row-actions">
+          {{if and .Status.IsTerminal .Image (ne $.App.Kind "compose")}}
+          <form method="post" action="/deployments/{{.ID}}/rollback" class="inline" onsubmit="return confirm('Roll back {{$.App.Name}} to the image built by deployment #{{.ID}}? Current env vars and domain settings will apply.');">
+            <button type="submit" class="btn btn-quiet">Rollback</button>
+          </form>
+          {{end}}
+          <a href="/deployments/{{.ID}}" class="rowlink">logs →</a>
+        </td>
       </tr>
       {{end}}
     </tbody>

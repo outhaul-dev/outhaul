@@ -2,6 +2,7 @@
 <div class="pagehead"><h1>Settings</h1></div>
 
 {{if .Notice}}<div class="alert alert-success">{{.Notice}}</div>{{end}}
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 
 <section class="panel">
   <h2 class="panel-title">GitHub App</h2>
@@ -14,6 +15,41 @@
   {{else}}
   <p><a href="/github/connect">Connect a GitHub App</a> to deploy private GitHub repos and auto-deploy on push.</p>
   {{end}}
+</section>
+
+<section class="panel">
+  <h2 class="panel-title">Backup destinations</h2>
+  {{if .Destinations}}
+  <table class="table">
+    <thead><tr><th>Name</th><th>Endpoint</th><th>Bucket</th><th>Region</th><th></th></tr></thead>
+    <tbody>
+      {{range .Destinations}}
+      <tr>
+        <td class="mono">{{.Name}}</td>
+        <td class="mono muted truncate">{{.Endpoint}}</td>
+        <td class="mono muted">{{.Bucket}}</td>
+        <td class="mono muted">{{if .Region}}{{.Region}}{{else}}—{{end}}</td>
+        <td class="row-actions">
+          <form method="post" action="/settings/destinations/{{.ID}}/test" class="inline"><button type="submit" class="btn btn-quiet">Test</button></form>
+          <form method="post" action="/settings/destinations/{{.ID}}/delete" class="inline"><button type="submit" class="linkbtn">remove</button></form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No destinations. Add an S3-compatible bucket (AWS S3, MinIO, R2, B2, Wasabi, …) to enable backups.</p>
+  {{end}}
+  <form method="post" action="/settings/destinations" class="grid-form env-add">
+    <label class="field"><span>Name</span><input type="text" name="name" placeholder="minio" required></label>
+    <label class="field"><span>Endpoint</span><input type="text" name="endpoint" placeholder="https://s3.eu-west-2.amazonaws.com" required></label>
+    <label class="field"><span>Region (optional)</span><input type="text" name="region" placeholder="eu-west-2"></label>
+    <label class="field"><span>Bucket</span><input type="text" name="bucket" placeholder="outhaul-backups" required></label>
+    <label class="field"><span>Access key</span><input type="text" name="access_key" required></label>
+    <label class="field"><span>Secret key</span><input type="password" name="secret_key" autocomplete="off" required></label>
+    <button type="submit" class="btn btn-primary">Add destination</button>
+  </form>
+  <p class="muted env-note">The secret key is stored encrypted at rest. Addressing is path-style, which every S3-compatible service accepts; Test writes and deletes a small probe object.</p>
 </section>
 
 <section class="panel">

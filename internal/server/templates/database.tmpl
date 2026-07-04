@@ -1,0 +1,106 @@
+{{define "content"}}
+<div class="pagehead">
+  <div>
+    <div class="crumbs"><a href="/projects">Projects</a> / <a href="/projects/{{.Project.ID}}">{{.Project.Name}}</a> / {{.Database.Name}}</div>
+    <h1>{{.Database.Name}} <span class="badge">{{.Database.Engine}}</span></h1>
+  </div>
+  <div class="pagehead-actions">
+    <span class="badge {{dbStateClass .Database.Status}}">{{.Database.Status}}</span>
+    {{if eq .Database.Status "stopped"}}
+    <form method="post" action="/databases/{{.Database.ID}}/start" class="inline"><button type="submit" class="btn">Start</button></form>
+    {{else if eq .Database.Status "running"}}
+    <form method="post" action="/databases/{{.Database.ID}}/stop" class="inline"><button type="submit" class="btn">Stop</button></form>
+    {{end}}
+    <form method="post" action="/databases/{{.Database.ID}}/delete" class="inline" onsubmit="return confirm('Delete database {{.Database.Name}}? Its container AND ALL STORED DATA will be permanently removed.');"><button type="submit" class="btn btn-danger">Delete</button></form>
+  </div>
+</div>
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+{{if eq .Database.Status "failed"}}<div class="alert alert-error">Provisioning failed: {{.Database.Reason}}. Fix the cause, then re-apply settings below to retry.</div>{{end}}
+
+<section class="panel">
+  <dl class="meta">
+    <div><dt>Image</dt><dd class="mono">{{.Database.Image}}</dd></div>
+    <div><dt>Container</dt><dd><span class="badge state-{{if eq .ContainerState "running"}}running{{else}}stopped{{end}}">{{.ContainerState}}</span></dd></div>
+    <div><dt>External port</dt><dd class="mono">{{if .Database.ExtPort}}{{.Database.ExtPort}}{{else}}— internal only{{end}}</dd></div>
+    <div><dt>Created</dt><dd>{{fmtTime .Database.CreatedAt}}</dd></div>
+  </dl>
+</section>
+
+<section class="panel">
+  <h2 class="panel-title">Connection</h2>
+  <p class="env-note">From apps on this server (internal, over the shared Docker network):</p>
+  <div class="cmd"><code>{{.InternalURL}}</code></div>
+  {{if .ExternalURL}}
+  <p class="env-note">From outside (published on host port {{.Database.ExtPort}} — the hostname below is the address you reached this UI on; substitute the server's public address if it differs):</p>
+  <div class="cmd"><code>{{.ExternalURL}}</code></div>
+  {{end}}
+  <p class="muted env-note">Tip: add the internal URL as a shared variable on the <a href="/projects/{{.Project.ID}}">project</a> (e.g. <span class="mono">{{.EnvExample}}</span>) and reference it from apps as <span class="mono">{{printf "${{project.%s}}" .EnvExample}}</span>.</p>
+</section>
+
+<section class="panel">
+  <div class="log-head">
+    <h2 class="panel-title">Runtime logs</h2>
+    <div class="log-controls">
+      <select id="log-tail" title="Lines to tail">
+        <option value="100">100 lines</option>
+        <option value="500">500 lines</option>
+        <option value="1000">1000 lines</option>
+        <option value="5000">5000 lines</option>
+      </select>
+      <span class="log-status" id="runtime-indicator">connecting…</span>
+    </div>
+  </div>
+  <pre class="log" id="runtime-log" data-id="{{.Database.ID}}"></pre>
+</section>
+
+<script>
+(function () {
+  var el = document.getElementById('runtime-log');
+  var indicator = document.getElementById('runtime-indicator');
+  var tailSel = document.getElementById('log-tail');
+  var id = el.getAttribute('data-id');
+  var es = null;
+
+  function open() {
+    if (es) { es.close(); }
+    el.textContent = '';
+    indicator.textContent = 'connecting…';
+    es = new EventSource('/databases/' + id + '/logs?tail=' + tailSel.value);
+    es.onopen = function () { indicator.textContent = 'streaming…'; };
+    es.addEventListener('log', function (e) {
+      var atBottom = (el.scrollTop + el.clientHeight) >= (el.scrollHeight - 4);
+      el.textContent += e.data + '\n';
+      if (atBottom) { el.scrollTop = el.scrollHeight; }
+    });
+    es.addEventListener('err', function (e) {
+      es.close();
+      el.textContent = e.data;
+      indicator.textContent = 'unavailable';
+    });
+    es.addEventListener('done', function () {
+      es.close();
+      indicator.textContent = 'stopped';
+    });
+    es.onerror = function () { indicator.textContent = 'disconnected'; };
+  }
+
+  tailSel.addEventListener('change', open);
+  open();
+})();
+</script>
+
+{{if ne .Database.Engine "redis"}}{{template "backups" .}}{{end}}
+
+<section class="panel">
+  <h2 class="panel-title">Settings</h2>
+  <form method="post" action="/databases/{{.Database.ID}}/settings" class="grid-form">
+    <label class="field">
+      <span>External port</span>
+      <input type="text" name="external_port" value="{{if .Database.ExtPort}}{{.Database.ExtPort}}{{end}}" placeholder="empty = internal only" inputmode="numeric">
+    </label>
+    <button type="submit" class="btn">Apply</button>
+  </form>
+  <p class="muted env-note">Applying recreates the container with the new port mapping — data is kept (it lives outside the container). This is also how to retry after a failed provision.</p>
+</section>
+{{end}}

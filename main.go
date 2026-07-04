@@ -13,8 +13,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/slipwaydev/slipway/internal/backup"
 	"github.com/slipwaydev/slipway/internal/builder"
+	"github.com/slipwaydev/slipway/internal/compose"
 	"github.com/slipwaydev/slipway/internal/config"
+	"github.com/slipwaydev/slipway/internal/dbaas"
 	"github.com/slipwaydev/slipway/internal/deploy"
 	"github.com/slipwaydev/slipway/internal/docker"
 	"github.com/slipwaydev/slipway/internal/github"
@@ -72,6 +75,11 @@ func serve() error {
 	} else if n > 0 {
 		log.Printf("recovered %d interrupted deployment(s) as failed", n)
 	}
+	if n, err := st.RecoverCreatingDatabases(context.Background(), "interrupted by restart"); err != nil {
+		return fmt.Errorf("crash recovery: %w", err)
+	} else if n > 0 {
+		log.Printf("recovered %d interrupted database provision(s) as failed", n)
+	}
 
 	// Docker client. Not fatal if unreachable: the admin UI (and first-boot
 	// setup) should still come up so the operator can see what's wrong.
@@ -87,7 +95,7 @@ func serve() error {
 
 	// Background worker.
 	broker := logstream.New()
-	worker := deploy.NewWorker(st, dc, builder.NewNixpacks(), deploy.NewGit(), broker, ghClient, cfg)
+	worker := deploy.NewWorker(st, dc, builder.NewNixpacks(), compose.NewDocker(), deploy.NewGit(), broker, ghClient, cfg)
 
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	workerDone := make(chan struct{})
@@ -96,9 +104,16 @@ func serve() error {
 		close(workerDone)
 	}()
 
+	// Database manager (databases-as-a-service).
+	dbm := dbaas.NewManager(st, dc, cfg.Network, cfg.DatabasesDir())
+
+	// Backup scheduler (dumps + volume tarballs to S3-compatible storage).
+	backups := backup.NewManager(st, dc, cfg.WorkDir())
+	go backups.Run(workerCtx)
+
 	// HTTP server.
 	setupToken := server.NewToken()
-	srv, err := server.New(st, worker, dc, broker, ghClient, cfg.PublicURL, setupToken)
+	srv, err := server.New(st, worker, dc, compose.NewDocker(), dbm, backups, broker, ghClient, cfg.PublicURL, setupToken)
 	if err != nil {
 		stopWorker()
 		return fmt.Errorf("build server: %w", err)

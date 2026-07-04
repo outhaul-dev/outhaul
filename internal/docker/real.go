@@ -2,15 +2,22 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
 )
 
@@ -92,6 +99,26 @@ func (r *real) FindContainer(ctx context.Context, name string) (*Container, erro
 	return nil, nil
 }
 
+func (r *real) ListContainers(ctx context.Context, match map[string]string) ([]Container, error) {
+	args := filters.NewArgs()
+	for k, v := range match {
+		args.Add("label", k+"="+v)
+	}
+	list, err := r.cli.ContainerList(ctx, container.ListOptions{All: true, Filters: args})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Container, 0, len(list))
+	for _, c := range list {
+		name := ""
+		if len(c.Names) > 0 {
+			name = strings.TrimPrefix(c.Names[0], "/")
+		}
+		out = append(out, Container{ID: c.ID, Name: name, Image: c.Image, State: c.State, Labels: c.Labels})
+	}
+	return out, nil
+}
+
 func (r *real) ContainerIP(ctx context.Context, id, network string) (string, error) {
 	info, err := r.cli.ContainerInspect(ctx, id)
 	if err != nil {
@@ -104,6 +131,93 @@ func (r *real) ContainerIP(ctx context.Context, id, network string) (string, err
 		return ep.IPAddress, nil
 	}
 	return "", nil
+}
+
+func (r *real) ContainerLogs(ctx context.Context, id string, tail int) (io.ReadCloser, error) {
+	info, err := r.cli.ContainerInspect(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	rc, err := r.cli.ContainerLogs(ctx, id, container.LogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Follow:     true,
+		Tail:       strconv.Itoa(tail),
+	})
+	if err != nil {
+		return nil, err
+	}
+	// TTY containers produce a raw stream; everything else is multiplexed with
+	// 8-byte frame headers that must be stripped.
+	if info.Config != nil && info.Config.Tty {
+		return rc, nil
+	}
+	pr, pw := io.Pipe()
+	go func() {
+		_, err := stdcopy.StdCopy(pw, pw, rc)
+		pw.CloseWithError(err)
+	}()
+	return &demuxedLogs{PipeReader: pr, src: rc}, nil
+}
+
+// demuxedLogs closes the underlying Docker stream alongside the pipe, which
+// unblocks the demux goroutine when the consumer walks away.
+type demuxedLogs struct {
+	*io.PipeReader
+	src io.Closer
+}
+
+func (d *demuxedLogs) Close() error {
+	d.src.Close()
+	return d.PipeReader.Close()
+}
+
+func (r *real) ContainerStats(ctx context.Context, id string) (Stats, error) {
+	resp, err := r.cli.ContainerStats(ctx, id, false)
+	if err != nil {
+		return Stats{}, err
+	}
+	defer resp.Body.Close()
+	var raw container.StatsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		return Stats{}, fmt.Errorf("decode stats: %w", err)
+	}
+	s := statsFromAPI(raw)
+	if info, err := r.cli.ContainerInspect(ctx, id); err == nil && info.State != nil {
+		if t, err := time.Parse(time.RFC3339Nano, info.State.StartedAt); err == nil {
+			s.StartedAt = t
+		}
+	}
+	return s, nil
+}
+
+// statsFromAPI reduces Docker's raw stats sample the way the docker CLI does.
+func statsFromAPI(raw container.StatsResponse) Stats {
+	var s Stats
+	cpuDelta := float64(raw.CPUStats.CPUUsage.TotalUsage) - float64(raw.PreCPUStats.CPUUsage.TotalUsage)
+	sysDelta := float64(raw.CPUStats.SystemUsage) - float64(raw.PreCPUStats.SystemUsage)
+	online := float64(raw.CPUStats.OnlineCPUs)
+	if online == 0 {
+		online = float64(len(raw.CPUStats.CPUUsage.PercpuUsage))
+	}
+	if cpuDelta > 0 && sysDelta > 0 {
+		s.CPUPercent = cpuDelta / sysDelta * online * 100
+	}
+	// Usage includes reclaimable page cache; subtract it (cgroup v1 names the
+	// counter total_inactive_file, v2 names it inactive_file).
+	mem := raw.MemoryStats.Usage
+	if v, ok := raw.MemoryStats.Stats["total_inactive_file"]; ok && v < mem {
+		mem -= v
+	} else if v, ok := raw.MemoryStats.Stats["inactive_file"]; ok && v < mem {
+		mem -= v
+	}
+	s.MemUsage = mem
+	s.MemLimit = raw.MemoryStats.Limit
+	for _, n := range raw.Networks {
+		s.NetRx += n.RxBytes
+		s.NetTx += n.TxBytes
+	}
+	return s
 }
 
 func (r *real) CreateContainer(ctx context.Context, spec ContainerSpec) (string, error) {
@@ -123,6 +237,7 @@ func (r *real) CreateContainer(ctx context.Context, spec ContainerSpec) (string,
 	host := &container.HostConfig{
 		PortBindings: bindings,
 		Binds:        bindMounts(spec.Mounts),
+		Mounts:       volumeMounts(spec.Mounts),
 	}
 	if spec.RestartPolicy != "" {
 		host.RestartPolicy = container.RestartPolicy{
@@ -184,11 +299,11 @@ func portConfig(ports []PortMapping) (nat.PortSet, nat.PortMap, error) {
 }
 
 func bindMounts(mounts []Mount) []string {
-	if len(mounts) == 0 {
-		return nil
-	}
-	binds := make([]string, 0, len(mounts))
+	var binds []string
 	for _, m := range mounts {
+		if m.Volume {
+			continue // named volumes go through the Mounts API
+		}
 		b := m.Source + ":" + m.Target
 		if m.ReadOnly {
 			b += ":ro"
@@ -196,4 +311,111 @@ func bindMounts(mounts []Mount) []string {
 		binds = append(binds, b)
 	}
 	return binds
+}
+
+func volumeMounts(mounts []Mount) []mount.Mount {
+	var vols []mount.Mount
+	for _, m := range mounts {
+		if !m.Volume {
+			continue
+		}
+		vols = append(vols, mount.Mount{
+			Type:     mount.TypeVolume,
+			Source:   m.Source,
+			Target:   m.Target,
+			ReadOnly: m.ReadOnly,
+		})
+	}
+	return vols
+}
+
+func (r *real) ExecContainer(ctx context.Context, id string, cmd, env []string, stdout, stderr io.Writer) (int, error) {
+	exec, err := r.cli.ContainerExecCreate(ctx, id, container.ExecOptions{
+		Cmd:          cmd,
+		Env:          env,
+		AttachStdout: true,
+		AttachStderr: true,
+	})
+	if err != nil {
+		return 0, err
+	}
+	resp, err := r.cli.ContainerExecAttach(ctx, exec.ID, container.ExecAttachOptions{})
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Close()
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	if _, err := stdcopy.StdCopy(stdout, stderr, resp.Reader); err != nil {
+		return 0, err
+	}
+	info, err := r.cli.ContainerExecInspect(ctx, exec.ID)
+	if err != nil {
+		return 0, err
+	}
+	return info.ExitCode, nil
+}
+
+func (r *real) ListVolumes(ctx context.Context, match map[string]string) ([]string, error) {
+	args := filters.NewArgs()
+	for k, v := range match {
+		args.Add("label", k+"="+v)
+	}
+	resp, err := r.cli.VolumeList(ctx, volume.ListOptions{Filters: args})
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(resp.Volumes))
+	for _, v := range resp.Volumes {
+		names = append(names, v.Name)
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+func (r *real) RunContainer(ctx context.Context, spec ContainerSpec, stdout, stderr io.Writer) (int, error) {
+	id, err := r.CreateContainer(ctx, spec)
+	if err != nil {
+		return 0, err
+	}
+	// Best-effort cleanup even on the error paths below.
+	defer r.cli.ContainerRemove(context.WithoutCancel(ctx), id, container.RemoveOptions{Force: true})
+
+	// Attach before starting so no output is lost.
+	att, err := r.cli.ContainerAttach(ctx, id, container.AttachOptions{
+		Stream: true, Stdout: true, Stderr: true,
+	})
+	if err != nil {
+		return 0, err
+	}
+	defer att.Close()
+
+	waitC, errC := r.cli.ContainerWait(ctx, id, container.WaitConditionNextExit)
+	if err := r.cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
+		return 0, err
+	}
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	if _, err := stdcopy.StdCopy(stdout, stderr, att.Reader); err != nil {
+		return 0, err
+	}
+	select {
+	case res := <-waitC:
+		if res.Error != nil {
+			return 0, fmt.Errorf("wait: %s", res.Error.Message)
+		}
+		return int(res.StatusCode), nil
+	case err := <-errC:
+		return 0, err
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	}
 }

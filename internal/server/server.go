@@ -9,12 +9,15 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"html/template"
+	"io"
 	"io/fs"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/slipwaydev/slipway/internal/compose"
 	"github.com/slipwaydev/slipway/internal/core"
 	"github.com/slipwaydev/slipway/internal/docker"
 	"github.com/slipwaydev/slipway/internal/github"
@@ -28,21 +31,43 @@ type Deployer interface {
 	Cancel(ctx context.Context, id int64) (bool, error)
 }
 
+// Databases is the slice of the dbaas manager the server needs. Provision is
+// asynchronous (it can pull an image); the rest are immediate.
+type Databases interface {
+	Provision(d core.Database)
+	Start(ctx context.Context, d core.Database) error
+	Stop(ctx context.Context, d core.Database) error
+	Remove(ctx context.Context, d core.Database) error
+}
+
+// Backups is the slice of the backup manager the server needs. RunNow is
+// asynchronous; TestDestination is a synchronous probe.
+type Backups interface {
+	RunNow(b core.Backup)
+	TestDestination(ctx context.Context, d core.Destination) error
+}
+
 // Runtime is the slice of the Docker client the server needs for app lifecycle.
 type Runtime interface {
 	FindContainer(ctx context.Context, name string) (*docker.Container, error)
+	ListContainers(ctx context.Context, match map[string]string) ([]docker.Container, error)
 	StartContainer(ctx context.Context, id string) error
 	StopContainer(ctx context.Context, id string, timeout time.Duration) error
 	RemoveContainer(ctx context.Context, id string, force bool) error
+	ContainerLogs(ctx context.Context, id string, tail int) (io.ReadCloser, error)
+	ContainerStats(ctx context.Context, id string) (docker.Stats, error)
 }
 
 // Server holds the HTTP layer's dependencies.
 type Server struct {
-	store    *store.Store
-	deployer Deployer
-	runtime  Runtime
-	broker   *logstream.Broker
-	gh       github.Client
+	store     *store.Store
+	deployer  Deployer
+	runtime   Runtime
+	compose   compose.Runner
+	databases Databases
+	backups   Backups
+	broker    *logstream.Broker
+	gh        github.Client
 
 	pages      map[string]*template.Template
 	setupToken string
@@ -57,11 +82,14 @@ type Server struct {
 // first-boot admin-creation flow (printed by the caller as a one-time URL).
 // publicURL is Slipway's externally reachable base URL, used to build the
 // GitHub App manifest's callback and webhook URLs.
-func New(st *store.Store, d Deployer, rt Runtime, br *logstream.Broker, gh github.Client, publicURL, setupToken string) (*Server, error) {
+func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databases, bk Backups, br *logstream.Broker, gh github.Client, publicURL, setupToken string) (*Server, error) {
 	s := &Server{
 		store:       st,
 		deployer:    d,
 		runtime:     rt,
+		compose:     cp,
+		databases:   dbm,
+		backups:     bk,
 		broker:      br,
 		gh:          gh,
 		publicURL:   publicURL,
@@ -77,13 +105,13 @@ func New(st *store.Store, d Deployer, rt Runtime, br *logstream.Broker, gh githu
 // parseTemplates builds one template set per page, each combining base.tmpl with
 // the page template (so every page can define its own "content" block).
 func (s *Server) parseTemplates() error {
-	pages := []string{"login", "setup", "overview", "projects", "project", "apps", "app", "deployment", "deployments", "github_connect", "settings", "placeholder"}
+	pages := []string{"login", "setup", "overview", "projects", "project", "apps", "app", "database", "deployment", "deployments", "github_connect", "settings", "placeholder"}
 	s.pages = make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.New("base").Funcs(templateFuncs())
 		// appform.tmpl is a shared partial (the create-app form, used by the
 		// Apps and project-detail pages); parsing it into every set is harmless.
-		t, err := t.ParseFS(templatesFS, "templates/base.tmpl", "templates/appform.tmpl", "templates/"+p+".tmpl")
+		t, err := t.ParseFS(templatesFS, "templates/base.tmpl", "templates/appform.tmpl", "templates/backups.tmpl", "templates/"+p+".tmpl")
 		if err != nil {
 			return err
 		}
@@ -115,12 +143,25 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /projects", s.requireAuth(s.handleCreateProject))
 	mux.HandleFunc("GET /projects/{id}", s.requireAuth(s.handleProjectDetail))
 	mux.HandleFunc("POST /projects/{id}/settings", s.requireAuth(s.handleProjectSettings))
+	mux.HandleFunc("POST /projects/{id}/env", s.requireAuth(s.handleSetProjectEnv))
+	mux.HandleFunc("POST /projects/{id}/env/delete", s.requireAuth(s.handleDeleteProjectEnv))
 	mux.HandleFunc("POST /projects/{id}/delete", s.requireAuth(s.handleDeleteProject))
+	mux.HandleFunc("POST /projects/{id}/databases", s.requireAuth(s.handleCreateDatabase))
+	mux.HandleFunc("GET /databases/{id}", s.requireAuth(s.handleDatabaseDetail))
+	mux.HandleFunc("GET /databases/{id}/logs", s.requireAuth(s.handleDatabaseLogsSSE))
+	mux.HandleFunc("POST /databases/{id}/start", s.requireAuth(s.handleStartDatabase))
+	mux.HandleFunc("POST /databases/{id}/stop", s.requireAuth(s.handleStopDatabase))
+	mux.HandleFunc("POST /databases/{id}/settings", s.requireAuth(s.handleDatabaseSettings))
+	mux.HandleFunc("POST /databases/{id}/delete", s.requireAuth(s.handleDeleteDatabase))
 	mux.HandleFunc("GET /apps", s.requireAuth(s.handleAppsList))
 	mux.HandleFunc("POST /apps", s.requireAuth(s.handleCreateApp))
 	mux.HandleFunc("GET /apps/{id}", s.requireAuth(s.handleAppDetail))
+	mux.HandleFunc("GET /apps/{id}/logs", s.requireAuth(s.handleRuntimeLogsSSE))
+	mux.HandleFunc("GET /apps/{id}/stats", s.requireAuth(s.handleAppStats))
 	mux.HandleFunc("POST /apps/{id}/deploy", s.requireAuth(s.handleDeploy))
 	mux.HandleFunc("POST /apps/{id}/settings", s.requireAuth(s.handleAppSettings))
+	mux.HandleFunc("POST /apps/{id}/domains", s.requireAuth(s.handleAddComposeDomain))
+	mux.HandleFunc("POST /apps/{id}/domains/{domainID}/delete", s.requireAuth(s.handleDeleteComposeDomain))
 	mux.HandleFunc("POST /apps/{id}/env", s.requireAuth(s.handleSetEnv))
 	mux.HandleFunc("POST /apps/{id}/env/delete", s.requireAuth(s.handleDeleteEnv))
 	mux.HandleFunc("POST /apps/{id}/stop", s.requireAuth(s.handleStopApp))
@@ -130,9 +171,18 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /deployments/{id}", s.requireAuth(s.handleDeploymentDetail))
 	mux.HandleFunc("GET /deployments/{id}/logs", s.requireAuth(s.handleLogsSSE))
 	mux.HandleFunc("POST /deployments/{id}/cancel", s.requireAuth(s.handleCancel))
+	mux.HandleFunc("POST /deployments/{id}/rollback", s.requireAuth(s.handleRollback))
+
+	mux.HandleFunc("POST /backups", s.requireAuth(s.handleCreateBackup))
+	mux.HandleFunc("POST /backups/{id}/run", s.requireAuth(s.handleRunBackup))
+	mux.HandleFunc("POST /backups/{id}/toggle", s.requireAuth(s.handleToggleBackup))
+	mux.HandleFunc("POST /backups/{id}/delete", s.requireAuth(s.handleDeleteBackup))
 
 	mux.HandleFunc("GET /settings", s.requireAuth(s.handleSettings))
 	mux.HandleFunc("POST /settings/password", s.requireAuth(s.handleChangePassword))
+	mux.HandleFunc("POST /settings/destinations", s.requireAuth(s.handleCreateDestination))
+	mux.HandleFunc("POST /settings/destinations/{id}/test", s.requireAuth(s.handleTestDestination))
+	mux.HandleFunc("POST /settings/destinations/{id}/delete", s.requireAuth(s.handleDeleteDestination))
 
 	mux.HandleFunc("GET /github/connect", s.requireAuth(s.handleGithubConnect))
 	// callback and setup are called by GitHub directly (no session cookie); the
@@ -171,6 +221,33 @@ func templateFuncs() template.FuncMap {
 	return template.FuncMap{
 		// stateClass maps a deployment status to its CSS class.
 		"stateClass": func(s core.DeployStatus) string { return "state-" + string(s) },
+		// dbStateClass maps a database status onto the deployment state colors.
+		"dbStateClass": func(s string) string {
+			if s == core.DBCreating {
+				return "state-building" // in-progress color
+			}
+			return "state-" + s
+		},
+		// runStateClass maps a backup-run status onto the same colors.
+		"runStateClass": func(s string) string {
+			switch s {
+			case core.RunOK:
+				return "state-running"
+			case core.RunRunning:
+				return "state-building"
+			default:
+				return "state-failed"
+			}
+		},
+		// fmtSize renders a byte count human-readably.
+		"fmtSize": func(n int64) string {
+			if n <= 0 {
+				return "—"
+			}
+			return fmtBytes(uint64(n))
+		},
+		// joinLines renders a list one-per-line (the watch-paths textarea).
+		"joinLines": func(ss []string) string { return strings.Join(ss, "\n") },
 		"fmtTime": func(t time.Time) string {
 			if t.IsZero() {
 				return "—"
