@@ -56,6 +56,7 @@ type Runtime interface {
 	RemoveContainer(ctx context.Context, id string, force bool) error
 	ContainerLogs(ctx context.Context, id string, tail int) (io.ReadCloser, error)
 	ContainerStats(ctx context.Context, id string) (docker.Stats, error)
+	RemoveImage(ctx context.Context, ref string) error
 }
 
 // Server holds the HTTP layer's dependencies.

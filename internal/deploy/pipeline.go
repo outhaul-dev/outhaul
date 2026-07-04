@@ -169,6 +169,15 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 	if _, err := w.store.SetStatus(context.Background(), dep.ID, core.StatusDeploying, core.StatusRunning, ""); err != nil {
 		logf(out, "WARNING: could not record running status: %v", err)
 	}
+
+	// Retention: trim this app's old images now that a new one shipped. A
+	// failure never fails the deploy — the daily sweep retries.
+	if w.pruner != nil {
+		if err := w.pruner.PruneApp(ctx, app, out); err != nil {
+			logf(out, "WARNING: pruning old images failed: %v", err)
+		}
+	}
+
 	logf(out, "Done. %s is live at http://%s", app.Name, app.Domain)
 }
 

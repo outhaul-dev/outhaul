@@ -28,7 +28,10 @@ Outhaul is a deliberately minimal alternative to Dokploy/Coolify.
 > apps over the internal network (and optionally on a published host port).
 > **Scheduled backups** ship database dumps and compose stacks' named volumes
 > to any S3-compatible bucket (AWS, MinIO, R2, B2, …) on cron schedules with
-> retention, run history, and one-click manual runs. See
+> retention, run history, and one-click manual runs. **Disk cleanup** keeps a
+> long-running host healthy: the newest builds per app stay on disk for
+> rollback (`OUTHAUL_IMAGE_KEEP`, default 5) and a nightly sweep reclaims
+> older images, dangling layers, and stale build cache. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and what is intentionally
 > not built yet (multiple users, backup restore UI, metrics history/alerts,
 > multi-server).
@@ -103,6 +106,7 @@ No config files — defaults with `OUTHAUL_*` environment overrides:
 | `OUTHAUL_ACME_STAGING`  | `false`              | Use the LE staging CA (testing)            |
 | `OUTHAUL_HTTPS_PORT`    | `443`                | Host port for HTTPS                        |
 | `OUTHAUL_HEALTH_TIMEOUT`| `60s`                | Deploy health-check deadline               |
+| `OUTHAUL_IMAGE_KEEP`    | `5`                  | Built images kept per app for rollback (`0` keeps all) |
 | `OUTHAUL_PUBLIC_URL`    | (empty)              | Public base URL of the admin UI; enables GitHub App + webhook URLs |
 
 Apps are expected to listen on `$PORT` (Outhaul sets it and points Traefik at it).

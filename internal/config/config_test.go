@@ -26,6 +26,33 @@ func TestLoadDefaults(t *testing.T) {
 	if c.Network != "outhaul" {
 		t.Errorf("Network = %q, want outhaul", c.Network)
 	}
+	if c.ImageKeep != 5 {
+		t.Errorf("ImageKeep = %d, want 5", c.ImageKeep)
+	}
+}
+
+func TestLoadImageKeep(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"", 5},     // default
+		{"0", 0},    // explicit disable
+		{"12", 12},  // override
+		{"-3", 5},   // negative falls back
+		{"lots", 5}, // garbage falls back
+	}
+	for _, tc := range cases {
+		c := Load(func(k string) string {
+			if k == "OUTHAUL_IMAGE_KEEP" {
+				return tc.in
+			}
+			return ""
+		})
+		if c.ImageKeep != tc.want {
+			t.Errorf("OUTHAUL_IMAGE_KEEP=%q -> %d, want %d", tc.in, c.ImageKeep, tc.want)
+		}
+	}
 }
 
 func TestLoadEnvOverrides(t *testing.T) {

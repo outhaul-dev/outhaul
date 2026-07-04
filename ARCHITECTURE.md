@@ -172,9 +172,11 @@ Every deployment row on the app page (and the deployment detail page) offers
 without the registry (design in `docs/superpowers/specs/2026-07-04-rollback.md`).
 Dokploy tags and pushes each deploy's image to a configured registry and links
 the deployment record to the tag; Outhaul already tags every nixpacks build
-`outhaul/<app>:<depID>`, records it on the row, and never prunes images, so
-the rollback material is on the host — single-server means a registry buys
-nothing. A rollback is an ordinary deployment enqueued with the source's
+`outhaul/<app>:<depID>` and records it on the row, so the rollback material is
+on the host — single-server means a registry buys nothing. Image retention
+(below) bounds how far back that material goes: the newest `OUTHAUL_IMAGE_KEEP`
+images per app stay rollback-able, older rows show "image pruned" instead of
+the button. A rollback is an ordinary deployment enqueued with the source's
 image and `rollback_of` pre-set (`POST /deployments/{id}/rollback`); the
 pipeline sees the pre-set image and skips clone+build, then shares everything
 downstream — health-gated blue-green cutover, cancel, crash recovery, per-app
@@ -186,7 +188,7 @@ per-deployment image handle — matching Dokploy's own limitation, and the
 existing Deploy button is the "redeploy" (rebuild the branch head,
 health-gated). Dokploy's Swarm-based auto-rollback has no equivalent because
 it isn't needed: a failed deploy never touches the live container. Per-deploy
-config snapshots and image retention/cleanup are deliberate seams.
+config snapshots are a deliberate seam.
 
 ### Databases as a service (done)
 
@@ -256,6 +258,43 @@ history table (capped at 20 rows per schedule) shown on the target's page
 next to Run-now/pause/remove; destinations have a Test button that writes and
 deletes a probe object. Deliberate seams: restore UI, multipart uploads,
 stop-during-tar consistency locks, non-S3 destinations.
+
+### Disk cleanup: image retention, dangling images, build cache (done)
+
+Left alone, a PaaS host fills its disk: every nixpacks deploy keeps its
+`outhaul/<app>:<depID>` tag forever (that is what makes registry-less rollback
+work), compose rebuilds leave the old images dangling, BuildKit cache grows
+without bound, and deleting an app never deleted its images. Dokploy's answer
+is an opt-in daily `docker image prune -a --force` — indiscriminate, and
+survivable for them only because their rollbacks pull from a registry.
+Outhaul's rollbacks are local images, so `internal/prune` replaces the blanket
+prune with **deterministic per-app retention** driven by the deployments
+table (design in `docs/superpowers/specs/2026-07-04-image-cleanup.md`): keep
+the newest `OUTHAUL_IMAGE_KEEP` (default 5, 0 disables) **distinct** tags per
+app — distinct because rollback rows repeat older tags — plus anything an
+in-flight deployment references and the live image. Removed tags flag
+`image_pruned` on every row bearing them, which hides the Rollback button
+(a muted "image pruned" explains why) and makes the rollback handler reject
+stale requests; the `image` column keeps its value so history stays truthful.
+Removal never uses `--force`: an image Docker refuses to delete (in use)
+stays rollback-able and is retried by the next sweep.
+
+Retention runs right after each successful nixpacks deploy (logged into the
+deploy log) and in a daily 03:30 sweep (minute ticker + the in-house cron
+parser, like backups). The sweep also **reconciles** the `outhaul/*`
+namespace — any tag no unpruned row references is removed, which converges
+after partial failures and cleans pre-retention installs; tags of in-flight
+deployments are skipped to dodge the SetImage race — then prunes **dangling
+images only** (the safe subset of Dokploy's cleanup: never touches tagged
+images, so pulled `postgres:*`/`traefik:*` and compose job images survive),
+prunes **build cache** unused for 7 days (recent cache keeps rebuilds fast),
+and removes crash-leftover `work/dep-*` checkouts and day-old backup staging
+temps. Deleting an app now also best-effort removes its recorded images
+(nixpacks) or runs `compose down --rmi local` (compose); anything missed is
+the next sweep's reconciliation. The deploy worker calls the pruner through a
+one-method hook interface so `internal/prune` stays out of the pipeline's
+dependency graph. Deliberate seams: per-app retention overrides, a disk-usage
+gauge, a "prune now" button.
 
 Design decisions from M3: private-repo access goes through a **GitHub App**,
 set up via GitHub's manifest flow (the operator submits a pre-filled manifest,
@@ -363,6 +402,9 @@ outhaul/
 
     backup/                   # the backup scheduler/executor
         manager.go            # minute ticker -> cron match -> dump/tar -> upload -> prune
+
+    prune/                    # disk cleanup: per-app image retention + daily sweep
+        pruner.go             # retention window, orphan reconciliation, dangling/build-cache prunes
 
     deploy/                   # the worker/orchestrator — drives the state machine
         worker.go             # dispatcher loop: claim queued work, per-app serialization, concurrency across apps

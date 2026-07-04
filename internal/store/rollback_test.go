@@ -43,6 +43,59 @@ func TestCreateRollbackPresetsImage(t *testing.T) {
 	}
 }
 
+func TestMarkImagePrunedFlagsEveryRowSharingTheTag(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	app := mustApp(t, s, "web")
+
+	src, err := s.CreateDeployment(ctx, app.ID)
+	if err != nil {
+		t.Fatalf("CreateDeployment: %v", err)
+	}
+	if err := s.SetImage(ctx, src.ID, "outhaul/web:1"); err != nil {
+		t.Fatalf("SetImage: %v", err)
+	}
+	rb, err := s.CreateRollback(ctx, app.ID, "outhaul/web:1", src.ID)
+	if err != nil {
+		t.Fatalf("CreateRollback: %v", err)
+	}
+	other, err := s.CreateRollback(ctx, app.ID, "outhaul/web:2", src.ID)
+	if err != nil {
+		t.Fatalf("CreateRollback: %v", err)
+	}
+
+	if err := s.MarkImagePruned(ctx, "outhaul/web:1"); err != nil {
+		t.Fatalf("MarkImagePruned: %v", err)
+	}
+
+	// One tag on the host backs both rows: pruning it must flag both, and
+	// only rows bearing that tag.
+	for _, id := range []int64{src.ID, rb.ID} {
+		d, err := s.GetDeployment(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !d.ImagePruned {
+			t.Errorf("deployment %d shares the pruned tag and should be flagged", id)
+		}
+	}
+	d, err := s.GetDeployment(ctx, other.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.ImagePruned {
+		t.Error("a row with a different tag must not be flagged")
+	}
+
+	retained, err := s.RetainedImages(ctx)
+	if err != nil {
+		t.Fatalf("RetainedImages: %v", err)
+	}
+	if len(retained) != 1 || retained[0] != "outhaul/web:2" {
+		t.Errorf("RetainedImages = %v, want only the unpruned tag outhaul/web:2", retained)
+	}
+}
+
 func TestCreateDeploymentHasNoRollback(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

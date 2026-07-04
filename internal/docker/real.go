@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/docker/docker/api/types/build"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
@@ -272,6 +274,62 @@ func (r *real) StopContainer(ctx context.Context, id string, timeout time.Durati
 
 func (r *real) RemoveContainer(ctx context.Context, id string, force bool) error {
 	return r.cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: force})
+}
+
+func (r *real) ListImages(ctx context.Context, refPattern string) ([]string, error) {
+	list, err := r.cli.ImageList(ctx, image.ListOptions{
+		Filters: filters.NewArgs(filters.Arg("reference", refPattern)),
+	})
+	if err != nil {
+		return nil, err
+	}
+	var tags []string
+	for _, img := range list {
+		// The reference filter matches an image when ANY of its tags does;
+		// re-check per tag so an image also tagged outside the pattern does
+		// not leak foreign tags into the result.
+		for _, tag := range img.RepoTags {
+			if ok, err := path.Match(refPattern, tag); err == nil && ok {
+				tags = append(tags, tag)
+			} else if repo, _, found := strings.Cut(tag, ":"); found {
+				if ok, err := path.Match(refPattern, repo); err == nil && ok {
+					tags = append(tags, tag)
+				}
+			}
+		}
+	}
+	sort.Strings(tags)
+	return tags, nil
+}
+
+func (r *real) RemoveImage(ctx context.Context, ref string) error {
+	_, err := r.cli.ImageRemove(ctx, ref, image.RemoveOptions{PruneChildren: true})
+	if client.IsErrNotFound(err) {
+		return nil // already gone: that is the state we wanted
+	}
+	return err
+}
+
+func (r *real) PruneImages(ctx context.Context) (uint64, error) {
+	report, err := r.cli.ImagesPrune(ctx, filters.NewArgs(filters.Arg("dangling", "true")))
+	if err != nil {
+		return 0, err
+	}
+	return report.SpaceReclaimed, nil
+}
+
+func (r *real) PruneBuildCache(ctx context.Context, olderThan time.Duration) (uint64, error) {
+	report, err := r.cli.BuildCachePrune(ctx, build.CachePruneOptions{
+		All:     true, // "all" here means shared/internal cache too, still bounded by the filter
+		Filters: filters.NewArgs(filters.Arg("until", olderThan.String())),
+	})
+	if err != nil {
+		return 0, err
+	}
+	if report == nil {
+		return 0, nil
+	}
+	return report.SpaceReclaimed, nil
 }
 
 func (r *real) Close() error { return r.cli.Close() }

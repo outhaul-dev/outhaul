@@ -5,6 +5,7 @@ package config
 
 import (
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
@@ -24,6 +25,7 @@ type Config struct {
 	ACMEStaging   bool          // use the LE staging CA (avoid rate limits)
 	HTTPSPort     string        // host port for the websecure entrypoint
 	HealthTimeout time.Duration // deploy health-check deadline
+	ImageKeep     int           // built images kept per app; 0 disables pruning
 
 	PublicURL string // externally reachable base URL of the admin UI (for GitHub callbacks/webhooks); empty disables GitHub App setup
 }
@@ -45,6 +47,7 @@ func Load(getenv Getenv) Config {
 		ACMEStaging:   truthy(getenv("OUTHAUL_ACME_STAGING")),
 		HTTPSPort:     or(getenv("OUTHAUL_HTTPS_PORT"), "443"),
 		HealthTimeout: durationOr(getenv("OUTHAUL_HEALTH_TIMEOUT"), 60*time.Second),
+		ImageKeep:     intOr(getenv("OUTHAUL_IMAGE_KEEP"), 5),
 
 		PublicURL: getenv("OUTHAUL_PUBLIC_URL"),
 	}
@@ -89,6 +92,19 @@ func truthy(v string) bool {
 		return true
 	}
 	return false
+}
+
+// intOr parses v as a non-negative integer, falling back on empty, invalid,
+// or negative input.
+func intOr(v string, fallback int) int {
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return fallback
+	}
+	return n
 }
 
 func durationOr(v string, fallback time.Duration) time.Duration {

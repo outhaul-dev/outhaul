@@ -116,6 +116,44 @@ func TestRollbackRejectsUnbuiltDeployment(t *testing.T) {
 	}
 }
 
+func TestRollbackRejectsPrunedImage(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	app := seedRunningApp(t, e, "")
+	src := seedFinishedDeploy(t, e, app.ID, "outhaul/web:1")
+	if err := e.store.MarkImagePruned(context.Background(), src.Image); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := e.postForm(t, "/deployments/"+itoa(src.ID)+"/rollback", url.Values{})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	if got := body(t, resp); !strings.Contains(got, "pruned") {
+		t.Errorf("error should explain the image was pruned, got %q", got)
+	}
+}
+
+func TestPrunedDeploymentHidesRollbackButton(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	app := seedRunningApp(t, e, "")
+	src := seedFinishedDeploy(t, e, app.ID, "outhaul/web:1")
+	if err := e.store.MarkImagePruned(context.Background(), src.Image); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{"/apps/" + itoa(app.ID), "/deployments/" + itoa(src.ID)} {
+		page := body(t, e.get(t, path))
+		if strings.Contains(page, "/deployments/"+itoa(src.ID)+"/rollback") {
+			t.Errorf("%s: pruned deployment must not offer a Rollback action", path)
+		}
+		if !strings.Contains(page, "image pruned") {
+			t.Errorf("%s: pruned deployment should say why rollback is gone", path)
+		}
+	}
+}
+
 func TestRollbackUnknownDeployment404(t *testing.T) {
 	e := newTestEnv(t)
 	e.login(t)

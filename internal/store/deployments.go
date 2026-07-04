@@ -8,7 +8,7 @@ import (
 	"github.com/james-smart/outhaul/internal/core"
 )
 
-const deploymentCols = `id, app_id, status, reason, image, rollback_of, created_at, started_at, finished_at`
+const deploymentCols = `id, app_id, status, reason, image, rollback_of, image_pruned, created_at, started_at, finished_at`
 
 // CreateDeployment inserts a new attempt in the queued state.
 func (s *Store) CreateDeployment(ctx context.Context, appID int64) (core.Deployment, error) {
@@ -160,6 +160,37 @@ func (s *Store) SetImage(ctx context.Context, id int64, image string) error {
 	return err
 }
 
+// MarkImagePruned flags every deployment whose image is the given tag as
+// pruned. Rollback rows share their source's tag, so the flag must land on
+// all of them — a Rollback button over a removed image would lie.
+func (s *Store) MarkImagePruned(ctx context.Context, image string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE deployments SET image_pruned = 1 WHERE image = ?`, image)
+	return err
+}
+
+// RetainedImages returns the distinct image tags of all unpruned
+// image-bearing deployments — everything the pruner's orphan reconciliation
+// must keep on the host.
+func (s *Store) RetainedImages(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT DISTINCT image FROM deployments WHERE image != '' AND image_pruned = 0`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var images []string
+	for rows.Next() {
+		var img string
+		if err := rows.Scan(&img); err != nil {
+			return nil, err
+		}
+		images = append(images, img)
+	}
+	return images, rows.Err()
+}
+
 // NextClaimable returns the oldest queued deployment whose app has no active
 // (building/deploying) deployment, or nil if none is claimable. This enforces
 // per-app serialization while allowing different apps to run concurrently.
@@ -210,7 +241,7 @@ func scanDeployment(row scanner) (core.Deployment, error) {
 		finishedAt sql.NullString
 	)
 	if err := row.Scan(&d.ID, &d.AppID, &d.Status, &d.Reason, &d.Image,
-		&d.RollbackOf, &createdAt, &startedAt, &finishedAt); err != nil {
+		&d.RollbackOf, &d.ImagePruned, &createdAt, &startedAt, &finishedAt); err != nil {
 		return core.Deployment{}, err
 	}
 	t, err := parseTime(createdAt)

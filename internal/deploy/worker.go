@@ -30,6 +30,12 @@ const pollInterval = 3 * time.Second
 // maxConcurrent bounds how many app deployments build/deploy at once.
 const maxConcurrent = 4
 
+// AppPruner is the optional after-deploy image-retention hook (implemented by
+// internal/prune, which stays out of the pipeline's dependency graph).
+type AppPruner interface {
+	PruneApp(ctx context.Context, app core.App, out io.Writer) error
+}
+
 // Worker dispatches and runs deployments.
 type Worker struct {
 	store   *store.Store
@@ -42,6 +48,7 @@ type Worker struct {
 	cfg     config.Config
 
 	healthCheck HealthChecker
+	pruner      AppPruner // nil disables after-deploy image pruning
 
 	notify chan struct{}
 	sem    chan struct{}
@@ -70,6 +77,9 @@ func NewWorker(st *store.Store, dc docker.Client, b builder.Builder, cp compose.
 		cancels: map[int64]context.CancelFunc{},
 	}
 }
+
+// SetPruner installs the after-deploy image-retention hook. Call before Run.
+func (w *Worker) SetPruner(p AppPruner) { w.pruner = p }
 
 // Notify wakes the dispatcher to look for claimable work. Non-blocking.
 func (w *Worker) Notify() {

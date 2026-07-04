@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -90,6 +91,8 @@ type fakeRuntime struct {
 	logs      map[string]string       // container ID -> content for ContainerLogs
 	logTails  []int                   // tail values passed to ContainerLogs
 	stats     map[string]docker.Stats // container ID -> sample for ContainerStats
+
+	removedImages []string // refs passed to RemoveImage
 }
 
 func (f *fakeRuntime) FindContainer(_ context.Context, name string) (*docker.Container, error) {
@@ -125,6 +128,11 @@ func (f *fakeRuntime) ContainerStats(_ context.Context, id string) (docker.Stats
 		return docker.Stats{}, fmt.Errorf("no such container: %s", id)
 	}
 	return st, nil
+}
+
+func (f *fakeRuntime) RemoveImage(_ context.Context, ref string) error {
+	f.removedImages = append(f.removedImages, ref)
+	return nil
 }
 
 type testEnv struct {
@@ -587,6 +595,30 @@ func TestDeleteApp(t *testing.T) {
 	}
 	if _, err := e.store.GetApp(context.Background(), app.ID); err == nil {
 		t.Error("app row not deleted")
+	}
+}
+
+func TestDeleteAppRemovesItsImages(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	seedFinishedDeploy(t, e, app.ID, "outhaul/web:1")
+	src := seedFinishedDeploy(t, e, app.ID, "outhaul/web:2")
+	// A rollback row repeats a tag; delete must not remove it twice.
+	if _, err := e.store.CreateRollback(context.Background(), app.ID, src.Image, src.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/delete", url.Values{})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("delete = %d, want 303", resp.StatusCode)
+	}
+
+	// Deployments come back newest first; each distinct tag exactly once.
+	want := []string{"outhaul/web:2", "outhaul/web:1"}
+	if !reflect.DeepEqual(e.runtime.removedImages, want) {
+		t.Errorf("removed images = %v, want %v", e.runtime.removedImages, want)
 	}
 }
 

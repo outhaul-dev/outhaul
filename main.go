@@ -22,6 +22,7 @@ import (
 	"github.com/james-smart/outhaul/internal/docker"
 	"github.com/james-smart/outhaul/internal/github"
 	"github.com/james-smart/outhaul/internal/logstream"
+	"github.com/james-smart/outhaul/internal/prune"
 	"github.com/james-smart/outhaul/internal/secret"
 	"github.com/james-smart/outhaul/internal/server"
 	"github.com/james-smart/outhaul/internal/store"
@@ -97,6 +98,10 @@ func serve() error {
 	broker := logstream.New()
 	worker := deploy.NewWorker(st, dc, builder.NewNixpacks(), compose.NewDocker(), deploy.NewGit(), broker, ghClient, cfg)
 
+	// Image pruner: after-deploy retention hook + daily sweep.
+	pruner := prune.New(st, dc, cfg.ImageKeep, cfg.WorkDir())
+	worker.SetPruner(pruner)
+
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	workerDone := make(chan struct{})
 	go func() {
@@ -110,6 +115,9 @@ func serve() error {
 	// Backup scheduler (dumps + volume tarballs to S3-compatible storage).
 	backups := backup.NewManager(st, dc, cfg.WorkDir())
 	go backups.Run(workerCtx)
+
+	// Daily disk-cleanup sweep (image retention, dangling images, build cache).
+	go pruner.Run(workerCtx)
 
 	// HTTP server.
 	setupToken := server.NewToken()
