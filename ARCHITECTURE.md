@@ -84,6 +84,35 @@ and the worker never see a project; apps remain the deployable unit. There is
 no DB-level FK on `apps.project_id` (SQLite can't add a `NOT NULL` FK column
 without a table rebuild); the store enforces the reference instead.
 
+### Docker Compose apps + watch paths (done)
+
+Apps now carry a **kind** — `nixpacks` (the default; everything above) or
+`compose` — chosen at creation. A compose app's repo ships a
+`docker-compose.yml` (path configurable) and deploys as a whole stack by
+shelling out to `docker compose` (v2 plugin, a new host requirement for
+compose apps only) behind a `compose.Runner` interface with a fake, mirroring
+the Nixpacks builder. The pipeline maps onto the same state machine:
+`building` = clone + write `.env` (all env vars, for `${VAR}` interpolation,
+Dokploy's layout) + `compose build`; `deploying` = `compose up -d --wait`
+with the health timeout as the gate. **No blue-green for stacks** — compose
+recreates containers in place (Dokploy behaves the same); the single-app
+cutover is unchanged. Exposing a stack is opt-in: set a domain plus a
+service+port and the pipeline layers a generated `slipway.override.yml` over
+the user's file (never rewriting it), attaching that one service to the
+shared network with the standard Traefik labels plus `traefik.docker.network`.
+Lifecycle is label-based (`docker compose -p slipway-<name> stop|restart|down`)
+so stop/restart/delete need no retained checkout; deletion keeps named
+volumes. Raw pasted-YAML compose, Swarm mode, and multi-domain stacks are
+deferred (seams in `docs/superpowers/specs/2026-07-04-compose-design.md`).
+
+**Watch paths** control *when* a push redeploys, for both kinds: per-app glob
+patterns (`*`/`?` within a segment, `**` across, `[seq]`; a small built-in
+matcher, no dependency) tested against the changed files a push webhook
+reports. No patterns = every push to the branch deploys (unchanged default);
+with patterns, a push that touches no matching file is skipped. A payload
+carrying no file info fails open and deploys — not knowing what changed must
+never silently drop a release (Dokploy crashes on that case; issue #4081).
+
 Design decisions from M3: private-repo access goes through a **GitHub App**,
 set up via GitHub's manifest flow (the operator submits a pre-filled manifest,
 GitHub redirects back with a temporary code that is exchanged for the App's
@@ -149,6 +178,11 @@ slipway/
         builder.go            # Builder interface: Build(ctx, BuildRequest) streaming logs -> image tag
         nixpacks.go           # shells out to `nixpacks build`; requires nixpacks on PATH at runtime
 
+    compose/                  # docker compose stacks behind a Runner interface (fake for tests)
+        compose.go            # Runner: Build/Up (files) + Stop/Restart/Down (label-based, -p only)
+        override.go           # Override: generated slipway.override.yml exposing one service on a domain
+        fake.go               # in-memory fake for unit tests
+
     logstream/               # in-memory pub/sub broker: build/deploy log lines -> SSE subscribers
         broker.go
 
@@ -156,7 +190,8 @@ slipway/
         keygen.go             # Generate: private key encrypted at rest, public key for the repo host
 
     webhook/                  # generic push-webhook parsing + HMAC signature verification
-        parse.go              # ParsePush: extract repo + branch from a push payload
+        parse.go              # ParsePush: extract repo + branch + changed files from a push payload
+        match.go              # watch-path glob matching (*, **, ?, [seq]) against changed files
         verify.go             # constant-time signature check against the per-app secret
 
     github/                   # GitHub App: manifest flow, JWT, installation-token client
@@ -168,7 +203,8 @@ slipway/
 
     deploy/                   # the worker/orchestrator — drives the state machine
         worker.go             # dispatcher loop: claim queued work, per-app serialization, concurrency across apps
-        pipeline.go           # one deployment: clone -> build -> start container -> health -> running
+        pipeline.go           # one nixpacks deployment: clone -> build -> start container -> health -> running
+        pipeline_compose.go   # one compose deployment: clone -> .env/override -> compose build -> up --wait
         git.go                # clone a repo (public, SSH deploy key, or GitHub App installation token)
 
     server/

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/slipwaydev/slipway/internal/builder"
+	"github.com/slipwaydev/slipway/internal/compose"
 	"github.com/slipwaydev/slipway/internal/config"
 	"github.com/slipwaydev/slipway/internal/core"
 	"github.com/slipwaydev/slipway/internal/docker"
@@ -34,6 +35,7 @@ type Worker struct {
 	store   *store.Store
 	docker  docker.Client
 	builder builder.Builder
+	compose compose.Runner
 	cloner  Cloner
 	broker  *logstream.Broker
 	gh      github.Client
@@ -50,11 +52,12 @@ type Worker struct {
 }
 
 // NewWorker wires the worker's dependencies.
-func NewWorker(st *store.Store, dc docker.Client, b builder.Builder, cl Cloner, br *logstream.Broker, gh github.Client, cfg config.Config) *Worker {
+func NewWorker(st *store.Store, dc docker.Client, b builder.Builder, cp compose.Runner, cl Cloner, br *logstream.Broker, gh github.Client, cfg config.Config) *Worker {
 	return &Worker{
 		store:   st,
 		docker:  dc,
 		builder: b,
+		compose: cp,
 		cloner:  cl,
 		broker:  br,
 		gh:      gh,

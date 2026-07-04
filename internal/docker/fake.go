@@ -70,6 +70,25 @@ func (f *Fake) FindContainer(_ context.Context, name string) (*Container, error)
 	return nil, nil
 }
 
+func (f *Fake) ListContainers(_ context.Context, match map[string]string) ([]Container, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []Container
+	for _, c := range f.Containers {
+		ok := true
+		for k, v := range match {
+			if c.Labels[k] != v {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			out = append(out, *c)
+		}
+	}
+	return out, nil
+}
+
 func (f *Fake) CreateContainer(_ context.Context, spec ContainerSpec) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

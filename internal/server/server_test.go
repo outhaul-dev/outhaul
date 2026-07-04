@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/slipwaydev/slipway/internal/compose"
 	"github.com/slipwaydev/slipway/internal/core"
 	"github.com/slipwaydev/slipway/internal/docker"
 	"github.com/slipwaydev/slipway/internal/github"
@@ -34,6 +35,7 @@ func (f *fakeDeployer) Cancel(_ context.Context, id int64) (bool, error) {
 
 type fakeRuntime struct {
 	container *docker.Container
+	stack     []docker.Container // returned by ListContainers (compose apps)
 	started   []string
 	stopped   []string
 	removed   []string
@@ -41,6 +43,9 @@ type fakeRuntime struct {
 
 func (f *fakeRuntime) FindContainer(_ context.Context, name string) (*docker.Container, error) {
 	return f.container, nil
+}
+func (f *fakeRuntime) ListContainers(_ context.Context, _ map[string]string) ([]docker.Container, error) {
+	return f.stack, nil
 }
 func (f *fakeRuntime) StartContainer(_ context.Context, id string) error {
 	f.started = append(f.started, id)
@@ -59,6 +64,7 @@ type testEnv struct {
 	srv      *Server
 	deployer *fakeDeployer
 	runtime  *fakeRuntime
+	compose  *compose.Fake
 	broker   *logstream.Broker
 	store    *store.Store
 	gh       *github.Fake
@@ -82,9 +88,10 @@ func newTestEnv(t *testing.T) *testEnv {
 
 	dep := &fakeDeployer{}
 	rt := &fakeRuntime{}
+	cp := &compose.Fake{}
 	br := logstream.New()
 	gh := &github.Fake{}
-	srv, err := New(st, dep, rt, br, gh, "https://slip.example.com", "SETUPTOKEN")
+	srv, err := New(st, dep, rt, cp, br, gh, "https://slip.example.com", "SETUPTOKEN")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -99,7 +106,7 @@ func newTestEnv(t *testing.T) *testEnv {
 			return http.ErrUseLastResponse // don't follow; assert redirects ourselves
 		},
 	}
-	return &testEnv{srv: srv, deployer: dep, runtime: rt, broker: br, store: st, gh: gh, http: ts, client: client}
+	return &testEnv{srv: srv, deployer: dep, runtime: rt, compose: cp, broker: br, store: st, gh: gh, http: ts, client: client}
 }
 
 func (e *testEnv) get(t *testing.T, path string) *http.Response {

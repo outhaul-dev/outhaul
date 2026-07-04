@@ -12,9 +12,11 @@ import (
 	"io/fs"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/slipwaydev/slipway/internal/compose"
 	"github.com/slipwaydev/slipway/internal/core"
 	"github.com/slipwaydev/slipway/internal/docker"
 	"github.com/slipwaydev/slipway/internal/github"
@@ -31,6 +33,7 @@ type Deployer interface {
 // Runtime is the slice of the Docker client the server needs for app lifecycle.
 type Runtime interface {
 	FindContainer(ctx context.Context, name string) (*docker.Container, error)
+	ListContainers(ctx context.Context, match map[string]string) ([]docker.Container, error)
 	StartContainer(ctx context.Context, id string) error
 	StopContainer(ctx context.Context, id string, timeout time.Duration) error
 	RemoveContainer(ctx context.Context, id string, force bool) error
@@ -41,6 +44,7 @@ type Server struct {
 	store    *store.Store
 	deployer Deployer
 	runtime  Runtime
+	compose  compose.Runner
 	broker   *logstream.Broker
 	gh       github.Client
 
@@ -57,11 +61,12 @@ type Server struct {
 // first-boot admin-creation flow (printed by the caller as a one-time URL).
 // publicURL is Slipway's externally reachable base URL, used to build the
 // GitHub App manifest's callback and webhook URLs.
-func New(st *store.Store, d Deployer, rt Runtime, br *logstream.Broker, gh github.Client, publicURL, setupToken string) (*Server, error) {
+func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, br *logstream.Broker, gh github.Client, publicURL, setupToken string) (*Server, error) {
 	s := &Server{
 		store:       st,
 		deployer:    d,
 		runtime:     rt,
+		compose:     cp,
 		broker:      br,
 		gh:          gh,
 		publicURL:   publicURL,
@@ -171,6 +176,8 @@ func templateFuncs() template.FuncMap {
 	return template.FuncMap{
 		// stateClass maps a deployment status to its CSS class.
 		"stateClass": func(s core.DeployStatus) string { return "state-" + string(s) },
+		// joinLines renders a list one-per-line (the watch-paths textarea).
+		"joinLines": func(ss []string) string { return strings.Join(ss, "\n") },
 		"fmtTime": func(t time.Time) string {
 			if t.IsZero() {
 				return "—"

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/slipwaydev/slipway/internal/builder"
+	"github.com/slipwaydev/slipway/internal/compose"
 	"github.com/slipwaydev/slipway/internal/config"
 	"github.com/slipwaydev/slipway/internal/deploy"
 	"github.com/slipwaydev/slipway/internal/docker"
@@ -87,7 +88,7 @@ func serve() error {
 
 	// Background worker.
 	broker := logstream.New()
-	worker := deploy.NewWorker(st, dc, builder.NewNixpacks(), deploy.NewGit(), broker, ghClient, cfg)
+	worker := deploy.NewWorker(st, dc, builder.NewNixpacks(), compose.NewDocker(), deploy.NewGit(), broker, ghClient, cfg)
 
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	workerDone := make(chan struct{})
@@ -98,7 +99,7 @@ func serve() error {
 
 	// HTTP server.
 	setupToken := server.NewToken()
-	srv, err := server.New(st, worker, dc, broker, ghClient, cfg.PublicURL, setupToken)
+	srv, err := server.New(st, worker, dc, compose.NewDocker(), broker, ghClient, cfg.PublicURL, setupToken)
 	if err != nil {
 		stopWorker()
 		return fmt.Errorf("build server: %w", err)

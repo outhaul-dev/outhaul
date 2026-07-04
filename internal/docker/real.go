@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
@@ -90,6 +91,26 @@ func (r *real) FindContainer(ctx context.Context, name string) (*Container, erro
 		}
 	}
 	return nil, nil
+}
+
+func (r *real) ListContainers(ctx context.Context, match map[string]string) ([]Container, error) {
+	args := filters.NewArgs()
+	for k, v := range match {
+		args.Add("label", k+"="+v)
+	}
+	list, err := r.cli.ContainerList(ctx, container.ListOptions{All: true, Filters: args})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Container, 0, len(list))
+	for _, c := range list {
+		name := ""
+		if len(c.Names) > 0 {
+			name = strings.TrimPrefix(c.Names[0], "/")
+		}
+		out = append(out, Container{ID: c.ID, Name: name, Image: c.Image, State: c.State, Labels: c.Labels})
+	}
+	return out, nil
 }
 
 func (r *real) ContainerIP(ctx context.Context, id, network string) (string, error) {

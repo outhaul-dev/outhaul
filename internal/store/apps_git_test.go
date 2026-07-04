@@ -121,11 +121,22 @@ func TestUpdateAppSettings(t *testing.T) {
 		Name: "a", RepoURL: "https://github.com/o/r.git", Domain: "a.example.com",
 		Branch: "main", Source: core.SourcePublic, WebhookSecret: "w",
 	})
-	if err := st.UpdateAppSettings(ctx, app.ID, "develop", true); err != nil {
+	if err := st.UpdateAppSettings(ctx, app.ID, "develop", true, []string{"src/**", "package.json"}); err != nil {
 		t.Fatalf("UpdateAppSettings: %v", err)
 	}
 	got, _ := st.GetApp(ctx, app.ID)
 	if got.Branch != "develop" || !got.AutoDeploy {
 		t.Errorf("settings not updated: %+v", got)
+	}
+	if len(got.WatchPaths) != 2 || got.WatchPaths[0] != "src/**" || got.WatchPaths[1] != "package.json" {
+		t.Errorf("watch paths not round-tripped: %v", got.WatchPaths)
+	}
+
+	if err := st.UpdateAppSettings(ctx, app.ID, "develop", true, nil); err != nil {
+		t.Fatalf("UpdateAppSettings (clear watch paths): %v", err)
+	}
+	got, _ = st.GetApp(ctx, app.ID)
+	if len(got.WatchPaths) != 0 {
+		t.Errorf("watch paths not cleared: %v", got.WatchPaths)
 	}
 }

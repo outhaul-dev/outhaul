@@ -63,6 +63,11 @@ type Client interface {
 	// FindContainer returns the container with the given name, or nil if none.
 	FindContainer(ctx context.Context, name string) (*Container, error)
 
+	// ListContainers returns all containers (running or not) whose labels
+	// include every key=value in match. Used to enumerate a compose stack via
+	// its com.docker.compose.project label.
+	ListContainers(ctx context.Context, match map[string]string) ([]Container, error)
+
 	// ContainerIP returns the container's IPv4 address on the named network, or
 	// "" if it is not attached to that network.
 	ContainerIP(ctx context.Context, id, network string) (string, error)

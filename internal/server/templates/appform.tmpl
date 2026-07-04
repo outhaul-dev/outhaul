@@ -15,6 +15,13 @@
       </select>
     </label>
     <label class="field">
+      <span>Deploy</span>
+      <select name="kind" id="kind-select">
+        <option value="nixpacks">Nixpacks build (single service)</option>
+        <option value="compose">Docker Compose (multi-service stack)</option>
+      </select>
+    </label>
+    <label class="field">
       <span>Source</span>
       <select name="source" id="source-select">
         <option value="public">Public Git URL</option>
@@ -38,15 +45,46 @@
       <span>Branch</span>
       <input type="text" name="branch" placeholder="main" value="main">
     </label>
+    <label class="field" data-kind="compose" hidden>
+      <span>Compose file</span>
+      <input type="text" name="compose_path" placeholder="docker-compose.yml">
+    </label>
     <label class="field">
       <span>Domain</span>
-      <input type="text" name="domain" placeholder="web.example.com" value="{{with .Form}}{{.Domain}}{{end}}" required>
+      <input type="text" name="domain" id="domain-input" placeholder="web.example.com" value="{{with .Form}}{{.Domain}}{{end}}" required>
+    </label>
+    <label class="field" data-kind="compose" hidden>
+      <span>Expose service</span>
+      <input type="text" name="compose_service" placeholder="web">
+    </label>
+    <label class="field" data-kind="compose" hidden>
+      <span>Service port</span>
+      <input type="text" name="compose_port" placeholder="3000" inputmode="numeric">
     </label>
     <label class="field-check">
       <input type="checkbox" name="auto_deploy"> <span>Auto-deploy on push</span>
     </label>
     <button type="submit" class="btn btn-primary">Create app</button>
   </form>
+  <script>
+    // Progressive enhancement: reveal the compose fields only for compose
+    // apps, where Domain becomes optional (leave it blank for an
+    // internal-only stack). Without JS everything shows; the server
+    // validates either way.
+    (function () {
+      var kind = document.getElementById('kind-select');
+      if (!kind) return;
+      var apply = function () {
+        var isCompose = kind.value === 'compose';
+        document.querySelectorAll('[data-kind="compose"]').forEach(function (el) {
+          el.hidden = !isCompose;
+        });
+        document.getElementById('domain-input').required = !isCompose;
+      };
+      kind.addEventListener('change', apply);
+      apply();
+    })();
+  </script>
   {{if not .GithubConnected}}<p class="env-note"><a href="/github/connect">Connect a GitHub App</a> to deploy private GitHub repos and auto-deploy on push.</p>{{end}}
   {{else}}
   <p class="empty">No projects yet. <a href="/projects">Create a project</a> first, then add apps to it.</p>

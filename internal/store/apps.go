@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/slipwaydev/slipway/internal/core"
@@ -11,7 +12,7 @@ import (
 
 // appCols is the column list read into core.App by scanApp (excludes the
 // write-only ssh_private_key, which is fetched separately and decrypted).
-const appCols = `id, project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_secret, ssh_public_key, github_repo`
+const appCols = `id, project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_secret, ssh_public_key, github_repo, kind, compose_path, compose_service, compose_port, watch_paths`
 
 // CreateApp inserts an app and returns it with ID and CreatedAt populated. The
 // SSH private key (if any) is encrypted at rest.
@@ -26,16 +27,21 @@ func (s *Store) CreateApp(ctx context.Context, app core.App) (core.App, error) {
 	if app.ProjectID == 0 {
 		app.ProjectID = core.DefaultProjectID
 	}
+	if app.Kind == "" {
+		app.Kind = core.KindNixpacks
+	}
 	encKey, err := s.sealMaybe(app.SSHPrivateKey)
 	if err != nil {
 		return core.App{}, err
 	}
 	res, err := s.db.ExecContext(ctx,
 		`INSERT INTO apps
-		   (project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_secret, ssh_private_key, ssh_public_key, github_repo)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		   (project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_secret, ssh_private_key, ssh_public_key, github_repo,
+		    kind, compose_path, compose_service, compose_port, watch_paths)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		app.ProjectID, app.Name, app.RepoURL, app.Domain, fmtTime(app.CreatedAt),
-		app.Branch, boolToInt(app.AutoDeploy), app.Source, app.WebhookSecret, encKey, app.SSHPublicKey, app.GithubRepo)
+		app.Branch, boolToInt(app.AutoDeploy), app.Source, app.WebhookSecret, encKey, app.SSHPublicKey, app.GithubRepo,
+		app.Kind, app.ComposePath, app.ComposeService, app.ComposePort, joinWatchPaths(app.WatchPaths))
 	if err != nil {
 		return core.App{}, err
 	}
@@ -153,9 +159,19 @@ func (s *Store) SSHPrivateKey(ctx context.Context, appID int64) (string, error) 
 }
 
 // UpdateAppSettings updates the mutable per-app deploy settings.
-func (s *Store) UpdateAppSettings(ctx context.Context, id int64, branch string, autoDeploy bool) error {
+func (s *Store) UpdateAppSettings(ctx context.Context, id int64, branch string, autoDeploy bool, watchPaths []string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE apps SET branch = ?, auto_deploy = ? WHERE id = ?`, branch, boolToInt(autoDeploy), id)
+		`UPDATE apps SET branch = ?, auto_deploy = ?, watch_paths = ? WHERE id = ?`,
+		branch, boolToInt(autoDeploy), joinWatchPaths(watchPaths), id)
+	return err
+}
+
+// UpdateAppCompose updates a compose app's exposure settings: where its
+// compose file lives and which service (if any) is published on which domain.
+func (s *Store) UpdateAppCompose(ctx context.Context, id int64, domain, composePath, composeService string, composePort int) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE apps SET domain = ?, compose_path = ?, compose_service = ?, compose_port = ? WHERE id = ?`,
+		domain, composePath, composeService, composePort, id)
 	return err
 }
 
@@ -190,9 +206,11 @@ func scanApp(row scanner) (core.App, error) {
 		app        core.App
 		createdAt  string
 		autoDeploy int
+		watchPaths string
 	)
 	if err := row.Scan(&app.ID, &app.ProjectID, &app.Name, &app.RepoURL, &app.Domain, &createdAt,
-		&app.Branch, &autoDeploy, &app.Source, &app.WebhookSecret, &app.SSHPublicKey, &app.GithubRepo); err != nil {
+		&app.Branch, &autoDeploy, &app.Source, &app.WebhookSecret, &app.SSHPublicKey, &app.GithubRepo,
+		&app.Kind, &app.ComposePath, &app.ComposeService, &app.ComposePort, &watchPaths); err != nil {
 		return core.App{}, err
 	}
 	t, err := parseTime(createdAt)
@@ -201,5 +219,22 @@ func scanApp(row scanner) (core.App, error) {
 	}
 	app.CreatedAt = t
 	app.AutoDeploy = autoDeploy != 0
+	app.WatchPaths = splitWatchPaths(watchPaths)
 	return app, nil
+}
+
+// Watch paths are stored as one newline-separated TEXT column; blank lines and
+// surrounding whitespace never survive a round-trip.
+func joinWatchPaths(patterns []string) string {
+	return strings.Join(patterns, "\n")
+}
+
+func splitWatchPaths(s string) []string {
+	var out []string
+	for _, line := range strings.Split(s, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			out = append(out, line)
+		}
+	}
+	return out
 }

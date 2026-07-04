@@ -44,7 +44,7 @@ func (s *Server) handleGithubWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, app := range apps {
-		s.maybeDeploy(r.Context(), app, ev.Branch)
+		s.maybeDeploy(r.Context(), app, ev)
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -73,14 +73,22 @@ func (s *Server) handleAppWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad payload", http.StatusBadRequest)
 		return
 	}
-	s.maybeDeploy(r.Context(), app, ev.Branch)
+	s.maybeDeploy(r.Context(), app, ev)
 	w.WriteHeader(http.StatusOK)
 }
 
-// maybeDeploy enqueues a deployment when auto-deploy is on and the branch
-// matches. Errors are logged, not surfaced (webhook senders retry noisily).
-func (s *Server) maybeDeploy(ctx context.Context, app core.App, pushedBranch string) {
-	if !app.AutoDeploy || pushedBranch == "" || pushedBranch != app.Branch {
+// maybeDeploy enqueues a deployment when every auto-deploy gate passes, in
+// order: the app's toggle, an exact branch match, and — when watch paths are
+// configured — a changed file matching one of them. A payload carrying no
+// file info at all (branch creation, thin webhook) fails open and deploys,
+// since "we don't know what changed" must never silently drop a release.
+// Errors are logged, not surfaced (webhook senders retry noisily).
+func (s *Server) maybeDeploy(ctx context.Context, app core.App, ev webhook.PushEvent) {
+	if !app.AutoDeploy || ev.Branch == "" || ev.Branch != app.Branch {
+		return
+	}
+	if len(app.WatchPaths) > 0 && len(ev.Changed) > 0 && !webhook.MatchAny(app.WatchPaths, ev.Changed) {
+		log.Printf("webhook: app %d push to %s skipped: no changed file matches its watch paths", app.ID, ev.Branch)
 		return
 	}
 	if _, err := s.store.CreateDeployment(ctx, app.ID); err != nil {

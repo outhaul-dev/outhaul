@@ -17,9 +17,9 @@
     <tbody>
       {{range .Apps}}
       <tr>
-        <td><a href="/apps/{{.ID}}" class="rowlink">{{.Name}}</a></td>
+        <td><a href="/apps/{{.ID}}" class="rowlink">{{.Name}}</a>{{if eq .Kind "compose"}} <span class="badge">Compose</span>{{end}}</td>
         <td><a href="/projects/{{.ProjectID}}" class="rowlink">{{.ProjectName}}</a></td>
-        <td><a href="http://{{.Domain}}" target="_blank" rel="noreferrer" class="mono">{{.Domain}}</a></td>
+        <td>{{if .Domain}}<a href="http://{{.Domain}}" target="_blank" rel="noreferrer" class="mono">{{.Domain}}</a>{{else}}<span class="muted">—</span>{{end}}</td>
         <td class="mono muted truncate">{{.RepoURL}}</td>
         <td class="mono muted">{{.Branch}}</td>
         <td>
