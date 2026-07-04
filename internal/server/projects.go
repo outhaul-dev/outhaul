@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/store"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/store"
 )
 
 // projectRow is a project plus the derived stats its card shows.

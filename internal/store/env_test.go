@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/secret"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/secret"
 )
 
 func openWithBox(t *testing.T) *Store {

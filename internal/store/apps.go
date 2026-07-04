@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 // appCols is the column list read into core.App by scanApp (excludes the

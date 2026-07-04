@@ -1,5 +1,5 @@
 // Package secret encrypts small values (app env vars) at rest with NaCl
-// secretbox and a locally-stored 32-byte key. It is pure: no other Slipway
+// secretbox and a locally-stored 32-byte key. It is pure: no other Outhaul
 // imports, no network, no logging. Losing the key file means losing the ability
 // to decrypt existing values.
 package secret

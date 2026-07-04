@@ -31,11 +31,11 @@ right here before writing the worker.
   run concurrently.
 - **Auth.** Single admin user for v1. argon2id password hash, session cookie.
   Created on first boot via a printed one-time setup URL.
-- **Config.** Single `/var/lib/slipway/` data dir. Env-var overrides. No YAML.
+- **Config.** Single `/var/lib/outhaul/` data dir. Env-var overrides. No YAML.
 
 ### Milestone 1 scope (this session)
 
-Thinnest end-to-end path: `slipway serve` → ensure Traefik container exists →
+Thinnest end-to-end path: `outhaul serve` → ensure Traefik container exists →
 admin logs in → create an app (public Git URL + domain) → **Deploy** clones,
 builds with Nixpacks, starts the container with correct Traefik labels, streams
 build logs live to the browser via SSE → app reachable on its domain. Plus
@@ -110,12 +110,12 @@ recreates containers in place (Dokploy behaves the same); the single-app
 cutover is unchanged. Exposing a stack is opt-in and multi-domain (Dokploy's
 model): a compose app has any number of `compose_domains` rows, each routing
 one host to one service's container port, managed from a Domains panel on the
-app page. The pipeline layers a generated `slipway.override.yml` over the
+app page. The pipeline layers a generated `outhaul.override.yml` over the
 user's file (never rewriting it), attaching each published service to the
 shared network and giving it one Traefik router per domain (named
-`slipway-<app>-d<domainID>`, unique and stable) plus `traefik.docker.network`.
+`outhaul-<app>-d<domainID>`, unique and stable) plus `traefik.docker.network`.
 Domain edits apply on the next deploy, when the override is regenerated.
-Lifecycle is label-based (`docker compose -p slipway-<name> stop|restart|down`)
+Lifecycle is label-based (`docker compose -p outhaul-<name> stop|restart|down`)
 so stop/restart/delete need no retained checkout; deletion keeps named
 volumes. Raw pasted-YAML compose and Swarm mode are deferred (seams in
 `docs/superpowers/specs/2026-07-04-compose-design.md`; multi-domain design in
@@ -172,7 +172,7 @@ Every deployment row on the app page (and the deployment detail page) offers
 without the registry (design in `docs/superpowers/specs/2026-07-04-rollback.md`).
 Dokploy tags and pushes each deploy's image to a configured registry and links
 the deployment record to the tag; Outhaul already tags every nixpacks build
-`slipway/<app>:<depID>`, records it on the row, and never prunes images, so
+`outhaul/<app>:<depID>`, records it on the row, and never prunes images, so
 the rollback material is on the host — single-server means a registry buys
 nothing. A rollback is an ordinary deployment enqueued with the source's
 image and `rollback_of` pre-set (`POST /deployments/{id}/rollback`); the
@@ -197,8 +197,8 @@ set (name + engine + optional image + optional external port) instead of five
 credential fields, with the user/database name defaulting to the database's
 name and the password always generated server-side (stored encrypted, same
 secretbox scheme as env values). Each database is a plain container named
-`slipway-db-<name>` on the shared network, so apps connect internally by
-hostname (`postgres://user:pass@slipway-db-shop:5432/shop`); the database page
+`outhaul-db-<name>` on the shared network, so apps connect internally by
+hostname (`postgres://user:pass@outhaul-db-shop:5432/shop`); the database page
 shows the ready-to-paste URL and nothing is auto-injected — wiring it into
 apps is a copy-paste into project shared env (`${{project.KEY}}`), which is
 also Dokploy's model. An optional **external port** publishes the engine's
@@ -279,13 +279,13 @@ is unavailable until it is configured.
 
 ## Package layout
 
-Single module `github.com/slipwaydev/slipway`.
+Single module `github.com/james-smart/outhaul`.
 `main.go` at the root; everything else under `internal/` so nothing is importable
 by third parties. Dependencies point inward: `core` depends on nothing; `server`
 and `deploy` wire the rest together.
 
 ```
-slipway/
+outhaul/
   main.go                     # entrypoint: parse `serve`, wire deps, run, graceful shutdown
   ARCHITECTURE.md
 
@@ -329,7 +329,7 @@ slipway/
 
     compose/                  # docker compose stacks behind a Runner interface (fake for tests)
         compose.go            # Runner: Build/Up (files) + Stop/Restart/Down (label-based, -p only)
-        override.go           # Override: generated slipway.override.yml publishing services on their domains
+        override.go           # Override: generated outhaul.override.yml publishing services on their domains
         fake.go               # in-memory fake for unit tests
 
     logstream/               # in-memory pub/sub broker: build/deploy log lines -> SSE subscribers
@@ -524,4 +524,4 @@ Browser                 server            store            deploy.worker        
 - `nixpacks` on `PATH` (build-time strategy for M1). Absence is surfaced as a
   clear deploy failure, not a crash.
 - Traefik image pullable; Outhaul creates the proxy container and a shared
-  `slipway` Docker network that app containers join.
+  `outhaul` Docker network that app containers join.

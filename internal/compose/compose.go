@@ -15,10 +15,10 @@ import (
 
 // ProjectName is the compose project (-p) for an app's stack. The prefix
 // keeps stacks clearly Outhaul-owned and unable to collide with the
-// "slipway-app-<name>" containers of nixpacks apps. App names are validated
+// "outhaul-app-<name>" containers of nixpacks apps. App names are validated
 // on creation to satisfy compose project-name rules.
 func ProjectName(appName string) string {
-	return "slipway-" + appName
+	return "outhaul-" + appName
 }
 
 // Runner executes compose operations for one stack. Build and Up need the

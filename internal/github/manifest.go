@@ -11,7 +11,7 @@ import (
 // ManifestParams are the inputs to a GitHub App manifest.
 type ManifestParams struct {
 	Name      string // globally-unique GitHub App name
-	PublicURL string // Slipway's externally reachable base URL
+	PublicURL string // Outhaul's externally reachable base URL
 }
 
 // BuildManifest returns the GitHub App manifest JSON POSTed to

@@ -11,7 +11,7 @@ import (
 )
 
 // Fake is an in-memory Client for unit tests. It records enough state to model
-// the operations Slipway performs (networks, containers, lifecycle) and mirrors
+// the operations Outhaul performs (networks, containers, lifecycle) and mirrors
 // Docker's "duplicate name" error so replace-then-create paths are exercised.
 type Fake struct {
 	mu         sync.Mutex

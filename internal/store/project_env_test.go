@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 func TestProjectEnvCRUD(t *testing.T) {

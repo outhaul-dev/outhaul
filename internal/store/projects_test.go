@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 func TestDefaultProjectExistsAfterMigration(t *testing.T) {

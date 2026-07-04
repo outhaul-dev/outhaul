@@ -17,7 +17,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 // Object is a stored object's key and size.
@@ -64,8 +64,8 @@ func Open(d core.Destination) (Client, error) {
 
 // Probe verifies a destination is writable: put a small object, delete it.
 func Probe(ctx context.Context, c Client) error {
-	const key = ".slipway-probe"
-	body := "slipway destination test"
+	const key = ".outhaul-probe"
+	body := "outhaul destination test"
 	if err := c.Put(ctx, key, strings.NewReader(body), int64(len(body))); err != nil {
 		return err
 	}

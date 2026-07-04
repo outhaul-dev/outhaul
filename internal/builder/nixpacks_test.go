@@ -22,8 +22,8 @@ func TestBuildArgs(t *testing.T) {
 	}{
 		{
 			name: "no env",
-			req:  BuildRequest{ContextDir: "/work/repo", ImageTag: "slipway/web:5"},
-			want: []string{"build", "/work/repo", "--name", "slipway/web:5"},
+			req:  BuildRequest{ContextDir: "/work/repo", ImageTag: "outhaul/web:5"},
+			want: []string{"build", "/work/repo", "--name", "outhaul/web:5"},
 		},
 		{
 			name: "env sorted for determinism",

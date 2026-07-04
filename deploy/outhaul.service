@@ -9,7 +9,7 @@
 
 [Unit]
 Description=Outhaul — single-binary self-hosted PaaS
-Documentation=https://github.com/James-Smart/slipway
+Documentation=https://github.com/James-Smart/outhaul
 Wants=network-online.target docker.service
 After=network-online.target docker.service
 
@@ -17,14 +17,14 @@ After=network-online.target docker.service
 User=outhaul
 Group=outhaul
 SupplementaryGroups=docker
-ExecStart=/usr/local/bin/slipway serve
+ExecStart=/usr/local/bin/outhaul serve
 # OUTHAUL_* overrides live here; absent file is fine.
 EnvironmentFile=-/etc/outhaul.env
-# Creates and owns /var/lib/slipway (the default OUTHAUL_DATA_DIR).
-StateDirectory=slipway
+# Creates and owns /var/lib/outhaul (the default OUTHAUL_DATA_DIR).
+StateDirectory=outhaul
 StateDirectoryMode=0700
 # git and nixpacks expect a writable HOME (config, build caches).
-Environment=HOME=/var/lib/slipway
+Environment=HOME=/var/lib/outhaul
 Restart=on-failure
 RestartSec=3
 

@@ -1,4 +1,4 @@
-// Package docker abstracts the container operations Slipway needs behind a
+// Package docker abstracts the container operations Outhaul needs behind a
 // small Client interface. A real SDK-backed implementation drives the local
 // Docker daemon; an in-memory Fake backs unit tests. No test touches a real
 // daemon.
@@ -63,7 +63,7 @@ type Container struct {
 // Running reports whether the container is currently running.
 func (c Container) Running() bool { return c.State == "running" }
 
-// Client is the container-runtime surface Slipway depends on.
+// Client is the container-runtime surface Outhaul depends on.
 type Client interface {
 	// Ping verifies the daemon is reachable.
 	Ping(ctx context.Context) error

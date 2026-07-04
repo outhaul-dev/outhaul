@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/github"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/github"
 )
 
 // testRSAKeyPEM generates a throwaway RSA private key PEM for constructing a

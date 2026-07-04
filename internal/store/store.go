@@ -1,4 +1,4 @@
-// Package store is Slipway's SQLite persistence layer and job queue. It depends
+// Package store is Outhaul's SQLite persistence layer and job queue. It depends
 // only on internal/core. Writes are serialized (single open connection) so the
 // pure-Go driver never trips on concurrent writers; WAL + busy_timeout keep
 // reads responsive.
@@ -10,7 +10,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/secret"
+	"github.com/james-smart/outhaul/internal/secret"
 	_ "modernc.org/sqlite"
 )
 

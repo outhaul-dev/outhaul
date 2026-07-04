@@ -19,7 +19,7 @@ func TestHTTPClientExchangeManifest(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"id": 42, "slug": "slipway-x", "pem": "PEMDATA",
+			"id": 42, "slug": "outhaul-x", "pem": "PEMDATA",
 			"webhook_secret": "whs", "client_id": "cid", "client_secret": "csec",
 		})
 	}))
@@ -31,7 +31,7 @@ func TestHTTPClientExchangeManifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExchangeManifest: %v", err)
 	}
-	if res.AppID != 42 || res.Slug != "slipway-x" || res.PEM != "PEMDATA" ||
+	if res.AppID != 42 || res.Slug != "outhaul-x" || res.PEM != "PEMDATA" ||
 		res.WebhookSecret != "whs" || res.ClientID != "cid" || res.ClientSecret != "csec" {
 		t.Errorf("bad result: %+v", res)
 	}

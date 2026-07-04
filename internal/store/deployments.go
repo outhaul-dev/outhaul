@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 const deploymentCols = `id, app_id, status, reason, image, rollback_of, created_at, started_at, finished_at`

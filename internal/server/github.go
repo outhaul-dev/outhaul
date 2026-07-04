@@ -6,8 +6,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/github"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/github"
 )
 
 // handleGithubConnect renders the auto-submitting manifest form (or a notice if
@@ -20,7 +20,7 @@ func (s *Server) handleGithubConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	manifest, err := github.BuildManifest(github.ManifestParams{
-		Name:      "slipway-" + s.newNameSuffix(),
+		Name:      "outhaul-" + s.newNameSuffix(),
 		PublicURL: s.publicURL,
 	})
 	if err != nil {

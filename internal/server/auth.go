@@ -8,11 +8,11 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 const (
-	sessionCookie = "slipway_session"
+	sessionCookie = "outhaul_session"
 	sessionTTL    = 7 * 24 * time.Hour
 )
 
@@ -21,7 +21,7 @@ func NewToken() string {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		// crypto/rand failure is fatal for security; surface loudly.
-		panic("slipway: crypto/rand failed: " + err.Error())
+		panic("outhaul: crypto/rand failed: " + err.Error())
 	}
 	return hex.EncodeToString(b)
 }

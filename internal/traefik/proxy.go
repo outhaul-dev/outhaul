@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/docker"
+	"github.com/james-smart/outhaul/internal/docker"
 )
 
 // DefaultDockerSocket is the host path to the Docker socket that Traefik's
@@ -22,7 +22,7 @@ const proxyStopTimeout = 10 * time.Second
 
 // ProxyConfig parameterises the managed Traefik container.
 type ProxyConfig struct {
-	ContainerName string // e.g. "slipway-traefik"
+	ContainerName string // e.g. "outhaul-traefik"
 	Image         string // e.g. "traefik:v3.3"
 	Network       string // shared network app containers also join
 	HTTPPort      string // host port for the web entrypoint, e.g. "80"
@@ -59,7 +59,7 @@ func EnsureProxy(ctx context.Context, dc docker.Client, pc ProxyConfig, logOut i
 	}
 	// Adopt only if its config matches; otherwise recreate so new flags
 	// (e.g. newly-enabled TLS) actually take effect.
-	if existing != nil && existing.Labels["slipway.config-hash"] == spec.Labels["slipway.config-hash"] {
+	if existing != nil && existing.Labels["outhaul.config-hash"] == spec.Labels["outhaul.config-hash"] {
 		if existing.Running() {
 			return nil
 		}
@@ -117,9 +117,9 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 	}
 
 	labels := map[string]string{
-		"slipway.managed":     "true",
-		"slipway.role":        "proxy",
-		"slipway.config-hash": hashConfig(pc.Image, cmd, ports, mounts),
+		"outhaul.managed":     "true",
+		"outhaul.role":        "proxy",
+		"outhaul.config-hash": hashConfig(pc.Image, cmd, ports, mounts),
 	}
 	return docker.ContainerSpec{
 		Name:          pc.ContainerName,

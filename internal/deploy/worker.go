@@ -1,4 +1,4 @@
-// Package deploy contains Slipway's background worker: an in-process dispatcher
+// Package deploy contains Outhaul's background worker: an in-process dispatcher
 // that turns queued deployments into running containers. Deploys for the same
 // app serialize; different apps run concurrently. The deployments table is the
 // queue (see internal/store); this package owns the pipeline that advances a
@@ -14,14 +14,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/builder"
-	"github.com/slipwaydev/slipway/internal/compose"
-	"github.com/slipwaydev/slipway/internal/config"
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/docker"
-	"github.com/slipwaydev/slipway/internal/github"
-	"github.com/slipwaydev/slipway/internal/logstream"
-	"github.com/slipwaydev/slipway/internal/store"
+	"github.com/james-smart/outhaul/internal/builder"
+	"github.com/james-smart/outhaul/internal/compose"
+	"github.com/james-smart/outhaul/internal/config"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/docker"
+	"github.com/james-smart/outhaul/internal/github"
+	"github.com/james-smart/outhaul/internal/logstream"
+	"github.com/james-smart/outhaul/internal/store"
 )
 
 // pollInterval is a safety-net re-check even if no Notify arrives.

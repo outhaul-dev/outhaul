@@ -12,15 +12,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/builder"
-	"github.com/slipwaydev/slipway/internal/compose"
-	"github.com/slipwaydev/slipway/internal/config"
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/docker"
-	"github.com/slipwaydev/slipway/internal/github"
-	"github.com/slipwaydev/slipway/internal/logstream"
-	"github.com/slipwaydev/slipway/internal/secret"
-	"github.com/slipwaydev/slipway/internal/store"
+	"github.com/james-smart/outhaul/internal/builder"
+	"github.com/james-smart/outhaul/internal/compose"
+	"github.com/james-smart/outhaul/internal/config"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/docker"
+	"github.com/james-smart/outhaul/internal/github"
+	"github.com/james-smart/outhaul/internal/logstream"
+	"github.com/james-smart/outhaul/internal/secret"
+	"github.com/james-smart/outhaul/internal/store"
 )
 
 // --- test doubles ---
@@ -96,7 +96,7 @@ func newHarness(t *testing.T) *harness {
 		cloner:  &fakeCloner{},
 		broker:  logstream.New(),
 	}
-	cfg := config.Config{DataDir: t.TempDir(), Network: "slipway"}
+	cfg := config.Config{DataDir: t.TempDir(), Network: "outhaul"}
 	h.worker = NewWorker(st, h.docker, h.builder, h.compose, h.cloner, h.broker, &github.Fake{}, cfg)
 	h.worker.healthCheck = func(context.Context, string, time.Duration) bool { return true }
 	return h
@@ -155,16 +155,16 @@ func TestPipelineHappyPath(t *testing.T) {
 	if got.Image == "" {
 		t.Error("expected built image to be recorded")
 	}
-	c, _ := h.docker.FindContainer(ctx, "slipway-app-web")
+	c, _ := h.docker.FindContainer(ctx, "outhaul-app-web")
 	if c == nil || !c.Running() {
 		t.Fatalf("app container not running: %+v", c)
 	}
-	if c.Labels["traefik.http.routers.slipway-web.rule"] != "Host(`web.test`)" {
+	if c.Labels["traefik.http.routers.outhaul-web.rule"] != "Host(`web.test`)" {
 		t.Errorf("missing/incorrect traefik rule label: %v", c.Labels)
 	}
-	spec := lastCreatedNamed(t, h, "slipway-app-web")
-	if !contains(spec.Networks, "slipway") {
-		t.Errorf("container not on slipway network: %v", spec.Networks)
+	spec := lastCreatedNamed(t, h, "outhaul-app-web")
+	if !contains(spec.Networks, "outhaul") {
+		t.Errorf("container not on outhaul network: %v", spec.Networks)
 	}
 	if !containsPrefix(spec.Env, "PORT=") {
 		t.Errorf("container missing PORT env: %v", spec.Env)
@@ -213,7 +213,7 @@ func TestPipelineUnhealthyKeepsOldContainerAndFails(t *testing.T) {
 	ctx := context.Background()
 	app := h.app(t, "web")
 
-	oldID, _ := h.docker.CreateContainer(ctx, docker.ContainerSpec{Name: "slipway-app-web", Image: "old:1"})
+	oldID, _ := h.docker.CreateContainer(ctx, docker.ContainerSpec{Name: "outhaul-app-web", Image: "old:1"})
 	h.docker.StartContainer(ctx, oldID)
 
 	h.worker.healthCheck = func(context.Context, string, time.Duration) bool { return false }
@@ -224,7 +224,7 @@ func TestPipelineUnhealthyKeepsOldContainerAndFails(t *testing.T) {
 	if got := h.status(t, dep.ID); got.Status != core.StatusFailed {
 		t.Fatalf("status = %q, want failed", got.Status)
 	}
-	if c, _ := h.docker.FindContainer(ctx, "slipway-app-web"); c == nil || c.Image != "old:1" {
+	if c, _ := h.docker.FindContainer(ctx, "outhaul-app-web"); c == nil || c.Image != "old:1" {
 		t.Errorf("old container should survive an unhealthy deploy, got %+v", c)
 	}
 }
@@ -233,7 +233,7 @@ func TestPipelineHealthyCutsOver(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	app := h.app(t, "web")
-	oldID, _ := h.docker.CreateContainer(ctx, docker.ContainerSpec{Name: "slipway-app-web", Image: "old:1"})
+	oldID, _ := h.docker.CreateContainer(ctx, docker.ContainerSpec{Name: "outhaul-app-web", Image: "old:1"})
 	h.docker.StartContainer(ctx, oldID)
 
 	dep := h.claimedDeployment(t, app.ID) // healthy by harness default
@@ -246,14 +246,14 @@ func TestPipelineHealthyCutsOver(t *testing.T) {
 	if _, ok := h.docker.Containers[oldID]; ok {
 		t.Error("old container not removed after healthy cutover")
 	}
-	c, _ := h.docker.FindContainer(ctx, "slipway-app-web")
+	c, _ := h.docker.FindContainer(ctx, "outhaul-app-web")
 	if c == nil || !c.Running() {
 		t.Fatalf("canonical container not running: %+v", c)
 	}
 	if c.Labels["traefik.enable"] != "true" {
 		t.Errorf("canonical container should have traefik enabled: %v", c.Labels)
 	}
-	if tmp, _ := h.docker.FindContainer(ctx, "slipway-deploy-"+itoa64(dep.ID)); tmp != nil {
+	if tmp, _ := h.docker.FindContainer(ctx, "outhaul-deploy-"+itoa64(dep.ID)); tmp != nil {
 		t.Error("temp container was not cleaned up")
 	}
 }
@@ -264,7 +264,7 @@ func TestPipelineTempRemovedWhenOldRemovalFails(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	app := h.app(t, "web")
-	oldID, _ := h.docker.CreateContainer(ctx, docker.ContainerSpec{Name: "slipway-app-web", Image: "old:1"})
+	oldID, _ := h.docker.CreateContainer(ctx, docker.ContainerSpec{Name: "outhaul-app-web", Image: "old:1"})
 	h.docker.StartContainer(ctx, oldID)
 	// Fail removal of the OLD container only.
 	h.docker.FailRemove = func(id string) error {
@@ -279,7 +279,7 @@ func TestPipelineTempRemovedWhenOldRemovalFails(t *testing.T) {
 	if got := h.status(t, dep.ID); got.Status != core.StatusFailed {
 		t.Fatalf("status = %q, want failed", got.Status)
 	}
-	if tmp, _ := h.docker.FindContainer(ctx, "slipway-deploy-"+itoa64(dep.ID)); tmp != nil {
+	if tmp, _ := h.docker.FindContainer(ctx, "outhaul-deploy-"+itoa64(dep.ID)); tmp != nil {
 		t.Error("temp container leaked when old removal failed")
 	}
 }
@@ -290,7 +290,7 @@ func TestPipelineCutoverFailureReportsAppDown(t *testing.T) {
 	app := h.app(t, "web")
 	// Fail creation of the CANONICAL container (the second create, enabled labels).
 	h.docker.FailCreate = func(spec docker.ContainerSpec) error {
-		if spec.Name == "slipway-app-web" && spec.Labels["traefik.enable"] == "true" {
+		if spec.Name == "outhaul-app-web" && spec.Labels["traefik.enable"] == "true" {
 			return errors.New("daemon hiccup")
 		}
 		return nil
@@ -305,7 +305,7 @@ func TestPipelineCutoverFailureReportsAppDown(t *testing.T) {
 	if !strings.Contains(got.Reason, "cutover") {
 		t.Errorf("reason = %q, want it to mention cutover (app down)", got.Reason)
 	}
-	if tmp, _ := h.docker.FindContainer(ctx, "slipway-deploy-"+itoa64(dep.ID)); tmp != nil {
+	if tmp, _ := h.docker.FindContainer(ctx, "outhaul-deploy-"+itoa64(dep.ID)); tmp != nil {
 		t.Error("temp container leaked after cutover-create failure")
 	}
 }
@@ -322,10 +322,10 @@ func TestPipelineAbortsIfAppDeletedDuringDeploy(t *testing.T) {
 	dep := h.claimedDeployment(t, app.ID)
 	h.worker.runPipeline(ctx, dep)
 
-	if c, _ := h.docker.FindContainer(ctx, "slipway-app-web"); c != nil {
+	if c, _ := h.docker.FindContainer(ctx, "outhaul-app-web"); c != nil {
 		t.Error("canonical container was created for a deleted app (orphan)")
 	}
-	if tmp, _ := h.docker.FindContainer(ctx, "slipway-deploy-"+itoa64(dep.ID)); tmp != nil {
+	if tmp, _ := h.docker.FindContainer(ctx, "outhaul-deploy-"+itoa64(dep.ID)); tmp != nil {
 		t.Error("temp container leaked after app-deleted abort")
 	}
 }
@@ -501,7 +501,7 @@ func TestPipelineInjectsEnvSecretsRuntimeOnly(t *testing.T) {
 	}
 
 	// Runtime env (on the canonical container spec): all three present.
-	spec := lastCreatedNamed(t, h, "slipway-app-web")
+	spec := lastCreatedNamed(t, h, "outhaul-app-web")
 	if !contains(spec.Env, "LOG_LEVEL=debug") {
 		t.Errorf("runtime env missing LOG_LEVEL: %v", spec.Env)
 	}
@@ -523,7 +523,7 @@ func TestPipelineIgnoresUserPort(t *testing.T) {
 	dep := h.claimedDeployment(t, app.ID)
 	h.worker.runPipeline(ctx, dep)
 
-	spec := lastCreatedNamed(t, h, "slipway-app-web")
+	spec := lastCreatedNamed(t, h, "outhaul-app-web")
 	ports := 0
 	for _, e := range spec.Env {
 		if e == "PORT=3000" {

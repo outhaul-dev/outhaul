@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 // TestSigV4TestVector checks the signer against the worked example in AWS's

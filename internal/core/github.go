@@ -2,7 +2,7 @@ package core
 
 import "time"
 
-// GithubApp is the single GitHub App record for a Slipway instance. Secret
+// GithubApp is the single GitHub App record for a Outhaul instance. Secret
 // fields hold plaintext in memory (decrypted); the store encrypts them at rest.
 type GithubApp struct {
 	AppID          int64

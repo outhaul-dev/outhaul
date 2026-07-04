@@ -2,7 +2,7 @@ package core
 
 import "time"
 
-// App source kinds: how Slipway obtains and authenticates the repo.
+// App source kinds: how Outhaul obtains and authenticates the repo.
 const (
 	SourcePublic = "public" // public http(s) clone, no credentials
 	SourceSSH    = "ssh"    // clone over SSH with a generated deploy key

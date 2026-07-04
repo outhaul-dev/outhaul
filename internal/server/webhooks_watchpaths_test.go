@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 // watchedApp creates an auto-deploying app watching the given paths.

@@ -6,8 +6,8 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/webhook"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/webhook"
 )
 
 // maxWebhookBody caps how much of a webhook body we read.

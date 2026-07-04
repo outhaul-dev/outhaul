@@ -1,4 +1,4 @@
-module github.com/slipwaydev/slipway
+module github.com/james-smart/outhaul
 
 go 1.26.4
 

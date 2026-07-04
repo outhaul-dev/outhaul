@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 // seedFinishedDeploy walks a deployment through the real state machine to
@@ -45,7 +45,7 @@ func TestRollbackEnqueuesReuseOfImage(t *testing.T) {
 	e := newTestEnv(t)
 	e.login(t)
 	app := seedRunningApp(t, e, "")
-	src := seedFinishedDeploy(t, e, app.ID, "slipway/web:1")
+	src := seedFinishedDeploy(t, e, app.ID, "outhaul/web:1")
 
 	resp := e.postForm(t, "/deployments/"+itoa(src.ID)+"/rollback", url.Values{})
 	defer resp.Body.Close()
@@ -72,8 +72,8 @@ func TestRollbackEnqueuesReuseOfImage(t *testing.T) {
 	if dep.Status != core.StatusQueued {
 		t.Errorf("status = %q, want queued", dep.Status)
 	}
-	if dep.Image != "slipway/web:1" || dep.RollbackOf != src.ID {
-		t.Errorf("rollback row = image %q rollback_of %d, want slipway/web:1 / %d",
+	if dep.Image != "outhaul/web:1" || dep.RollbackOf != src.ID {
+		t.Errorf("rollback row = image %q rollback_of %d, want outhaul/web:1 / %d",
 			dep.Image, dep.RollbackOf, src.ID)
 	}
 	if e.deployer.notified == 0 {
@@ -130,7 +130,7 @@ func TestAppPageShowsRollbackButtonAndProvenance(t *testing.T) {
 	e := newTestEnv(t)
 	e.login(t)
 	app := seedRunningApp(t, e, "")
-	src := seedFinishedDeploy(t, e, app.ID, "slipway/web:1")
+	src := seedFinishedDeploy(t, e, app.ID, "outhaul/web:1")
 	if _, err := e.store.CreateRollback(context.Background(), app.ID, src.Image, src.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestDeploymentPageShowsRollbackButton(t *testing.T) {
 	e := newTestEnv(t)
 	e.login(t)
 	app := seedRunningApp(t, e, "")
-	src := seedFinishedDeploy(t, e, app.ID, "slipway/web:1")
+	src := seedFinishedDeploy(t, e, app.ID, "outhaul/web:1")
 
 	page := body(t, e.get(t, "/deployments/"+itoa(src.ID)))
 	if !strings.Contains(page, "/deployments/"+itoa(src.ID)+"/rollback") {

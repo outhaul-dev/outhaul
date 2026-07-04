@@ -3,7 +3,7 @@ package server
 import (
 	"net/http"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 // handleDeployments renders a global, cross-app deployment history.

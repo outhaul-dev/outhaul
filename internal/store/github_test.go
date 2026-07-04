@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 func TestGithubAppRoundTripEncrypted(t *testing.T) {
@@ -17,7 +17,7 @@ func TestGithubAppRoundTripEncrypted(t *testing.T) {
 	}
 
 	in := core.GithubApp{
-		AppID: 100, Slug: "slipway-z", PrivateKey: "PEM", WebhookSecret: "whs",
+		AppID: 100, Slug: "outhaul-z", PrivateKey: "PEM", WebhookSecret: "whs",
 		ClientID: "cid", ClientSecret: "csec",
 	}
 	if err := st.SetGithubApp(ctx, in); err != nil {
@@ -28,7 +28,7 @@ func TestGithubAppRoundTripEncrypted(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("GithubApp after setup: ok=%v err=%v", ok, err)
 	}
-	if got.AppID != 100 || got.Slug != "slipway-z" || got.PrivateKey != "PEM" ||
+	if got.AppID != 100 || got.Slug != "outhaul-z" || got.PrivateKey != "PEM" ||
 		got.WebhookSecret != "whs" || got.ClientID != "cid" || got.ClientSecret != "csec" {
 		t.Errorf("round-trip mismatch: %+v", got)
 	}

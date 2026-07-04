@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 // Labels returns the Docker-provider labels that make Traefik route the app's
@@ -16,13 +16,13 @@ import (
 // "websecure" router is added, sharing the same service, terminating TLS via
 // the "le" (Let's Encrypt) certificate resolver.
 //
-// The "slipway.*" labels are ownership markers Slipway uses to recognise the
+// The "outhaul.*" labels are ownership markers Outhaul uses to recognise the
 // containers it manages (they are ignored by Traefik).
 func Labels(app core.App, port int, tlsEnabled bool) map[string]string {
 	labels := RouteLabels(routerName(app.Name), app.Domain, port, tlsEnabled)
 	labels["traefik.enable"] = "true"
-	labels["slipway.managed"] = "true"
-	labels["slipway.app"] = app.Name
+	labels["outhaul.managed"] = "true"
+	labels["outhaul.app"] = app.Name
 	return labels
 }
 
@@ -51,5 +51,5 @@ func RouteLabels(router, host string, port int, tlsEnabled bool) map[string]stri
 // routerName namespaces Traefik router/service names per app so two apps never
 // collide.
 func routerName(appName string) string {
-	return "slipway-" + appName
+	return "outhaul-" + appName
 }

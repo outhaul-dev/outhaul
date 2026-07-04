@@ -6,7 +6,7 @@ import (
 )
 
 func TestBuildManifest(t *testing.T) {
-	raw, err := BuildManifest(ManifestParams{Name: "slipway-abc123", PublicURL: "https://slip.example.com"})
+	raw, err := BuildManifest(ManifestParams{Name: "outhaul-abc123", PublicURL: "https://slip.example.com"})
 	if err != nil {
 		t.Fatalf("BuildManifest: %v", err)
 	}
@@ -14,7 +14,7 @@ func TestBuildManifest(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &m); err != nil {
 		t.Fatalf("manifest is not valid JSON: %v", err)
 	}
-	if m["name"] != "slipway-abc123" {
+	if m["name"] != "outhaul-abc123" {
 		t.Errorf("name = %v", m["name"])
 	}
 	if m["url"] != "https://slip.example.com" {

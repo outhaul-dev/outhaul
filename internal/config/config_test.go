@@ -11,8 +11,8 @@ func TestLoadDefaults(t *testing.T) {
 	get := func(string) string { return "" }
 	c := Load(get)
 
-	if c.DataDir != "/var/lib/slipway" {
-		t.Errorf("DataDir = %q, want /var/lib/slipway", c.DataDir)
+	if c.DataDir != "/var/lib/outhaul" {
+		t.Errorf("DataDir = %q, want /var/lib/outhaul", c.DataDir)
 	}
 	if c.ListenAddr != ":8080" {
 		t.Errorf("ListenAddr = %q, want :8080", c.ListenAddr)
@@ -23,8 +23,8 @@ func TestLoadDefaults(t *testing.T) {
 	if c.TraefikImage == "" {
 		t.Error("TraefikImage should have a non-empty default")
 	}
-	if c.Network != "slipway" {
-		t.Errorf("Network = %q, want slipway", c.Network)
+	if c.Network != "outhaul" {
+		t.Errorf("Network = %q, want outhaul", c.Network)
 	}
 }
 
@@ -62,7 +62,7 @@ func TestDBPathDerivesFromDataDir(t *testing.T) {
 		}
 		return ""
 	})
-	want := filepath.Join("/data/slip", "slipway.db")
+	want := filepath.Join("/data/slip", "outhaul.db")
 	if got := c.DBPath(); got != want {
 		t.Errorf("DBPath() = %q, want %q", got, want)
 	}

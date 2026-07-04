@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/slipwaydev/slipway/internal/compose"
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/compose"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 // handleLogsSSE streams a deployment's build/deploy log to the browser as

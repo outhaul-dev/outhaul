@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// DefaultTraefikImage is the Traefik image Slipway pulls and manages. Pinned to
+// DefaultTraefikImage is the Traefik image Outhaul pulls and manages. Pinned to
 // a major version so upgrades are deliberate.
 const DefaultTraefikImage = "traefik:v3.3"
 
@@ -35,11 +35,11 @@ type Getenv func(string) string
 // Load resolves configuration from defaults overlaid with OUTHAUL_* env vars.
 func Load(getenv Getenv) Config {
 	return Config{
-		DataDir:      or(getenv("OUTHAUL_DATA_DIR"), "/var/lib/slipway"),
+		DataDir:      or(getenv("OUTHAUL_DATA_DIR"), "/var/lib/outhaul"),
 		ListenAddr:   or(getenv("OUTHAUL_LISTEN_ADDR"), ":8080"),
 		DockerHost:   getenv("OUTHAUL_DOCKER_HOST"), // empty is a valid value: defer to SDK
 		TraefikImage: or(getenv("OUTHAUL_TRAEFIK_IMAGE"), DefaultTraefikImage),
-		Network:      or(getenv("OUTHAUL_NETWORK"), "slipway"),
+		Network:      or(getenv("OUTHAUL_NETWORK"), "outhaul"),
 
 		ACMEEmail:     getenv("OUTHAUL_ACME_EMAIL"),
 		ACMEStaging:   truthy(getenv("OUTHAUL_ACME_STAGING")),
@@ -52,7 +52,7 @@ func Load(getenv Getenv) Config {
 
 // DBPath is the SQLite database file path, derived from DataDir.
 func (c Config) DBPath() string {
-	return filepath.Join(c.DataDir, "slipway.db")
+	return filepath.Join(c.DataDir, "outhaul.db")
 }
 
 // WorkDir is where a deployment's repo is cloned and built.

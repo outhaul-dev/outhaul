@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 func newTestStore(t *testing.T) *Store {

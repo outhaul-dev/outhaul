@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 const databaseCols = `id, project_id, name, engine, image, username, password, db_name, ext_port, status, reason, created_at`

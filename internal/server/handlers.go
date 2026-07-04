@@ -15,14 +15,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/compose"
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/github"
-	"github.com/slipwaydev/slipway/internal/sshkey"
+	"github.com/james-smart/outhaul/internal/compose"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/github"
+	"github.com/james-smart/outhaul/internal/sshkey"
 )
 
 // appContainerPrefix is prepended to an app's name to get its container name.
-const appContainerPrefix = "slipway-app-"
+const appContainerPrefix = "outhaul-app-"
 
 // appNameRe restricts app names to values safe as container names, Traefik
 // router identifiers, and URL segments.
@@ -470,7 +470,7 @@ func (s *Server) handleSetEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if key == "PORT" {
-		http.Error(w, "PORT is managed by Slipway and cannot be set.", http.StatusBadRequest)
+		http.Error(w, "PORT is managed by Outhaul and cannot be set.", http.StatusBadRequest)
 		return
 	}
 	if err := s.store.SetEnv(r.Context(), id, key, value, isSecret); err != nil {

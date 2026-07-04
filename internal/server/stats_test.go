@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/docker"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/docker"
 )
 
 // getStats fetches and decodes the app's live-metrics snapshot.
@@ -79,7 +79,7 @@ func TestAppStatsNotRunning(t *testing.T) {
 	}
 
 	// A container that exists but is stopped.
-	e.runtime.container = &docker.Container{ID: "c1", Name: "slipway-app-web", State: "exited"}
+	e.runtime.container = &docker.Container{ID: "c1", Name: "outhaul-app-web", State: "exited"}
 	if s := getStats(t, e, app.ID); s.Running {
 		t.Error("app with a stopped container should report not running")
 	}

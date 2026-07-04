@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 // GithubApp returns the configured GitHub App, or ok=false if none is set up.

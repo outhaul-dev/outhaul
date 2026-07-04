@@ -40,8 +40,8 @@ Requirements on the host: a reachable **Docker** daemon, **git**, and
 need the **docker CLI with the compose v2 plugin** (`docker compose`).
 
 ```sh
-go build -o slipway .
-./slipway serve
+go build -o outhaul .
+./outhaul serve
 ```
 
 On first boot Outhaul prints a one-time setup URL — open it to create the admin
@@ -56,7 +56,7 @@ below, which sets up a dedicated user and a systemd unit.
 Don't run Outhaul as root. From a checkout on the server:
 
 ```sh
-git clone https://github.com/James-Smart/slipway && cd slipway
+git clone https://github.com/James-Smart/outhaul && cd outhaul
 sudo deploy/install.sh
 ```
 
@@ -66,9 +66,9 @@ and a re-run after `git pull` upgrades the binary and restarts the service.
 It:
 
 - installs **Docker** (via get.docker.com), **git**, and **nixpacks** if missing;
-- creates an `outhaul` **system user** (no login shell, home `/var/lib/slipway`)
+- creates an `outhaul` **system user** (no login shell, home `/var/lib/outhaul`)
   in the `docker` group;
-- builds the binary if needed and installs it to `/usr/local/bin/slipway`;
+- builds the binary if needed and installs it to `/usr/local/bin/outhaul`;
 - writes `/etc/outhaul.env` (put `OUTHAUL_*` overrides there — ACME email,
   public URL) and installs and starts `outhaul.service`
   ([deploy/outhaul.service](deploy/outhaul.service)).
@@ -94,11 +94,11 @@ No config files — defaults with `OUTHAUL_*` environment overrides:
 
 | Variable                | Default              | Purpose                                   |
 |-------------------------|----------------------|-------------------------------------------|
-| `OUTHAUL_DATA_DIR`      | `/var/lib/slipway`   | SQLite DB and build work dirs             |
+| `OUTHAUL_DATA_DIR`      | `/var/lib/outhaul`   | SQLite DB and build work dirs             |
 | `OUTHAUL_LISTEN_ADDR`   | `:8080`              | Admin UI / API listen address             |
 | `OUTHAUL_DOCKER_HOST`   | (SDK env default)    | Docker endpoint                           |
 | `OUTHAUL_TRAEFIK_IMAGE` | `traefik:v3.3`       | Managed Traefik image                     |
-| `OUTHAUL_NETWORK`       | `slipway`            | Shared Docker network for app containers  |
+| `OUTHAUL_NETWORK`       | `outhaul`            | Shared Docker network for app containers  |
 | `OUTHAUL_ACME_EMAIL`    | (empty)              | Let's Encrypt email; set to enable HTTPS   |
 | `OUTHAUL_ACME_STAGING`  | `false`              | Use the LE staging CA (testing)            |
 | `OUTHAUL_HTTPS_PORT`    | `443`                | Host port for HTTPS                        |

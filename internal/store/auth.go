@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 // HasUser reports whether an admin user exists (drives the first-boot flow).

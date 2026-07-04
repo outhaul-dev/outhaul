@@ -8,14 +8,14 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/builder"
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/docker"
-	"github.com/slipwaydev/slipway/internal/github"
-	"github.com/slipwaydev/slipway/internal/traefik"
+	"github.com/james-smart/outhaul/internal/builder"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/docker"
+	"github.com/james-smart/outhaul/internal/github"
+	"github.com/james-smart/outhaul/internal/traefik"
 )
 
-// AppPort is the internal port Slipway asks apps to listen on (via $PORT) and
+// AppPort is the internal port Outhaul asks apps to listen on (via $PORT) and
 // tells Traefik to route to. Nixpacks-built apps that honour $PORT work out of
 // the box; per-app ports are a later seam.
 const AppPort = 8080
@@ -75,7 +75,7 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 		}
 		defer cleanup()
 
-		image = fmt.Sprintf("slipway/%s:%d", app.Name, dep.ID)
+		image = fmt.Sprintf("outhaul/%s:%d", app.Name, dep.ID)
 		logf(out, "Building image %s with %s...", image, w.builder.Name())
 		req := builder.BuildRequest{
 			ContextDir: workDir,
@@ -112,9 +112,9 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 	// --- start new container, invisible to Traefik, and health-check it ---
 	// Named on the globally-unique deployment ID (not the app name) so it can
 	// never collide with a canonical name: app names permit trailing
-	// "-<digits>", so "slipway-app-<name>-<depID>" could equal the canonical
+	// "-<digits>", so "outhaul-app-<name>-<depID>" could equal the canonical
 	// name of an app literally named "<name>-<depID>".
-	tempName := fmt.Sprintf("slipway-deploy-%d", dep.ID)
+	tempName := fmt.Sprintf("outhaul-deploy-%d", dep.ID)
 	logf(out, "Starting new container and waiting for it to become healthy...")
 	newID, err := w.createContainer(ctx, app, image, tempName, runtimeEnv, false)
 	if err != nil {
@@ -223,13 +223,13 @@ func (w *Worker) createContainer(ctx context.Context, app core.App, image, name 
 	} else {
 		labels = map[string]string{
 			"traefik.enable":  "false",
-			"slipway.managed": "true",
-			"slipway.app":     app.Name,
+			"outhaul.managed": "true",
+			"outhaul.app":     app.Name,
 		}
 	}
 	// Only the canonical (Traefik-routed) container should survive a host
 	// reboot or Docker restart. The temp health-check container carries
-	// runtime env (including secrets); if Slipway crashes between create and
+	// runtime env (including secrets); if Outhaul crashes between create and
 	// cleanup, an "unless-stopped" temp container would restart forever since
 	// crash recovery only touches DB rows, not orphaned Docker state.
 	restart := ""
@@ -331,5 +331,5 @@ func (w *Worker) githubToken(ctx context.Context) (string, error) {
 // App names are validated on creation to be safe as container/label
 // identifiers, so no escaping is needed here.
 func containerName(appName string) string {
-	return "slipway-app-" + appName
+	return "outhaul-app-" + appName
 }

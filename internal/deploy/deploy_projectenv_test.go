@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/slipwaydev/slipway/internal/compose"
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/compose"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 // TestPipelineResolvesProjectEnv: an app var referencing ${{project.KEY}} gets
@@ -37,7 +37,7 @@ func TestPipelineResolvesProjectEnv(t *testing.T) {
 	if got := h.status(t, dep.ID); got.Status != core.StatusRunning {
 		t.Fatalf("status = %q (%q), want running", got.Status, got.Reason)
 	}
-	spec := lastCreatedNamed(t, h, "slipway-app-web")
+	spec := lastCreatedNamed(t, h, "outhaul-app-web")
 	if !contains(spec.Env, "DATABASE_URL=postgres://db/app?sslmode=disable") {
 		t.Errorf("runtime env missing resolved DATABASE_URL: %v", spec.Env)
 	}

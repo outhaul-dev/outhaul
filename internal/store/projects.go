@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 // ErrProjectNotEmpty is returned by DeleteProject while apps or databases

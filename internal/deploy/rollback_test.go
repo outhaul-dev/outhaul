@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/docker"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/docker"
 )
 
 // claimedRollback enqueues a rollback (image pre-set) and moves it to
@@ -31,10 +31,10 @@ func TestPipelineRollbackSkipsCloneAndBuild(t *testing.T) {
 	app := h.app(t, "web")
 
 	// The app is live on the image from a newer (bad) deploy.
-	oldID, _ := h.docker.CreateContainer(ctx, docker.ContainerSpec{Name: "slipway-app-web", Image: "slipway/web:9"})
+	oldID, _ := h.docker.CreateContainer(ctx, docker.ContainerSpec{Name: "outhaul-app-web", Image: "outhaul/web:9"})
 	h.docker.StartContainer(ctx, oldID)
 
-	dep := h.claimedRollback(t, app.ID, "slipway/web:7", 7)
+	dep := h.claimedRollback(t, app.ID, "outhaul/web:7", 7)
 	h.worker.runPipeline(ctx, dep)
 
 	got := h.status(t, dep.ID)
@@ -47,11 +47,11 @@ func TestPipelineRollbackSkipsCloneAndBuild(t *testing.T) {
 	if h.builder.lastReq.ImageTag != "" {
 		t.Errorf("rollback must not build, built %q", h.builder.lastReq.ImageTag)
 	}
-	c, _ := h.docker.FindContainer(ctx, "slipway-app-web")
-	if c == nil || !c.Running() || c.Image != "slipway/web:7" {
+	c, _ := h.docker.FindContainer(ctx, "outhaul-app-web")
+	if c == nil || !c.Running() || c.Image != "outhaul/web:7" {
 		t.Fatalf("canonical container should run the rolled-back image, got %+v", c)
 	}
-	if got.Image != "slipway/web:7" {
+	if got.Image != "outhaul/web:7" {
 		t.Errorf("deployment image = %q, want the reused tag", got.Image)
 	}
 }
@@ -63,17 +63,17 @@ func TestPipelineRollbackUnhealthyKeepsCurrentContainer(t *testing.T) {
 	ctx := context.Background()
 	app := h.app(t, "web")
 
-	oldID, _ := h.docker.CreateContainer(ctx, docker.ContainerSpec{Name: "slipway-app-web", Image: "slipway/web:9"})
+	oldID, _ := h.docker.CreateContainer(ctx, docker.ContainerSpec{Name: "outhaul-app-web", Image: "outhaul/web:9"})
 	h.docker.StartContainer(ctx, oldID)
 	h.worker.healthCheck = func(context.Context, string, time.Duration) bool { return false }
 
-	dep := h.claimedRollback(t, app.ID, "slipway/web:7", 7)
+	dep := h.claimedRollback(t, app.ID, "outhaul/web:7", 7)
 	h.worker.runPipeline(ctx, dep)
 
 	if got := h.status(t, dep.ID); got.Status != core.StatusFailed {
 		t.Fatalf("status = %q, want failed", got.Status)
 	}
-	if c, _ := h.docker.FindContainer(ctx, "slipway-app-web"); c == nil || c.Image != "slipway/web:9" {
+	if c, _ := h.docker.FindContainer(ctx, "outhaul-app-web"); c == nil || c.Image != "outhaul/web:9" {
 		t.Errorf("current container should survive an unhealthy rollback, got %+v", c)
 	}
 }

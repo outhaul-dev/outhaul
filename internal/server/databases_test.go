@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/docker"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/docker"
 )
 
 // seedDatabase inserts a database row directly (as handleCreateDatabase
@@ -135,7 +135,7 @@ func TestDatabasePageShowsConnectionURL(t *testing.T) {
 	d := seedDatabase(t, e, "shop", core.EnginePostgres)
 
 	page := body(t, e.get(t, "/databases/"+itoa(d.ID)))
-	if !strings.Contains(page, "postgres://shop:pw123@slipway-db-shop:5432/shop") {
+	if !strings.Contains(page, "postgres://shop:pw123@outhaul-db-shop:5432/shop") {
 		t.Error("page missing the internal connection URL")
 	}
 	// The logs URL is assembled in JS from the data-id attribute.
@@ -226,7 +226,7 @@ func TestDatabaseLogsSSEStreams(t *testing.T) {
 	e := newTestEnv(t)
 	e.login(t)
 	d := seedDatabase(t, e, "shop", core.EnginePostgres)
-	e.runtime.container = &docker.Container{ID: "db1", Name: "slipway-db-shop", State: "running"}
+	e.runtime.container = &docker.Container{ID: "db1", Name: "outhaul-db-shop", State: "running"}
 	e.runtime.logs = map[string]string{"db1": "ready to accept connections\n"}
 
 	got := body(t, e.get(t, "/databases/"+itoa(d.ID)+"/logs"))

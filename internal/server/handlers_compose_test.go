@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/docker"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/docker"
 )
 
 // composeForm builds a valid create-app submission for a compose app.
@@ -247,8 +247,8 @@ func TestComposeLifecycleUsesRunner(t *testing.T) {
 		t.Errorf("compose stop calls = %d, want 1", n)
 	}
 	calls := e.compose.CallsFor("restart")
-	if len(calls) != 1 || calls[0].Project != "slipway-shop" {
-		t.Errorf("compose restart calls = %+v, want one for slipway-shop", calls)
+	if len(calls) != 1 || calls[0].Project != "outhaul-shop" {
+		t.Errorf("compose restart calls = %+v, want one for outhaul-shop", calls)
 	}
 	if len(e.runtime.stopped) != 0 || len(e.runtime.started) != 0 {
 		t.Error("compose lifecycle must not touch single containers")
@@ -268,8 +268,8 @@ func TestDeleteComposeAppDownsStack(t *testing.T) {
 	resp.Body.Close()
 
 	downs := e.compose.CallsFor("down")
-	if len(downs) != 1 || downs[0].Project != "slipway-shop" {
-		t.Errorf("compose down calls = %+v, want one for slipway-shop", downs)
+	if len(downs) != 1 || downs[0].Project != "outhaul-shop" {
+		t.Errorf("compose down calls = %+v, want one for outhaul-shop", downs)
 	}
 	if _, err := e.store.GetApp(context.Background(), app.ID); err == nil {
 		t.Error("app row should be deleted")
@@ -283,9 +283,9 @@ func TestComposeAppDetailShowsStack(t *testing.T) {
 	app, _ := e.store.GetAppByName(context.Background(), "shop")
 
 	e.runtime.stack = []docker.Container{
-		{ID: "c1", Name: "slipway-shop-web-1", State: "running",
+		{ID: "c1", Name: "outhaul-shop-web-1", State: "running",
 			Labels: map[string]string{"com.docker.compose.service": "web"}},
-		{ID: "c2", Name: "slipway-shop-db-1", State: "exited",
+		{ID: "c2", Name: "outhaul-shop-db-1", State: "exited",
 			Labels: map[string]string{"com.docker.compose.service": "db"}},
 	}
 

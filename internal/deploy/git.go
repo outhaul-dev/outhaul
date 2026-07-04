@@ -105,7 +105,7 @@ func tokenURL(url, token string) string {
 // sshEnv writes the private key to a temp 0600 file and returns env vars setting
 // GIT_SSH_COMMAND to use it. The returned cleanup removes the file.
 func sshEnv(privateKey string) (env []string, cleanup func(), err error) {
-	f, err := os.CreateTemp("", "slipway-deploy-key-*")
+	f, err := os.CreateTemp("", "outhaul-deploy-key-*")
 	if err != nil {
 		return nil, func() {}, err
 	}

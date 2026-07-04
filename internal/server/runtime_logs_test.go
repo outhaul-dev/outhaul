@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/docker"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/docker"
 )
 
 // seedRunningApp creates a nixpacks app with a running container whose logs
@@ -19,7 +19,7 @@ func seedRunningApp(t *testing.T, e *testEnv, logs string) core.App {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e.runtime.container = &docker.Container{ID: "c1", Name: "slipway-app-web", State: "running"}
+	e.runtime.container = &docker.Container{ID: "c1", Name: "outhaul-app-web", State: "running"}
 	e.runtime.logs = map[string]string{"c1": logs}
 	return app
 }
@@ -101,9 +101,9 @@ func seedComposeStack(t *testing.T, e *testEnv) core.App {
 		t.Fatal(err)
 	}
 	e.runtime.stack = []docker.Container{
-		{ID: "c1", Name: "slipway-shop-web-1", State: "running",
+		{ID: "c1", Name: "outhaul-shop-web-1", State: "running",
 			Labels: map[string]string{"com.docker.compose.service": "web"}},
-		{ID: "c2", Name: "slipway-shop-db-1", State: "running",
+		{ID: "c2", Name: "outhaul-shop-db-1", State: "running",
 			Labels: map[string]string{"com.docker.compose.service": "db"}},
 	}
 	e.runtime.logs = map[string]string{"c1": "web says hi\n", "c2": "db ready\n"}
