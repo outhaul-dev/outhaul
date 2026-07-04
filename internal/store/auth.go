@@ -50,6 +50,29 @@ func (s *Store) GetUserByName(ctx context.Context, username string) (core.User, 
 	return u, nil
 }
 
+// GetUser returns the user with the given id.
+func (s *Store) GetUser(ctx context.Context, id int64) (core.User, error) {
+	var u core.User
+	var createdAt string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, username, password_hash, created_at FROM users WHERE id = ?`, id).
+		Scan(&u.ID, &u.Username, &u.PasswordHash, &createdAt)
+	if err != nil {
+		return core.User{}, err
+	}
+	if u.CreatedAt, err = parseTime(createdAt); err != nil {
+		return core.User{}, err
+	}
+	return u, nil
+}
+
+// UpdateUserPassword sets a new password hash for the user.
+func (s *Store) UpdateUserPassword(ctx context.Context, id int64, passwordHash string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE users SET password_hash = ? WHERE id = ?`, passwordHash, id)
+	return err
+}
+
 // CreateSession stores a session. CreatedAt defaults to now when zero.
 func (s *Store) CreateSession(ctx context.Context, sess core.Session) error {
 	if sess.CreatedAt.IsZero() {
