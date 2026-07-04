@@ -1,0 +1,38 @@
+# Outhaul systemd unit. Installed by deploy/install.sh to
+# /etc/systemd/system/outhaul.service.
+#
+# The service runs as the dedicated `outhaul` system user, not root. Its only
+# privilege is the docker group (needed for the socket) — note that socket
+# access is itself root-equivalent, so the dedicated user is least-privilege
+# hygiene, not a security boundary. Traefik's container publishes 80/443 via
+# the daemon; the binary itself binds only the admin UI port.
+
+[Unit]
+Description=Outhaul — single-binary self-hosted PaaS
+Documentation=https://github.com/James-Smart/slipway
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+User=outhaul
+Group=outhaul
+SupplementaryGroups=docker
+ExecStart=/usr/local/bin/slipway serve
+# OUTHAUL_* overrides live here; absent file is fine.
+EnvironmentFile=-/etc/outhaul.env
+# Creates and owns /var/lib/slipway (the default OUTHAUL_DATA_DIR).
+StateDirectory=slipway
+StateDirectoryMode=0700
+# git and nixpacks expect a writable HOME (config, build caches).
+Environment=HOME=/var/lib/slipway
+Restart=on-failure
+RestartSec=3
+
+# Sandboxing. Deploy-key temp files land in the private /tmp.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

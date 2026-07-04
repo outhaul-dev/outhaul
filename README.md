@@ -48,6 +48,46 @@ On first boot Outhaul prints a one-time setup URL — open it to create the admi
 account. The admin UI listens on `:8080` by default; Traefik is started
 automatically and serves app traffic on `:80`.
 
+That's fine for kicking the tires; for a server install use the installer
+below, which sets up a dedicated user and a systemd unit.
+
+## Deploying to a server
+
+Don't run Outhaul as root. From a checkout on the server:
+
+```sh
+git clone https://github.com/James-Smart/slipway && cd slipway
+sudo deploy/install.sh
+```
+
+The installer needs root once (systemd required; Ubuntu/Debian/Fedora/RHEL/
+openSUSE). Each step is skipped when already done, so it is safe to re-run —
+and a re-run after `git pull` upgrades the binary and restarts the service.
+It:
+
+- installs **Docker** (via get.docker.com), **git**, and **nixpacks** if missing;
+- creates an `outhaul` **system user** (no login shell, home `/var/lib/slipway`)
+  in the `docker` group;
+- builds the binary if needed and installs it to `/usr/local/bin/slipway`;
+- writes `/etc/outhaul.env` (put `OUTHAUL_*` overrides there — ACME email,
+  public URL) and installs and starts `outhaul.service`
+  ([deploy/outhaul.service](deploy/outhaul.service)).
+
+The one-time setup URL lands in the journal:
+
+```sh
+journalctl -u outhaul | grep -i setup
+```
+
+**Why a dedicated user and not root?** The process needs exactly the Docker
+socket, the `git`/`nixpacks`/`docker` CLIs, and its data dir. It never binds
+a privileged port itself — Traefik's *container* publishes 80/443, and the
+(root) Docker daemon does that binding. Note that `docker` group membership
+is still root-equivalent (socket access can mount the host filesystem into a
+container), so the dedicated user is least-privilege hygiene rather than a
+hard security boundary; the unit layers systemd sandboxing on top
+(`NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=full`, `ProtectHome`).
+
 ## Configuration
 
 No config files — defaults with `OUTHAUL_*` environment overrides:

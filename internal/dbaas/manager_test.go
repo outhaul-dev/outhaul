@@ -246,6 +246,76 @@ func TestRemoveDeletesContainerDataAndRow(t *testing.T) {
 	if _, err := h.store.GetDatabase(ctx, d.ID); err == nil {
 		t.Error("row survived Remove")
 	}
+	if len(h.docker.Runs) != 0 {
+		t.Errorf("helper containers = %v, want none when plain removal works", h.docker.Runs)
+	}
+}
+
+// Under an unprivileged service user the engine has chowned its data to a
+// container-internal uid and plain removal fails; the (root) daemon must then
+// delete it via a helper container.
+func TestRemoveFallsBackToHelperContainer(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	d := h.database(t, "shop", core.EnginePostgres)
+	if err := h.m.provision(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	h.m.removeAll = func(string) error { return errors.New("permission denied") }
+
+	if err := h.m.Remove(ctx, d); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if len(h.docker.Runs) != 1 {
+		t.Fatalf("helper runs = %d, want 1", len(h.docker.Runs))
+	}
+	spec := h.docker.Runs[0]
+	if spec.Image != helperImage {
+		t.Errorf("helper image = %q, want %q", spec.Image, helperImage)
+	}
+	if len(spec.Cmd) != 3 || spec.Cmd[0] != "rm" || spec.Cmd[1] != "-rf" || spec.Cmd[2] != "/data/shop" {
+		t.Errorf("helper cmd = %v, want rm -rf /data/shop", spec.Cmd)
+	}
+	if len(spec.Mounts) != 1 || spec.Mounts[0].Source != h.m.dataDir || spec.Mounts[0].Target != "/data" {
+		t.Errorf("helper mounts = %v, want the databases root at /data", spec.Mounts)
+	}
+	if spec.Labels["slipway.role"] != "helper" {
+		t.Errorf("labels = %v, want slipway.role=helper", spec.Labels)
+	}
+	if !hasPulled(h.docker.Pulled, helperImage) {
+		t.Errorf("pulled = %v, want the helper image pulled", h.docker.Pulled)
+	}
+	if _, err := h.store.GetDatabase(ctx, d.ID); err == nil {
+		t.Error("row survived Remove")
+	}
+}
+
+func TestRemoveHelperFailureSurfaces(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	d := h.database(t, "shop", core.EnginePostgres)
+	if err := h.m.provision(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	h.m.removeAll = func(string) error { return errors.New("permission denied") }
+	h.docker.OnRun = func(docker.ContainerSpec) (string, int, error) { return "", 1, nil }
+
+	err := h.m.Remove(ctx, d)
+	if err == nil || !strings.Contains(err.Error(), "exited 1") {
+		t.Fatalf("Remove = %v, want the helper exit code surfaced", err)
+	}
+	if _, gerr := h.store.GetDatabase(ctx, d.ID); gerr != nil {
+		t.Error("row deleted even though the data dir survived")
+	}
+}
+
+func hasPulled(pulled []string, ref string) bool {
+	for _, p := range pulled {
+		if p == ref {
+			return true
+		}
+	}
+	return false
 }
 
 func TestConnectionURLs(t *testing.T) {
