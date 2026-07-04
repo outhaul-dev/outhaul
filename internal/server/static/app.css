@@ -148,6 +148,7 @@ input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px 
 /* Alerts */
 .alert { padding: 10px 14px; border-radius: var(--radius); margin-bottom: 16px; font-size: 13px; }
 .alert-error { background: var(--danger-bg); border: 1px solid var(--danger-bd); color: var(--danger); }
+.alert-success { background: var(--state-running-bg); border: 1px solid var(--state-running-bd); color: var(--state-running-fg); }
 
 /* Log stream */
 .log-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }

@@ -2,7 +2,6 @@ package server
 
 import (
 	"net/http"
-	"strings"
 )
 
 // handleSettings renders the settings hub: GitHub App connection status and the
@@ -33,7 +32,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	current := r.FormValue("current")
-	next := strings.TrimSpace(r.FormValue("new"))
+	next := r.FormValue("new")
 	if len(next) < 8 {
 		http.Error(w, "New password must be at least 8 characters.", http.StatusBadRequest)
 		return
