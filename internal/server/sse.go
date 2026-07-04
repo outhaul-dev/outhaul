@@ -84,6 +84,15 @@ func (s *Server) handleRuntimeLogsSSE(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	s.streamContainerLogs(w, r, func() (string, string) {
+		return s.runtimeLogTarget(r.Context(), app, r.URL.Query().Get("service"))
+	})
+}
+
+// streamContainerLogs is the shared body of the runtime-log SSE endpoints
+// (apps and databases): resolve a container, replay the last ?tail= lines,
+// then follow until the container stops or the client disconnects.
+func (s *Server) streamContainerLogs(w http.ResponseWriter, r *http.Request, resolve func() (containerID, errMsg string)) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
@@ -102,7 +111,7 @@ func (s *Server) handleRuntimeLogsSSE(w http.ResponseWriter, r *http.Request) {
 
 	// Anything that stops the stream travels as an in-stream "err" event:
 	// EventSource clients cannot read the body of a non-200 response.
-	cid, errMsg := s.runtimeLogTarget(r.Context(), app, r.URL.Query().Get("service"))
+	cid, errMsg := resolve()
 	if errMsg != "" {
 		writeSSE(w, "err", errMsg)
 		flusher.Flush()

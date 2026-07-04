@@ -188,6 +188,41 @@ health-gated). Dokploy's Swarm-based auto-rollback has no equivalent because
 it isn't needed: a failed deploy never touches the live container. Per-deploy
 config snapshots and image retention/cleanup are deliberate seams.
 
+### Databases as a service (done)
+
+Projects can hold managed **databases** — PostgreSQL, MySQL, or Redis — next
+to their apps (design in `docs/superpowers/specs/2026-07-04-databases.md`).
+This is Dokploy's databases feature trimmed to Outhaul's shape: one form field
+set (name + engine + optional image + optional external port) instead of five
+credential fields, with the user/database name defaulting to the database's
+name and the password always generated server-side (stored encrypted, same
+secretbox scheme as env values). Each database is a plain container named
+`slipway-db-<name>` on the shared network, so apps connect internally by
+hostname (`postgres://user:pass@slipway-db-shop:5432/shop`); the database page
+shows the ready-to-paste URL and nothing is auto-injected — wiring it into
+apps is a copy-paste into project shared env (`${{project.KEY}}`), which is
+also Dokploy's model. An optional **external port** publishes the engine's
+port on the host for outside access — raw TCP publish rather than Traefik,
+which is HTTP-only (Dokploy bypasses its proxy here too).
+
+Provisioning (pull → create → start) runs in a background goroutine owned by
+`internal/dbaas.Manager` — the databases counterpart of the deploy worker; the
+server calls it through a small interface and never creates containers
+itself. The row's stored status (`creating → running/failed`) exists only
+because "being created" and "failed to create" aren't observable from Docker;
+everything else derives from the container, which carries
+`restart: unless-stopped` so Docker owns reboots (no Swarm, no HA — matching
+the rest of Outhaul). Data lives in a bind mount under
+`<data-dir>/databases/<name>` rather than a named volume, keeping all state
+rsync-able in one directory; because of that, reprovisioning (retry after a
+failed pull, or applying a changed external port) can simply remove and
+recreate the container. Rows stuck in `creating` after a binary restart are
+recovered as failed on boot, like interrupted deployments. Deleting a
+database removes container, data directory, and row — the confirm dialog says
+so. Deliberate seams: scheduled/S3 backups and restore (Dokploy's cron +
+destinations model), more engines (a table row each), image upgrades, and a
+database metrics panel.
+
 Design decisions from M3: private-repo access goes through a **GitHub App**,
 set up via GitHub's manifest flow (the operator submits a pre-filled manifest,
 GitHub redirects back with a temporary code that is exchanged for the App's
@@ -226,6 +261,7 @@ slipway/
 
     core/                     # PURE domain: no I/O, no deps. The testable heart.
         app.go                # App model
+        database.go           # managed Database model (engine, credentials, lifecycle status)
         env.go                # EnvVar model + ResolveEnv (${{project.KEY}} references)
         project.go            # Project model (workspace grouping apps)
         deployment.go         # Deployment model, DeployStatus enum
@@ -239,6 +275,7 @@ slipway/
         apps.go               # App CRUD
         projects.go           # Project CRUD (guarded delete, app counts)
         project_env.go        # project-level shared env vars (encrypted at rest)
+        databases.go          # managed-database CRUD (password encrypted at rest, recover-on-boot)
         deployments.go        # Deployment CRUD + queue ops (claim, recover-on-boot, rollbacks)
 
     docker/                   # Docker behind an interface (fake for tests)
@@ -278,6 +315,10 @@ slipway/
         real.go               # HTTP-backed implementation
         fake.go               # in-memory fake for unit tests
 
+    dbaas/                    # managed database containers (databases-as-a-service)
+        engines.go            # engine table: images, ports, env/credentials, connection URLs
+        manager.go            # provision/start/stop/remove; the server's Databases interface
+
     deploy/                   # the worker/orchestrator — drives the state machine
         worker.go             # dispatcher loop: claim queued work, per-app serialization, concurrency across apps
         pipeline.go           # one nixpacks deployment: clone -> build -> start container -> health -> running
@@ -288,6 +329,7 @@ slipway/
         server.go             # http.ServeMux, route table, middleware, graceful Shutdown
         auth.go               # argon2id, session cookies, first-boot setup token
         handlers.go           # apps list/create, deploy trigger, deployment detail
+        databases.go          # managed-database pages: create, detail, lifecycle, settings
         sse.go                # SSE handlers: build logs (logstream broker) + runtime container logs (docker follow)
         stats.go              # live app metrics: aggregated docker-stats snapshot, polled by the app page
         templates/*.tmpl      # html/template, embedded

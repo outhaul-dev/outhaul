@@ -22,10 +22,13 @@ Outhaul is a deliberately minimal alternative to Dokploy/Coolify.
 > live-tails **runtime container logs** (per service for compose stacks) and
 > shows **live metrics** (CPU, memory, network, and uptime, aggregated across
 > a compose stack). Any past deployment with a built image can be **rolled
-> back** to in one click — no rebuild, same health-gated cutover. See
-> [ARCHITECTURE.md](ARCHITECTURE.md) for the design and what is intentionally
-> not built yet (multiple users, databases, metrics history/alerts,
-> multi-server).
+> back** to in one click — no rebuild, same health-gated cutover. Projects can
+> hold **managed databases** (PostgreSQL, MySQL, Redis): one click provisions
+> a container with generated credentials and persistent data, reachable by
+> apps over the internal network (and optionally on a published host port).
+> See [ARCHITECTURE.md](ARCHITECTURE.md) for the design and what is
+> intentionally not built yet (multiple users, database backups, metrics
+> history/alerts, multi-server).
 
 ## Running
 

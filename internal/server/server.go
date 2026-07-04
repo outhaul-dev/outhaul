@@ -31,6 +31,15 @@ type Deployer interface {
 	Cancel(ctx context.Context, id int64) (bool, error)
 }
 
+// Databases is the slice of the dbaas manager the server needs. Provision is
+// asynchronous (it can pull an image); the rest are immediate.
+type Databases interface {
+	Provision(d core.Database)
+	Start(ctx context.Context, d core.Database) error
+	Stop(ctx context.Context, d core.Database) error
+	Remove(ctx context.Context, d core.Database) error
+}
+
 // Runtime is the slice of the Docker client the server needs for app lifecycle.
 type Runtime interface {
 	FindContainer(ctx context.Context, name string) (*docker.Container, error)
@@ -44,12 +53,13 @@ type Runtime interface {
 
 // Server holds the HTTP layer's dependencies.
 type Server struct {
-	store    *store.Store
-	deployer Deployer
-	runtime  Runtime
-	compose  compose.Runner
-	broker   *logstream.Broker
-	gh       github.Client
+	store     *store.Store
+	deployer  Deployer
+	runtime   Runtime
+	compose   compose.Runner
+	databases Databases
+	broker    *logstream.Broker
+	gh        github.Client
 
 	pages      map[string]*template.Template
 	setupToken string
@@ -64,12 +74,13 @@ type Server struct {
 // first-boot admin-creation flow (printed by the caller as a one-time URL).
 // publicURL is Slipway's externally reachable base URL, used to build the
 // GitHub App manifest's callback and webhook URLs.
-func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, br *logstream.Broker, gh github.Client, publicURL, setupToken string) (*Server, error) {
+func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databases, br *logstream.Broker, gh github.Client, publicURL, setupToken string) (*Server, error) {
 	s := &Server{
 		store:       st,
 		deployer:    d,
 		runtime:     rt,
 		compose:     cp,
+		databases:   dbm,
 		broker:      br,
 		gh:          gh,
 		publicURL:   publicURL,
@@ -85,7 +96,7 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, br *logstre
 // parseTemplates builds one template set per page, each combining base.tmpl with
 // the page template (so every page can define its own "content" block).
 func (s *Server) parseTemplates() error {
-	pages := []string{"login", "setup", "overview", "projects", "project", "apps", "app", "deployment", "deployments", "github_connect", "settings", "placeholder"}
+	pages := []string{"login", "setup", "overview", "projects", "project", "apps", "app", "database", "deployment", "deployments", "github_connect", "settings", "placeholder"}
 	s.pages = make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.New("base").Funcs(templateFuncs())
@@ -126,6 +137,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /projects/{id}/env", s.requireAuth(s.handleSetProjectEnv))
 	mux.HandleFunc("POST /projects/{id}/env/delete", s.requireAuth(s.handleDeleteProjectEnv))
 	mux.HandleFunc("POST /projects/{id}/delete", s.requireAuth(s.handleDeleteProject))
+	mux.HandleFunc("POST /projects/{id}/databases", s.requireAuth(s.handleCreateDatabase))
+	mux.HandleFunc("GET /databases/{id}", s.requireAuth(s.handleDatabaseDetail))
+	mux.HandleFunc("GET /databases/{id}/logs", s.requireAuth(s.handleDatabaseLogsSSE))
+	mux.HandleFunc("POST /databases/{id}/start", s.requireAuth(s.handleStartDatabase))
+	mux.HandleFunc("POST /databases/{id}/stop", s.requireAuth(s.handleStopDatabase))
+	mux.HandleFunc("POST /databases/{id}/settings", s.requireAuth(s.handleDatabaseSettings))
+	mux.HandleFunc("POST /databases/{id}/delete", s.requireAuth(s.handleDeleteDatabase))
 	mux.HandleFunc("GET /apps", s.requireAuth(s.handleAppsList))
 	mux.HandleFunc("POST /apps", s.requireAuth(s.handleCreateApp))
 	mux.HandleFunc("GET /apps/{id}", s.requireAuth(s.handleAppDetail))
@@ -186,6 +204,13 @@ func templateFuncs() template.FuncMap {
 	return template.FuncMap{
 		// stateClass maps a deployment status to its CSS class.
 		"stateClass": func(s core.DeployStatus) string { return "state-" + string(s) },
+		// dbStateClass maps a database status onto the deployment state colors.
+		"dbStateClass": func(s string) string {
+			if s == core.DBCreating {
+				return "state-building" // in-progress color
+			}
+			return "state-" + s
+		},
 		// joinLines renders a list one-per-line (the watch-paths textarea).
 		"joinLines": func(ss []string) string { return strings.Join(ss, "\n") },
 		"fmtTime": func(t time.Time) string {

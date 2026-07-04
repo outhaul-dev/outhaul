@@ -8,10 +8,11 @@ import (
 	"github.com/slipwaydev/slipway/internal/core"
 )
 
-// ErrProjectNotEmpty is returned by DeleteProject while apps still reference
-// the project. There is no DB-level foreign key on apps.project_id (see
-// migration 0004), so this guard is what keeps the reference sound.
-var ErrProjectNotEmpty = errors.New("store: project still has apps")
+// ErrProjectNotEmpty is returned by DeleteProject while apps or databases
+// still reference the project. There is no DB-level foreign key on
+// apps.project_id / databases.project_id (see migrations 0004 and 0009), so
+// this guard is what keeps the references sound.
+var ErrProjectNotEmpty = errors.New("store: project still has apps or databases")
 
 // CreateProject inserts a project and returns it with ID and CreatedAt set.
 func (s *Store) CreateProject(ctx context.Context, p core.Project) (core.Project, error) {
@@ -61,9 +62,9 @@ func (s *Store) UpdateProject(ctx context.Context, id int64, name, description s
 	return err
 }
 
-// DeleteProject removes an empty project; a project with apps is refused with
-// ErrProjectNotEmpty. Count and delete run in one transaction so an app
-// created concurrently cannot slip into a just-deleted project.
+// DeleteProject removes an empty project; a project with apps or databases is
+// refused with ErrProjectNotEmpty. Count and delete run in one transaction so
+// an app created concurrently cannot slip into a just-deleted project.
 func (s *Store) DeleteProject(ctx context.Context, id int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -72,7 +73,8 @@ func (s *Store) DeleteProject(ctx context.Context, id int64) error {
 	defer tx.Rollback()
 	var n int
 	if err := tx.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM apps WHERE project_id = ?`, id).Scan(&n); err != nil {
+		`SELECT (SELECT COUNT(*) FROM apps WHERE project_id = ?)
+		      + (SELECT COUNT(*) FROM databases WHERE project_id = ?)`, id, id).Scan(&n); err != nil {
 		return err
 	}
 	if n > 0 {

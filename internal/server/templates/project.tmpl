@@ -46,6 +46,44 @@
 {{template "appform" .}}
 
 <section class="panel">
+  <h2 class="panel-title">Databases</h2>
+  {{if .Databases}}
+  <table class="table">
+    <thead>
+      <tr><th>Name</th><th>Engine</th><th>Image</th><th>External port</th><th>Status</th></tr>
+    </thead>
+    <tbody>
+      {{range .Databases}}
+      <tr>
+        <td><a href="/databases/{{.ID}}" class="rowlink">{{.Name}}</a></td>
+        <td class="mono muted">{{.Engine}}</td>
+        <td class="mono muted">{{.Image}}</td>
+        <td class="mono muted">{{if .ExtPort}}{{.ExtPort}}{{else}}—{{end}}</td>
+        <td><span class="badge {{dbStateClass .Status}}">{{.Status}}</span></td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No databases in this project yet.</p>
+  {{end}}
+  <form method="post" action="/projects/{{.Project.ID}}/databases" class="grid-form env-add">
+    <label class="field"><span>Name</span><input type="text" name="name" placeholder="shop-db" required></label>
+    <label class="field"><span>Engine</span>
+      <select name="engine">
+        <option value="postgres">PostgreSQL</option>
+        <option value="mysql">MySQL</option>
+        <option value="redis">Redis</option>
+      </select>
+    </label>
+    <label class="field"><span>Image (optional)</span><input type="text" name="image" placeholder="engine default"></label>
+    <label class="field"><span>External port (optional)</span><input type="text" name="external_port" placeholder="internal only" inputmode="numeric"></label>
+    <button type="submit" class="btn btn-primary">Create database</button>
+  </form>
+  <p class="muted env-note">Credentials are generated and stored encrypted; the database runs on the shared Docker network with its data under the server's data directory. Connection details live on the database's page after creation.</p>
+</section>
+
+<section class="panel">
   <h2 class="panel-title">Shared variables</h2>
   {{if .Env}}
   <table class="table">
@@ -94,8 +132,8 @@
 
 <section class="panel">
   <h2 class="panel-title">Danger zone</h2>
-  {{if .Apps}}
-  <p class="env-note">This project still has {{.AppCount}} app{{if ne .AppCount 1}}s{{end}}. Delete them before deleting the project.</p>
+  {{if or .Apps .Databases}}
+  <p class="env-note">This project still has {{.AppCount}} app{{if ne .AppCount 1}}s{{end}} and {{len .Databases}} database{{if ne (len .Databases) 1}}s{{end}}. Delete them before deleting the project.</p>
   {{else}}
   <form method="post" action="/projects/{{.Project.ID}}/delete" class="inline" onsubmit="return confirm('Delete project {{.Project.Name}}?');">
     <button type="submit" class="btn btn-danger">Delete project</button>

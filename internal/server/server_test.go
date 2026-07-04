@@ -34,6 +34,40 @@ func (f *fakeDeployer) Cancel(_ context.Context, id int64) (bool, error) {
 	return true, nil
 }
 
+// fakeDatabases records lifecycle calls from the handlers; it never touches a
+// store or container, so tests assert on the calls (and set row state
+// themselves when a page needs it).
+type fakeDatabases struct {
+	provisioned []core.Database
+	started     []int64
+	stopped     []int64
+	removed     []int64
+	failWith    error // returned by Start/Stop/Remove when set
+}
+
+func (f *fakeDatabases) Provision(d core.Database) { f.provisioned = append(f.provisioned, d) }
+func (f *fakeDatabases) Start(_ context.Context, d core.Database) error {
+	if f.failWith != nil {
+		return f.failWith
+	}
+	f.started = append(f.started, d.ID)
+	return nil
+}
+func (f *fakeDatabases) Stop(_ context.Context, d core.Database) error {
+	if f.failWith != nil {
+		return f.failWith
+	}
+	f.stopped = append(f.stopped, d.ID)
+	return nil
+}
+func (f *fakeDatabases) Remove(_ context.Context, d core.Database) error {
+	if f.failWith != nil {
+		return f.failWith
+	}
+	f.removed = append(f.removed, d.ID)
+	return nil
+}
+
 type fakeRuntime struct {
 	container *docker.Container
 	stack     []docker.Container // returned by ListContainers (compose apps)
@@ -81,15 +115,16 @@ func (f *fakeRuntime) ContainerStats(_ context.Context, id string) (docker.Stats
 }
 
 type testEnv struct {
-	srv      *Server
-	deployer *fakeDeployer
-	runtime  *fakeRuntime
-	compose  *compose.Fake
-	broker   *logstream.Broker
-	store    *store.Store
-	gh       *github.Fake
-	http     *httptest.Server
-	client   *http.Client
+	srv       *Server
+	deployer  *fakeDeployer
+	runtime   *fakeRuntime
+	compose   *compose.Fake
+	databases *fakeDatabases
+	broker    *logstream.Broker
+	store     *store.Store
+	gh        *github.Fake
+	http      *httptest.Server
+	client    *http.Client
 
 	sessionToken string // set by login(); attach to requests via authed()
 }
@@ -109,9 +144,10 @@ func newTestEnv(t *testing.T) *testEnv {
 	dep := &fakeDeployer{}
 	rt := &fakeRuntime{}
 	cp := &compose.Fake{}
+	dbm := &fakeDatabases{}
 	br := logstream.New()
 	gh := &github.Fake{}
-	srv, err := New(st, dep, rt, cp, br, gh, "https://slip.example.com", "SETUPTOKEN")
+	srv, err := New(st, dep, rt, cp, dbm, br, gh, "https://slip.example.com", "SETUPTOKEN")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -126,7 +162,7 @@ func newTestEnv(t *testing.T) *testEnv {
 			return http.ErrUseLastResponse // don't follow; assert redirects ourselves
 		},
 	}
-	return &testEnv{srv: srv, deployer: dep, runtime: rt, compose: cp, broker: br, store: st, gh: gh, http: ts, client: client}
+	return &testEnv{srv: srv, deployer: dep, runtime: rt, compose: cp, databases: dbm, broker: br, store: st, gh: gh, http: ts, client: client}
 }
 
 func (e *testEnv) get(t *testing.T, path string) *http.Response {

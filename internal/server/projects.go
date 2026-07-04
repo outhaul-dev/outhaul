@@ -112,12 +112,18 @@ func (s *Server) renderProject(w http.ResponseWriter, r *http.Request, status in
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	dbs, err := s.store.ListDatabasesByProject(r.Context(), p.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	data := map[string]any{
 		"Title":           p.Name,
 		"Active":          "projects",
 		"Project":         p,
 		"Apps":            rows,
 		"AppCount":        len(rows),
+		"Databases":       dbs,
 		"Env":             maskEnv(envVars),
 		"Projects":        projects,
 		"SelectedProject": p.ID,
@@ -234,8 +240,9 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.DeleteProject(r.Context(), id); err != nil {
 		if errors.Is(err, store.ErrProjectNotEmpty) {
 			apps, _ := s.store.ListAppsByProject(r.Context(), id)
+			dbs, _ := s.store.ListDatabasesByProject(r.Context(), id)
 			s.renderProject(w, r, http.StatusConflict, p,
-				fmt.Sprintf("This project still has %d app(s). Delete them before deleting the project.", len(apps)))
+				fmt.Sprintf("This project still has %d app(s) and %d database(s). Delete them before deleting the project.", len(apps), len(dbs)))
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
