@@ -53,7 +53,9 @@
   <p class="env-note">Add this as a deploy key on the repository (read access):</p>
   <div class="cmd"><code>{{.App.SSHPublicKey}}</code></div>
   {{end}}
-  {{if .WebhookURL}}
+  {{if eq .App.Source "github"}}
+  <p class="env-note">Auto-deploy is handled by the connected GitHub App — pushes to <span class="mono">{{.App.Branch}}</span> deploy automatically when auto-deploy is enabled. No webhook setup needed.</p>
+  {{else if .WebhookURL}}
   <p class="env-note">Point a push webhook here to auto-deploy:</p>
   <div class="cmd"><code>{{.WebhookURL}}</code></div>
   {{end}}

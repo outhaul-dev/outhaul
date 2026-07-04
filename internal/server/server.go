@@ -177,7 +177,7 @@ func templateFuncs() template.FuncMap {
 			return t.Local().Format("2006-01-02 15:04:05")
 		},
 		"buildDur": func(d core.Deployment) string {
-			if d.StartedAt == nil || d.FinishedAt == nil {
+			if d.StartedAt == nil || d.FinishedAt == nil || d.FinishedAt.Before(*d.StartedAt) {
 				return "—"
 			}
 			return d.FinishedAt.Sub(*d.StartedAt).Round(time.Second).String()
