@@ -78,6 +78,11 @@ func (s *Store) DeleteProject(ctx context.Context, id int64) error {
 	if n > 0 {
 		return ErrProjectNotEmpty
 	}
+	// project_env cascades on project delete, but delete explicitly too so the
+	// behavior is robust to a future migration dropping the cascade.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM project_env WHERE project_id = ?`, id); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, id); err != nil {
 		return err
 	}

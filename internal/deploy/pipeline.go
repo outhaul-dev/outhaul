@@ -48,9 +48,9 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 
 	logf(out, "Deploying %s (%s) to %s", app.Name, app.RepoURL, app.Domain)
 
-	envVars, err := w.store.ListEnv(ctx, app.ID)
+	envVars, err := w.loadEnv(ctx, app)
 	if err != nil {
-		w.fail(dep, core.StatusBuilding, "load env: "+err.Error(), out)
+		w.fail(dep, core.StatusBuilding, err.Error(), out)
 		return
 	}
 	buildEnv := map[string]string{"PORT": fmt.Sprintf("%d", AppPort)}
@@ -164,6 +164,21 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 		logf(out, "WARNING: could not record running status: %v", err)
 	}
 	logf(out, "Done. %s is live at http://%s", app.Name, app.Domain)
+}
+
+// loadEnv loads an app's env vars with ${{project.KEY}} references resolved
+// against its project's shared variables. Errors come back ready to be used
+// as a failure reason.
+func (w *Worker) loadEnv(ctx context.Context, app core.App) ([]core.EnvVar, error) {
+	appVars, err := w.store.ListEnv(ctx, app.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load env: %w", err)
+	}
+	projectVars, err := w.store.ListProjectEnv(ctx, app.ProjectID)
+	if err != nil {
+		return nil, fmt.Errorf("load project env: %w", err)
+	}
+	return core.ResolveEnv(appVars, projectVars)
 }
 
 // cloneWorkDir creates the per-deploy work dir and clones the app's repo into

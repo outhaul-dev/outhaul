@@ -107,12 +107,18 @@ func (s *Server) renderProject(w http.ResponseWriter, r *http.Request, status in
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	envVars, err := s.store.ListProjectEnv(r.Context(), p.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	data := map[string]any{
 		"Title":           p.Name,
 		"Active":          "projects",
 		"Project":         p,
 		"Apps":            rows,
 		"AppCount":        len(rows),
+		"Env":             maskEnv(envVars),
 		"Projects":        projects,
 		"SelectedProject": p.ID,
 		"Return":          "/projects/" + strconv.FormatInt(p.ID, 10),
@@ -161,6 +167,51 @@ func (s *Server) handleProjectSettings(w http.ResponseWriter, r *http.Request) {
 	if err := s.store.UpdateProject(r.Context(), id, name, description); err != nil {
 		// Most likely a duplicate name (UNIQUE constraint).
 		s.renderProject(w, r, http.StatusBadRequest, p, "Could not update project: "+err.Error())
+		return
+	}
+	http.Redirect(w, r, "/projects/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
+// handleSetProjectEnv upserts a shared variable. Apps consume shared variables
+// only via ${{project.KEY}} references in their own env values, resolved on
+// each app's next deploy — so unlike app env, a project-level PORT is harmless
+// and allowed.
+func (s *Server) handleSetProjectEnv(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	p, err := s.store.GetProject(r.Context(), id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	key := strings.TrimSpace(r.FormValue("key"))
+	if !envKeyRe.MatchString(key) {
+		s.renderProject(w, r, http.StatusBadRequest, p, "Key must be UPPER_SNAKE_CASE (letters, digits, underscore).")
+		return
+	}
+	if err := s.store.SetProjectEnv(r.Context(), id, key, r.FormValue("value"), r.FormValue("secret") != ""); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/projects/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
+func (s *Server) handleDeleteProjectEnv(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := s.store.GetProject(r.Context(), id); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	key := strings.TrimSpace(r.FormValue("key"))
+	if err := s.store.DeleteProjectEnv(r.Context(), id, key); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/projects/"+strconv.FormatInt(id, 10), http.StatusSeeOther)

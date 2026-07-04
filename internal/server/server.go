@@ -120,6 +120,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /projects", s.requireAuth(s.handleCreateProject))
 	mux.HandleFunc("GET /projects/{id}", s.requireAuth(s.handleProjectDetail))
 	mux.HandleFunc("POST /projects/{id}/settings", s.requireAuth(s.handleProjectSettings))
+	mux.HandleFunc("POST /projects/{id}/env", s.requireAuth(s.handleSetProjectEnv))
+	mux.HandleFunc("POST /projects/{id}/env/delete", s.requireAuth(s.handleDeleteProjectEnv))
 	mux.HandleFunc("POST /projects/{id}/delete", s.requireAuth(s.handleDeleteProject))
 	mux.HandleFunc("GET /apps", s.requireAuth(s.handleAppsList))
 	mux.HandleFunc("POST /apps", s.requireAuth(s.handleCreateApp))

@@ -156,7 +156,7 @@
     <label class="field"><span>Secret</span><input type="checkbox" name="secret"></label>
     <button type="submit" class="btn btn-primary">Add</button>
   </form>
-  <p class="muted env-note">Redeploy to apply env changes.</p>
+  <p class="muted env-note">Values may reference the project's shared variables as <span class="mono">{{"${{project.KEY}}"}}</span>, resolved on deploy. Redeploy to apply env changes.</p>
 </section>
 
 <section class="panel">

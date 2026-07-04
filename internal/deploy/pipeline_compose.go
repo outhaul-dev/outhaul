@@ -24,9 +24,9 @@ import (
 func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, app core.App, out io.Writer) {
 	logf(out, "Deploying compose stack %s (%s)", app.Name, app.RepoURL)
 
-	envVars, err := w.store.ListEnv(ctx, app.ID)
+	envVars, err := w.loadEnv(ctx, app)
 	if err != nil {
-		w.fail(dep, core.StatusBuilding, "load env: "+err.Error(), out)
+		w.fail(dep, core.StatusBuilding, err.Error(), out)
 		return
 	}
 	domains, err := w.store.ListComposeDomains(ctx, app.ID)

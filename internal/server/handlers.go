@@ -316,19 +316,6 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	type envRow struct {
-		Key      string
-		Value    string
-		IsSecret bool
-	}
-	envRows := make([]envRow, 0, len(envVars))
-	for _, v := range envVars {
-		row := envRow{Key: v.Key, IsSecret: v.IsSecret}
-		if !v.IsSecret {
-			row.Value = v.Value
-		}
-		envRows = append(envRows, row)
-	}
 	// Runtime state: nixpacks apps have one canonical container; compose apps
 	// have a stack of them, enumerated via the compose project label.
 	runtimeState := "absent"
@@ -368,7 +355,7 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 		"Active":      "apps",
 		"App":         app,
 		"Deployments": deployments,
-		"Env":         envRows,
+		"Env":         maskEnv(envVars),
 		"Runtime":     runtimeState,
 		"Stack":       stack,
 		"Domains":     domains,
@@ -431,6 +418,25 @@ func (s *Server) handleDeleteComposeDomain(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
+// envRow is an env var prepared for display: secret values are masked.
+type envRow struct {
+	Key      string
+	Value    string
+	IsSecret bool
+}
+
+func maskEnv(vars []core.EnvVar) []envRow {
+	rows := make([]envRow, 0, len(vars))
+	for _, v := range vars {
+		row := envRow{Key: v.Key, IsSecret: v.IsSecret}
+		if !v.IsSecret {
+			row.Value = v.Value
+		}
+		rows = append(rows, row)
+	}
+	return rows
 }
 
 func (s *Server) handleSetEnv(w http.ResponseWriter, r *http.Request) {

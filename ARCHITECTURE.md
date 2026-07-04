@@ -79,10 +79,21 @@ Dokploy, argued in `docs/superpowers/specs/2026-07-04-projects-design.md`:
 no organization layer (single-admin), no environment layer yet (a seam, the
 same retrofit path Dokploy took), and project deletion is guarded rather than
 cascading — a project must be emptied of apps before it can be deleted, since
-deleting an app tears down a live container. Deployments, webhooks, env vars,
-and the worker never see a project; apps remain the deployable unit. There is
-no DB-level FK on `apps.project_id` (SQLite can't add a `NOT NULL` FK column
-without a table rebuild); the store enforces the reference instead.
+deleting an app tears down a live container. Deployments and webhooks never
+see a project; apps remain the deployable unit. There is no DB-level FK on
+`apps.project_id` (SQLite can't add a `NOT NULL` FK column without a table
+rebuild); the store enforces the reference instead.
+
+Projects also hold **shared environment variables** (Dokploy's model, design
+in `docs/superpowers/specs/2026-07-04-project-env.md`): a per-project
+dictionary (`project_env`, encrypted at rest like `app_env`, edited from a
+Shared variables panel on the project page) that apps opt into by writing
+`${{project.KEY}}` inside their own env values. The worker resolves
+references at deploy time in both pipelines (`core.ResolveEnv`): nothing is
+injected unreferenced, a reference to an undefined shared variable fails the
+deploy (never ship a literal placeholder), and a value that pulled in a
+secret shared variable is treated as secret — kept out of the nixpacks build
+env. Resolution is one level deep; changes apply on each app's next deploy.
 
 ### Docker Compose apps + watch paths (done)
 
@@ -156,6 +167,7 @@ slipway/
 
     core/                     # PURE domain: no I/O, no deps. The testable heart.
         app.go                # App model
+        env.go                # EnvVar model + ResolveEnv (${{project.KEY}} references)
         project.go            # Project model (workspace grouping apps)
         deployment.go         # Deployment model, DeployStatus enum
         statemachine.go       # legal transitions, terminal/active predicates
@@ -167,6 +179,7 @@ slipway/
         migrations/*.sql
         apps.go               # App CRUD
         projects.go           # Project CRUD (guarded delete, app counts)
+        project_env.go        # project-level shared env vars (encrypted at rest)
         deployments.go        # Deployment CRUD + queue ops (claim, recover-on-boot)
 
     docker/                   # Docker behind an interface (fake for tests)
