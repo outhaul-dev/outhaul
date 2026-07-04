@@ -19,12 +19,12 @@ func MatchAny(patterns, files []string) bool {
 // matchGlob matches a slash-separated path against a glob pattern with the
 // usual watch-path semantics (the micromatch subset Dokploy documents):
 //
-//	*      any run of characters within one path segment
-//	       ("src/*" matches "src/a.js" but not "src/lib/a.js")
-//	**     any run of whole segments, including none
-//	       ("src/**" matches "src/a.js" and "src/lib/deep/a.js")
-//	?      exactly one character within a segment
-//	[seq]  one character in seq; ranges ("a-z"), negation ("[^x]"/"[!x]")
+//	"*"      any run of characters within one path segment
+//	         ("src/*" matches "src/a.js" but not "src/lib/a.js")
+//	"**"     any run of whole segments, including none
+//	         ("src/**" matches "src/a.js" and "src/lib/deep/a.js")
+//	"?"      exactly one character within a segment
+//	"[seq]"  one character in seq; ranges ("a-z"), negation ("[^x]"/"[!x]")
 //
 // Both sides are compared segment-wise, so "*" and "?" never cross a "/".
 // An invalid pattern (unclosed "[") matches nothing rather than erroring.
