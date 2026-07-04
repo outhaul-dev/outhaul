@@ -97,18 +97,10 @@ func (s *Server) renderProject(w http.ResponseWriter, r *http.Request, status in
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	type appRow struct {
-		core.App
-		Latest *core.Deployment
-	}
-	rows := make([]appRow, 0, len(apps))
-	for _, a := range apps {
-		latest, err := s.store.LatestDeploymentForApp(r.Context(), a.ID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		rows = append(rows, appRow{App: a, Latest: latest})
+	rows, err := s.appRows(r.Context(), apps, nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	projects, err := s.store.ListProjects(r.Context())
 	if err != nil {

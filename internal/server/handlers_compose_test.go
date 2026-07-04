@@ -41,8 +41,16 @@ func TestCreateComposeApp(t *testing.T) {
 	if app.ComposePath != "docker-compose.yml" {
 		t.Errorf("ComposePath = %q, want the docker-compose.yml default", app.ComposePath)
 	}
-	if app.ComposeService != "web" || app.ComposePort != 3000 {
-		t.Errorf("exposure = %q:%d, want web:3000", app.ComposeService, app.ComposePort)
+	if app.Domain != "" {
+		t.Errorf("App.Domain = %q; compose domains must live in their own table", app.Domain)
+	}
+	domains, err := e.store.ListComposeDomains(context.Background(), app.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(domains) != 1 || domains[0].Domain != "shop.example.com" ||
+		domains[0].Service != "web" || domains[0].Port != 3000 {
+		t.Errorf("domains = %+v, want the form's domain seeded as web:3000", domains)
 	}
 }
 
@@ -61,8 +69,11 @@ func TestCreateComposeAppWithoutDomain(t *testing.T) {
 	resp.Body.Close()
 
 	app, _ := e.store.GetAppByName(context.Background(), "internal")
-	if app.Domain != "" || app.ComposeService != "" || app.ComposePort != 0 {
-		t.Errorf("internal-only stack should have no exposure: %+v", app)
+	if app.Domain != "" {
+		t.Errorf("internal-only stack should have no domain: %+v", app)
+	}
+	if ds, _ := e.store.ListComposeDomains(context.Background(), app.ID); len(ds) != 0 {
+		t.Errorf("internal-only stack should have no domain rows: %+v", ds)
 	}
 }
 
@@ -120,11 +131,8 @@ func TestComposeAppSettingsUpdate(t *testing.T) {
 
 	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/settings", url.Values{
 		"branch": {"release"}, "auto_deploy": {"on"},
-		"watch_paths":     {"deploy/**\n\n  src/** \n"},
-		"domain":          {"shop.example.com"},
-		"compose_path":    {"deploy/compose.yml"},
-		"compose_service": {"frontend"},
-		"compose_port":    {"8081"},
+		"watch_paths":  {"deploy/**\n\n  src/** \n"},
+		"compose_path": {"deploy/compose.yml"},
 	})
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("settings = %d, want 303; body=%s", resp.StatusCode, body(t, resp))
@@ -138,9 +146,84 @@ func TestComposeAppSettingsUpdate(t *testing.T) {
 	if len(got.WatchPaths) != 2 || got.WatchPaths[0] != "deploy/**" || got.WatchPaths[1] != "src/**" {
 		t.Errorf("watch paths = %v, want trimmed two entries", got.WatchPaths)
 	}
-	if got.ComposePath != "deploy/compose.yml" || got.ComposeService != "frontend" || got.ComposePort != 8081 {
-		t.Errorf("compose settings not updated: %+v", got)
+	if got.ComposePath != "deploy/compose.yml" {
+		t.Errorf("compose path not updated: %+v", got)
 	}
+	// Domains are managed by their own endpoints, untouched by settings saves.
+	if ds, _ := e.store.ListComposeDomains(context.Background(), app.ID); len(ds) != 1 {
+		t.Errorf("settings save must not touch domains: %+v", ds)
+	}
+}
+
+func TestComposeDomainAddAndRemove(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	e.postForm(t, "/apps", composeForm("shop")).Body.Close()
+	app, _ := e.store.GetAppByName(context.Background(), "shop")
+
+	// Add a second domain on another service.
+	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/domains", url.Values{
+		"domain": {"api.example.com"}, "service": {"api"}, "port": {"8080"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("add domain = %d, want 303; body=%s", resp.StatusCode, body(t, resp))
+	}
+	resp.Body.Close()
+	domains, _ := e.store.ListComposeDomains(context.Background(), app.ID)
+	if len(domains) != 2 || domains[0].Domain != "api.example.com" {
+		t.Fatalf("domains = %+v, want api.example.com added", domains)
+	}
+
+	// A duplicate host on the same app is rejected.
+	resp = e.postForm(t, "/apps/"+itoa(app.ID)+"/domains", url.Values{
+		"domain": {"api.example.com"}, "service": {"other"}, "port": {"1234"},
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("duplicate domain = %d, want 400", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// Bad fields are rejected.
+	for name, form := range map[string]url.Values{
+		"missing service": {"domain": {"x.example.com"}, "port": {"80"}},
+		"bad port":        {"domain": {"x.example.com"}, "service": {"web"}, "port": {"99999"}},
+		"bad domain":      {"domain": {"not a host"}, "service": {"web"}, "port": {"80"}},
+	} {
+		resp = e.postForm(t, "/apps/"+itoa(app.ID)+"/domains", form)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s = %d, want 400", name, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+
+	// Remove one; the other survives.
+	resp = e.postForm(t, "/apps/"+itoa(app.ID)+"/domains/"+itoa(domains[0].ID)+"/delete", url.Values{})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("delete domain = %d, want 303", resp.StatusCode)
+	}
+	resp.Body.Close()
+	domains, _ = e.store.ListComposeDomains(context.Background(), app.ID)
+	if len(domains) != 1 || domains[0].Domain != "shop.example.com" {
+		t.Errorf("domains after delete = %+v, want just shop.example.com", domains)
+	}
+}
+
+func TestComposeDomainRejectedForNixpacksApp(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	e.postForm(t, "/apps", url.Values{
+		"name": {"web"}, "source": {"public"},
+		"repo_url": {"https://github.com/o/web.git"}, "domain": {"web.example.com"},
+	}).Body.Close()
+	app, _ := e.store.GetAppByName(context.Background(), "web")
+
+	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/domains", url.Values{
+		"domain": {"extra.example.com"}, "service": {"web"}, "port": {"80"},
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("add domain to nixpacks app = %d, want 400", resp.StatusCode)
+	}
+	resp.Body.Close()
 }
 
 func TestComposeLifecycleUsesRunner(t *testing.T) {
@@ -220,5 +303,18 @@ func TestComposeAppDetailShowsStack(t *testing.T) {
 	}
 	if !strings.Contains(page, "Watch paths") {
 		t.Error("settings form missing the watch-paths field")
+	}
+	if !strings.Contains(page, "shop.example.com") {
+		t.Error("domains panel missing the published domain")
+	}
+	if !strings.Contains(page, "/apps/"+itoa(app.ID)+"/domains") {
+		t.Error("domains panel missing the add-domain form")
+	}
+	domains, _ := e.store.ListComposeDomains(context.Background(), app.ID)
+	if len(domains) != 1 {
+		t.Fatalf("domains = %+v", domains)
+	}
+	if !strings.Contains(page, "/domains/"+itoa(domains[0].ID)+"/delete") {
+		t.Error("domains panel missing the remove button")
 	}
 }

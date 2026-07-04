@@ -51,20 +51,10 @@ func (s *Server) handleAppsList(w http.ResponseWriter, r *http.Request) {
 		projectNames[p.ID] = p.Name
 	}
 
-	// Attach each app's latest deployment status for the list view.
-	type appRow struct {
-		core.App
-		ProjectName string
-		Latest      *core.Deployment
-	}
-	rows := make([]appRow, 0, len(apps))
-	for _, a := range apps {
-		latest, err := s.store.LatestDeploymentForApp(r.Context(), a.ID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		rows = append(rows, appRow{App: a, ProjectName: projectNames[a.ProjectID], Latest: latest})
+	rows, err := s.appRows(r.Context(), apps, projectNames)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	data := map[string]any{
@@ -75,6 +65,35 @@ func (s *Server) handleAppsList(w http.ResponseWriter, r *http.Request) {
 		data[k] = v
 	}
 	s.render(w, http.StatusOK, "apps", data)
+}
+
+// appRow is one row of an app-list table: the app plus its display context.
+type appRow struct {
+	core.App
+	ProjectName string
+	Domains     []core.ComposeDomain // a compose app's published domains
+	Latest      *core.Deployment
+}
+
+// appRows decorates apps with their project name, latest deployment status,
+// and (for compose apps) published domains. projectNames may be nil when the
+// listing is already scoped to one project.
+func (s *Server) appRows(ctx context.Context, apps []core.App, projectNames map[int64]string) ([]appRow, error) {
+	rows := make([]appRow, 0, len(apps))
+	for _, a := range apps {
+		latest, err := s.store.LatestDeploymentForApp(ctx, a.ID)
+		if err != nil {
+			return nil, err
+		}
+		row := appRow{App: a, ProjectName: projectNames[a.ProjectID], Latest: latest}
+		if a.Kind == core.KindCompose {
+			if row.Domains, err = s.store.ListComposeDomains(ctx, a.ID); err != nil {
+				return nil, err
+			}
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
 }
 
 // githubRepoData returns template data describing GitHub App connectivity for
@@ -148,12 +167,24 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		Branch: branch, AutoDeploy: autoDeploy, GithubRepo: githubRepo,
 		WebhookSecret: newSecret(), ProjectID: projectID,
 	}
+	// Compose domains live in their own table (a stack can have many); the
+	// form's optional domain/service/port trio seeds the first row after the
+	// app exists.
+	var firstDomain *core.ComposeDomain
 	if kind == core.KindCompose {
+		app.Domain = ""
 		verr := ""
-		app.ComposePath, app.ComposeService, app.ComposePort, verr = parseComposeFields(r)
-		if verr != "" {
+		if app.ComposePath, verr = parseComposePath(r); verr != "" {
 			s.renderAppsWithError(w, r, verr, name, repo, domain)
 			return
+		}
+		if domain != "" {
+			d, verr := parseDomainFields(domain, r.FormValue("compose_service"), r.FormValue("compose_port"))
+			if verr != "" {
+				s.renderAppsWithError(w, r, verr, name, repo, domain)
+				return
+			}
+			firstDomain = &d
 		}
 	}
 
@@ -171,10 +202,20 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		app.SSHPrivateKey, app.SSHPublicKey = priv, pub
 	}
 
-	if _, err := s.store.CreateApp(r.Context(), app); err != nil {
+	created, err := s.store.CreateApp(r.Context(), app)
+	if err != nil {
 		// Most likely a duplicate name (UNIQUE constraint).
 		s.renderAppsWithError(w, r, "Could not create app: "+err.Error(), name, repo, domain)
 		return
+	}
+	if firstDomain != nil {
+		firstDomain.AppID = created.ID
+		if _, err := s.store.AddComposeDomain(r.Context(), *firstDomain); err != nil {
+			// The app row exists; surface the domain failure instead of hiding it.
+			s.renderAppsWithError(w, r,
+				"App created, but the domain could not be added: "+err.Error(), name, repo, domain)
+			return
+		}
 	}
 	// The project-detail form asks to land back on its project; anything else
 	// (or a tampered value) falls back to the apps list.
@@ -193,8 +234,8 @@ func newSecret() string {
 }
 
 // handleAppSettings updates the mutable per-app deploy settings: branch,
-// auto-deploy-on-push, and watch paths for every app; plus the compose
-// exposure fields (domain, compose file, service, port) for compose apps.
+// auto-deploy-on-push, and watch paths for every app; plus the compose file
+// path for compose apps. Compose domains have their own endpoints.
 func (s *Server) handleAppSettings(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(r.PathValue("id"))
 	if !ok {
@@ -217,17 +258,12 @@ func (s *Server) handleAppSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if app.Kind == core.KindCompose {
-		domain := strings.TrimSpace(r.FormValue("domain"))
-		if domain != "" && strings.ContainsAny(domain, " /") {
-			http.Error(w, "Domain must be a bare hostname (e.g. app.example.com).", http.StatusBadRequest)
-			return
-		}
-		composePath, service, port, verr := parseComposeFields(r)
+		composePath, verr := parseComposePath(r)
 		if verr != "" {
 			http.Error(w, verr, http.StatusBadRequest)
 			return
 		}
-		if err := s.store.UpdateAppCompose(r.Context(), id, domain, composePath, service, port); err != nil {
+		if err := s.store.UpdateAppComposePath(r.Context(), id, composePath); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -244,16 +280,9 @@ func (s *Server) renderAppsWithError(w http.ResponseWriter, r *http.Request, msg
 	for _, p := range projects {
 		projectNames[p.ID] = p.Name
 	}
-	type appRow struct {
-		core.App
-		ProjectName string
-		Latest      *core.Deployment
-	}
-	rows := make([]appRow, 0, len(apps))
-	for _, a := range apps {
-		latest, _ := s.store.LatestDeploymentForApp(r.Context(), a.ID)
-		rows = append(rows, appRow{App: a, ProjectName: projectNames[a.ProjectID], Latest: latest})
-	}
+	// Errors are tolerated here: this page is already reporting a form error,
+	// so render it with whatever rows could be built.
+	rows, _ := s.appRows(r.Context(), apps, projectNames)
 	data := map[string]any{
 		"Title": "Apps", "Active": "apps", "Apps": rows,
 		"Projects": projects, "SelectedProject": selectedProject(projects),
@@ -308,7 +337,12 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 		State   string
 	}
 	var stack []serviceRow
+	var domains []core.ComposeDomain
 	if app.Kind == core.KindCompose {
+		if domains, err = s.store.ListComposeDomains(r.Context(), id); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		cs, err := s.runtime.ListContainers(r.Context(),
 			map[string]string{"com.docker.compose.project": compose.ProjectName(app.Name)})
 		if err == nil && len(cs) > 0 {
@@ -337,6 +371,7 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 		"Env":         envRows,
 		"Runtime":     runtimeState,
 		"Stack":       stack,
+		"Domains":     domains,
 	}
 	// Breadcrumb context; tolerate a missing project rather than 500 the page.
 	if p, err := s.store.GetProject(r.Context(), app.ProjectID); err == nil {
@@ -346,6 +381,56 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 		data["WebhookURL"] = strings.TrimRight(s.publicURL, "/") + "/webhooks/app/" + app.WebhookSecret
 	}
 	s.render(w, http.StatusOK, "app", data)
+}
+
+// handleAddComposeDomain publishes a stack service on another domain. The row
+// is stored immediately but only reaches Traefik on the next deploy, when the
+// override file is regenerated — the same contract as Dokploy.
+func (s *Server) handleAddComposeDomain(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	app, err := s.store.GetApp(r.Context(), id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if app.Kind != core.KindCompose {
+		http.Error(w, "Domains can only be added to compose apps; edit a nixpacks app's single domain instead.", http.StatusBadRequest)
+		return
+	}
+	d, verr := parseDomainFields(r.FormValue("domain"), r.FormValue("service"), r.FormValue("port"))
+	if verr != "" {
+		http.Error(w, verr, http.StatusBadRequest)
+		return
+	}
+	d.AppID = id
+	if _, err := s.store.AddComposeDomain(r.Context(), d); err != nil {
+		// Most likely the UNIQUE(app_id, domain) constraint.
+		http.Error(w, "Could not add domain (is it already configured?): "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
+func (s *Server) handleDeleteComposeDomain(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	domainID, ok2 := parseID(r.PathValue("domainID"))
+	if !ok || !ok2 {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := s.store.GetApp(r.Context(), id); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if err := s.store.DeleteComposeDomain(r.Context(), id, domainID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
 func (s *Server) handleSetEnv(w http.ResponseWriter, r *http.Request) {
@@ -591,28 +676,31 @@ func validateApp(app core.App) string {
 	return ""
 }
 
-// parseComposeFields reads and validates the compose-specific form fields.
-// The domain/service/port coupling is checked here: exposing a stack needs
-// all three, and a stack without a domain exposes nothing.
-func parseComposeFields(r *http.Request) (composePath, service string, port int, verr string) {
-	composePath, ok := cleanComposePath(r.FormValue("compose_path"))
+// parseComposePath reads and normalizes the compose_path form field.
+func parseComposePath(r *http.Request) (string, string) {
+	p, ok := cleanComposePath(r.FormValue("compose_path"))
 	if !ok {
-		return "", "", 0, "Compose file must be a relative path inside the repository (e.g. docker-compose.yml)."
+		return "", "Compose file must be a relative path inside the repository (e.g. docker-compose.yml)."
 	}
-	service = strings.TrimSpace(r.FormValue("compose_service"))
-	portStr := strings.TrimSpace(r.FormValue("compose_port"))
-	if strings.TrimSpace(r.FormValue("domain")) == "" {
-		// No domain: nothing is exposed, so service/port are meaningless.
-		return composePath, "", 0, ""
+	return p, ""
+}
+
+// parseDomainFields validates one domain→service:port publication. Publishing
+// needs all three: the host Traefik matches, the compose service it routes
+// to, and the container port that service listens on.
+func parseDomainFields(domain, service, portStr string) (core.ComposeDomain, string) {
+	domain = strings.TrimSpace(domain)
+	if domain == "" || strings.ContainsAny(domain, " /") {
+		return core.ComposeDomain{}, "Domain must be a bare hostname (e.g. app.example.com)."
 	}
-	if !composeServiceRe.MatchString(service) {
-		return "", "", 0, "Name the compose service to expose on the domain (e.g. web)."
+	if !composeServiceRe.MatchString(strings.TrimSpace(service)) {
+		return core.ComposeDomain{}, "Name the compose service to expose on the domain (e.g. web)."
 	}
-	port, err := strconv.Atoi(portStr)
+	port, err := strconv.Atoi(strings.TrimSpace(portStr))
 	if err != nil || port < 1 || port > 65535 {
-		return "", "", 0, "Service port must be a number between 1 and 65535."
+		return core.ComposeDomain{}, "Service port must be a number between 1 and 65535."
 	}
-	return composePath, service, port, ""
+	return core.ComposeDomain{Domain: domain, Service: strings.TrimSpace(service), Port: port}, ""
 }
 
 // cleanComposePath normalizes a repo-relative compose file path, rejecting

@@ -29,6 +29,11 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 		w.fail(dep, core.StatusBuilding, "load env: "+err.Error(), out)
 		return
 	}
+	domains, err := w.store.ListComposeDomains(ctx, app.ID)
+	if err != nil {
+		w.fail(dep, core.StatusBuilding, "load domains: "+err.Error(), out)
+		return
+	}
 
 	workDir, cleanup, err := w.cloneWorkDir(ctx, dep, app, out)
 	if err != nil {
@@ -56,8 +61,8 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 	// files are work-dir-relative (the runner runs in workDir); the override
 	// sits beside the user's compose file and layers domain exposure over it.
 	files := []string{app.ComposePath}
-	if app.Domain != "" {
-		ov := compose.Override(app, w.cfg.Network, w.cfg.TLSEnabled())
+	if len(domains) > 0 {
+		ov := compose.Override(app, domains, w.cfg.Network, w.cfg.TLSEnabled())
 		if err := os.WriteFile(filepath.Join(stackDir, compose.OverrideFile), ov, 0o644); err != nil {
 			w.fail(dep, core.StatusBuilding, "write override: "+err.Error(), out)
 			return
@@ -100,8 +105,12 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 	if _, err := w.store.SetStatus(context.Background(), dep.ID, core.StatusDeploying, core.StatusRunning, ""); err != nil {
 		logf(out, "WARNING: could not record running status: %v", err)
 	}
-	if app.Domain != "" {
-		logf(out, "Done. %s is live at http://%s", app.Name, app.Domain)
+	if len(domains) > 0 {
+		hosts := make([]string, len(domains))
+		for i, d := range domains {
+			hosts[i] = "http://" + d.Domain
+		}
+		logf(out, "Done. %s is live at %s", app.Name, strings.Join(hosts, ", "))
 	} else {
 		logf(out, "Done. Stack %s is up.", project)
 	}

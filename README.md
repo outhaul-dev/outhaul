@@ -15,8 +15,8 @@ Outhaul is a deliberately minimal alternative to Dokploy/Coolify.
 > webhooks), with a per-app branch and auto-deploy toggle. Apps are grouped
 > into Dokploy-style **projects** (workspaces for a product or client). Repos
 > with a `docker-compose.yml` deploy as **compose stacks** (multi-service,
-> optional domain on a chosen service), and **watch paths** scope auto-deploy
-> to pushes that change matching files. See
+> with any number of domains routed to the stack's services), and **watch
+> paths** scope auto-deploy to pushes that change matching files. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and what is intentionally
 > not built yet (multiple users, databases, metrics, multi-server).
 

@@ -13,17 +13,23 @@ import (
 )
 
 // composeApp creates a compose-kind app whose fake clone contains a compose
-// file at the given path.
+// file at the given path. A non-empty domain is published on service web:3000.
 func (h *harness) composeApp(t *testing.T, name, composePath, domain string) core.App {
 	t.Helper()
 	h.cloner.files = map[string]string{composePath: "services:\n  web:\n    image: nginx\n"}
 	app, err := h.store.CreateApp(context.Background(), core.App{
-		Name: name, RepoURL: "https://example.com/" + name + ".git", Domain: domain,
+		Name: name, RepoURL: "https://example.com/" + name + ".git",
 		Kind: core.KindCompose, ComposePath: composePath,
-		ComposeService: "web", ComposePort: 3000,
 	})
 	if err != nil {
 		t.Fatalf("CreateApp: %v", err)
+	}
+	if domain != "" {
+		if _, err := h.store.AddComposeDomain(context.Background(), core.ComposeDomain{
+			AppID: app.ID, Domain: domain, Service: "web", Port: 3000,
+		}); err != nil {
+			t.Fatalf("AddComposeDomain: %v", err)
+		}
 	}
 	return app
 }
@@ -80,6 +86,40 @@ func TestComposePipelineHappyPath(t *testing.T) {
 	}
 	if h.builder.lastReq.ImageTag != "" {
 		t.Error("nixpacks builder must not run for a compose app")
+	}
+}
+
+// TestComposePipelineMultipleDomains: every published domain lands in the one
+// generated override, each with its own Host rule.
+func TestComposePipelineMultipleDomains(t *testing.T) {
+	h := newHarness(t)
+	app := h.composeApp(t, "shop", "docker-compose.yml", "shop.example.com")
+	if _, err := h.store.AddComposeDomain(context.Background(), core.ComposeDomain{
+		AppID: app.ID, Domain: "api.example.com", Service: "api", Port: 8080,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var overrideContent string
+	h.compose.Hook = func(c compose.Call) {
+		if c.Verb != "up" {
+			return
+		}
+		if b, err := os.ReadFile(filepath.Join(c.Dir, compose.OverrideFile)); err == nil {
+			overrideContent = string(b)
+		}
+	}
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	if got := h.status(t, dep.ID); got.Status != core.StatusRunning {
+		t.Fatalf("status = %q (%q), want running", got.Status, got.Reason)
+	}
+	for _, host := range []string{"Host(`shop.example.com`)", "Host(`api.example.com`)"} {
+		if !strings.Contains(overrideContent, host) {
+			t.Errorf("override missing %s; got:\n%s", host, overrideContent)
+		}
 	}
 }
 

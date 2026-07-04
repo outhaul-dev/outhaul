@@ -96,14 +96,19 @@ the Nixpacks builder. The pipeline maps onto the same state machine:
 Dokploy's layout) + `compose build`; `deploying` = `compose up -d --wait`
 with the health timeout as the gate. **No blue-green for stacks** — compose
 recreates containers in place (Dokploy behaves the same); the single-app
-cutover is unchanged. Exposing a stack is opt-in: set a domain plus a
-service+port and the pipeline layers a generated `slipway.override.yml` over
-the user's file (never rewriting it), attaching that one service to the
-shared network with the standard Traefik labels plus `traefik.docker.network`.
+cutover is unchanged. Exposing a stack is opt-in and multi-domain (Dokploy's
+model): a compose app has any number of `compose_domains` rows, each routing
+one host to one service's container port, managed from a Domains panel on the
+app page. The pipeline layers a generated `slipway.override.yml` over the
+user's file (never rewriting it), attaching each published service to the
+shared network and giving it one Traefik router per domain (named
+`slipway-<app>-d<domainID>`, unique and stable) plus `traefik.docker.network`.
+Domain edits apply on the next deploy, when the override is regenerated.
 Lifecycle is label-based (`docker compose -p slipway-<name> stop|restart|down`)
 so stop/restart/delete need no retained checkout; deletion keeps named
-volumes. Raw pasted-YAML compose, Swarm mode, and multi-domain stacks are
-deferred (seams in `docs/superpowers/specs/2026-07-04-compose-design.md`).
+volumes. Raw pasted-YAML compose and Swarm mode are deferred (seams in
+`docs/superpowers/specs/2026-07-04-compose-design.md`; multi-domain design in
+`2026-07-04-compose-multidomain.md`).
 
 **Watch paths** control *when* a push redeploys, for both kinds: per-app glob
 patterns (`*`/`?` within a segment, `**` across, `[seq]`; a small built-in
@@ -180,7 +185,7 @@ slipway/
 
     compose/                  # docker compose stacks behind a Runner interface (fake for tests)
         compose.go            # Runner: Build/Up (files) + Stop/Restart/Down (label-based, -p only)
-        override.go           # Override: generated slipway.override.yml exposing one service on a domain
+        override.go           # Override: generated slipway.override.yml publishing services on their domains
         fake.go               # in-memory fake for unit tests
 
     logstream/               # in-memory pub/sub broker: build/deploy log lines -> SSE subscribers
