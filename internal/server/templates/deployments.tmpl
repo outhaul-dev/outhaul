@@ -1,0 +1,28 @@
+{{define "content"}}
+<div class="pagehead"><h1>Deployments</h1></div>
+
+<section class="panel">
+  <h2 class="panel-title">All deployments</h2>
+  {{if .Deployments}}
+  <table class="table">
+    <thead>
+      <tr><th>#</th><th>App</th><th>Status</th><th>Created</th><th>Finished</th><th></th></tr>
+    </thead>
+    <tbody>
+      {{range .Deployments}}
+      <tr>
+        <td class="mono">{{.ID}}</td>
+        <td><a href="/apps/{{.AppID}}" class="rowlink">{{.AppName}}</a></td>
+        <td><span class="badge {{stateClass .Status}}">{{.Status}}</span></td>
+        <td class="mono muted">{{fmtTime .CreatedAt}}</td>
+        <td class="mono muted">{{fmtTimePtr .FinishedAt}}</td>
+        <td><a href="/deployments/{{.ID}}" class="rowlink">logs →</a></td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No deployments yet.</p>
+  {{end}}
+</section>
+{{end}}
