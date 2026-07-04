@@ -15,7 +15,7 @@ import (
 func (s *Server) handleGithubConnect(w http.ResponseWriter, r *http.Request) {
 	if !s.publicURLSet() {
 		s.render(w, http.StatusOK, "github_connect", map[string]any{
-			"Title": "Connect GitHub", "NeedsPublicURL": true,
+			"Title": "Connect GitHub", "Active": "settings", "NeedsPublicURL": true,
 		})
 		return
 	}
@@ -34,6 +34,7 @@ func (s *Server) handleGithubConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	s.render(w, http.StatusOK, "github_connect", map[string]any{
 		"Title":    "Connect GitHub",
+		"Active":   "settings",
 		"Action":   action,
 		"Manifest": manifest,
 	})

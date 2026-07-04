@@ -336,6 +336,11 @@ func TestCancelDelegatesToWorker(t *testing.T) {
 // itoa is a tiny local helper for building request paths.
 func itoa(id int64) string { return strconv.FormatInt(id, 10) }
 
+// appForm builds a minimal valid create-app form submission.
+func appForm(name, domain string) url.Values {
+	return url.Values{"name": {name}, "domain": {domain}, "source": {"public"}, "repo_url": {"https://github.com/o/" + name + ".git"}, "branch": {"main"}}
+}
+
 func TestEnvAddListAndMask(t *testing.T) {
 	e := newTestEnv(t)
 	e.completeSetup(t)
@@ -461,8 +466,8 @@ func TestDeleteApp(t *testing.T) {
 	e.runtime.container = &docker.Container{ID: "ctr1", Name: "slipway-app-web", State: "running"}
 
 	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/delete", url.Values{})
-	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/" {
-		t.Fatalf("delete redirect = %d -> %q, want 303 -> /", resp.StatusCode, resp.Header.Get("Location"))
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/apps" {
+		t.Fatalf("delete redirect = %d -> %q, want 303 -> /apps", resp.StatusCode, resp.Header.Get("Location"))
 	}
 	resp.Body.Close()
 	if len(e.runtime.removed) != 1 {
@@ -479,8 +484,8 @@ func TestDeleteAppWhenContainerGone(t *testing.T) {
 	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
 	// container is nil (already gone); delete must still remove the row and redirect to /
 	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/delete", url.Values{})
-	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/" {
-		t.Fatalf("delete = %d -> %q, want 303 -> /", resp.StatusCode, resp.Header.Get("Location"))
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/apps" {
+		t.Fatalf("delete = %d -> %q, want 303 -> /apps", resp.StatusCode, resp.Header.Get("Location"))
 	}
 	resp.Body.Close()
 	if len(e.runtime.removed) != 0 {

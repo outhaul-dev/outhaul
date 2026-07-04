@@ -41,7 +41,7 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, "Usage: slipway serve")
 	fmt.Fprintln(os.Stderr)
-	fmt.Fprintln(os.Stderr, "Starts the Slipway admin UI and deploy worker.")
+	fmt.Fprintln(os.Stderr, "Starts the Outhaul admin UI and deploy worker.")
 	fmt.Fprintln(os.Stderr, "Configuration via OUTHAUL_* environment variables (see ARCHITECTURE.md).")
 }
 

@@ -77,7 +77,7 @@ func New(st *store.Store, d Deployer, rt Runtime, br *logstream.Broker, gh githu
 // parseTemplates builds one template set per page, each combining base.tmpl with
 // the page template (so every page can define its own "content" block).
 func (s *Server) parseTemplates() error {
-	pages := []string{"login", "setup", "apps", "app", "deployment", "github_connect"}
+	pages := []string{"login", "setup", "overview", "apps", "app", "deployment", "github_connect"}
 	s.pages = make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.New("base").Funcs(templateFuncs())
@@ -108,7 +108,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /login", s.handleLoginSubmit)
 	mux.HandleFunc("POST /logout", s.handleLogout)
 
-	mux.HandleFunc("GET /{$}", s.requireAuth(s.handleAppsList))
+	mux.HandleFunc("GET /{$}", s.requireAuth(s.handleOverview))
+	mux.HandleFunc("GET /apps", s.requireAuth(s.handleAppsList))
 	mux.HandleFunc("POST /apps", s.requireAuth(s.handleCreateApp))
 	mux.HandleFunc("GET /apps/{id}", s.requireAuth(s.handleAppDetail))
 	mux.HandleFunc("POST /apps/{id}/deploy", s.requireAuth(s.handleDeploy))

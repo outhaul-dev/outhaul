@@ -142,7 +142,7 @@ func TestAppsListShowsGithubReposWhenConnected(t *testing.T) {
 	env.gh.Token = "tok"
 	env.gh.Repos = []github.Repo{{FullName: "o/r"}}
 
-	resp := env.get(t, "/")
+	resp := env.get(t, "/apps")
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}

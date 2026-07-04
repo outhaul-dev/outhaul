@@ -3,24 +3,52 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{if .Title}}{{.Title}} · {{end}}Slipway</title>
+  <title>{{if .Title}}{{.Title}} · {{end}}Outhaul</title>
   <link rel="stylesheet" href="/static/app.css">
   <script src="/static/htmx.min.js" defer></script>
 </head>
 <body>
-  {{if .HideChrome}}{{else}}
-  <header class="topbar">
-    <a class="brand" href="/">slipway</a>
-    <nav class="topnav">
-      <a href="/">Apps</a>
-      <form method="post" action="/logout" class="inline">
-        <button type="submit" class="linkbtn">Sign out</button>
-      </form>
-    </nav>
-  </header>
-  {{end}}
+  {{if .HideChrome}}
   <main class="container">
     {{template "content" .}}
   </main>
+  {{else}}
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="sidebar-brand" href="/">outhaul</a>
+      <nav class="sidebar-nav">
+        <div class="nav-group">
+          <a class="nav-item {{if eq .Active "overview"}}active{{end}}" href="/">Overview</a>
+        </div>
+        <div class="nav-group">
+          <div class="nav-group-label">Deploy</div>
+          <a class="nav-item {{if eq .Active "apps"}}active{{end}}" href="/apps">Apps</a>
+          <a class="nav-item {{if eq .Active "deployments"}}active{{end}}" href="/deployments">Deployments</a>
+        </div>
+        <div class="nav-group">
+          <div class="nav-group-label">Resources</div>
+          <a class="nav-item {{if eq .Active "databases"}}active{{end}}" href="/databases">Databases <span class="soon">soon</span></a>
+          <a class="nav-item {{if eq .Active "volumes"}}active{{end}}" href="/volumes">Volumes <span class="soon">soon</span></a>
+          <a class="nav-item {{if eq .Active "registry"}}active{{end}}" href="/registry">Registry <span class="soon">soon</span></a>
+          <a class="nav-item {{if eq .Active "domains"}}active{{end}}" href="/domains">Domains <span class="soon">soon</span></a>
+        </div>
+        <div class="nav-group">
+          <div class="nav-group-label">System</div>
+          <a class="nav-item {{if eq .Active "infrastructure"}}active{{end}}" href="/infrastructure">Infrastructure <span class="soon">soon</span></a>
+          <a class="nav-item {{if eq .Active "metrics"}}active{{end}}" href="/metrics">Metrics <span class="soon">soon</span></a>
+        </div>
+      </nav>
+      <div class="sidebar-foot">
+        <a class="nav-item {{if eq .Active "settings"}}active{{end}}" href="/settings">Settings</a>
+        <form method="post" action="/logout" class="inline"><button type="submit" class="nav-item linkbtn">Sign out</button></form>
+      </div>
+    </aside>
+    <div class="shell-main">
+      <main class="container">
+        {{template "content" .}}
+      </main>
+    </div>
+  </div>
+  {{end}}
 </body>
 </html>{{end}}
