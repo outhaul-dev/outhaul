@@ -1,10 +1,10 @@
-# Slipway
+# Outhaul
 
 A single-binary, self-hosted PaaS. Point it at a fresh VPS, push a public Git
 repo, and it clones, builds (Nixpacks), and runs your app behind Traefik on a
 domain you choose — no Node, no Postgres, one ~22 MB Go binary and a SQLite file.
 
-Slipway is a deliberately minimal alternative to Dokploy/Coolify.
+Outhaul is a deliberately minimal alternative to Dokploy/Coolify.
 
 > **Status: Milestone 3 (git automation).** The thinnest end-to-end path
 > works: log in, create an app, click Deploy, watch the build stream live, and
@@ -26,28 +26,28 @@ go build -o slipway .
 ./slipway serve
 ```
 
-On first boot Slipway prints a one-time setup URL — open it to create the admin
+On first boot Outhaul prints a one-time setup URL — open it to create the admin
 account. The admin UI listens on `:8080` by default; Traefik is started
 automatically and serves app traffic on `:80`.
 
 ## Configuration
 
-No config files — defaults with `SLIPWAY_*` environment overrides:
+No config files — defaults with `OUTHAUL_*` environment overrides:
 
 | Variable                | Default              | Purpose                                   |
 |-------------------------|----------------------|-------------------------------------------|
-| `SLIPWAY_DATA_DIR`      | `/var/lib/slipway`   | SQLite DB and build work dirs             |
-| `SLIPWAY_LISTEN_ADDR`   | `:8080`              | Admin UI / API listen address             |
-| `SLIPWAY_DOCKER_HOST`   | (SDK env default)    | Docker endpoint                           |
-| `SLIPWAY_TRAEFIK_IMAGE` | `traefik:v3.3`       | Managed Traefik image                     |
-| `SLIPWAY_NETWORK`       | `slipway`            | Shared Docker network for app containers  |
-| `SLIPWAY_ACME_EMAIL`    | (empty)              | Let's Encrypt email; set to enable HTTPS   |
-| `SLIPWAY_ACME_STAGING`  | `false`              | Use the LE staging CA (testing)            |
-| `SLIPWAY_HTTPS_PORT`    | `443`                | Host port for HTTPS                        |
-| `SLIPWAY_HEALTH_TIMEOUT`| `60s`                | Deploy health-check deadline               |
-| `SLIPWAY_PUBLIC_URL`    | (empty)              | Public base URL of the admin UI; enables GitHub App + webhook URLs |
+| `OUTHAUL_DATA_DIR`      | `/var/lib/slipway`   | SQLite DB and build work dirs             |
+| `OUTHAUL_LISTEN_ADDR`   | `:8080`              | Admin UI / API listen address             |
+| `OUTHAUL_DOCKER_HOST`   | (SDK env default)    | Docker endpoint                           |
+| `OUTHAUL_TRAEFIK_IMAGE` | `traefik:v3.3`       | Managed Traefik image                     |
+| `OUTHAUL_NETWORK`       | `slipway`            | Shared Docker network for app containers  |
+| `OUTHAUL_ACME_EMAIL`    | (empty)              | Let's Encrypt email; set to enable HTTPS   |
+| `OUTHAUL_ACME_STAGING`  | `false`              | Use the LE staging CA (testing)            |
+| `OUTHAUL_HTTPS_PORT`    | `443`                | Host port for HTTPS                        |
+| `OUTHAUL_HEALTH_TIMEOUT`| `60s`                | Deploy health-check deadline               |
+| `OUTHAUL_PUBLIC_URL`    | (empty)              | Public base URL of the admin UI; enables GitHub App + webhook URLs |
 
-Apps are expected to listen on `$PORT` (Slipway sets it and points Traefik at it).
+Apps are expected to listen on `$PORT` (Outhaul sets it and points Traefik at it).
 
 ## Development
 

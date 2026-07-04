@@ -1,5 +1,5 @@
-// Package config resolves Slipway's runtime configuration. There are no config
-// files (a locked decision): defaults plus SLIPWAY_* environment overrides,
+// Package config resolves Outhaul's runtime configuration. There are no config
+// files (a locked decision): defaults plus OUTHAUL_* environment overrides,
 // all rooted at a single data directory.
 package config
 
@@ -32,21 +32,21 @@ type Config struct {
 // process environment.
 type Getenv func(string) string
 
-// Load resolves configuration from defaults overlaid with SLIPWAY_* env vars.
+// Load resolves configuration from defaults overlaid with OUTHAUL_* env vars.
 func Load(getenv Getenv) Config {
 	return Config{
-		DataDir:      or(getenv("SLIPWAY_DATA_DIR"), "/var/lib/slipway"),
-		ListenAddr:   or(getenv("SLIPWAY_LISTEN_ADDR"), ":8080"),
-		DockerHost:   getenv("SLIPWAY_DOCKER_HOST"), // empty is a valid value: defer to SDK
-		TraefikImage: or(getenv("SLIPWAY_TRAEFIK_IMAGE"), DefaultTraefikImage),
-		Network:      or(getenv("SLIPWAY_NETWORK"), "slipway"),
+		DataDir:      or(getenv("OUTHAUL_DATA_DIR"), "/var/lib/slipway"),
+		ListenAddr:   or(getenv("OUTHAUL_LISTEN_ADDR"), ":8080"),
+		DockerHost:   getenv("OUTHAUL_DOCKER_HOST"), // empty is a valid value: defer to SDK
+		TraefikImage: or(getenv("OUTHAUL_TRAEFIK_IMAGE"), DefaultTraefikImage),
+		Network:      or(getenv("OUTHAUL_NETWORK"), "slipway"),
 
-		ACMEEmail:     getenv("SLIPWAY_ACME_EMAIL"),
-		ACMEStaging:   truthy(getenv("SLIPWAY_ACME_STAGING")),
-		HTTPSPort:     or(getenv("SLIPWAY_HTTPS_PORT"), "443"),
-		HealthTimeout: durationOr(getenv("SLIPWAY_HEALTH_TIMEOUT"), 60*time.Second),
+		ACMEEmail:     getenv("OUTHAUL_ACME_EMAIL"),
+		ACMEStaging:   truthy(getenv("OUTHAUL_ACME_STAGING")),
+		HTTPSPort:     or(getenv("OUTHAUL_HTTPS_PORT"), "443"),
+		HealthTimeout: durationOr(getenv("OUTHAUL_HEALTH_TIMEOUT"), 60*time.Second),
 
-		PublicURL: getenv("SLIPWAY_PUBLIC_URL"),
+		PublicURL: getenv("OUTHAUL_PUBLIC_URL"),
 	}
 }
 

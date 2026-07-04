@@ -42,7 +42,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "Usage: slipway serve")
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "Starts the Slipway admin UI and deploy worker.")
-	fmt.Fprintln(os.Stderr, "Configuration via SLIPWAY_* environment variables (see ARCHITECTURE.md).")
+	fmt.Fprintln(os.Stderr, "Configuration via OUTHAUL_* environment variables (see ARCHITECTURE.md).")
 }
 
 func serve() error {
@@ -162,7 +162,7 @@ func ensureInfra(dc docker.Client, cfg config.Config) {
 	if cfg.TLSEnabled() {
 		log.Printf("Traefik proxy ready on :80 and :%s (TLS via Let's Encrypt) on network %q", cfg.HTTPSPort, cfg.Network)
 	} else {
-		log.Printf("Traefik proxy ready on :80 (network %q; set SLIPWAY_ACME_EMAIL to enable HTTPS)", cfg.Network)
+		log.Printf("Traefik proxy ready on :80 (network %q; set OUTHAUL_ACME_EMAIL to enable HTTPS)", cfg.Network)
 	}
 }
 
