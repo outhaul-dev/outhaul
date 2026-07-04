@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 )
@@ -19,6 +20,8 @@ type Fake struct {
 	Pulled     []string              // images pulled, in order
 	Created    []ContainerSpec       // specs passed to CreateContainer, in order
 	IPs        map[string]string     // container ID -> IP (test-settable)
+	Logs       map[string]string     // container ID -> log content (test-settable)
+	LogTails   []int                 // tail values passed to ContainerLogs, in order
 
 	// FailPull, when set, makes PullImage return an error for matching refs.
 	FailPull func(ref string) error
@@ -33,6 +36,7 @@ func NewFake() *Fake {
 		Networks:   map[string]bool{},
 		Containers: map[string]*Container{},
 		IPs:        map[string]string{},
+		Logs:       map[string]string{},
 	}
 }
 
@@ -149,6 +153,16 @@ func (f *Fake) RemoveContainer(_ context.Context, id string, _ bool) error {
 	}
 	delete(f.Containers, id)
 	return nil
+}
+
+func (f *Fake) ContainerLogs(_ context.Context, id string, tail int) (io.ReadCloser, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.Containers[id]; !ok {
+		return nil, fmt.Errorf("no such container: %s", id)
+	}
+	f.LogTails = append(f.LogTails, tail)
+	return io.NopCloser(strings.NewReader(f.Logs[id])), nil
 }
 
 func (f *Fake) ContainerIP(_ context.Context, id, _ string) (string, error) {

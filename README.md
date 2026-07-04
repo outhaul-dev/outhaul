@@ -18,7 +18,8 @@ Outhaul is a deliberately minimal alternative to Dokploy/Coolify.
 > `${{project.KEY}}`. Repos
 > with a `docker-compose.yml` deploy as **compose stacks** (multi-service,
 > with any number of domains routed to the stack's services), and **watch
-> paths** scope auto-deploy to pushes that change matching files. See
+> paths** scope auto-deploy to pushes that change matching files. The app page
+> live-tails **runtime container logs** (per service for compose stacks). See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and what is intentionally
 > not built yet (multiple users, databases, metrics, multi-server).
 

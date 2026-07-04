@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"io"
 	"testing"
 	"time"
 )
@@ -66,6 +67,29 @@ func TestFakeContainerIP(t *testing.T) {
 	}
 	if _, err := f.ContainerIP(ctx, "missing", "slipway"); err == nil {
 		t.Error("expected error for unknown container")
+	}
+}
+
+func TestFakeContainerLogs(t *testing.T) {
+	ctx := context.Background()
+	f := NewFake()
+	id, _ := f.CreateContainer(ctx, ContainerSpec{Name: "web", Image: "img"})
+	f.Logs[id] = "hello\nworld\n"
+
+	rc, err := f.ContainerLogs(ctx, id, 500)
+	if err != nil {
+		t.Fatalf("ContainerLogs: %v", err)
+	}
+	b, _ := io.ReadAll(rc)
+	rc.Close()
+	if string(b) != "hello\nworld\n" {
+		t.Errorf("logs = %q", b)
+	}
+	if len(f.LogTails) != 1 || f.LogTails[0] != 500 {
+		t.Errorf("LogTails = %v, want [500]", f.LogTails)
+	}
+	if _, err := f.ContainerLogs(ctx, "missing", 100); err == nil {
+		t.Error("expected error for unknown container, mirroring the daemon")
 	}
 }
 

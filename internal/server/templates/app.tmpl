@@ -92,6 +92,67 @@
 </section>
 
 <section class="panel">
+  <div class="log-head">
+    <h2 class="panel-title">Runtime logs</h2>
+    <div class="log-controls">
+      {{if and (eq .App.Kind "compose") .Stack}}
+      <select id="log-service" title="Compose service">
+        {{range .Stack}}<option value="{{.Service}}">{{.Service}}</option>{{end}}
+      </select>
+      {{end}}
+      <select id="log-tail" title="Lines to tail">
+        <option value="100">100 lines</option>
+        <option value="500">500 lines</option>
+        <option value="1000">1000 lines</option>
+        <option value="5000">5000 lines</option>
+      </select>
+      <span class="log-status" id="runtime-indicator">connecting…</span>
+    </div>
+  </div>
+  <pre class="log" id="runtime-log" data-id="{{.App.ID}}"></pre>
+</section>
+
+<script>
+(function () {
+  var el = document.getElementById('runtime-log');
+  var indicator = document.getElementById('runtime-indicator');
+  var svcSel = document.getElementById('log-service');
+  var tailSel = document.getElementById('log-tail');
+  var id = el.getAttribute('data-id');
+  var es = null;
+
+  function open() {
+    if (es) { es.close(); }
+    el.textContent = '';
+    indicator.textContent = 'connecting…';
+    var qs = 'tail=' + tailSel.value;
+    if (svcSel) { qs += '&service=' + encodeURIComponent(svcSel.value); }
+    es = new EventSource('/apps/' + id + '/logs?' + qs);
+    es.onopen = function () { indicator.textContent = 'streaming…'; };
+    es.addEventListener('log', function (e) {
+      var atBottom = (el.scrollTop + el.clientHeight) >= (el.scrollHeight - 4);
+      el.textContent += e.data + '\n';
+      if (atBottom) { el.scrollTop = el.scrollHeight; }
+    });
+    es.addEventListener('err', function (e) {
+      es.close();
+      el.textContent = e.data;
+      indicator.textContent = 'unavailable';
+    });
+    es.addEventListener('done', function () {
+      es.close();
+      indicator.textContent = 'stopped';
+    });
+    es.onerror = function () { indicator.textContent = 'disconnected'; };
+  }
+
+  if (svcSel) { svcSel.addEventListener('change', open); }
+  tailSel.addEventListener('change', open);
+  open();
+})();
+</script>
+
+<section class="panel">
   <h2 class="panel-title">Deploy settings</h2>
   <form method="post" action="/apps/{{.App.ID}}/settings" class="grid-form">
     <label class="field"><span>Source</span><input type="text" value="{{.App.Source}}" disabled></label>

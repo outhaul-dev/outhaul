@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -39,6 +40,8 @@ type fakeRuntime struct {
 	started   []string
 	stopped   []string
 	removed   []string
+	logs      map[string]string // container ID -> content for ContainerLogs
+	logTails  []int             // tail values passed to ContainerLogs
 }
 
 func (f *fakeRuntime) FindContainer(_ context.Context, name string) (*docker.Container, error) {
@@ -58,6 +61,14 @@ func (f *fakeRuntime) StopContainer(_ context.Context, id string, _ time.Duratio
 func (f *fakeRuntime) RemoveContainer(_ context.Context, id string, _ bool) error {
 	f.removed = append(f.removed, id)
 	return nil
+}
+func (f *fakeRuntime) ContainerLogs(_ context.Context, id string, tail int) (io.ReadCloser, error) {
+	f.logTails = append(f.logTails, tail)
+	content, ok := f.logs[id]
+	if !ok {
+		return nil, fmt.Errorf("no such container: %s", id)
+	}
+	return io.NopCloser(strings.NewReader(content)), nil
 }
 
 type testEnv struct {

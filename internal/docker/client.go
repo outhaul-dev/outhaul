@@ -72,6 +72,12 @@ type Client interface {
 	// "" if it is not attached to that network.
 	ContainerIP(ctx context.Context, id, network string) (string, error)
 
+	// ContainerLogs returns a stream of the container's stdout+stderr, starting
+	// tail lines back and following until the container stops or the reader is
+	// closed. The stream is plain text (Docker's multiplexing framing is
+	// stripped).
+	ContainerLogs(ctx context.Context, id string, tail int) (io.ReadCloser, error)
+
 	// CreateContainer creates (does not start) a container and returns its ID.
 	CreateContainer(ctx context.Context, spec ContainerSpec) (string, error)
 

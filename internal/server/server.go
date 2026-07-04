@@ -9,6 +9,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"html/template"
+	"io"
 	"io/fs"
 	"net/http"
 	"strconv"
@@ -37,6 +38,7 @@ type Runtime interface {
 	StartContainer(ctx context.Context, id string) error
 	StopContainer(ctx context.Context, id string, timeout time.Duration) error
 	RemoveContainer(ctx context.Context, id string, force bool) error
+	ContainerLogs(ctx context.Context, id string, tail int) (io.ReadCloser, error)
 }
 
 // Server holds the HTTP layer's dependencies.
@@ -126,6 +128,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /apps", s.requireAuth(s.handleAppsList))
 	mux.HandleFunc("POST /apps", s.requireAuth(s.handleCreateApp))
 	mux.HandleFunc("GET /apps/{id}", s.requireAuth(s.handleAppDetail))
+	mux.HandleFunc("GET /apps/{id}/logs", s.requireAuth(s.handleRuntimeLogsSSE))
 	mux.HandleFunc("POST /apps/{id}/deploy", s.requireAuth(s.handleDeploy))
 	mux.HandleFunc("POST /apps/{id}/settings", s.requireAuth(s.handleAppSettings))
 	mux.HandleFunc("POST /apps/{id}/domains", s.requireAuth(s.handleAddComposeDomain))

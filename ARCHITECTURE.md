@@ -129,6 +129,23 @@ with patterns, a push that touches no matching file is skipped. A payload
 carrying no file info fails open and deploys — not knowing what changed must
 never silently drop a release (Dokploy crashes on that case; issue #4081).
 
+### Runtime container logs (done)
+
+The app page live-tails the *running* containers' stdout+stderr — Dokploy's
+log viewer, adapted to the house SSE mechanism (design in
+`docs/superpowers/specs/2026-07-04-runtime-logs.md`). Unlike build logs there
+is no broker or history: the Docker daemon is the log store, so
+`GET /apps/{id}/logs` opens its own follow stream per request
+(`docker.Client.ContainerLogs`, which strips Docker's multiplexing framing),
+replays a whitelisted tail (100/500/1000/5000 lines) and follows until the
+container stops or the browser disconnects. Logs are per-container, as in
+Dokploy: nixpacks apps tail their single container, compose apps pick one
+service from a selector (resolved via compose labels). A stopped container
+still serves its logs — post-mortem debugging is the point. Failures
+("deploy first", unknown service) travel as in-stream `err` events because
+EventSource clients can't read non-200 bodies. Search, time-range filters,
+log-level parsing, ANSI rendering, and download are deliberately deferred.
+
 Design decisions from M3: private-repo access goes through a **GitHub App**,
 set up via GitHub's manifest flow (the operator submits a pre-filled manifest,
 GitHub redirects back with a temporary code that is exchanged for the App's
@@ -229,7 +246,7 @@ slipway/
         server.go             # http.ServeMux, route table, middleware, graceful Shutdown
         auth.go               # argon2id, session cookies, first-boot setup token
         handlers.go           # apps list/create, deploy trigger, deployment detail
-        sse.go                # SSE handler bridging logstream -> browser
+        sse.go                # SSE handlers: build logs (logstream broker) + runtime container logs (docker follow)
         templates/*.tmpl      # html/template, embedded
         static/*              # CSS (from the design system), embedded
         embed.go              # embed.FS for templates + static

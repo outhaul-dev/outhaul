@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
 )
 
@@ -125,6 +127,45 @@ func (r *real) ContainerIP(ctx context.Context, id, network string) (string, err
 		return ep.IPAddress, nil
 	}
 	return "", nil
+}
+
+func (r *real) ContainerLogs(ctx context.Context, id string, tail int) (io.ReadCloser, error) {
+	info, err := r.cli.ContainerInspect(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	rc, err := r.cli.ContainerLogs(ctx, id, container.LogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Follow:     true,
+		Tail:       strconv.Itoa(tail),
+	})
+	if err != nil {
+		return nil, err
+	}
+	// TTY containers produce a raw stream; everything else is multiplexed with
+	// 8-byte frame headers that must be stripped.
+	if info.Config != nil && info.Config.Tty {
+		return rc, nil
+	}
+	pr, pw := io.Pipe()
+	go func() {
+		_, err := stdcopy.StdCopy(pw, pw, rc)
+		pw.CloseWithError(err)
+	}()
+	return &demuxedLogs{PipeReader: pr, src: rc}, nil
+}
+
+// demuxedLogs closes the underlying Docker stream alongside the pipe, which
+// unblocks the demux goroutine when the consumer walks away.
+type demuxedLogs struct {
+	*io.PipeReader
+	src io.Closer
+}
+
+func (d *demuxedLogs) Close() error {
+	d.src.Close()
+	return d.PipeReader.Close()
 }
 
 func (r *real) CreateContainer(ctx context.Context, spec ContainerSpec) (string, error) {
