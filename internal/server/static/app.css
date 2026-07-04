@@ -236,6 +236,18 @@ input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px 
 .deploy-card-title { font-size: 13px; color: var(--text-primary); }
 .deploy-card-meta { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
+/* ---- Project cards ---- */
+.project-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.project-card {
+  display: block; background: var(--bg-2); border: 1px solid var(--border);
+  border-radius: var(--radius-md); padding: 12px 14px; text-decoration: none;
+}
+.project-card:hover { border-color: var(--text-tertiary); }
+.project-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.project-card-name { font-size: 14px; color: var(--text-primary); }
+.project-card-desc { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
+.project-card-meta { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+
 /* ---- Command / copy block ---- */
 .cmd {
   background: var(--bg-0); border: 1px solid var(--border); border-radius: var(--radius);

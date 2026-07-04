@@ -1,0 +1,55 @@
+{{define "appform"}}
+<section class="panel">
+  <h2 class="panel-title">New app</h2>
+  {{if .Projects}}
+  <form method="post" action="/apps" class="grid-form">
+    {{if .Return}}<input type="hidden" name="return" value="{{.Return}}">{{end}}
+    <label class="field">
+      <span>Name</span>
+      <input type="text" name="name" placeholder="web" value="{{with .Form}}{{.Name}}{{end}}" required>
+    </label>
+    <label class="field">
+      <span>Project</span>
+      <select name="project_id">
+        {{range .Projects}}<option value="{{.ID}}"{{if eq .ID $.SelectedProject}} selected{{end}}>{{.Name}}</option>{{end}}
+      </select>
+    </label>
+    <label class="field">
+      <span>Source</span>
+      <select name="source" id="source-select">
+        <option value="public">Public Git URL</option>
+        <option value="ssh">Private (SSH deploy key)</option>
+        {{if .GithubConnected}}<option value="github">GitHub App</option>{{end}}
+      </select>
+    </label>
+    {{if .GithubConnected}}
+    <label class="field" data-source="github">
+      <span>GitHub repository</span>
+      <select name="github_repo">
+        {{range .GithubRepos}}<option value="{{.FullName}}">{{.FullName}}</option>{{end}}
+      </select>
+    </label>
+    {{end}}
+    <label class="field" data-source="public ssh">
+      <span>Git URL</span>
+      <input type="text" name="repo_url" placeholder="https://github.com/owner/repo.git" value="{{with .Form}}{{.RepoURL}}{{end}}">
+    </label>
+    <label class="field">
+      <span>Branch</span>
+      <input type="text" name="branch" placeholder="main" value="main">
+    </label>
+    <label class="field">
+      <span>Domain</span>
+      <input type="text" name="domain" placeholder="web.example.com" value="{{with .Form}}{{.Domain}}{{end}}" required>
+    </label>
+    <label class="field-check">
+      <input type="checkbox" name="auto_deploy"> <span>Auto-deploy on push</span>
+    </label>
+    <button type="submit" class="btn btn-primary">Create app</button>
+  </form>
+  {{if not .GithubConnected}}<p class="env-note"><a href="/github/connect">Connect a GitHub App</a> to deploy private GitHub repos and auto-deploy on push.</p>{{end}}
+  {{else}}
+  <p class="empty">No projects yet. <a href="/projects">Create a project</a> first, then add apps to it.</p>
+  {{end}}
+</section>
+{{end}}

@@ -15,6 +15,11 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	projects, err := s.store.ListProjects(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	deployCount, err := s.store.CountDeployments(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -54,6 +59,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	s.render(w, http.StatusOK, "overview", map[string]any{
 		"Title":        "Overview",
 		"Active":       "overview",
+		"ProjectCount": len(projects),
 		"AppCount":     len(apps),
 		"RunningCount": running,
 		"DeployCount":  deployCount,

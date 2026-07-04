@@ -1,0 +1,42 @@
+{{define "content"}}
+<div class="pagehead">
+  <h1>Projects</h1>
+</div>
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+<section class="panel">
+  <h2 class="panel-title">New project</h2>
+  <form method="post" action="/projects" class="grid-form">
+    <label class="field">
+      <span>Name</span>
+      <input type="text" name="name" placeholder="acme" value="{{with .Form}}{{.Name}}{{end}}" required>
+    </label>
+    <label class="field">
+      <span>Description</span>
+      <input type="text" name="description" placeholder="What lives in this workspace (optional)" value="{{with .Form}}{{.Description}}{{end}}">
+    </label>
+    <button type="submit" class="btn btn-primary">Create project</button>
+  </form>
+</section>
+
+<section class="panel">
+  <h2 class="panel-title">Workspaces</h2>
+  {{if .Projects}}
+  <div class="project-cards">
+    {{range .Projects}}
+    <a class="project-card" href="/projects/{{.ID}}">
+      <div class="project-card-head">
+        <span class="project-card-name">{{.Name}}</span>
+        <span class="badge {{if .Running}}state-running{{else}}state-stopped{{end}}">{{.Running}} running</span>
+      </div>
+      {{if .Description}}<div class="project-card-desc">{{.Description}}</div>{{end}}
+      <div class="project-card-meta">{{.AppCount}} app{{if ne .AppCount 1}}s{{end}} · created {{fmtTime .CreatedAt}}</div>
+    </a>
+    {{end}}
+  </div>
+  {{else}}
+  <p class="empty">No projects yet. Create one above to group related apps.</p>
+  {{end}}
+</section>
+{{end}}

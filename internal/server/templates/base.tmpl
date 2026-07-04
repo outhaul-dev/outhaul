@@ -22,6 +22,7 @@
         </div>
         <div class="nav-group">
           <div class="nav-group-label">Deploy</div>
+          <a class="nav-item {{if eq .Active "projects"}}active{{end}}" href="/projects">Projects</a>
           <a class="nav-item {{if eq .Active "apps"}}active{{end}}" href="/apps">Apps</a>
           <a class="nav-item {{if eq .Active "deployments"}}active{{end}}" href="/deployments">Deployments</a>
         </div>

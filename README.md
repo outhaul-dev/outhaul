@@ -12,7 +12,8 @@ Outhaul is a deliberately minimal alternative to Dokploy/Coolify.
 > vars & secrets (encrypted at rest), health-gated deploys that never promote a
 > broken build, and app lifecycle (stop/restart/delete). M3 adds private repos
 > (via a GitHub App + per-app SSH deploy keys) and auto-deploy on push (via
-> webhooks), with a per-app branch and auto-deploy toggle. See
+> webhooks), with a per-app branch and auto-deploy toggle. Apps are grouped
+> into Dokploy-style **projects** (workspaces for a product or client). See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and what is intentionally
 > not built yet (multiple users, databases, metrics, multi-server).
 
