@@ -66,6 +66,34 @@ func (s *Store) LatestDeploymentForApp(ctx context.Context, appID int64) (*core.
 	return &d, nil
 }
 
+// ListRecentDeployments returns the most recent deployments across all apps,
+// newest first, capped at limit.
+func (s *Store) ListRecentDeployments(ctx context.Context, limit int) ([]core.Deployment, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+deploymentCols+` FROM deployments ORDER BY created_at DESC, id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ds []core.Deployment
+	for rows.Next() {
+		d, err := scanDeployment(rows)
+		if err != nil {
+			return nil, err
+		}
+		ds = append(ds, d)
+	}
+	return ds, rows.Err()
+}
+
+// CountDeployments returns the total number of deployment rows.
+func (s *Store) CountDeployments(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM deployments`).Scan(&n)
+	return n, err
+}
+
 // ClaimDeployment atomically moves a deployment from queued -> building and
 // stamps StartedAt. Returns false if it was not queued (lost the race).
 func (s *Store) ClaimDeployment(ctx context.Context, id int64) (bool, error) {

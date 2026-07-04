@@ -1,0 +1,36 @@
+{{define "content"}}
+<div class="pagehead"><h1>Overview</h1></div>
+
+<section class="panel">
+  <div class="log-head">
+    <h2 class="panel-title">System</h2>
+    <span class="not-live">not live</span>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="stat-label">Apps</div><div class="stat-value">{{.AppCount}}</div></div>
+    <div class="stat"><div class="stat-label">Running</div><div class="stat-value">{{.RunningCount}}</div></div>
+    <div class="stat"><div class="stat-label">Deployments</div><div class="stat-value">{{.DeployCount}}</div></div>
+    <div class="stat"><div class="stat-label">CPU</div><div class="stat-value">—<span class="unit">%</span></div><div class="stat-sub">metrics coming soon</div></div>
+    <div class="stat"><div class="stat-label">Memory</div><div class="stat-value">—<span class="unit">MB</span></div><div class="stat-sub">metrics coming soon</div></div>
+  </div>
+</section>
+
+<section class="panel">
+  <h2 class="panel-title">Recent deployments</h2>
+  {{if .Recent}}
+  <div class="deploy-cards">
+    {{range .Recent}}
+    <a class="deploy-card" href="/deployments/{{.ID}}">
+      <div class="deploy-card-main">
+        <div class="deploy-card-title">{{.AppName}} · #{{.ID}}</div>
+        <div class="deploy-card-meta">{{fmtTime .CreatedAt}}</div>
+      </div>
+      <span class="badge {{stateClass .Status}}">{{.Status}}</span>
+    </a>
+    {{end}}
+  </div>
+  {{else}}
+  <p class="empty">No deployments yet. <a href="/apps">Create an app</a> to get started.</p>
+  {{end}}
+</section>
+{{end}}

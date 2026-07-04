@@ -48,7 +48,7 @@ func (s *Server) handleAppsList(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, appRow{App: a, Latest: latest})
 	}
 
-	data := map[string]any{"Title": "Apps", "Apps": rows}
+	data := map[string]any{"Title": "Apps", "Active": "apps", "Apps": rows}
 	for k, v := range s.githubRepoData(r) {
 		data[k] = v
 	}
@@ -126,7 +126,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		s.renderAppsWithError(w, r, "Could not create app: "+err.Error(), name, repo, domain)
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, "/apps", http.StatusSeeOther)
 }
 
 // newSecret returns a random hex token for a per-app webhook.
@@ -174,7 +174,7 @@ func (s *Server) renderAppsWithError(w http.ResponseWriter, r *http.Request, msg
 		rows = append(rows, appRow{App: a, Latest: latest})
 	}
 	data := map[string]any{
-		"Title": "Apps", "Apps": rows,
+		"Title": "Apps", "Active": "apps", "Apps": rows,
 		"Error": msg,
 		"Form":  map[string]string{"Name": name, "RepoURL": repo, "Domain": domain},
 	}
@@ -224,6 +224,7 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	data := map[string]any{
 		"Title":       app.Name,
+		"Active":      "apps",
 		"App":         app,
 		"Deployments": deployments,
 		"Env":         envRows,
@@ -348,7 +349,7 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, "/apps", http.StatusSeeOther)
 }
 
 func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
@@ -389,6 +390,7 @@ func (s *Server) handleDeploymentDetail(w http.ResponseWriter, r *http.Request) 
 	}
 	s.render(w, http.StatusOK, "deployment", map[string]any{
 		"Title":      "Deployment #" + r.PathValue("id"),
+		"Active":     "deployments",
 		"App":        app,
 		"Deployment": dep,
 		"Live":       !dep.Status.IsTerminal(),

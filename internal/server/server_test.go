@@ -336,6 +336,45 @@ func TestCancelDelegatesToWorker(t *testing.T) {
 // itoa is a tiny local helper for building request paths.
 func itoa(id int64) string { return strconv.FormatInt(id, 10) }
 
+// appForm builds a minimal valid create-app form submission.
+func appForm(name, domain string) url.Values {
+	return url.Values{"name": {name}, "domain": {domain}, "source": {"public"}, "repo_url": {"https://github.com/o/" + name + ".git"}, "branch": {"main"}}
+}
+
+func TestAppDetailShowsConnectAndStats(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	e.postForm(t, "/apps", appForm("web", "web.example.com")).Body.Close()
+	app, _ := e.store.GetAppByName(context.Background(), "web")
+
+	page := body(t, e.get(t, "/apps/"+itoa(app.ID)))
+	if !strings.Contains(page, "not live") {
+		t.Error("app detail should show placeholder metric stats marked not-live")
+	}
+	if !strings.Contains(page, "/webhooks/app/"+app.WebhookSecret) {
+		t.Error("app detail should show the connect-repo webhook URL")
+	}
+}
+
+func TestAppsListShowsBranch(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	e.postForm(t, "/apps", appForm("web", "web.example.com")).Body.Close()
+	app, err := e.store.GetAppByName(context.Background(), "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Set a distinctive branch that does NOT appear anywhere in the create form
+	// (whose branch input defaults to "main"), so the assertion below only
+	// passes if the apps table actually renders the app's branch.
+	e.postForm(t, "/apps/"+itoa(app.ID)+"/settings", url.Values{"branch": {"release-9x"}}).Body.Close()
+
+	page := body(t, e.get(t, "/apps"))
+	if !strings.Contains(page, "release-9x") {
+		t.Error("apps list should render each app's branch in the table")
+	}
+}
+
 func TestEnvAddListAndMask(t *testing.T) {
 	e := newTestEnv(t)
 	e.completeSetup(t)
@@ -461,8 +500,8 @@ func TestDeleteApp(t *testing.T) {
 	e.runtime.container = &docker.Container{ID: "ctr1", Name: "slipway-app-web", State: "running"}
 
 	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/delete", url.Values{})
-	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/" {
-		t.Fatalf("delete redirect = %d -> %q, want 303 -> /", resp.StatusCode, resp.Header.Get("Location"))
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/apps" {
+		t.Fatalf("delete redirect = %d -> %q, want 303 -> /apps", resp.StatusCode, resp.Header.Get("Location"))
 	}
 	resp.Body.Close()
 	if len(e.runtime.removed) != 1 {
@@ -479,8 +518,8 @@ func TestDeleteAppWhenContainerGone(t *testing.T) {
 	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
 	// container is nil (already gone); delete must still remove the row and redirect to /
 	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/delete", url.Values{})
-	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/" {
-		t.Fatalf("delete = %d -> %q, want 303 -> /", resp.StatusCode, resp.Header.Get("Location"))
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/apps" {
+		t.Fatalf("delete = %d -> %q, want 303 -> /apps", resp.StatusCode, resp.Header.Get("Location"))
 	}
 	resp.Body.Close()
 	if len(e.runtime.removed) != 0 {

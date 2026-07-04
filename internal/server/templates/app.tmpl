@@ -1,7 +1,7 @@
 {{define "content"}}
 <div class="pagehead">
   <div>
-    <div class="crumbs"><a href="/">Apps</a> / {{.App.Name}}</div>
+    <div class="crumbs"><a href="/apps">Apps</a> / {{.App.Name}}</div>
     <h1>{{.App.Name}}</h1>
   </div>
   <div class="pagehead-actions">
@@ -21,6 +21,19 @@
 </section>
 
 <section class="panel">
+  <div class="log-head">
+    <h2 class="panel-title">Metrics</h2>
+    <span class="not-live">not live</span>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="stat-label">CPU</div><div class="stat-value">—<span class="unit">%</span></div><div class="stat-sub">coming soon</div></div>
+    <div class="stat"><div class="stat-label">Memory</div><div class="stat-value">—<span class="unit">MB</span></div><div class="stat-sub">coming soon</div></div>
+    <div class="stat"><div class="stat-label">Net I/O</div><div class="stat-value">—<span class="unit">MB/s</span></div><div class="stat-sub">coming soon</div></div>
+    <div class="stat"><div class="stat-label">Uptime</div><div class="stat-value">—</div><div class="stat-sub">coming soon</div></div>
+  </div>
+</section>
+
+<section class="panel">
   <h2 class="panel-title">Deploy settings</h2>
   <form method="post" action="/apps/{{.App.ID}}/settings" class="grid-form">
     <label class="field"><span>Source</span><input type="text" value="{{.App.Source}}" disabled></label>
@@ -28,13 +41,23 @@
     <label class="field-check"><input type="checkbox" name="auto_deploy" {{if .App.AutoDeploy}}checked{{end}}> <span>Auto-deploy on push</span></label>
     <button type="submit" class="btn">Save</button>
   </form>
-  {{if .App.SSHPublicKey}}
-  <p class="env-note">Add this as a deploy key on the repository:</p>
-  <pre class="mono" style="white-space:pre-wrap;word-break:break-all">{{.App.SSHPublicKey}}</pre>
+</section>
+
+<section class="panel">
+  <h2 class="panel-title">Connect this repo</h2>
+  {{if .App.RepoURL}}
+  <p class="env-note">Clone URL:</p>
+  <div class="cmd"><code>{{.App.RepoURL}}</code></div>
   {{end}}
-  {{if .WebhookURL}}
-  <p class="env-note">Generic webhook URL (POST push events here):</p>
-  <pre class="mono" style="white-space:pre-wrap;word-break:break-all">{{.WebhookURL}}</pre>
+  {{if .App.SSHPublicKey}}
+  <p class="env-note">Add this as a deploy key on the repository (read access):</p>
+  <div class="cmd"><code>{{.App.SSHPublicKey}}</code></div>
+  {{end}}
+  {{if eq .App.Source "github"}}
+  <p class="env-note">Auto-deploy is handled by the connected GitHub App — pushes to <span class="mono">{{.App.Branch}}</span> deploy automatically when auto-deploy is enabled. No webhook setup needed.</p>
+  {{else if .WebhookURL}}
+  <p class="env-note">Point a push webhook here to auto-deploy:</p>
+  <div class="cmd"><code>{{.WebhookURL}}</code></div>
   {{end}}
 </section>
 
@@ -75,7 +98,7 @@
   {{if .Deployments}}
   <table class="table">
     <thead>
-      <tr><th>#</th><th>Status</th><th>Created</th><th>Finished</th><th></th></tr>
+      <tr><th>#</th><th>Status</th><th>Created</th><th>Build</th><th></th></tr>
     </thead>
     <tbody>
       {{range .Deployments}}
@@ -83,7 +106,7 @@
         <td class="mono">{{.ID}}</td>
         <td><span class="badge {{stateClass .Status}}">{{.Status}}</span></td>
         <td class="mono muted">{{fmtTime .CreatedAt}}</td>
-        <td class="mono muted">{{fmtTimePtr .FinishedAt}}</td>
+        <td class="mono muted">{{buildDur .}}</td>
         <td><a href="/deployments/{{.ID}}" class="rowlink">logs →</a></td>
       </tr>
       {{end}}

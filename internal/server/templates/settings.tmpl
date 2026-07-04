@@ -1,0 +1,27 @@
+{{define "content"}}
+<div class="pagehead"><h1>Settings</h1></div>
+
+{{if .Notice}}<div class="alert alert-success">{{.Notice}}</div>{{end}}
+
+<section class="panel">
+  <h2 class="panel-title">GitHub App</h2>
+  {{if .NeedsPublicURL}}
+  <p class="env-note">Set <code>OUTHAUL_PUBLIC_URL</code> to your admin UI's public HTTPS URL to enable GitHub App setup.</p>
+  {{else if .GithubInstalled}}
+  <p>Connected as <span class="mono">{{.GithubSlug}}</span> and installed. Private GitHub repos and auto-deploy on push are available.</p>
+  {{else if .GithubSlug}}
+  <p>App <span class="mono">{{.GithubSlug}}</span> created but not installed. <a href="/github/connect">Finish installation</a>.</p>
+  {{else}}
+  <p><a href="/github/connect">Connect a GitHub App</a> to deploy private GitHub repos and auto-deploy on push.</p>
+  {{end}}
+</section>
+
+<section class="panel">
+  <h2 class="panel-title">Change password</h2>
+  <form method="post" action="/settings/password" class="grid-form">
+    <label class="field"><span>Current password</span><input type="password" name="current" autocomplete="current-password" required></label>
+    <label class="field"><span>New password <em>(min 8 characters)</em></span><input type="password" name="new" autocomplete="new-password" required></label>
+    <button type="submit" class="btn btn-primary">Update password</button>
+  </form>
+</section>
+{{end}}

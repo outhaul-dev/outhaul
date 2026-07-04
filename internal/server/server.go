@@ -77,7 +77,7 @@ func New(st *store.Store, d Deployer, rt Runtime, br *logstream.Broker, gh githu
 // parseTemplates builds one template set per page, each combining base.tmpl with
 // the page template (so every page can define its own "content" block).
 func (s *Server) parseTemplates() error {
-	pages := []string{"login", "setup", "apps", "app", "deployment", "github_connect"}
+	pages := []string{"login", "setup", "overview", "apps", "app", "deployment", "deployments", "github_connect", "settings", "placeholder"}
 	s.pages = make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.New("base").Funcs(templateFuncs())
@@ -108,7 +108,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /login", s.handleLoginSubmit)
 	mux.HandleFunc("POST /logout", s.handleLogout)
 
-	mux.HandleFunc("GET /{$}", s.requireAuth(s.handleAppsList))
+	mux.HandleFunc("GET /{$}", s.requireAuth(s.handleOverview))
+	mux.HandleFunc("GET /apps", s.requireAuth(s.handleAppsList))
 	mux.HandleFunc("POST /apps", s.requireAuth(s.handleCreateApp))
 	mux.HandleFunc("GET /apps/{id}", s.requireAuth(s.handleAppDetail))
 	mux.HandleFunc("POST /apps/{id}/deploy", s.requireAuth(s.handleDeploy))
@@ -118,9 +119,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /apps/{id}/stop", s.requireAuth(s.handleStopApp))
 	mux.HandleFunc("POST /apps/{id}/restart", s.requireAuth(s.handleRestartApp))
 	mux.HandleFunc("POST /apps/{id}/delete", s.requireAuth(s.handleDeleteApp))
+	mux.HandleFunc("GET /deployments", s.requireAuth(s.handleDeployments))
 	mux.HandleFunc("GET /deployments/{id}", s.requireAuth(s.handleDeploymentDetail))
 	mux.HandleFunc("GET /deployments/{id}/logs", s.requireAuth(s.handleLogsSSE))
 	mux.HandleFunc("POST /deployments/{id}/cancel", s.requireAuth(s.handleCancel))
+
+	mux.HandleFunc("GET /settings", s.requireAuth(s.handleSettings))
+	mux.HandleFunc("POST /settings/password", s.requireAuth(s.handleChangePassword))
 
 	mux.HandleFunc("GET /github/connect", s.requireAuth(s.handleGithubConnect))
 	// callback and setup are called by GitHub directly (no session cookie); the
@@ -132,6 +137,10 @@ func (s *Server) Handler() http.Handler {
 	// cookie); each verifies its own HMAC signature or token instead.
 	mux.HandleFunc("POST /webhooks/github", s.handleGithubWebhook)
 	mux.HandleFunc("POST /webhooks/app/{token}", s.handleAppWebhook)
+
+	for _, p := range placeholderPages {
+		mux.HandleFunc("GET /"+p.active, s.requireAuth(s.handlePlaceholder(p)))
+	}
 
 	return mux
 }
@@ -166,6 +175,12 @@ func templateFuncs() template.FuncMap {
 				return "—"
 			}
 			return t.Local().Format("2006-01-02 15:04:05")
+		},
+		"buildDur": func(d core.Deployment) string {
+			if d.StartedAt == nil || d.FinishedAt == nil || d.FinishedAt.Before(*d.StartedAt) {
+				return "—"
+			}
+			return d.FinishedAt.Sub(*d.StartedAt).Round(time.Second).String()
 		},
 	}
 }

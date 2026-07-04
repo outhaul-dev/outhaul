@@ -2,13 +2,13 @@
 <div class="pagehead"><h1>Connect GitHub</h1></div>
 {{if .NeedsPublicURL}}
 <section class="panel">
-  <p class="alert alert-error">Set <code>SLIPWAY_PUBLIC_URL</code> to your admin UI's
+  <p class="alert alert-error">Set <code>OUTHAUL_PUBLIC_URL</code> to your admin UI's
   public HTTPS URL, then reload this page. GitHub needs a reachable callback and
   webhook URL to create the App.</p>
 </section>
 {{else}}
 <section class="panel">
-  <p>Click below to create a GitHub App for Slipway. GitHub will ask you to
+  <p>Click below to create a GitHub App for Outhaul. GitHub will ask you to
   approve permissions (read-only code + metadata) and choose which repositories
   to grant access to.</p>
   <form id="manifest-form" method="post" action="{{.Action}}">

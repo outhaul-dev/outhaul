@@ -30,11 +30,11 @@ func TestLoadDefaults(t *testing.T) {
 
 func TestLoadEnvOverrides(t *testing.T) {
 	env := map[string]string{
-		"SLIPWAY_DATA_DIR":      "/data/slip",
-		"SLIPWAY_LISTEN_ADDR":   ":9000",
-		"SLIPWAY_DOCKER_HOST":   "tcp://10.0.0.1:2375",
-		"SLIPWAY_TRAEFIK_IMAGE": "traefik:v9.9",
-		"SLIPWAY_NETWORK":       "mynet",
+		"OUTHAUL_DATA_DIR":      "/data/slip",
+		"OUTHAUL_LISTEN_ADDR":   ":9000",
+		"OUTHAUL_DOCKER_HOST":   "tcp://10.0.0.1:2375",
+		"OUTHAUL_TRAEFIK_IMAGE": "traefik:v9.9",
+		"OUTHAUL_NETWORK":       "mynet",
 	}
 	c := Load(func(k string) string { return env[k] })
 
@@ -57,7 +57,7 @@ func TestLoadEnvOverrides(t *testing.T) {
 
 func TestDBPathDerivesFromDataDir(t *testing.T) {
 	c := Load(func(k string) string {
-		if k == "SLIPWAY_DATA_DIR" {
+		if k == "OUTHAUL_DATA_DIR" {
 			return "/data/slip"
 		}
 		return ""
@@ -83,9 +83,9 @@ func TestLoadTLSAndHealthDefaults(t *testing.T) {
 
 func TestLoadTLSEnabledWhenEmailSet(t *testing.T) {
 	env := map[string]string{
-		"SLIPWAY_ACME_EMAIL":     "ops@example.com",
-		"SLIPWAY_ACME_STAGING":   "true",
-		"SLIPWAY_HEALTH_TIMEOUT": "90s",
+		"OUTHAUL_ACME_EMAIL":     "ops@example.com",
+		"OUTHAUL_ACME_STAGING":   "true",
+		"OUTHAUL_HEALTH_TIMEOUT": "90s",
 	}
 	c := Load(func(k string) string { return env[k] })
 	if !c.TLSEnabled() {
@@ -101,7 +101,7 @@ func TestLoadTLSEnabledWhenEmailSet(t *testing.T) {
 
 func TestPublicURL(t *testing.T) {
 	c := Load(func(k string) string {
-		if k == "SLIPWAY_PUBLIC_URL" {
+		if k == "OUTHAUL_PUBLIC_URL" {
 			return "https://slip.example.com"
 		}
 		return ""

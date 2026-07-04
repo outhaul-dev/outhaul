@@ -1,6 +1,6 @@
-# Slipway — Architecture
+# Outhaul — Architecture
 
-Slipway is an open-source, self-hosted PaaS: a single Go binary plus SQLite that
+Outhaul is an open-source, self-hosted PaaS: a single Go binary plus SQLite that
 turns a fresh VPS into a git-push-to-deploy platform by orchestrating Docker and
 Traefik. It is positioned as a minimal alternative to Dokploy/Coolify — one
 ~22 MB binary, no Node, no Postgres, installed with `curl | sh`.
@@ -20,7 +20,7 @@ right here before writing the worker.
 - **Docker.** Official `github.com/docker/docker/client` SDK against the local
   socket. Never shell out to the `docker` CLI.
 - **Reverse proxy.** Traefik, configured through the **Docker provider**
-  (container labels), not the file provider. Slipway starts and manages the
+  (container labels), not the file provider. Outhaul starts and manages the
   Traefik container itself.
 - **Builds.** Nixpacks initially (shell out to the `nixpacks` binary), abstracted
   behind a `Builder` interface so Dockerfile/buildpack strategies can be added.
@@ -60,7 +60,7 @@ new container is polled before cutover, so a failed build never disrupts the
 running app. App runtime state is derived from Docker rather than stored as a
 desired-state column; the `unless-stopped` restart policy handles reboot.
 HTTPS is Traefik + Let's Encrypt HTTP-01, enabled by setting
-`SLIPWAY_ACME_EMAIL`, with a config-hash drift check that recreates the
+`OUTHAUL_ACME_EMAIL`, with a config-hash drift check that recreates the
 Traefik container when its desired config changes.
 
 ### Milestone 3 (done)
@@ -83,7 +83,7 @@ the payload with a constant-time comparison, and `webhook.ParsePush` extracts
 the pushed branch independent of the Git host's payload shape. Auto-deploy is
 gated by two per-app settings — a target branch and an on/off toggle — so a
 push only enqueues a deploy when both match; tag pushes and pushes to other
-branches no-op. `SLIPWAY_PUBLIC_URL` supplies the externally reachable base
+branches no-op. `OUTHAUL_PUBLIC_URL` supplies the externally reachable base
 URL the GitHub App manifest and webhook URLs are built from; GitHub App setup
 is unavailable until it is configured.
 
@@ -166,7 +166,7 @@ slipway/
 
 ### Boundaries and testing seams
 
-- **`core` is pure and has no imports** from other Slipway packages or I/O. The
+- **`core` is pure and has no imports** from other Outhaul packages or I/O. The
   state machine and its tests live here. This is what "get the state machine
   right first" means concretely.
 - **Docker is an interface** (`docker.Client`) with a real SDK impl and an
@@ -304,5 +304,5 @@ Browser                 server            store            deploy.worker        
 - Docker daemon reachable at the local socket (`/var/run/docker.sock`).
 - `nixpacks` on `PATH` (build-time strategy for M1). Absence is surfaced as a
   clear deploy failure, not a crash.
-- Traefik image pullable; Slipway creates the proxy container and a shared
+- Traefik image pullable; Outhaul creates the proxy container and a shared
   `slipway` Docker network that app containers join.
