@@ -360,10 +360,18 @@ func TestAppsListShowsBranch(t *testing.T) {
 	e := newTestEnv(t)
 	e.login(t)
 	e.postForm(t, "/apps", appForm("web", "web.example.com")).Body.Close()
+	app, err := e.store.GetAppByName(context.Background(), "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Set a distinctive branch that does NOT appear anywhere in the create form
+	// (whose branch input defaults to "main"), so the assertion below only
+	// passes if the apps table actually renders the app's branch.
+	e.postForm(t, "/apps/"+itoa(app.ID)+"/settings", url.Values{"branch": {"release-9x"}}).Body.Close()
 
 	page := body(t, e.get(t, "/apps"))
-	if !strings.Contains(page, "main") {
-		t.Error("apps list should show the app's branch")
+	if !strings.Contains(page, "release-9x") {
+		t.Error("apps list should render each app's branch in the table")
 	}
 }
 
