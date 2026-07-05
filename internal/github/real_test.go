@@ -78,7 +78,10 @@ func TestHTTPClientListRepos(t *testing.T) {
 			t.Errorf("per_page = %q, want 100", got)
 		}
 		json.NewEncoder(w).Encode(map[string]any{
-			"repositories": []map[string]any{{"full_name": "a/b"}, {"full_name": "c/d"}},
+			"repositories": []map[string]any{
+				{"full_name": "a/b", "default_branch": "main"},
+				{"full_name": "c/d", "default_branch": "master"},
+			},
 		})
 	}))
 	defer srv.Close()
@@ -91,6 +94,11 @@ func TestHTTPClientListRepos(t *testing.T) {
 	}
 	if len(repos) != 2 || repos[0].FullName != "a/b" || repos[1].FullName != "c/d" {
 		t.Errorf("repos = %+v", repos)
+	}
+	// The default branch must be captured so the create-app form can pre-fill
+	// it (repos on "master" otherwise fail a hardcoded "main" clone).
+	if repos[0].DefaultBranch != "main" || repos[1].DefaultBranch != "master" {
+		t.Errorf("default branches = %q, %q; want main, master", repos[0].DefaultBranch, repos[1].DefaultBranch)
 	}
 }
 

@@ -80,7 +80,8 @@ func (c *HTTPClient) InstallationToken(ctx context.Context, appJWT string, insta
 func (c *HTTPClient) ListRepos(ctx context.Context, token string) ([]Repo, error) {
 	var r struct {
 		Repositories []struct {
-			FullName string `json:"full_name"`
+			FullName      string `json:"full_name"`
+			DefaultBranch string `json:"default_branch"`
 		} `json:"repositories"`
 	}
 	url := fmt.Sprintf("%s/installation/repositories?per_page=100", c.BaseURL)
@@ -89,7 +90,7 @@ func (c *HTTPClient) ListRepos(ctx context.Context, token string) ([]Repo, error
 	}
 	repos := make([]Repo, 0, len(r.Repositories))
 	for _, x := range r.Repositories {
-		repos = append(repos, Repo{FullName: x.FullName})
+		repos = append(repos, Repo{FullName: x.FullName, DefaultBranch: x.DefaultBranch})
 	}
 	return repos, nil
 }

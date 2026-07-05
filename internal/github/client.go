@@ -4,7 +4,8 @@ import "context"
 
 // Repo is a repository the installation can access.
 type Repo struct {
-	FullName string // "owner/name"
+	FullName      string // "owner/name"
+	DefaultBranch string // the repo's default branch, e.g. "main" or "master"
 }
 
 // ManifestResult is the App's credentials returned by the manifest conversion.

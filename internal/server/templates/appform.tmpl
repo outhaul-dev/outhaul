@@ -33,8 +33,8 @@
     {{if .GithubConnected}}
     <label class="field" data-source="github">
       <span>GitHub repository</span>
-      <select name="github_repo">
-        {{range .GithubRepos}}<option value="{{.FullName}}">{{.FullName}}</option>{{end}}
+      <select name="github_repo" id="github-repo-select">
+        {{range .GithubRepos}}<option value="{{.FullName}}" data-default-branch="{{.DefaultBranch}}">{{.FullName}}</option>{{end}}
       </select>
     </label>
     {{end}}
@@ -44,7 +44,7 @@
     </label>
     <label class="field">
       <span>Branch</span>
-      <input type="text" name="branch" placeholder="main" value="main">
+      <input type="text" name="branch" id="branch-input" placeholder="main" value="main">
     </label>
     <label class="field" data-kind="compose" hidden>
       <span>Compose file</span>
@@ -73,21 +73,51 @@
   </form>
   <p class="muted env-note" data-kind="compose" hidden>Domain, service and port publish one stack service (leave the domain blank for an internal-only stack). More domains can be added on the app page after creating it.</p>
   <script>
-    // Progressive enhancement: reveal each kind's fields only when that kind
-    // is selected; Domain is optional only for compose (leave it blank for an
-    // internal-only stack). Without JS everything shows; the server
-    // validates either way.
+    // Progressive enhancement: reveal each kind's/source's fields only when
+    // that option is selected — e.g. the GitHub repo dropdown appears only
+    // once the "GitHub App" source is chosen, the Git URL box only for
+    // public/ssh. Domain is optional only for compose (leave it blank for an
+    // internal-only stack). Without JS everything shows; the server validates
+    // either way.
     (function () {
       var kind = document.getElementById('kind-select');
-      if (!kind) return;
-      var apply = function () {
-        document.querySelectorAll('[data-kind]').forEach(function (el) {
-          el.hidden = el.getAttribute('data-kind') !== kind.value;
-        });
-        document.getElementById('domain-input').required = kind.value !== 'compose';
+      if (kind) {
+        var applyKind = function () {
+          document.querySelectorAll('[data-kind]').forEach(function (el) {
+            el.hidden = el.getAttribute('data-kind') !== kind.value;
+          });
+          document.getElementById('domain-input').required = kind.value !== 'compose';
+        };
+        kind.addEventListener('change', applyKind);
+        applyKind();
+      }
+
+      var source = document.getElementById('source-select');
+      var repo = document.getElementById('github-repo-select');
+      var branch = document.getElementById('branch-input');
+
+      // When a GitHub repo is chosen, default the branch to that repo's real
+      // default branch (e.g. "master") instead of the hardcoded "main" — the
+      // most common cause of a "branch not found" clone failure.
+      var syncBranch = function () {
+        if (!repo || !branch || !source || source.value !== 'github') return;
+        var opt = repo.options[repo.selectedIndex];
+        var def = opt && opt.getAttribute('data-default-branch');
+        if (def) branch.value = def;
       };
-      kind.addEventListener('change', apply);
-      apply();
+      if (repo) repo.addEventListener('change', syncBranch);
+
+      if (source) {
+        var applySource = function () {
+          document.querySelectorAll('[data-source]').forEach(function (el) {
+            // data-source is a space-separated list of sources the field applies to.
+            el.hidden = el.getAttribute('data-source').split(' ').indexOf(source.value) === -1;
+          });
+          syncBranch();
+        };
+        source.addEventListener('change', applySource);
+        applySource();
+      }
     })();
   </script>
   {{if not .GithubConnected}}<p class="env-note"><a href="/github/connect">Connect a GitHub App</a> to deploy private GitHub repos and auto-deploy on push.</p>{{end}}
