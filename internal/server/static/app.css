@@ -1,6 +1,8 @@
 /* Outhaul admin UI — dark ops-tool theme. Tokens lifted from the Outhaul
    design system. Fonts fall back to system stacks (no webfont dependency). */
 :root {
+  color-scheme: dark; /* native widgets (scrollbars, pickers) render dark */
+
   --font-mono: "IBM Plex Mono", "SFMono-Regular", "Menlo", "Consolas", ui-monospace, monospace;
   --font-sans: "IBM Plex Sans", -apple-system, "Segoe UI", system-ui, sans-serif;
 
@@ -28,6 +30,9 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
+/* Keep the hidden attribute working on elements whose class sets a display
+   (author display beats the UA's [hidden] rule otherwise). */
+[hidden] { display: none !important; }
 body {
   background: var(--bg-0);
   color: var(--text-primary);
@@ -114,20 +119,25 @@ a:hover { color: var(--link-hover); }
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field > span { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-tertiary); }
 .field > span em { text-transform: none; letter-spacing: 0; color: var(--text-muted); font-style: normal; }
-input[type=text], input[type=password], textarea {
+input[type=text], input[type=password], textarea, select {
   background: var(--bg-3); border: 1px solid var(--border-strong);
   border-radius: var(--radius); color: var(--text-primary);
-  font: inherit; font-size: 13px; padding: 7px 10px; width: 100%;
+  font: inherit; font-size: 13px; padding: 7px 10px;
 }
+input[type=text], input[type=password], textarea, .field select { width: 100%; }
 textarea { font-family: var(--font-mono); font-size: 12px; resize: vertical; }
-input:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-dim, rgba(224,138,60,0.35)); }
+input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-dim, rgba(224,138,60,0.35)); }
+input[type=checkbox] { accent-color: var(--accent); }
 .field-wide { grid-column: 1 / -1; }
+.field-check { display: flex; align-items: center; gap: 8px; padding: 7px 0; }
 
 /* Buttons */
 .btn {
   font: inherit; font-size: 13px; font-weight: 500; cursor: pointer;
-  padding: 7px 14px; border-radius: var(--radius); border: 1px solid transparent;
+  padding: 7px 14px; border-radius: var(--radius);
+  background: var(--bg-3); color: var(--text-primary); border: 1px solid var(--border-strong);
 }
+.btn:hover { border-color: var(--accent); }
 .btn-primary { background: var(--accent); color: var(--text-inverse); border-color: var(--accent-active); }
 .btn-primary:hover { background: var(--accent-hover); }
 .btn-danger { background: var(--danger-bg); color: var(--danger); border-color: var(--danger-bd); }
@@ -280,8 +290,9 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); box-sh
 .template-deploy input, .template-deploy select {
   flex: 1; min-width: 0; background: var(--bg-0); border: 1px solid var(--border);
   border-radius: var(--radius); color: var(--text-primary);
-  font-family: var(--font-mono); font-size: 12px; padding: 6px 8px;
+  font-family: var(--font-mono); font-size: 12px; padding: 6px 8px; width: auto;
 }
+.template-deploy input { flex: 1.4; } /* app names run longer than project names */
 
 /* ---- Command / copy block ---- */
 .cmd {

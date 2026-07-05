@@ -112,7 +112,7 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 // parseTemplates builds one template set per page, each combining base.tmpl with
 // the page template (so every page can define its own "content" block).
 func (s *Server) parseTemplates() error {
-	pages := []string{"login", "setup", "overview", "projects", "project", "apps", "app", "database", "deployment", "deployments", "github_connect", "settings", "restore", "placeholder", "templates"}
+	pages := []string{"login", "setup", "overview", "projects", "project", "apps", "app", "database", "databases", "deployment", "deployments", "github_connect", "settings", "restore", "placeholder", "templates"}
 	s.pages = make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.New("base").Funcs(templateFuncs())
@@ -154,6 +154,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /projects/{id}/env/delete", s.requireAuth(s.handleDeleteProjectEnv))
 	mux.HandleFunc("POST /projects/{id}/delete", s.requireAuth(s.handleDeleteProject))
 	mux.HandleFunc("POST /projects/{id}/databases", s.requireAuth(s.handleCreateDatabase))
+	mux.HandleFunc("GET /databases", s.requireAuth(s.handleDatabasesList))
 	mux.HandleFunc("GET /databases/{id}", s.requireAuth(s.handleDatabaseDetail))
 	mux.HandleFunc("GET /databases/{id}/logs", s.requireAuth(s.handleDatabaseLogsSSE))
 	mux.HandleFunc("POST /databases/{id}/start", s.requireAuth(s.handleStartDatabase))

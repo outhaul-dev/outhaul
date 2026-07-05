@@ -9,12 +9,12 @@ import (
 func TestPlaceholderPageRenders(t *testing.T) {
 	e := newTestEnv(t)
 	e.login(t)
-	resp := e.get(t, "/databases")
+	resp := e.get(t, "/volumes")
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET /databases = %d, want 200", resp.StatusCode)
+		t.Fatalf("GET /volumes = %d, want 200", resp.StatusCode)
 	}
 	page := body(t, resp)
-	if !strings.Contains(page, "Databases") || !strings.Contains(page, "coming soon") {
+	if !strings.Contains(page, "Volumes") || !strings.Contains(page, "coming soon") {
 		t.Error("placeholder page should show its title and a coming-soon marker")
 	}
 }

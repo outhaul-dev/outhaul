@@ -13,6 +13,39 @@ import (
 // databasePath is the detail page for a database.
 func databasePath(id int64) string { return "/databases/" + strconv.FormatInt(id, 10) }
 
+// handleDatabasesList is the cross-project database inventory (the sidebar's
+// Databases section). Databases are created from their project's page; this
+// page answers "what is running where".
+func (s *Server) handleDatabasesList(w http.ResponseWriter, r *http.Request) {
+	dbs, err := s.store.ListDatabases(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	projects, err := s.store.ListProjects(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	names := make(map[int64]string, len(projects))
+	for _, p := range projects {
+		names[p.ID] = p.Name
+	}
+	type row struct {
+		core.Database
+		ProjectName string
+	}
+	rows := make([]row, 0, len(dbs))
+	for _, d := range dbs {
+		rows = append(rows, row{Database: d, ProjectName: names[d.ProjectID]})
+	}
+	s.render(w, http.StatusOK, "databases", map[string]any{
+		"Title":     "Databases",
+		"Active":    "databases",
+		"Databases": rows,
+	})
+}
+
 // handleCreateDatabase creates a managed database in a project and kicks off
 // provisioning (pull + create + start) in the background, then sends the
 // operator to the database page to watch it come up.

@@ -510,7 +510,7 @@ outhaul/
         auth.go               # argon2id, session cookies, first-boot setup token
         handlers.go           # apps list/create, deploy trigger, deployment detail
         catalog.go            # template gallery + one-click deploy-from-template
-        databases.go          # managed-database pages: create, detail, lifecycle, settings
+        databases.go          # managed-database pages: cross-project list, create, detail, lifecycle, settings
         backups.go            # backup schedules + destinations (create/test/delete, run-now)
         sse.go                # SSE handlers: build logs (logstream broker) + runtime container logs (docker follow)
         stats.go              # live app metrics: aggregated docker-stats snapshot, polled by the app page
