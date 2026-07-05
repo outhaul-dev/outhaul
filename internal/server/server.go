@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/james-smart/outhaul/internal/blobstore"
 	"github.com/james-smart/outhaul/internal/compose"
 	"github.com/james-smart/outhaul/internal/core"
 	"github.com/james-smart/outhaul/internal/docker"
@@ -40,10 +41,13 @@ type Databases interface {
 	Remove(ctx context.Context, d core.Database) error
 }
 
-// Backups is the slice of the backup manager the server needs. RunNow is
-// asynchronous; TestDestination is a synchronous probe.
+// Backups is the slice of the backup manager the server needs. RunNow and
+// RestoreNow are asynchronous; the rest are synchronous.
 type Backups interface {
 	RunNow(b core.Backup)
+	RestoreNow(b core.Backup, objectKey string)
+	ListRestoreObjects(ctx context.Context, b core.Backup) ([]blobstore.Object, error)
+	RestoreDir(ctx context.Context, b core.Backup) (string, error)
 	TestDestination(ctx context.Context, d core.Destination) error
 }
 
@@ -106,7 +110,7 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 // parseTemplates builds one template set per page, each combining base.tmpl with
 // the page template (so every page can define its own "content" block).
 func (s *Server) parseTemplates() error {
-	pages := []string{"login", "setup", "overview", "projects", "project", "apps", "app", "database", "deployment", "deployments", "github_connect", "settings", "placeholder"}
+	pages := []string{"login", "setup", "overview", "projects", "project", "apps", "app", "database", "deployment", "deployments", "github_connect", "settings", "restore", "placeholder"}
 	s.pages = make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.New("base").Funcs(templateFuncs())
@@ -178,6 +182,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /backups/{id}/run", s.requireAuth(s.handleRunBackup))
 	mux.HandleFunc("POST /backups/{id}/toggle", s.requireAuth(s.handleToggleBackup))
 	mux.HandleFunc("POST /backups/{id}/delete", s.requireAuth(s.handleDeleteBackup))
+	mux.HandleFunc("GET /backups/{id}/restore", s.requireAuth(s.handleRestorePage))
+	mux.HandleFunc("POST /backups/{id}/restore", s.requireAuth(s.handleRestoreBackup))
 
 	mux.HandleFunc("GET /settings", s.requireAuth(s.handleSettings))
 	mux.HandleFunc("POST /settings/password", s.requireAuth(s.handleChangePassword))

@@ -15,6 +15,12 @@ const (
 	RunFailed  = "failed"
 )
 
+// Backup run kinds: which direction the archive moved.
+const (
+	RunKindBackup  = "backup"
+	RunKindRestore = "restore"
+)
+
 // Destination is an S3-compatible bucket backups upload to (AWS, MinIO, R2,
 // B2, Wasabi, …). Addressed path-style; SecretKey is stored encrypted.
 type Destination struct {
@@ -42,12 +48,14 @@ type Backup struct {
 	CreatedAt     time.Time
 }
 
-// BackupRun is one execution of a Backup: what ran, what it produced, and how
-// it ended. ObjectKey is the uploaded object (the last one, for multi-volume
-// app backups); Reason carries the failure detail.
+// BackupRun is one execution of a Backup or a restore from one of its
+// archives: what ran, what it produced, and how it ended. ObjectKey is the
+// uploaded object (the last one, for multi-volume app backups) or the archive
+// restored; Reason carries the failure detail.
 type BackupRun struct {
 	ID         int64
 	BackupID   int64
+	Kind       string // RunKindBackup | RunKindRestore
 	Status     string // RunRunning | RunOK | RunFailed
 	Reason     string
 	SizeBytes  int64

@@ -24,6 +24,7 @@ type fakeBlob struct {
 	mu      sync.Mutex
 	objects map[string][]byte
 	putErr  error
+	getErr  error
 }
 
 func (f *fakeBlob) Put(_ context.Context, key string, r io.Reader, size int64) error {
@@ -41,6 +42,19 @@ func (f *fakeBlob) Put(_ context.Context, key string, r io.Reader, size int64) e
 	defer f.mu.Unlock()
 	f.objects[key] = b
 	return nil
+}
+
+func (f *fakeBlob) Get(_ context.Context, key string) (io.ReadCloser, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	b, ok := f.objects[key]
+	if !ok {
+		return nil, errors.New("404 Not Found: NoSuchKey")
+	}
+	return io.NopCloser(bytes.NewReader(b)), nil
 }
 
 func (f *fakeBlob) List(_ context.Context, prefix string) ([]blobstore.Object, error) {

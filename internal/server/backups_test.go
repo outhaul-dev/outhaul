@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/james-smart/outhaul/internal/blobstore"
 	"github.com/james-smart/outhaul/internal/core"
 )
 
@@ -246,7 +247,7 @@ func TestBackupPanelsRender(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runID, err := e.store.StartBackupRun(context.Background(), b.ID)
+	runID, err := e.store.StartBackupRun(context.Background(), b.ID, core.RunKindBackup)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,5 +270,136 @@ func TestBackupPanelsRender(t *testing.T) {
 	page = body(t, e.get(t, "/apps/"+itoa(nix.ID)))
 	if strings.Contains(page, `action="/backups"`) {
 		t.Error("nixpacks page should not offer backups")
+	}
+}
+
+func TestRestorePageListsSchedulesArchives(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	d := seedDestination(t, e, "minio")
+	db := seedDatabase(t, e, "shop", core.EnginePostgres)
+	b, err := e.store.CreateBackup(context.Background(), core.Backup{
+		TargetKind: core.BackupTargetDatabase, TargetID: db.ID, DestinationID: d.ID,
+		Schedule: "0 3 * * *", Prefix: "prod",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.backups.restoreDir = "prod/shop"
+	e.backups.objects = []blobstore.Object{
+		{Key: "prod/shop/20260102T000000Z.dump.gz", Size: 2048},
+		{Key: "prod/shop/20260101T000000Z.dump.gz", Size: 1024},
+	}
+
+	page := body(t, e.get(t, "/backups/"+itoa(b.ID)+"/restore"))
+	for _, want := range []string{
+		"prod/shop/20260102T000000Z.dump.gz",
+		"prod/shop/20260101T000000Z.dump.gz",
+		"/backups/" + itoa(b.ID) + "/restore", // the per-row POST form
+		"minio",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("restore page missing %q", want)
+		}
+	}
+
+	// A bucket that cannot be listed is surfaced, not rendered empty.
+	e.backups.listErr = errors.New("AccessDenied")
+	resp := e.get(t, "/backups/"+itoa(b.ID)+"/restore")
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("list failure status = %d, want 502", resp.StatusCode)
+	}
+	if got := body(t, resp); !strings.Contains(got, "AccessDenied") {
+		t.Errorf("list failure not surfaced: %q", got)
+	}
+}
+
+func TestRestorePostTriggersRestore(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	d := seedDestination(t, e, "minio")
+	db := seedDatabase(t, e, "shop", core.EnginePostgres)
+	b, err := e.store.CreateBackup(context.Background(), core.Backup{
+		TargetKind: core.BackupTargetDatabase, TargetID: db.ID, DestinationID: d.ID,
+		Schedule: "0 3 * * *", Prefix: "prod",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.backups.restoreDir = "prod/shop"
+
+	resp := e.postForm(t, "/backups/"+itoa(b.ID)+"/restore",
+		url.Values{"key": {"prod/shop/20260101T000000Z.dump.gz"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "/databases/"+itoa(db.ID) {
+		t.Errorf("redirect = %q, want back to the database page", loc)
+	}
+	want := itoa(b.ID) + " prod/shop/20260101T000000Z.dump.gz"
+	if len(e.backups.restored) != 1 || e.backups.restored[0] != want {
+		t.Errorf("restored = %v, want [%q]", e.backups.restored, want)
+	}
+}
+
+func TestRestorePostRejectsForeignKeys(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	d := seedDestination(t, e, "minio")
+	db := seedDatabase(t, e, "shop", core.EnginePostgres)
+	b, err := e.store.CreateBackup(context.Background(), core.Backup{
+		TargetKind: core.BackupTargetDatabase, TargetID: db.ID, DestinationID: d.ID,
+		Schedule: "0 3 * * *", Prefix: "prod",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.backups.restoreDir = "prod/shop"
+
+	for _, key := range []string{"", "prod/other/x.dump.gz", "prod/shop/", "prod/shopfake/x.gz"} {
+		resp := e.postForm(t, "/backups/"+itoa(b.ID)+"/restore", url.Values{"key": {key}})
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("key %q: status = %d, want 400", key, resp.StatusCode)
+		}
+	}
+	if len(e.backups.restored) != 0 {
+		t.Errorf("foreign keys reached the manager: %v", e.backups.restored)
+	}
+
+	// Unknown backup ID is a 404, both verbs.
+	if resp := e.get(t, "/backups/9999/restore"); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("GET unknown backup = %d, want 404", resp.StatusCode)
+	}
+	if resp := e.postForm(t, "/backups/9999/restore", url.Values{"key": {"prod/shop/x"}}); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("POST unknown backup = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestBackupPanelShowsRestoreLinkAndBadge(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	d := seedDestination(t, e, "minio")
+	db := seedDatabase(t, e, "shop", core.EnginePostgres)
+	b, err := e.store.CreateBackup(context.Background(), core.Backup{
+		TargetKind: core.BackupTargetDatabase, TargetID: db.ID, DestinationID: d.ID,
+		Schedule: "0 3 * * *", Prefix: "prod",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runID, err := e.store.StartBackupRun(context.Background(), b.ID, core.RunKindRestore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.FinishBackupRun(context.Background(), runID, core.RunOK, "", "prod/shop/x.dump.gz", 99); err != nil {
+		t.Fatal(err)
+	}
+
+	page := body(t, e.get(t, "/databases/"+itoa(db.ID)))
+	if !strings.Contains(page, "/backups/"+itoa(b.ID)+"/restore") {
+		t.Error("panel missing the restore link")
+	}
+	if !strings.Contains(page, ">restore</span>") {
+		t.Error("restore run row missing its kind badge")
 	}
 }

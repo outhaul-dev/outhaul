@@ -28,13 +28,15 @@ Outhaul is a deliberately minimal alternative to Dokploy/Coolify.
 > apps over the internal network (and optionally on a published host port).
 > **Scheduled backups** ship database dumps and compose stacks' named volumes
 > to any S3-compatible bucket (AWS, MinIO, R2, B2, …) on cron schedules with
-> retention, run history, and one-click manual runs. **Disk cleanup** keeps a
+> retention, run history, and one-click manual runs — and any archive can be
+> **restored** from the same page: dumps stream back into the running
+> database with the engine's own tools, volume archives are unpacked into
+> the stack's volume with a stop/restore/restart cycle. **Disk cleanup** keeps a
 > long-running host healthy: the newest builds per app stay on disk for
 > rollback (`OUTHAUL_IMAGE_KEEP`, default 5) and a nightly sweep reclaims
 > older images, dangling layers, and stale build cache. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and what is intentionally
-> not built yet (multiple users, backup restore UI, metrics history/alerts,
-> multi-server).
+> not built yet (multiple users, metrics history/alerts, multi-server).
 
 ## Running
 

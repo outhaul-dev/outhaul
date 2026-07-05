@@ -233,12 +233,12 @@ func scanBackup(row scanner) (core.Backup, error) {
 
 // --- runs ---
 
-// StartBackupRun records a run in status running and prunes history beyond
-// the cap.
-func (s *Store) StartBackupRun(ctx context.Context, backupID int64) (int64, error) {
+// StartBackupRun records a run (kind backup or restore) in status running and
+// prunes history beyond the cap.
+func (s *Store) StartBackupRun(ctx context.Context, backupID int64, kind string) (int64, error) {
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO backup_runs (backup_id, status, started_at) VALUES (?, ?, ?)`,
-		backupID, core.RunRunning, fmtTime(time.Now().UTC()))
+		`INSERT INTO backup_runs (backup_id, kind, status, started_at) VALUES (?, ?, ?, ?)`,
+		backupID, kind, core.RunRunning, fmtTime(time.Now().UTC()))
 	if err != nil {
 		return 0, err
 	}
@@ -264,7 +264,7 @@ func (s *Store) FinishBackupRun(ctx context.Context, runID int64, status, reason
 // ListBackupRuns returns a backup's newest runs, most recent first.
 func (s *Store) ListBackupRuns(ctx context.Context, backupID int64, limit int) ([]core.BackupRun, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, backup_id, status, reason, size_bytes, object_key, started_at, finished_at
+		`SELECT id, backup_id, kind, status, reason, size_bytes, object_key, started_at, finished_at
 		 FROM backup_runs WHERE backup_id = ? ORDER BY id DESC LIMIT ?`, backupID, limit)
 	if err != nil {
 		return nil, err
@@ -277,7 +277,7 @@ func (s *Store) ListBackupRuns(ctx context.Context, backupID int64, limit int) (
 			startedAt  string
 			finishedAt sql.NullString
 		)
-		if err := rows.Scan(&r.ID, &r.BackupID, &r.Status, &r.Reason, &r.SizeBytes, &r.ObjectKey, &startedAt, &finishedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.BackupID, &r.Kind, &r.Status, &r.Reason, &r.SizeBytes, &r.ObjectKey, &startedAt, &finishedAt); err != nil {
 			return nil, err
 		}
 		t, err := parseTime(startedAt)

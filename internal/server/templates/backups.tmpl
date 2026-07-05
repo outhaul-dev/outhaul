@@ -11,6 +11,7 @@
       {{if not .Enabled}}<span class="badge state-stopped">paused</span>{{end}}
       <span class="backup-actions">
         <form method="post" action="/backups/{{.ID}}/run" class="inline"><button type="submit" class="btn btn-quiet">Run now</button></form>
+        <a href="/backups/{{.ID}}/restore" class="linkbtn">restore…</a>
         <form method="post" action="/backups/{{.ID}}/toggle" class="inline"><button type="submit" class="linkbtn">{{if .Enabled}}pause{{else}}resume{{end}}</button></form>
         <form method="post" action="/backups/{{.ID}}/delete" class="inline" onsubmit="return confirm('Remove this backup schedule? Objects already in the bucket are kept.');"><button type="submit" class="linkbtn">remove</button></form>
       </span>
@@ -22,7 +23,7 @@
         {{range .Runs}}
         <tr>
           <td class="muted">{{fmtTime .StartedAt}}</td>
-          <td><span class="badge {{runStateClass .Status}}">{{.Status}}</span>{{if .Reason}} <span class="muted">{{.Reason}}</span>{{end}}</td>
+          <td>{{if eq .Kind "restore"}}<span class="badge">restore</span> {{end}}<span class="badge {{runStateClass .Status}}">{{.Status}}</span>{{if .Reason}} <span class="muted">{{.Reason}}</span>{{end}}</td>
           <td class="mono muted">{{fmtSize .SizeBytes}}</td>
           <td class="mono muted truncate">{{if .ObjectKey}}{{.ObjectKey}}{{else}}—{{end}}</td>
         </tr>

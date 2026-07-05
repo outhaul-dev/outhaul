@@ -110,10 +110,12 @@ type Client interface {
 	RemoveContainer(ctx context.Context, id string, force bool) error
 
 	// ExecContainer runs cmd inside a running container with extra env vars,
-	// streaming the command's stdout and stderr to the given writers (either
-	// may be nil), and returns its exit code. Used to run dump tools that ship
-	// inside database images (pg_dump, mysqldump).
-	ExecContainer(ctx context.Context, id string, cmd, env []string, stdout, stderr io.Writer) (int, error)
+	// feeding stdin to the command when non-nil (closed once the reader
+	// drains) and streaming the command's stdout and stderr to the given
+	// writers (either may be nil), and returns its exit code. Used to run the
+	// dump and restore tools that ship inside database images (pg_dump,
+	// pg_restore, mysqldump, mysql).
+	ExecContainer(ctx context.Context, id string, cmd, env []string, stdin io.Reader, stdout, stderr io.Writer) (int, error)
 
 	// ListVolumes returns the names of Docker volumes whose labels include
 	// every key=value in match. Used to enumerate a compose stack's named

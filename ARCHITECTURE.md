@@ -221,9 +221,9 @@ failed pull, or applying a changed external port) can simply remove and
 recreate the container. Rows stuck in `creating` after a binary restart are
 recovered as failed on boot, like interrupted deployments. Deleting a
 database removes container, data directory, and row — the confirm dialog says
-so. Deliberate seams: scheduled/S3 backups and restore (Dokploy's cron +
-destinations model), more engines (a table row each), image upgrades, and a
-database metrics panel.
+so. Scheduled S3 backups and restore are done (sections below). Deliberate
+seams: more engines (a table row each), image upgrades, and a database
+metrics panel.
 
 ### Scheduled backups to S3-compatible storage (done)
 
@@ -256,8 +256,34 @@ back up. After a successful run, retention prunes each directory to the
 newest N objects (timestamps sort lexicographically). Every run lands in a
 history table (capped at 20 rows per schedule) shown on the target's page
 next to Run-now/pause/remove; destinations have a Test button that writes and
-deletes a probe object. Deliberate seams: restore UI, multipart uploads,
+deletes a probe object. Deliberate seams: multipart uploads,
 stop-during-tar consistency locks, non-S3 destinations.
+
+### Backup restore (done)
+
+Each backup schedule has a **Restore** page (`/backups/{id}/restore`, design
+in `docs/superpowers/specs/2026-07-05-backup-restore.md`) listing the
+archives under the schedule's own bucket directory, newest first — restore is
+deliberately scoped to *what this schedule backed up*, where Dokploy offers
+free-text bucket paths and target database names to mistype. The transfer is
+Dokploy's restore pipeline without the rclone: the archive is staged to the
+work dir first (a network blip must not leave a half-restored database), then
+gunzipped in Go and streamed into the engine's own tool inside the running
+database container over docker exec stdin — `pg_restore -O --clean
+--if-exists` for postgres (our dumps are `pg_dump -Fc`, exactly what it
+expects), `mysql` for mysql (our dumps carry no `USE` statement, so they
+always land in the named database — Dokploy's issue #3436 can't happen with
+our own archives). Compose volume archives name their volume in the key;
+restoring one stops the stack's running containers, empties the volume, untars
+the archive into it with the same busybox helper backups use (volume mounted
+rw, staged archive bind-mounted read-only), and restarts what was running —
+best-effort even when the untar failed, because a broken volume with the
+stack down is strictly worse. The volume must already exist; restore never
+creates one. Restores share the schedule's in-flight guard (never overlapping
+its backups) and land in the same run history with a `restore` badge.
+Deliberate seams: cross-target restore (different database/volume/server),
+upload-a-local-dump, PITR/incremental, automatic pre-restore safety backup
+(the confirm dialog tells the operator to Run now first).
 
 ### Disk cleanup: image retention, dangling images, build cache (done)
 
