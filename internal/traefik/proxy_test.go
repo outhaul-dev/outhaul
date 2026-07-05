@@ -3,6 +3,8 @@ package traefik
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -248,6 +250,123 @@ func TestEnsureProxyKeepsOldContainerWhenPullFails(t *testing.T) {
 	if after == nil || after.ID != before.ID {
 		t.Error("old traefik container must survive a failed pull (no teardown before pull)")
 	}
+}
+
+func TestEnsureProxyPinsDockerAPIVersion(t *testing.T) {
+	ctx := context.Background()
+
+	// Explicit version is used verbatim.
+	rec := &recordingFake{Fake: docker.NewFake()}
+	pc := testProxyConfig()
+	pc.DockerAPIVersion = "1.51"
+	if err := EnsureProxy(ctx, rec, pc, nil); err != nil {
+		t.Fatalf("EnsureProxy: %v", err)
+	}
+	if !hasEnv(rec.created.Env, "DOCKER_API_VERSION=1.51") {
+		t.Errorf("want DOCKER_API_VERSION=1.51 pinned, env=%v", rec.created.Env)
+	}
+
+	// Empty falls back to the built-in default so the provider never breaks.
+	rec2 := &recordingFake{Fake: docker.NewFake()}
+	if err := EnsureProxy(ctx, rec2, testProxyConfig(), nil); err != nil {
+		t.Fatalf("EnsureProxy: %v", err)
+	}
+	if !hasEnv(rec2.created.Env, "DOCKER_API_VERSION="+fallbackDockerAPIVersion) {
+		t.Errorf("want fallback DOCKER_API_VERSION, env=%v", rec2.created.Env)
+	}
+}
+
+func adminProxyConfig(t *testing.T) ProxyConfig {
+	pc := tlsProxyConfig()
+	pc.AdminHost = "outhaul.example.com"
+	pc.AdminPort = "8080"
+	pc.DynamicDir = t.TempDir()
+	return pc
+}
+
+func TestEnsureProxyPublishesAdminRoute(t *testing.T) {
+	ctx := context.Background()
+	rec := &recordingFake{Fake: docker.NewFake()}
+	pc := adminProxyConfig(t)
+	if err := EnsureProxy(ctx, rec, pc, nil); err != nil {
+		t.Fatalf("EnsureProxy: %v", err)
+	}
+
+	joined := strings.Join(rec.created.Cmd, " ")
+	if !strings.Contains(joined, "--providers.file.directory=/etc/traefik/dynamic") {
+		t.Errorf("file provider not configured: %v", rec.created.Cmd)
+	}
+	if !hasEnv(rec.created.ExtraHosts, "host.docker.internal:host-gateway") {
+		t.Errorf("host-gateway extra host missing: %v", rec.created.ExtraHosts)
+	}
+	foundMount := false
+	for _, m := range rec.created.Mounts {
+		if m.Target == "/etc/traefik/dynamic" {
+			foundMount = true
+		}
+	}
+	if !foundMount {
+		t.Errorf("dynamic dir not mounted: %v", rec.created.Mounts)
+	}
+
+	// The file-provider config must route the host to the admin UI with a cert.
+	data, err := os.ReadFile(filepath.Join(pc.DynamicDir, adminDynamicFile))
+	if err != nil {
+		t.Fatalf("read dynamic config: %v", err)
+	}
+	body := string(data)
+	for _, want := range []string{
+		"Host(`outhaul.example.com`)",
+		"certResolver: le",
+		"http://host.docker.internal:8080",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dynamic config missing %q; got:\n%s", want, body)
+		}
+	}
+}
+
+func TestEnsureProxyNoAdminRouteWithoutTLS(t *testing.T) {
+	ctx := context.Background()
+	rec := &recordingFake{Fake: docker.NewFake()}
+	pc := adminProxyConfig(t)
+	pc.TLSEnabled = false // a cert is impossible, so no admin route
+	pc.ACMEEmail = ""
+	if err := EnsureProxy(ctx, rec, pc, nil); err != nil {
+		t.Fatalf("EnsureProxy: %v", err)
+	}
+	if strings.Contains(strings.Join(rec.created.Cmd, " "), "providers.file") {
+		t.Errorf("admin route should be absent without TLS: %v", rec.created.Cmd)
+	}
+	if _, err := os.Stat(filepath.Join(pc.DynamicDir, adminDynamicFile)); !os.IsNotExist(err) {
+		t.Errorf("dynamic config should not be written without TLS (err=%v)", err)
+	}
+}
+
+func TestWriteAdminDynamicConfigRemovesStaleFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, adminDynamicFile)
+	if err := os.WriteFile(path, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Routing now disabled (no AdminHost) — the stale route must be cleared.
+	pc := ProxyConfig{TLSEnabled: true, DynamicDir: dir}
+	if err := writeAdminDynamicConfig(pc); err != nil {
+		t.Fatalf("writeAdminDynamicConfig: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("stale dynamic config should have been removed (err=%v)", err)
+	}
+}
+
+// hasEnv reports whether want is present in the slice (used for Env/ExtraHosts).
+func hasEnv(items []string, want string) bool {
+	for _, s := range items {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 // recordingFake wraps the Fake to capture the ContainerSpec passed to Create.

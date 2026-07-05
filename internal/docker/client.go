@@ -37,7 +37,8 @@ type ContainerSpec struct {
 	Ports         []PortMapping
 	Mounts        []Mount
 	Cmd           []string
-	RestartPolicy string // e.g. "unless-stopped"; empty means Docker default
+	RestartPolicy string   // e.g. "unless-stopped"; empty means Docker default
+	ExtraHosts    []string // extra /etc/hosts entries, e.g. "host.docker.internal:host-gateway"
 }
 
 // Stats is a point-in-time sample of a running container's resource usage,
@@ -67,6 +68,12 @@ func (c Container) Running() bool { return c.State == "running" }
 type Client interface {
 	// Ping verifies the daemon is reachable.
 	Ping(ctx context.Context) error
+
+	// ServerAPIVersion reports the daemon's supported Docker API version
+	// (e.g. "1.44"). Empty if it cannot be determined. Used to pin
+	// DOCKER_API_VERSION for the managed Traefik container, whose embedded
+	// client otherwise defaults to a version modern daemons reject.
+	ServerAPIVersion(ctx context.Context) string
 
 	// PullImage pulls ref, streaming progress to out (may be nil).
 	PullImage(ctx context.Context, ref string, out io.Writer) error

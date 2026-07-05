@@ -75,6 +75,8 @@ func NewFake() *Fake {
 
 func (f *Fake) Ping(context.Context) error { return nil }
 
+func (f *Fake) ServerAPIVersion(context.Context) string { return "1.44" }
+
 func (f *Fake) PullImage(_ context.Context, ref string, out io.Writer) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

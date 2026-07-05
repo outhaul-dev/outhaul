@@ -4,14 +4,17 @@
 package config
 
 import (
+	"net"
+	"net/url"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 )
 
 // DefaultTraefikImage is the Traefik image Outhaul pulls and manages. Pinned to
-// a major version so upgrades are deliberate.
-const DefaultTraefikImage = "traefik:v3.3"
+// a specific version so upgrades are deliberate.
+const DefaultTraefikImage = "traefik:v3.7.6"
 
 // Config holds resolved runtime settings.
 type Config struct {
@@ -44,7 +47,7 @@ func Load(getenv Getenv) Config {
 		TraefikImage: or(getenv("OUTHAUL_TRAEFIK_IMAGE"), DefaultTraefikImage),
 		Network:      or(getenv("OUTHAUL_NETWORK"), "outhaul"),
 
-		ACMEEmail:     getenv("OUTHAUL_ACME_EMAIL"),
+		ACMEEmail:     firstField(getenv("OUTHAUL_ACME_EMAIL")),
 		ACMEStaging:   truthy(getenv("OUTHAUL_ACME_STAGING")),
 		HTTPSPort:     or(getenv("OUTHAUL_HTTPS_PORT"), "443"),
 		HealthTimeout: durationOr(getenv("OUTHAUL_HEALTH_TIMEOUT"), 60*time.Second),
@@ -84,9 +87,51 @@ func (c Config) SecretKeyPath() string { return filepath.Join(c.DataDir, "secret
 // AcmeDir is the host directory bind-mounted into Traefik for acme.json.
 func (c Config) AcmeDir() string { return filepath.Join(c.DataDir, "traefik", "acme") }
 
+// DynamicDir is the host directory bind-mounted into Traefik as its file
+// provider, holding the dynamic config that routes the admin UI over HTTPS.
+func (c Config) DynamicDir() string { return filepath.Join(c.DataDir, "traefik", "dynamic") }
+
+// AdminHost is the hostname the admin UI should be served under, parsed from
+// PublicURL (e.g. "outhaul.example.com" from "https://outhaul.example.com").
+// Empty when PublicURL is unset or unparseable — no admin route is published.
+func (c Config) AdminHost() string {
+	if c.PublicURL == "" {
+		return ""
+	}
+	u, err := url.Parse(c.PublicURL)
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
+}
+
+// AdminPort is the TCP port the admin UI listens on, derived from ListenAddr
+// (":8080" -> "8080"). Traefik reaches it on the host via host-gateway.
+func (c Config) AdminPort() string {
+	_, port, err := net.SplitHostPort(c.ListenAddr)
+	if err != nil || port == "" {
+		return "8080"
+	}
+	return port
+}
+
 // DatabasesDir is the root under which each managed database gets a
 // per-database data directory, bind-mounted into its container.
 func (c Config) DatabasesDir() string { return filepath.Join(c.DataDir, "databases") }
+
+// firstField returns the first whitespace-delimited token of v, also dropping
+// anything from a '#' onward. systemd's EnvironmentFile keeps inline "# ..."
+// comments as part of the value, which would otherwise corrupt a setting like
+// the ACME email (which never contains spaces or '#').
+func firstField(v string) string {
+	if i := strings.IndexByte(v, '#'); i >= 0 {
+		v = v[:i]
+	}
+	if f := strings.Fields(v); len(f) > 0 {
+		return f[0]
+	}
+	return ""
+}
 
 func truthy(v string) bool {
 	switch v {

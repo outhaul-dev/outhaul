@@ -145,3 +145,46 @@ func TestPublicURL(t *testing.T) {
 		t.Error("PublicURLSet() = true for empty, want false")
 	}
 }
+
+func TestAdminHostAndPort(t *testing.T) {
+	c := Load(func(k string) string {
+		switch k {
+		case "OUTHAUL_PUBLIC_URL":
+			return "https://outhaul.example.com"
+		case "OUTHAUL_LISTEN_ADDR":
+			return ":9090"
+		}
+		return ""
+	})
+	if got := c.AdminHost(); got != "outhaul.example.com" {
+		t.Errorf("AdminHost() = %q, want outhaul.example.com", got)
+	}
+	if got := c.AdminPort(); got != "9090" {
+		t.Errorf("AdminPort() = %q, want 9090", got)
+	}
+
+	def := Load(func(string) string { return "" })
+	if got := def.AdminHost(); got != "" {
+		t.Errorf("AdminHost() = %q, want empty when PublicURL unset", got)
+	}
+	if got := def.AdminPort(); got != "8080" {
+		t.Errorf("AdminPort() = %q, want default 8080", got)
+	}
+}
+
+// A leaked inline comment in /etc/outhaul.env (systemd keeps it as part of the
+// value) must not corrupt the ACME email — otherwise TLS silently never issues.
+func TestACMEEmailStripsInlineComment(t *testing.T) {
+	c := Load(func(k string) string {
+		if k == "OUTHAUL_ACME_EMAIL" {
+			return "ops@example.com     # set to enable automatic HTTPS"
+		}
+		return ""
+	})
+	if c.ACMEEmail != "ops@example.com" {
+		t.Errorf("ACMEEmail = %q, want ops@example.com", c.ACMEEmail)
+	}
+	if !c.TLSEnabled() {
+		t.Error("TLSEnabled() = false, want true")
+	}
+}

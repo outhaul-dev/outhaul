@@ -104,8 +104,16 @@ if [ ! -f "$ENV_FILE" ]; then
 	cat >"$ENV_FILE" <<'EOF'
 # Outhaul configuration: OUTHAUL_* overrides, one per line.
 # Uncomment and edit, then: systemctl restart outhaul
-#OUTHAUL_ACME_EMAIL=you@example.com     # set to enable automatic HTTPS
+#
+# NOTE: put comments on their OWN line, never after a value. systemd keeps
+# an inline "# ..." as part of the value, which would corrupt e.g. the email.
+
+# set to enable automatic HTTPS:
+#OUTHAUL_ACME_EMAIL=you@example.com
+
+# public URL of the admin UI; with ACME set, it is also served over HTTPS here:
 #OUTHAUL_PUBLIC_URL=https://paas.example.com
+
 #OUTHAUL_LISTEN_ADDR=:8080
 #OUTHAUL_DATA_DIR=/var/lib/outhaul
 EOF

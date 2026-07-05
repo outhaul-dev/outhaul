@@ -47,6 +47,16 @@ func (r *real) Ping(ctx context.Context) error {
 	return err
 }
 
+// ServerAPIVersion returns the daemon's supported API version, or "" if the
+// ping fails. The value is the server's maximum, which is always safe to pin.
+func (r *real) ServerAPIVersion(ctx context.Context) string {
+	ping, err := r.cli.Ping(ctx)
+	if err != nil {
+		return ""
+	}
+	return ping.APIVersion
+}
+
 func (r *real) PullImage(ctx context.Context, ref string, out io.Writer) error {
 	rc, err := r.cli.ImagePull(ctx, ref, image.PullOptions{})
 	if err != nil {
@@ -240,6 +250,7 @@ func (r *real) CreateContainer(ctx context.Context, spec ContainerSpec) (string,
 		PortBindings: bindings,
 		Binds:        bindMounts(spec.Mounts),
 		Mounts:       volumeMounts(spec.Mounts),
+		ExtraHosts:   spec.ExtraHosts,
 	}
 	if spec.RestartPolicy != "" {
 		host.RestartPolicy = container.RestartPolicy{

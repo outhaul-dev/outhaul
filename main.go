@@ -176,15 +176,19 @@ func ensureInfra(dc docker.Client, cfg config.Config) {
 		return
 	}
 	pc := traefik.ProxyConfig{
-		ContainerName:  "outhaul-traefik",
-		Image:          cfg.TraefikImage,
-		Network:        cfg.Network,
-		HTTPPort:       "80",
-		TLSEnabled:     cfg.TLSEnabled(),
-		ACMEEmail:      cfg.ACMEEmail,
-		ACMEStaging:    cfg.ACMEStaging,
-		HTTPSPort:      cfg.HTTPSPort,
-		ACMEStorageDir: cfg.AcmeDir(),
+		ContainerName:    "outhaul-traefik",
+		Image:            cfg.TraefikImage,
+		Network:          cfg.Network,
+		HTTPPort:         "80",
+		TLSEnabled:       cfg.TLSEnabled(),
+		ACMEEmail:        cfg.ACMEEmail,
+		ACMEStaging:      cfg.ACMEStaging,
+		HTTPSPort:        cfg.HTTPSPort,
+		ACMEStorageDir:   cfg.AcmeDir(),
+		DockerAPIVersion: dc.ServerAPIVersion(ctx),
+		AdminHost:        cfg.AdminHost(),
+		AdminPort:        cfg.AdminPort(),
+		DynamicDir:       cfg.DynamicDir(),
 	}
 	if err := traefik.EnsureProxy(ctx, dc, pc, os.Stdout); err != nil {
 		log.Printf("WARNING: could not ensure Traefik proxy: %v", err)
@@ -192,6 +196,9 @@ func ensureInfra(dc docker.Client, cfg config.Config) {
 	}
 	if cfg.TLSEnabled() {
 		log.Printf("Traefik proxy ready on :80 and :%s (TLS via Let's Encrypt) on network %q", cfg.HTTPSPort, cfg.Network)
+		if cfg.AdminHost() != "" {
+			log.Printf("admin UI published over HTTPS at https://%s (Traefik will obtain a cert on first request)", cfg.AdminHost())
+		}
 	} else {
 		log.Printf("Traefik proxy ready on :80 (network %q; set OUTHAUL_ACME_EMAIL to enable HTTPS)", cfg.Network)
 	}
