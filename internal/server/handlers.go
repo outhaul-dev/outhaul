@@ -717,10 +717,13 @@ func (s *Server) handleDeploymentDetail(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Project is for the breadcrumb only; a lookup failure just shortens it.
+	project, _ := s.store.GetProject(r.Context(), app.ProjectID)
 	s.render(w, http.StatusOK, "deployment", map[string]any{
 		"Title":      "Deployment #" + r.PathValue("id"),
 		"Active":     "deployments",
 		"App":        app,
+		"Project":    project,
 		"Deployment": dep,
 		"Live":       !dep.Status.IsTerminal(),
 	})

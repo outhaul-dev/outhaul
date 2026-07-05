@@ -1,0 +1,32 @@
+{{define "content"}}
+<div class="pagehead"><h1>Databases</h1></div>
+
+<p class="page-intro">Every managed database across all projects. Databases are
+created from their <a href="/projects">project's page</a>; connection details
+live on each database's page.</p>
+
+<section class="panel">
+  <h2 class="panel-title">All databases</h2>
+  {{if .Databases}}
+  <table class="table">
+    <thead>
+      <tr><th>Name</th><th>Project</th><th>Engine</th><th>Image</th><th>External port</th><th>Status</th></tr>
+    </thead>
+    <tbody>
+      {{range .Databases}}
+      <tr>
+        <td><a href="/databases/{{.ID}}" class="rowlink">{{.Name}}</a></td>
+        <td><a href="/projects/{{.ProjectID}}" class="rowlink">{{.ProjectName}}</a></td>
+        <td class="mono muted">{{.Engine}}</td>
+        <td class="mono muted">{{.Image}}</td>
+        <td class="mono muted">{{if .ExtPort}}{{.ExtPort}}{{else}}—{{end}}</td>
+        <td><span class="badge {{dbStateClass .Status}}">{{.Status}}</span></td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No databases yet. Open a <a href="/projects">project</a> and create one from its Databases panel.</p>
+  {{end}}
+</section>
+{{end}}

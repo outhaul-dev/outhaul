@@ -2,7 +2,7 @@
 <div class="pagehead">
   <div>
     <div class="crumbs"><a href="/projects">Projects</a> / {{with .Project}}<a href="/projects/{{.ID}}">{{.Name}}</a> / {{end}}{{.App.Name}}</div>
-    <h1>{{.App.Name}}{{if eq .App.Kind "compose"}} <span class="badge">Compose</span>{{end}}</h1>
+    <h1>{{.App.Name}}{{if .App.TemplateID}} <span class="badge">Template</span>{{else if eq .App.Kind "compose"}} <span class="badge">Compose</span>{{else if eq .App.Kind "dockerfile"}} <span class="badge">Dockerfile</span>{{end}}</h1>
   </div>
   <div class="pagehead-actions">
     <span class="badge state-{{if eq .Runtime "running"}}running{{else}}stopped{{end}}">{{.Runtime}}</span>

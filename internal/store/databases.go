@@ -67,6 +67,26 @@ func (s *Store) ListDatabasesByProject(ctx context.Context, projectID int64) ([]
 	return dbs, rows.Err()
 }
 
+// ListDatabases returns every managed database across all projects (passwords
+// decrypted), ordered by name.
+func (s *Store) ListDatabases(ctx context.Context) ([]core.Database, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+databaseCols+` FROM databases ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var dbs []core.Database
+	for rows.Next() {
+		d, err := s.scanDatabase(rows)
+		if err != nil {
+			return nil, err
+		}
+		dbs = append(dbs, d)
+	}
+	return dbs, rows.Err()
+}
+
 // SetDatabaseStatus records a lifecycle state (and failure reason) on the row.
 func (s *Store) SetDatabaseStatus(ctx context.Context, id int64, status, reason string) error {
 	_, err := s.db.ExecContext(ctx,

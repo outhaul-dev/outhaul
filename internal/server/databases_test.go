@@ -222,6 +222,36 @@ func TestProjectPageListsDatabases(t *testing.T) {
 	}
 }
 
+func TestDatabasesListAcrossProjects(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+
+	seedDatabase(t, e, "shop-db", core.EnginePostgres) // default project
+	p, err := e.store.CreateProject(context.Background(), core.Project{Name: "acme"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.store.CreateDatabase(context.Background(), core.Database{
+		ProjectID: p.ID, Name: "cache", Engine: core.EngineRedis, Image: "redis:7", Password: "pw",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := e.get(t, "/databases")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /databases = %d, want 200", resp.StatusCode)
+	}
+	page := body(t, resp)
+	for _, want := range []string{"shop-db", "cache", "acme", "/projects/" + itoa(p.ID)} {
+		if !strings.Contains(page, want) {
+			t.Errorf("databases page missing %q", want)
+		}
+	}
+	if strings.Contains(page, "coming soon") {
+		t.Error("databases page still renders as a placeholder")
+	}
+}
+
 func TestDatabaseLogsSSEStreams(t *testing.T) {
 	e := newTestEnv(t)
 	e.login(t)

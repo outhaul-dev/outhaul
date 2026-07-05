@@ -145,4 +145,10 @@ func TestTemplateAppPage(t *testing.T) {
 	if !strings.Contains(list, ">Template</span>") {
 		t.Error("apps list missing the Template badge")
 	}
+
+	// The project page's app table mirrors the apps list for template apps.
+	proj := body(t, e.get(t, "/projects/"+itoa(app.ProjectID)))
+	if !strings.Contains(proj, "template: uptime-kuma") || !strings.Contains(proj, ">Template</span>") {
+		t.Error("project page missing the template badge or repo cell")
+	}
 }

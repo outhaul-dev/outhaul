@@ -1,7 +1,7 @@
 {{define "content"}}
 <div class="pagehead">
   <div>
-    <div class="crumbs"><a href="/apps">Apps</a> / <a href="/apps/{{.App.ID}}">{{.App.Name}}</a> / #{{.Deployment.ID}}</div>
+    <div class="crumbs"><a href="/projects">Projects</a> / {{if .Project.ID}}<a href="/projects/{{.Project.ID}}">{{.Project.Name}}</a> / {{end}}<a href="/apps/{{.App.ID}}">{{.App.Name}}</a> / #{{.Deployment.ID}}</div>
     <h1>Deployment #{{.Deployment.ID}} <span class="badge {{stateClass .Deployment.Status}}" id="status-badge">{{.Deployment.Status}}</span>{{if .Deployment.RollbackOf}} <span class="muted h1-note">↩ rollback of #{{.Deployment.RollbackOf}}</span>{{end}}</h1>
   </div>
   {{if .Deployment.Status.CanCancel}}
