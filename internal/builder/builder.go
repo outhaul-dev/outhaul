@@ -1,6 +1,7 @@
 // Package builder turns a cloned source tree into a runnable Docker image.
-// Build strategies sit behind the Builder interface; Nixpacks is the M1
-// implementation, with Dockerfile/buildpack strategies as later seams.
+// Build strategies sit behind the Builder interface: Nixpacks (auto-detected
+// builds) and Docker (the repo's own Dockerfile), with buildpack strategies
+// as later seams.
 package builder
 
 import (
@@ -12,7 +13,8 @@ import (
 type BuildRequest struct {
 	ContextDir string            // path to the checked-out source
 	ImageTag   string            // tag to give the built image, e.g. "outhaul/web:5"
-	Env        map[string]string // build-time environment (empty in M1)
+	Env        map[string]string // build-time environment (non-secret vars + PORT)
+	Dockerfile string            // Dockerfile path relative to ContextDir (Docker strategy only)
 }
 
 // Builder produces a Docker image from source, streaming build output to a

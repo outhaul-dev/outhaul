@@ -36,16 +36,24 @@ type AppPruner interface {
 	PruneApp(ctx context.Context, app core.App, out io.Writer) error
 }
 
+// Builders holds one build strategy per single-container app kind; the
+// pipeline picks by app.Kind (compose stacks build via docker compose, not a
+// Builder).
+type Builders struct {
+	Nixpacks   builder.Builder
+	Dockerfile builder.Builder
+}
+
 // Worker dispatches and runs deployments.
 type Worker struct {
-	store   *store.Store
-	docker  docker.Client
-	builder builder.Builder
-	compose compose.Runner
-	cloner  Cloner
-	broker  *logstream.Broker
-	gh      github.Client
-	cfg     config.Config
+	store    *store.Store
+	docker   docker.Client
+	builders Builders
+	compose  compose.Runner
+	cloner   Cloner
+	broker   *logstream.Broker
+	gh       github.Client
+	cfg      config.Config
 
 	healthCheck HealthChecker
 	pruner      AppPruner // nil disables after-deploy image pruning
@@ -59,16 +67,16 @@ type Worker struct {
 }
 
 // NewWorker wires the worker's dependencies.
-func NewWorker(st *store.Store, dc docker.Client, b builder.Builder, cp compose.Runner, cl Cloner, br *logstream.Broker, gh github.Client, cfg config.Config) *Worker {
+func NewWorker(st *store.Store, dc docker.Client, b Builders, cp compose.Runner, cl Cloner, br *logstream.Broker, gh github.Client, cfg config.Config) *Worker {
 	return &Worker{
-		store:   st,
-		docker:  dc,
-		builder: b,
-		compose: cp,
-		cloner:  cl,
-		broker:  br,
-		gh:      gh,
-		cfg:     cfg,
+		store:    st,
+		docker:   dc,
+		builders: b,
+		compose:  cp,
+		cloner:   cl,
+		broker:   br,
+		gh:       gh,
+		cfg:      cfg,
 
 		healthCheck: httpPoll,
 

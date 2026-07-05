@@ -75,14 +75,19 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 		}
 		defer cleanup()
 
+		b := w.builders.Nixpacks
+		if app.Kind == core.KindDockerfile {
+			b = w.builders.Dockerfile
+		}
 		image = fmt.Sprintf("outhaul/%s:%d", app.Name, dep.ID)
-		logf(out, "Building image %s with %s...", image, w.builder.Name())
+		logf(out, "Building image %s with %s...", image, b.Name())
 		req := builder.BuildRequest{
 			ContextDir: workDir,
 			ImageTag:   image,
 			Env:        buildEnv,
+			Dockerfile: app.DockerfilePath,
 		}
-		if err := w.builder.Build(ctx, req, out); err != nil {
+		if err := b.Build(ctx, req, out); err != nil {
 			w.fail(dep, core.StatusBuilding, "build failed: "+err.Error(), out)
 			return
 		}

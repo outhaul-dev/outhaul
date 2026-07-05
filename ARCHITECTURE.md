@@ -18,12 +18,15 @@ right here before writing the worker.
 - **Storage.** SQLite via `modernc.org/sqlite` (pure Go, CGO stays off).
   Migrations embedded, run on startup. WAL mode.
 - **Docker.** Official `github.com/docker/docker/client` SDK against the local
-  socket. Never shell out to the `docker` CLI.
+  socket for all runtime container operations. Builds are the exception and
+  shell out (`nixpacks`, `docker build`, `docker compose`) — build tooling is
+  CLI-first and streaming its output is the whole job.
 - **Reverse proxy.** Traefik, configured through the **Docker provider**
   (container labels), not the file provider. Outhaul starts and manages the
   Traefik container itself.
-- **Builds.** Nixpacks initially (shell out to the `nixpacks` binary), abstracted
-  behind a `Builder` interface so Dockerfile/buildpack strategies can be added.
+- **Builds.** Nixpacks (shell out to the `nixpacks` binary) or the repo's own
+  Dockerfile (shell out to `docker build`), abstracted behind a `Builder`
+  interface so buildpack strategies can be added.
 - **HTTP.** `net/http` with stdlib 1.22+ routing patterns. No web framework.
   SSE for log/build streaming, not websockets.
 - **Background jobs.** In-process worker with the `deployments` table as the
@@ -285,6 +288,31 @@ Deliberate seams: cross-target restore (different database/volume/server),
 upload-a-local-dump, PITR/incremental, automatic pre-restore safety backup
 (the confirm dialog tells the operator to Run now first).
 
+### Dockerfile builds (done)
+
+A third app kind, `dockerfile`, deploys repos that carry their own Dockerfile
+— because Nixpacks guesses wrong or the image is already dialed in (design in
+`docs/superpowers/specs/2026-07-05-dockerfile-builds.md`, grounded in
+Dokploy's `dockerfile` build type). It is *only* a build-strategy swap: the
+app runs the exact same single-container pipeline as nixpacks apps, so
+blue-green cutover, `$PORT` routing, health gating, rollback, image
+retention, logs, metrics, and lifecycle all come for free with no new
+branches. The worker holds one `builder.Builder` per single-container kind
+(`deploy.Builders`) and the pipeline picks by `app.Kind`; the Dockerfile
+strategy shells out to `docker build <ctx> --file <ctx>/<path> --tag
+outhaul/<app>:<depID>` exactly like the Nixpacks strategy shells out to
+`nixpacks`, with a pre-flight check that names the missing Dockerfile before
+Docker prints its own noise. The per-app `dockerfile_path` (default
+`Dockerfile`, validated relative like the compose path) is set on the create
+form and editable in deploy settings. The build context is always the repo
+root — with `--file` pointing anywhere, `COPY` paths keep working and a
+monorepo Dockerfile can reference any file; a narrower context is a
+performance knob, not a correctness one. Build-time env (the same non-secret
+vars + `PORT` Nixpacks gets) is passed as `--build-arg`s; consuming one is
+opt-in via `ARG`. Deliberate seams: context override, `--target` build
+stage, `--no-cache`, BuildKit `--secret` mounts, buildpacks/static builds,
+and Dockerfile autodetection at create time.
+
 ### Disk cleanup: image retention, dangling images, build cache (done)
 
 Left alone, a PaaS host fills its disk: every nixpacks deploy keeps its
@@ -391,6 +419,7 @@ outhaul/
     builder/
         builder.go            # Builder interface: Build(ctx, BuildRequest) streaming logs -> image tag
         nixpacks.go           # shells out to `nixpacks build`; requires nixpacks on PATH at runtime
+        dockerfile.go         # shells out to `docker build` for the repo's own Dockerfile
 
     compose/                  # docker compose stacks behind a Runner interface (fake for tests)
         compose.go            # Runner: Build/Up (files) + Stop/Restart/Down (label-based, -p only)
@@ -434,7 +463,7 @@ outhaul/
 
     deploy/                   # the worker/orchestrator — drives the state machine
         worker.go             # dispatcher loop: claim queued work, per-app serialization, concurrency across apps
-        pipeline.go           # one nixpacks deployment: clone -> build -> start container -> health -> running
+        pipeline.go           # one single-container deployment (nixpacks/dockerfile): clone -> build -> start -> health -> running
         pipeline_compose.go   # one compose deployment: clone -> .env/override -> compose build -> up --wait
         git.go                # clone a repo (public, SSH deploy key, or GitHub App installation token)
 
@@ -461,9 +490,9 @@ outhaul/
   daemon. An integration build tag can exercise the real client later.
 - **Traefik label generation is a pure function** (`traefik.Labels`) tested
   table-driven, independent of any running container.
-- **`Builder` is an interface.** Nixpacks is one implementation. The pipeline
-  depends on the interface, so a `Dockerfile` builder slots in without touching
-  the worker.
+- **`Builder` is an interface.** Nixpacks and the Dockerfile strategy are the
+  two implementations; the pipeline picks by app kind and depends only on the
+  interface, so buildpack strategies slot in without touching the worker.
 - **`logstream.Broker`** decouples the pipeline (producer) from SSE handlers
   (consumers). The pipeline never knows about HTTP; the server never knows about
   the build.
@@ -589,7 +618,8 @@ Browser                 server            store            deploy.worker        
 ## Runtime dependencies
 
 - Docker daemon reachable at the local socket (`/var/run/docker.sock`).
-- `nixpacks` on `PATH` (build-time strategy for M1). Absence is surfaced as a
-  clear deploy failure, not a crash.
+- `nixpacks` on `PATH` (the default build strategy); the `docker` CLI for
+  Dockerfile apps (`docker build`) and compose stacks. Absence is surfaced as
+  a clear deploy failure, not a crash.
 - Traefik image pullable; Outhaul creates the proxy container and a shared
   `outhaul` Docker network that app containers join.

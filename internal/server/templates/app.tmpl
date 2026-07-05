@@ -202,6 +202,9 @@
     {{if eq .App.Kind "compose"}}
     <label class="field"><span>Compose file</span><input type="text" name="compose_path" value="{{.App.ComposePath}}"></label>
     {{end}}
+    {{if eq .App.Kind "dockerfile"}}
+    <label class="field"><span>Dockerfile</span><input type="text" name="dockerfile_path" value="{{.App.DockerfilePath}}"></label>
+    {{end}}
     <label class="field-check"><input type="checkbox" name="auto_deploy" {{if .App.AutoDeploy}}checked{{end}}> <span>Auto-deploy on push</span></label>
     <label class="field field-wide">
       <span>Watch paths</span>
