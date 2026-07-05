@@ -17,13 +17,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/blobstore"
-	"github.com/slipwaydev/slipway/internal/compose"
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/cron"
-	"github.com/slipwaydev/slipway/internal/dbaas"
-	"github.com/slipwaydev/slipway/internal/docker"
-	"github.com/slipwaydev/slipway/internal/store"
+	"github.com/james-smart/outhaul/internal/blobstore"
+	"github.com/james-smart/outhaul/internal/compose"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/cron"
+	"github.com/james-smart/outhaul/internal/dbaas"
+	"github.com/james-smart/outhaul/internal/docker"
+	"github.com/james-smart/outhaul/internal/store"
 )
 
 // helperImage tars volumes; busybox ships tar+gzip in ~2 MB.
@@ -269,12 +269,12 @@ func (m *Manager) backupAppVolumes(ctx context.Context, b core.Backup, blob blob
 		f, err := m.stage(false, func(w io.Writer) error {
 			var stderr strings.Builder
 			exit, err := m.docker.RunContainer(ctx, docker.ContainerSpec{
-				Name:  fmt.Sprintf("slipway-backup-%d-%d", b.ID, i),
+				Name:  fmt.Sprintf("outhaul-backup-%d-%d", b.ID, i),
 				Image: helperImage,
 				Cmd:   []string{"tar", "czf", "-", "-C", "/src", "."},
 				Labels: map[string]string{
-					"slipway.managed": "true",
-					"slipway.role":    "backup",
+					"outhaul.managed": "true",
+					"outhaul.role":    "backup",
 				},
 				Mounts: []docker.Mount{{Source: vol, Target: "/src", ReadOnly: true, Volume: true}},
 			}, w, limitWriter(&stderr))

@@ -24,6 +24,10 @@ type Deployment struct {
 	// or 0 for a normal build-from-source deploy.
 	RollbackOf int64
 
+	// ImagePruned reports that Image has been removed from the host by the
+	// image pruner, so this attempt can no longer be rolled back to.
+	ImagePruned bool
+
 	CreatedAt  time.Time
 	StartedAt  *time.Time // when a worker claimed it (queued -> building)
 	FinishedAt *time.Time // when it reached a terminal state

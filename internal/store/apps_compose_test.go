@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 // TestCreateAppDefaultsToNixpacksKind: apps that never mention a kind (all

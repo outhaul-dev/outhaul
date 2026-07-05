@@ -8,20 +8,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 func TestBuildArgs(t *testing.T) {
-	got := buildArgs([]string{"docker-compose.yml", "slipway.override.yml"}, "slipway-web")
-	want := []string{"compose", "-p", "slipway-web", "-f", "docker-compose.yml", "-f", "slipway.override.yml", "build"}
+	got := buildArgs([]string{"docker-compose.yml", "outhaul.override.yml"}, "outhaul-web")
+	want := []string{"compose", "-p", "outhaul-web", "-f", "docker-compose.yml", "-f", "outhaul.override.yml", "build"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("buildArgs = %v, want %v", got, want)
 	}
 }
 
 func TestUpArgs(t *testing.T) {
-	got := upArgs([]string{"docker-compose.yml"}, "slipway-web", 90*time.Second)
-	want := []string{"compose", "-p", "slipway-web", "-f", "docker-compose.yml",
+	got := upArgs([]string{"docker-compose.yml"}, "outhaul-web", 90*time.Second)
+	want := []string{"compose", "-p", "outhaul-web", "-f", "docker-compose.yml",
 		"up", "-d", "--wait", "--wait-timeout", "90", "--remove-orphans"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("upArgs = %v, want %v", got, want)
@@ -35,14 +35,14 @@ func TestUpArgs(t *testing.T) {
 
 func TestDockerMissingBinary(t *testing.T) {
 	d := &Docker{Bin: "docker-does-not-exist-7a1b"}
-	err := d.Stop(context.Background(), "slipway-web", io.Discard)
+	err := d.Stop(context.Background(), "outhaul-web", io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "compose v2 plugin") {
 		t.Fatalf("expected an actionable docker-not-found error, got %v", err)
 	}
 }
 
 func TestProjectName(t *testing.T) {
-	if got := ProjectName("web"); got != "slipway-web" {
+	if got := ProjectName("web"); got != "outhaul-web" {
 		t.Errorf("ProjectName = %q", got)
 	}
 }
@@ -53,17 +53,17 @@ func TestOverride(t *testing.T) {
 		{ID: 1, Domain: "shop.example.com", Service: "web", Port: 3000},
 	}
 
-	got := string(Override(app, domains, "slipway", false))
+	got := string(Override(app, domains, "outhaul", false))
 
 	for _, want := range []string{
 		"services:\n  \"web\":\n",
-		"      \"slipway\": {}\n",
+		"      \"outhaul\": {}\n",
 		"      default: {}\n",
 		`"traefik.enable": "true"`,
-		`"traefik.docker.network": "slipway"`,
-		"\"traefik.http.routers.slipway-shop-d1.rule\": \"Host(`shop.example.com`)\"",
-		`"traefik.http.services.slipway-shop-d1.loadbalancer.server.port": "3000"`,
-		"networks:\n  \"slipway\":\n    external: true\n",
+		`"traefik.docker.network": "outhaul"`,
+		"\"traefik.http.routers.outhaul-shop-d1.rule\": \"Host(`shop.example.com`)\"",
+		`"traefik.http.services.outhaul-shop-d1.loadbalancer.server.port": "3000"`,
+		"networks:\n  \"outhaul\":\n    external: true\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("override missing %q; got:\n%s", want, got)
@@ -73,8 +73,8 @@ func TestOverride(t *testing.T) {
 		t.Error("TLS labels must not appear when TLS is disabled")
 	}
 
-	tls := string(Override(app, domains, "slipway", true))
-	if !strings.Contains(tls, `"traefik.http.routers.slipway-shop-d1-tls.tls.certresolver": "le"`) {
+	tls := string(Override(app, domains, "outhaul", true))
+	if !strings.Contains(tls, `"traefik.http.routers.outhaul-shop-d1-tls.tls.certresolver": "le"`) {
 		t.Errorf("TLS override missing certresolver labels; got:\n%s", tls)
 	}
 }
@@ -90,13 +90,13 @@ func TestOverrideMultipleDomains(t *testing.T) {
 		{ID: 9, Domain: "api.example.com", Service: "api", Port: 8080},
 	}
 
-	got := string(Override(app, domains, "slipway", false))
+	got := string(Override(app, domains, "outhaul", false))
 
 	for _, want := range []string{
-		"\"traefik.http.routers.slipway-shop-d7.rule\": \"Host(`shop.example.com`)\"",
-		"\"traefik.http.routers.slipway-shop-d8.rule\": \"Host(`www.example.com`)\"",
-		"\"traefik.http.routers.slipway-shop-d9.rule\": \"Host(`api.example.com`)\"",
-		`"traefik.http.services.slipway-shop-d9.loadbalancer.server.port": "8080"`,
+		"\"traefik.http.routers.outhaul-shop-d7.rule\": \"Host(`shop.example.com`)\"",
+		"\"traefik.http.routers.outhaul-shop-d8.rule\": \"Host(`www.example.com`)\"",
+		"\"traefik.http.routers.outhaul-shop-d9.rule\": \"Host(`api.example.com`)\"",
+		`"traefik.http.services.outhaul-shop-d9.loadbalancer.server.port": "8080"`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("override missing %q; got:\n%s", want, got)
@@ -112,10 +112,10 @@ func TestOverrideMultipleDomains(t *testing.T) {
 	}
 	// Both web domains' labels live under the single web block.
 	webBlock := got[webIdx:]
-	if !strings.Contains(webBlock, "slipway-shop-d7") || !strings.Contains(webBlock, "slipway-shop-d8") {
+	if !strings.Contains(webBlock, "outhaul-shop-d7") || !strings.Contains(webBlock, "outhaul-shop-d8") {
 		t.Errorf("web block missing one of its domains' routers; got:\n%s", webBlock)
 	}
-	if !strings.Contains(got[apiIdx:webIdx], "slipway-shop-d9") {
+	if !strings.Contains(got[apiIdx:webIdx], "outhaul-shop-d9") {
 		t.Errorf("api block missing its router; got:\n%s", got[apiIdx:webIdx])
 	}
 }

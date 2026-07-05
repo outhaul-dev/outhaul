@@ -5,10 +5,11 @@ package config
 
 import (
 	"path/filepath"
+	"strconv"
 	"time"
 )
 
-// DefaultTraefikImage is the Traefik image Slipway pulls and manages. Pinned to
+// DefaultTraefikImage is the Traefik image Outhaul pulls and manages. Pinned to
 // a major version so upgrades are deliberate.
 const DefaultTraefikImage = "traefik:v3.3"
 
@@ -24,6 +25,7 @@ type Config struct {
 	ACMEStaging   bool          // use the LE staging CA (avoid rate limits)
 	HTTPSPort     string        // host port for the websecure entrypoint
 	HealthTimeout time.Duration // deploy health-check deadline
+	ImageKeep     int           // built images kept per app; 0 disables pruning
 
 	PublicURL string // externally reachable base URL of the admin UI (for GitHub callbacks/webhooks); empty disables GitHub App setup
 }
@@ -35,16 +37,17 @@ type Getenv func(string) string
 // Load resolves configuration from defaults overlaid with OUTHAUL_* env vars.
 func Load(getenv Getenv) Config {
 	return Config{
-		DataDir:      or(getenv("OUTHAUL_DATA_DIR"), "/var/lib/slipway"),
+		DataDir:      or(getenv("OUTHAUL_DATA_DIR"), "/var/lib/outhaul"),
 		ListenAddr:   or(getenv("OUTHAUL_LISTEN_ADDR"), ":8080"),
 		DockerHost:   getenv("OUTHAUL_DOCKER_HOST"), // empty is a valid value: defer to SDK
 		TraefikImage: or(getenv("OUTHAUL_TRAEFIK_IMAGE"), DefaultTraefikImage),
-		Network:      or(getenv("OUTHAUL_NETWORK"), "slipway"),
+		Network:      or(getenv("OUTHAUL_NETWORK"), "outhaul"),
 
 		ACMEEmail:     getenv("OUTHAUL_ACME_EMAIL"),
 		ACMEStaging:   truthy(getenv("OUTHAUL_ACME_STAGING")),
 		HTTPSPort:     or(getenv("OUTHAUL_HTTPS_PORT"), "443"),
 		HealthTimeout: durationOr(getenv("OUTHAUL_HEALTH_TIMEOUT"), 60*time.Second),
+		ImageKeep:     intOr(getenv("OUTHAUL_IMAGE_KEEP"), 5),
 
 		PublicURL: getenv("OUTHAUL_PUBLIC_URL"),
 	}
@@ -52,7 +55,7 @@ func Load(getenv Getenv) Config {
 
 // DBPath is the SQLite database file path, derived from DataDir.
 func (c Config) DBPath() string {
-	return filepath.Join(c.DataDir, "slipway.db")
+	return filepath.Join(c.DataDir, "outhaul.db")
 }
 
 // WorkDir is where a deployment's repo is cloned and built.
@@ -89,6 +92,19 @@ func truthy(v string) bool {
 		return true
 	}
 	return false
+}
+
+// intOr parses v as a non-negative integer, falling back on empty, invalid,
+// or negative input.
+func intOr(v string, fallback int) int {
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return fallback
+	}
+	return n
 }
 
 func durationOr(v string, fallback time.Duration) time.Duration {

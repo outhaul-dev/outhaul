@@ -15,10 +15,10 @@ import (
 
 // ProjectName is the compose project (-p) for an app's stack. The prefix
 // keeps stacks clearly Outhaul-owned and unable to collide with the
-// "slipway-app-<name>" containers of nixpacks apps. App names are validated
+// "outhaul-app-<name>" containers of nixpacks apps. App names are validated
 // on creation to satisfy compose project-name rules.
 func ProjectName(appName string) string {
-	return "slipway-" + appName
+	return "outhaul-" + appName
 }
 
 // Runner executes compose operations for one stack. Build and Up need the
@@ -38,8 +38,10 @@ type Runner interface {
 	Stop(ctx context.Context, project string, out io.Writer) error
 	Restart(ctx context.Context, project string, out io.Writer) error
 
-	// Down removes the stack's containers and networks. Named volumes are
-	// deliberately kept (they are data); orphaned containers are removed.
+	// Down removes the stack's containers, networks, and the images compose
+	// built for it (--rmi local never touches registry images other stacks
+	// share). Named volumes are deliberately kept (they are data); orphaned
+	// containers are removed. Only called when the app is deleted.
 	Down(ctx context.Context, project string, out io.Writer) error
 }
 
@@ -69,7 +71,7 @@ func (d *Docker) Restart(ctx context.Context, project string, out io.Writer) err
 }
 
 func (d *Docker) Down(ctx context.Context, project string, out io.Writer) error {
-	return d.run(ctx, "", out, []string{"compose", "-p", project, "down", "--remove-orphans"})
+	return d.run(ctx, "", out, []string{"compose", "-p", project, "down", "--remove-orphans", "--rmi", "local"})
 }
 
 // buildArgs and upArgs are split out so the exact command lines are testable.

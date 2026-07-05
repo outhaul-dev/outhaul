@@ -11,7 +11,7 @@ import (
 // BuildRequest describes one build.
 type BuildRequest struct {
 	ContextDir string            // path to the checked-out source
-	ImageTag   string            // tag to give the built image, e.g. "slipway/web:5"
+	ImageTag   string            // tag to give the built image, e.g. "outhaul/web:5"
 	Env        map[string]string // build-time environment (empty in M1)
 }
 

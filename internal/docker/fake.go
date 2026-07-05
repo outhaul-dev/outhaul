@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path"
 	"sort"
 	"strings"
 	"sync"
@@ -11,7 +12,7 @@ import (
 )
 
 // Fake is an in-memory Client for unit tests. It records enough state to model
-// the operations Slipway performs (networks, containers, lifecycle) and mirrors
+// the operations Outhaul performs (networks, containers, lifecycle) and mirrors
 // Docker's "duplicate name" error so replace-then-create paths are exercised.
 type Fake struct {
 	mu         sync.Mutex
@@ -29,6 +30,11 @@ type Fake struct {
 	Execs   []ExecCall                   // ExecContainer invocations, in order
 	Runs    []ContainerSpec              // RunContainer specs, in order
 
+	Images           map[string]bool // local image tags (test-settable)
+	RemovedImages    []string        // refs passed to RemoveImage, in order
+	ImagePrunes      int             // PruneImages invocations
+	BuildCachePrunes []time.Duration // olderThan values passed to PruneBuildCache
+
 	// OnExec, when set, supplies ExecContainer's output and exit code.
 	OnExec func(id string, cmd, env []string) (stdout, stderr string, exit int, err error)
 	// OnRun, when set, supplies RunContainer's stdout and exit code.
@@ -39,6 +45,10 @@ type Fake struct {
 
 	FailCreate func(spec ContainerSpec) error
 	FailRemove func(id string) error
+
+	// FailRemoveImage, when set, makes RemoveImage return an error for
+	// matching refs (models "image is in use by a container").
+	FailRemoveImage func(ref string) error
 }
 
 // ExecCall records one ExecContainer invocation.
@@ -57,6 +67,7 @@ func NewFake() *Fake {
 		Logs:       map[string]string{},
 		Stats:      map[string]Stats{},
 		Volumes:    map[string]map[string]string{},
+		Images:     map[string]bool{},
 	}
 }
 
@@ -264,6 +275,48 @@ func (f *Fake) RunContainer(_ context.Context, spec ContainerSpec, stdout, _ io.
 		io.WriteString(stdout, out)
 	}
 	return exit, nil
+}
+
+func (f *Fake) ListImages(_ context.Context, refPattern string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var tags []string
+	for tag := range f.Images {
+		if ok, _ := path.Match(refPattern, tag); ok {
+			tags = append(tags, tag)
+		}
+	}
+	sort.Strings(tags)
+	return tags, nil
+}
+
+func (f *Fake) RemoveImage(_ context.Context, ref string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.FailRemoveImage != nil {
+		if err := f.FailRemoveImage(ref); err != nil {
+			return err
+		}
+	}
+	// A missing ref is success, mirroring the real client's not-found
+	// swallowing; record the call either way.
+	f.RemovedImages = append(f.RemovedImages, ref)
+	delete(f.Images, ref)
+	return nil
+}
+
+func (f *Fake) PruneImages(context.Context) (uint64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ImagePrunes++
+	return 0, nil
+}
+
+func (f *Fake) PruneBuildCache(_ context.Context, olderThan time.Duration) (uint64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.BuildCachePrunes = append(f.BuildCachePrunes, olderThan)
+	return 0, nil
 }
 
 func (f *Fake) Close() error { return nil }

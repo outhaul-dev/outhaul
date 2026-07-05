@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 // SetProjectEnv upserts a shared env var for a project, encrypting the value

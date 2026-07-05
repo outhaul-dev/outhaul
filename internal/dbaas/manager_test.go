@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/docker"
-	"github.com/slipwaydev/slipway/internal/secret"
-	"github.com/slipwaydev/slipway/internal/store"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/docker"
+	"github.com/james-smart/outhaul/internal/secret"
+	"github.com/james-smart/outhaul/internal/store"
 )
 
 type harness struct {
@@ -34,7 +34,7 @@ func newHarness(t *testing.T) *harness {
 	t.Cleanup(func() { st.Close() })
 	fake := docker.NewFake()
 	return &harness{
-		m:      NewManager(st, fake, "slipway", filepath.Join(dir, "databases")),
+		m:      NewManager(st, fake, "outhaul", filepath.Join(dir, "databases")),
 		store:  st,
 		docker: fake,
 	}
@@ -89,12 +89,12 @@ func TestProvisionCreatesAndStartsContainer(t *testing.T) {
 	if len(h.docker.Pulled) != 1 || h.docker.Pulled[0] != "postgres:17" {
 		t.Errorf("pulled %v, want the engine image", h.docker.Pulled)
 	}
-	c, _ := h.docker.FindContainer(ctx, "slipway-db-shop")
+	c, _ := h.docker.FindContainer(ctx, "outhaul-db-shop")
 	if c == nil || !c.Running() {
-		t.Fatalf("container = %+v, want running slipway-db-shop", c)
+		t.Fatalf("container = %+v, want running outhaul-db-shop", c)
 	}
-	if c.Labels["slipway.role"] != "database" || c.Labels["slipway.db"] != "shop" {
-		t.Errorf("labels = %v, want slipway.role=database and slipway.db=shop", c.Labels)
+	if c.Labels["outhaul.role"] != "database" || c.Labels["outhaul.db"] != "shop" {
+		t.Errorf("labels = %v, want outhaul.role=database and outhaul.db=shop", c.Labels)
 	}
 
 	spec := h.docker.Created[0]
@@ -104,7 +104,7 @@ func TestProvisionCreatesAndStartsContainer(t *testing.T) {
 	if spec.RestartPolicy != "unless-stopped" {
 		t.Errorf("restart policy = %q, want unless-stopped (reboots are Docker's job)", spec.RestartPolicy)
 	}
-	if len(spec.Networks) != 1 || spec.Networks[0] != "slipway" {
+	if len(spec.Networks) != 1 || spec.Networks[0] != "outhaul" {
 		t.Errorf("networks = %v, want the shared network", spec.Networks)
 	}
 	if len(spec.Ports) != 0 {
@@ -159,13 +159,13 @@ func TestProvisionReplacesExistingContainer(t *testing.T) {
 	if err := h.m.provision(ctx, d); err != nil {
 		t.Fatal(err)
 	}
-	first, _ := h.docker.FindContainer(ctx, "slipway-db-shop")
+	first, _ := h.docker.FindContainer(ctx, "outhaul-db-shop")
 
 	d.ExtPort = 5433
 	if err := h.m.provision(ctx, d); err != nil {
 		t.Fatalf("reprovision: %v", err)
 	}
-	second, _ := h.docker.FindContainer(ctx, "slipway-db-shop")
+	second, _ := h.docker.FindContainer(ctx, "outhaul-db-shop")
 	if second == nil || second.ID == first.ID {
 		t.Fatalf("container was not replaced: first %+v second %+v", first, second)
 	}
@@ -204,7 +204,7 @@ func TestStopAndStartSyncRow(t *testing.T) {
 	if err := h.m.Stop(ctx, d); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if c, _ := h.docker.FindContainer(ctx, "slipway-db-shop"); c.Running() {
+	if c, _ := h.docker.FindContainer(ctx, "outhaul-db-shop"); c.Running() {
 		t.Error("container still running after Stop")
 	}
 	if got := h.status(t, d.ID); got.Status != core.DBStopped {
@@ -214,7 +214,7 @@ func TestStopAndStartSyncRow(t *testing.T) {
 	if err := h.m.Start(ctx, d); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if c, _ := h.docker.FindContainer(ctx, "slipway-db-shop"); !c.Running() {
+	if c, _ := h.docker.FindContainer(ctx, "outhaul-db-shop"); !c.Running() {
 		t.Error("container not running after Start")
 	}
 	if got := h.status(t, d.ID); got.Status != core.DBRunning {
@@ -237,7 +237,7 @@ func TestRemoveDeletesContainerDataAndRow(t *testing.T) {
 	if err := h.m.Remove(ctx, d); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
-	if c, _ := h.docker.FindContainer(ctx, "slipway-db-shop"); c != nil {
+	if c, _ := h.docker.FindContainer(ctx, "outhaul-db-shop"); c != nil {
 		t.Error("container survived Remove")
 	}
 	if _, err := os.Stat(h.m.DataPath("shop")); !os.IsNotExist(err) {
@@ -279,8 +279,8 @@ func TestRemoveFallsBackToHelperContainer(t *testing.T) {
 	if len(spec.Mounts) != 1 || spec.Mounts[0].Source != h.m.dataDir || spec.Mounts[0].Target != "/data" {
 		t.Errorf("helper mounts = %v, want the databases root at /data", spec.Mounts)
 	}
-	if spec.Labels["slipway.role"] != "helper" {
-		t.Errorf("labels = %v, want slipway.role=helper", spec.Labels)
+	if spec.Labels["outhaul.role"] != "helper" {
+		t.Errorf("labels = %v, want outhaul.role=helper", spec.Labels)
 	}
 	if !hasPulled(h.docker.Pulled, helperImage) {
 		t.Errorf("pulled = %v, want the helper image pulled", h.docker.Pulled)
@@ -320,7 +320,7 @@ func hasPulled(pulled []string, ref string) bool {
 
 func TestConnectionURLs(t *testing.T) {
 	pg := core.Database{Name: "shop", Engine: core.EnginePostgres, Username: "shop", Password: "pw", DBName: "shop"}
-	if got, want := InternalURL(pg), "postgres://shop:pw@slipway-db-shop:5432/shop"; got != want {
+	if got, want := InternalURL(pg), "postgres://shop:pw@outhaul-db-shop:5432/shop"; got != want {
 		t.Errorf("InternalURL = %q, want %q", got, want)
 	}
 	if got := ExternalURL(pg, "203.0.113.7"); got != "" {
@@ -332,7 +332,7 @@ func TestConnectionURLs(t *testing.T) {
 	}
 
 	redis := core.Database{Name: "cache", Engine: core.EngineRedis, Password: "pw"}
-	if got, want := InternalURL(redis), "redis://:pw@slipway-db-cache:6379/0"; got != want {
+	if got, want := InternalURL(redis), "redis://:pw@outhaul-db-cache:6379/0"; got != want {
 		t.Errorf("redis InternalURL = %q, want %q", got, want)
 	}
 }

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/slipwaydev/slipway/internal/compose"
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/compose"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 // composeApp creates a compose-kind app whose fake clone contains a compose
@@ -67,8 +67,8 @@ func TestComposePipelineHappyPath(t *testing.T) {
 	if len(builds) != 1 || len(ups) != 1 {
 		t.Fatalf("compose calls: build=%d up=%d, want 1 each", len(builds), len(ups))
 	}
-	if ups[0].Project != "slipway-shop" {
-		t.Errorf("project = %q, want slipway-shop", ups[0].Project)
+	if ups[0].Project != "outhaul-shop" {
+		t.Errorf("project = %q, want outhaul-shop", ups[0].Project)
 	}
 	wantFiles := []string{"docker-compose.yml", compose.OverrideFile}
 	if len(ups[0].Files) != 2 || ups[0].Files[0] != wantFiles[0] || ups[0].Files[1] != wantFiles[1] {
@@ -198,7 +198,7 @@ func TestComposePipelineBuildFailureMarksFailed(t *testing.T) {
 func TestComposePipelineUpFailureMarksFailed(t *testing.T) {
 	h := newHarness(t)
 	app := h.composeApp(t, "shop", "docker-compose.yml", "")
-	h.compose.FailUp = errors.New("container slipway-shop-web-1 is unhealthy")
+	h.compose.FailUp = errors.New("container outhaul-shop-web-1 is unhealthy")
 
 	dep := h.claimedDeployment(t, app.ID)
 	h.worker.runPipeline(context.Background(), dep)

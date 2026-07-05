@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// PushEvent is the subset of a push webhook Slipway acts on.
+// PushEvent is the subset of a push webhook Outhaul acts on.
 type PushEvent struct {
 	RepoFullName string   // "owner/name"
 	Branch       string   // "main"; empty for non-branch refs (e.g. tags)

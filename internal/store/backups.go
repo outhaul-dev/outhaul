@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 // ErrDestinationInUse is returned by DeleteDestination while backups still

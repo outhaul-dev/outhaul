@@ -278,9 +278,13 @@
         <td class="mono muted">{{buildDur .}}</td>
         <td class="row-actions">
           {{if and .Status.IsTerminal .Image (ne $.App.Kind "compose")}}
+          {{if .ImagePruned}}
+          <span class="muted" title="the built image was removed by image retention; deploy to rebuild from the branch">image pruned</span>
+          {{else}}
           <form method="post" action="/deployments/{{.ID}}/rollback" class="inline" onsubmit="return confirm('Roll back {{$.App.Name}} to the image built by deployment #{{.ID}}? Current env vars and domain settings will apply.');">
             <button type="submit" class="btn btn-quiet">Rollback</button>
           </form>
+          {{end}}
           {{end}}
           <a href="/deployments/{{.ID}}" class="rowlink">logs →</a>
         </td>

@@ -13,7 +13,7 @@
 
 set -euo pipefail
 
-BIN_DEST=/usr/local/bin/slipway
+BIN_DEST=/usr/local/bin/outhaul
 ENV_FILE=/etc/outhaul.env
 UNIT_DEST=/etc/systemd/system/outhaul.service
 SERVICE_USER=outhaul
@@ -57,12 +57,27 @@ if ! command -v nixpacks >/dev/null 2>&1; then
 	curl -sSL https://nixpacks.com/install.sh | bash
 fi
 
+# --- migration from the old "slipway" name ------------------------------------
+# Pre-rename installs kept state in /var/lib/slipway and the binary at
+# /usr/local/bin/slipway. Carry the important state (SQLite DB, secret key,
+# ACME certs) across; containers under the old names are NOT migrated — remove
+# them with `docker rm -f $(docker ps -aq --filter label=slipway.managed)`
+# and redeploy from the UI.
+
+if [ -d /var/lib/slipway ] && [ ! -e /var/lib/outhaul ]; then
+	log "migrating data dir /var/lib/slipway -> /var/lib/outhaul"
+	systemctl stop outhaul 2>/dev/null || true
+	mv /var/lib/slipway /var/lib/outhaul
+	[ -f /var/lib/outhaul/slipway.db ] && mv /var/lib/outhaul/slipway.db /var/lib/outhaul/outhaul.db
+fi
+rm -f /usr/local/bin/slipway
+
 # --- service user ------------------------------------------------------------
 
 if ! id "$SERVICE_USER" >/dev/null 2>&1; then
 	log "creating system user $SERVICE_USER"
 	nologin="$(command -v nologin || echo /usr/sbin/nologin)"
-	useradd --system --home-dir /var/lib/slipway --create-home \
+	useradd --system --home-dir /var/lib/outhaul --create-home \
 		--shell "$nologin" "$SERVICE_USER"
 fi
 # docker group access is how the service talks to the daemon. Note: socket
@@ -71,16 +86,16 @@ usermod -aG docker "$SERVICE_USER"
 
 # --- binary -------------------------------------------------------------------
 
-if [ ! -x "$REPO_ROOT/slipway" ]; then
+if [ ! -x "$REPO_ROOT/outhaul" ]; then
 	command -v go >/dev/null 2>&1 && [ -f "$REPO_ROOT/go.mod" ] ||
-		die "no ./slipway binary and no Go toolchain; build the binary (go build -o slipway .) and re-run"
-	log "building slipway from source"
-	(cd "$REPO_ROOT" && go build -o slipway .)
+		die "no ./outhaul binary and no Go toolchain; build the binary (go build -o outhaul .) and re-run"
+	log "building outhaul from source"
+	(cd "$REPO_ROOT" && go build -o outhaul .)
 fi
 log "installing binary to $BIN_DEST"
 # install(1) unlinks the destination first, so upgrading a running service
 # does not trip over ETXTBSY.
-install -m 0755 "$REPO_ROOT/slipway" "$BIN_DEST"
+install -m 0755 "$REPO_ROOT/outhaul" "$BIN_DEST"
 
 # --- configuration + unit -----------------------------------------------------
 
@@ -92,7 +107,7 @@ if [ ! -f "$ENV_FILE" ]; then
 #OUTHAUL_ACME_EMAIL=you@example.com     # set to enable automatic HTTPS
 #OUTHAUL_PUBLIC_URL=https://paas.example.com
 #OUTHAUL_LISTEN_ADDR=:8080
-#OUTHAUL_DATA_DIR=/var/lib/slipway
+#OUTHAUL_DATA_DIR=/var/lib/outhaul
 EOF
 	chmod 0600 "$ENV_FILE"
 fi

@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/compose"
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/docker"
+	"github.com/james-smart/outhaul/internal/compose"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/docker"
 )
 
 // appStatsResponse is the live-metrics snapshot the app page polls. Values are
@@ -111,7 +111,7 @@ func (s *Server) appStats(ctx context.Context, app core.App) appStatsResponse {
 }
 
 // runningContainers resolves the app's currently running containers: the one
-// slipway-app-<name> container for nixpacks apps, the labelled stack for
+// outhaul-app-<name> container for nixpacks apps, the labelled stack for
 // compose apps.
 func (s *Server) runningContainers(ctx context.Context, app core.App) ([]docker.Container, error) {
 	if app.Kind == core.KindCompose {

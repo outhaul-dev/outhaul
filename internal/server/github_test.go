@@ -7,13 +7,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/slipwaydev/slipway/internal/github"
+	"github.com/james-smart/outhaul/internal/github"
 )
 
 func TestGithubCallbackStoresApp(t *testing.T) {
 	env := newTestEnv(t)
 	env.gh.ManifestResult = github.ManifestResult{
-		AppID: 55, Slug: "slipway-t", PEM: "PEM", WebhookSecret: "whs",
+		AppID: 55, Slug: "outhaul-t", PEM: "PEM", WebhookSecret: "whs",
 		ClientID: "cid", ClientSecret: "csec",
 	}
 
@@ -26,7 +26,7 @@ func TestGithubCallbackStoresApp(t *testing.T) {
 		t.Fatalf("status = %d, want 303; body=%s", rec.Code, rec.Body)
 	}
 	loc := rec.Header().Get("Location")
-	if !strings.Contains(loc, "github.com/apps/slipway-t/installations/new") {
+	if !strings.Contains(loc, "github.com/apps/outhaul-t/installations/new") {
 		t.Errorf("redirect = %q, want install URL", loc)
 	}
 	if env.gh.LastCode != "xyz" {

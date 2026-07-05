@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/dbaas"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/dbaas"
 )
 
 // databasePath is the detail page for a database.

@@ -28,7 +28,10 @@ Outhaul is a deliberately minimal alternative to Dokploy/Coolify.
 > apps over the internal network (and optionally on a published host port).
 > **Scheduled backups** ship database dumps and compose stacks' named volumes
 > to any S3-compatible bucket (AWS, MinIO, R2, B2, …) on cron schedules with
-> retention, run history, and one-click manual runs. See
+> retention, run history, and one-click manual runs. **Disk cleanup** keeps a
+> long-running host healthy: the newest builds per app stay on disk for
+> rollback (`OUTHAUL_IMAGE_KEEP`, default 5) and a nightly sweep reclaims
+> older images, dangling layers, and stale build cache. See
 > [ARCHITECTURE.md](ARCHITECTURE.md) for the design and what is intentionally
 > not built yet (multiple users, backup restore UI, metrics history/alerts,
 > multi-server).
@@ -40,8 +43,8 @@ Requirements on the host: a reachable **Docker** daemon, **git**, and
 need the **docker CLI with the compose v2 plugin** (`docker compose`).
 
 ```sh
-go build -o slipway .
-./slipway serve
+go build -o outhaul .
+./outhaul serve
 ```
 
 On first boot Outhaul prints a one-time setup URL — open it to create the admin
@@ -56,7 +59,7 @@ below, which sets up a dedicated user and a systemd unit.
 Don't run Outhaul as root. From a checkout on the server:
 
 ```sh
-git clone https://github.com/James-Smart/slipway && cd slipway
+git clone https://github.com/James-Smart/outhaul && cd outhaul
 sudo deploy/install.sh
 ```
 
@@ -66,9 +69,9 @@ and a re-run after `git pull` upgrades the binary and restarts the service.
 It:
 
 - installs **Docker** (via get.docker.com), **git**, and **nixpacks** if missing;
-- creates an `outhaul` **system user** (no login shell, home `/var/lib/slipway`)
+- creates an `outhaul` **system user** (no login shell, home `/var/lib/outhaul`)
   in the `docker` group;
-- builds the binary if needed and installs it to `/usr/local/bin/slipway`;
+- builds the binary if needed and installs it to `/usr/local/bin/outhaul`;
 - writes `/etc/outhaul.env` (put `OUTHAUL_*` overrides there — ACME email,
   public URL) and installs and starts `outhaul.service`
   ([deploy/outhaul.service](deploy/outhaul.service)).
@@ -94,15 +97,16 @@ No config files — defaults with `OUTHAUL_*` environment overrides:
 
 | Variable                | Default              | Purpose                                   |
 |-------------------------|----------------------|-------------------------------------------|
-| `OUTHAUL_DATA_DIR`      | `/var/lib/slipway`   | SQLite DB and build work dirs             |
+| `OUTHAUL_DATA_DIR`      | `/var/lib/outhaul`   | SQLite DB and build work dirs             |
 | `OUTHAUL_LISTEN_ADDR`   | `:8080`              | Admin UI / API listen address             |
 | `OUTHAUL_DOCKER_HOST`   | (SDK env default)    | Docker endpoint                           |
 | `OUTHAUL_TRAEFIK_IMAGE` | `traefik:v3.3`       | Managed Traefik image                     |
-| `OUTHAUL_NETWORK`       | `slipway`            | Shared Docker network for app containers  |
+| `OUTHAUL_NETWORK`       | `outhaul`            | Shared Docker network for app containers  |
 | `OUTHAUL_ACME_EMAIL`    | (empty)              | Let's Encrypt email; set to enable HTTPS   |
 | `OUTHAUL_ACME_STAGING`  | `false`              | Use the LE staging CA (testing)            |
 | `OUTHAUL_HTTPS_PORT`    | `443`                | Host port for HTTPS                        |
 | `OUTHAUL_HEALTH_TIMEOUT`| `60s`                | Deploy health-check deadline               |
+| `OUTHAUL_IMAGE_KEEP`    | `5`                  | Built images kept per app for rollback (`0` keeps all) |
 | `OUTHAUL_PUBLIC_URL`    | (empty)              | Public base URL of the admin UI; enables GitHub App + webhook URLs |
 
 Apps are expected to listen on `$PORT` (Outhaul sets it and points Traefik at it).

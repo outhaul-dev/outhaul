@@ -1,4 +1,4 @@
-// Package docker abstracts the container operations Slipway needs behind a
+// Package docker abstracts the container operations Outhaul needs behind a
 // small Client interface. A real SDK-backed implementation drives the local
 // Docker daemon; an in-memory Fake backs unit tests. No test touches a real
 // daemon.
@@ -63,7 +63,7 @@ type Container struct {
 // Running reports whether the container is currently running.
 func (c Container) Running() bool { return c.State == "running" }
 
-// Client is the container-runtime surface Slipway depends on.
+// Client is the container-runtime surface Outhaul depends on.
 type Client interface {
 	// Ping verifies the daemon is reachable.
 	Ping(ctx context.Context) error
@@ -125,6 +125,24 @@ type Client interface {
 	// runs, wait for exit, remove it, and return the exit code. Used for
 	// backup helper containers that tar a volume to stdout.
 	RunContainer(ctx context.Context, spec ContainerSpec, stdout, stderr io.Writer) (int, error)
+
+	// ListImages returns the local image tags matching a reference pattern
+	// (e.g. "outhaul/*"), one entry per matching tag. Used by the image
+	// pruner to reconcile the outhaul/* namespace against the database.
+	ListImages(ctx context.Context, refPattern string) ([]string, error)
+
+	// RemoveImage untags ref and deletes the underlying image when that was
+	// its last tag. A ref that does not exist is success (the desired state);
+	// an image in use by a container is an error — the pruner never forces.
+	RemoveImage(ctx context.Context, ref string) error
+
+	// PruneImages removes dangling (untagged) images only — never tagged
+	// ones — and returns the bytes reclaimed.
+	PruneImages(ctx context.Context) (uint64, error)
+
+	// PruneBuildCache removes build-cache entries unused for longer than
+	// olderThan and returns the bytes reclaimed.
+	PruneBuildCache(ctx context.Context, olderThan time.Duration) (uint64, error)
 
 	// Close releases any client resources.
 	Close() error

@@ -12,15 +12,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/docker"
-	"github.com/slipwaydev/slipway/internal/store"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/docker"
+	"github.com/james-smart/outhaul/internal/store"
 )
 
 // containerPrefix names database containers, disjoint from the app
-// (slipway-app-), deploy temp (slipway-deploy-), compose (slipway-<name>),
-// and Traefik (slipway-traefik) namespaces.
-const containerPrefix = "slipway-db-"
+// (outhaul-app-), deploy temp (outhaul-deploy-), compose (outhaul-<name>),
+// and Traefik (outhaul-traefik) namespaces.
+const containerPrefix = "outhaul-db-"
 
 // ContainerName returns the container name for a database.
 func ContainerName(dbName string) string { return containerPrefix + dbName }
@@ -105,9 +105,9 @@ func (m *Manager) provision(ctx context.Context, d core.Database) error {
 		Name:  ContainerName(d.Name),
 		Image: d.Image,
 		Labels: map[string]string{
-			"slipway.managed": "true",
-			"slipway.role":    "database",
-			"slipway.db":      d.Name,
+			"outhaul.managed": "true",
+			"outhaul.role":    "database",
+			"outhaul.db":      d.Name,
 		},
 		Env:      env(d),
 		Cmd:      cmd(d),
@@ -195,12 +195,12 @@ func (m *Manager) removeData(ctx context.Context, name string) error {
 	}
 	var stderr bytes.Buffer
 	spec := docker.ContainerSpec{
-		Name:  "slipway-db-rm-" + name,
+		Name:  "outhaul-db-rm-" + name,
 		Image: helperImage,
 		Cmd:   []string{"rm", "-rf", "/data/" + name},
 		Labels: map[string]string{
-			"slipway.managed": "true",
-			"slipway.role":    "helper",
+			"outhaul.managed": "true",
+			"outhaul.role":    "helper",
 		},
 		Mounts: []docker.Mount{{Source: m.dataDir, Target: "/data"}},
 	}

@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/blobstore"
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/docker"
-	"github.com/slipwaydev/slipway/internal/secret"
-	"github.com/slipwaydev/slipway/internal/store"
+	"github.com/james-smart/outhaul/internal/blobstore"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/docker"
+	"github.com/james-smart/outhaul/internal/secret"
+	"github.com/james-smart/outhaul/internal/store"
 )
 
 // fakeBlob is an in-memory blobstore.Client.
@@ -128,7 +128,7 @@ func (h *harness) seedRunningDatabase(t *testing.T, name, engine string) core.Da
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, err := h.docker.CreateContainer(context.Background(), docker.ContainerSpec{Name: "slipway-db-" + name, Image: "img"})
+	id, err := h.docker.CreateContainer(context.Background(), docker.ContainerSpec{Name: "outhaul-db-" + name, Image: "img"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,8 +307,8 @@ func TestComposeVolumesUploadOnePerVolume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.docker.Volumes["slipway-wiki_data"] = map[string]string{"com.docker.compose.project": "slipway-wiki"}
-	h.docker.Volumes["slipway-wiki_uploads"] = map[string]string{"com.docker.compose.project": "slipway-wiki"}
+	h.docker.Volumes["outhaul-wiki_data"] = map[string]string{"com.docker.compose.project": "outhaul-wiki"}
+	h.docker.Volumes["outhaul-wiki_uploads"] = map[string]string{"com.docker.compose.project": "outhaul-wiki"}
 	h.docker.Volumes["unrelated"] = map[string]string{"com.docker.compose.project": "other"}
 	h.docker.OnRun = func(spec docker.ContainerSpec) (string, int, error) {
 		return "tarball-of-" + spec.Mounts[0].Source, 0, nil
@@ -327,7 +327,7 @@ func TestComposeVolumesUploadOnePerVolume(t *testing.T) {
 		t.Fatalf("keys = %v, want one per stack volume", keys)
 	}
 	for _, k := range keys {
-		if !strings.HasPrefix(k, "prod/wiki/slipway-wiki_") || !strings.HasSuffix(k, ".tar.gz") {
+		if !strings.HasPrefix(k, "prod/wiki/outhaul-wiki_") || !strings.HasSuffix(k, ".tar.gz") {
 			t.Errorf("key %q not under prod/wiki/<volume>/", k)
 		}
 	}
@@ -343,7 +343,7 @@ func TestComposeVolumesUploadOnePerVolume(t *testing.T) {
 	var found bool
 	for _, k := range keys {
 		if strings.Contains(k, "_data") {
-			found = string(h.blob.objects[k]) == "tarball-of-slipway-wiki_data"
+			found = string(h.blob.objects[k]) == "tarball-of-outhaul-wiki_data"
 		}
 	}
 	if !found {

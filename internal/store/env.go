@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 // SetEnv upserts an env var for an app, encrypting the value at rest.

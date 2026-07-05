@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 func seedDestination(t *testing.T, e *testEnv, name string) core.Destination {

@@ -1,4 +1,4 @@
-// Package deploy contains Slipway's background worker: an in-process dispatcher
+// Package deploy contains Outhaul's background worker: an in-process dispatcher
 // that turns queued deployments into running containers. Deploys for the same
 // app serialize; different apps run concurrently. The deployments table is the
 // queue (see internal/store); this package owns the pipeline that advances a
@@ -14,14 +14,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/builder"
-	"github.com/slipwaydev/slipway/internal/compose"
-	"github.com/slipwaydev/slipway/internal/config"
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/docker"
-	"github.com/slipwaydev/slipway/internal/github"
-	"github.com/slipwaydev/slipway/internal/logstream"
-	"github.com/slipwaydev/slipway/internal/store"
+	"github.com/james-smart/outhaul/internal/builder"
+	"github.com/james-smart/outhaul/internal/compose"
+	"github.com/james-smart/outhaul/internal/config"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/docker"
+	"github.com/james-smart/outhaul/internal/github"
+	"github.com/james-smart/outhaul/internal/logstream"
+	"github.com/james-smart/outhaul/internal/store"
 )
 
 // pollInterval is a safety-net re-check even if no Notify arrives.
@@ -29,6 +29,12 @@ const pollInterval = 3 * time.Second
 
 // maxConcurrent bounds how many app deployments build/deploy at once.
 const maxConcurrent = 4
+
+// AppPruner is the optional after-deploy image-retention hook (implemented by
+// internal/prune, which stays out of the pipeline's dependency graph).
+type AppPruner interface {
+	PruneApp(ctx context.Context, app core.App, out io.Writer) error
+}
 
 // Worker dispatches and runs deployments.
 type Worker struct {
@@ -42,6 +48,7 @@ type Worker struct {
 	cfg     config.Config
 
 	healthCheck HealthChecker
+	pruner      AppPruner // nil disables after-deploy image pruning
 
 	notify chan struct{}
 	sem    chan struct{}
@@ -70,6 +77,9 @@ func NewWorker(st *store.Store, dc docker.Client, b builder.Builder, cp compose.
 		cancels: map[int64]context.CancelFunc{},
 	}
 }
+
+// SetPruner installs the after-deploy image-retention hook. Call before Run.
+func (w *Worker) SetPruner(p AppPruner) { w.pruner = p }
 
 // Notify wakes the dispatcher to look for claimable work. Non-blocking.
 func (w *Worker) Notify() {

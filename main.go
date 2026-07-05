@@ -1,5 +1,5 @@
-// Command slipway is a single-binary, self-hosted PaaS: git-push-to-deploy on
-// one VPS, orchestrating Docker and Traefik. `slipway serve` starts the admin
+// Command outhaul is a single-binary, self-hosted PaaS: git-push-to-deploy on
+// one VPS, orchestrating Docker and Traefik. `outhaul serve` starts the admin
 // UI and the background deploy worker.
 package main
 
@@ -13,24 +13,25 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/backup"
-	"github.com/slipwaydev/slipway/internal/builder"
-	"github.com/slipwaydev/slipway/internal/compose"
-	"github.com/slipwaydev/slipway/internal/config"
-	"github.com/slipwaydev/slipway/internal/dbaas"
-	"github.com/slipwaydev/slipway/internal/deploy"
-	"github.com/slipwaydev/slipway/internal/docker"
-	"github.com/slipwaydev/slipway/internal/github"
-	"github.com/slipwaydev/slipway/internal/logstream"
-	"github.com/slipwaydev/slipway/internal/secret"
-	"github.com/slipwaydev/slipway/internal/server"
-	"github.com/slipwaydev/slipway/internal/store"
-	"github.com/slipwaydev/slipway/internal/traefik"
+	"github.com/james-smart/outhaul/internal/backup"
+	"github.com/james-smart/outhaul/internal/builder"
+	"github.com/james-smart/outhaul/internal/compose"
+	"github.com/james-smart/outhaul/internal/config"
+	"github.com/james-smart/outhaul/internal/dbaas"
+	"github.com/james-smart/outhaul/internal/deploy"
+	"github.com/james-smart/outhaul/internal/docker"
+	"github.com/james-smart/outhaul/internal/github"
+	"github.com/james-smart/outhaul/internal/logstream"
+	"github.com/james-smart/outhaul/internal/prune"
+	"github.com/james-smart/outhaul/internal/secret"
+	"github.com/james-smart/outhaul/internal/server"
+	"github.com/james-smart/outhaul/internal/store"
+	"github.com/james-smart/outhaul/internal/traefik"
 )
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
-	log.SetPrefix("slipway: ")
+	log.SetPrefix("outhaul: ")
 
 	if len(os.Args) < 2 || os.Args[1] != "serve" {
 		usage()
@@ -42,7 +43,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "Usage: slipway serve")
+	fmt.Fprintln(os.Stderr, "Usage: outhaul serve")
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "Starts the Outhaul admin UI and deploy worker.")
 	fmt.Fprintln(os.Stderr, "Configuration via OUTHAUL_* environment variables (see ARCHITECTURE.md).")
@@ -97,6 +98,10 @@ func serve() error {
 	broker := logstream.New()
 	worker := deploy.NewWorker(st, dc, builder.NewNixpacks(), compose.NewDocker(), deploy.NewGit(), broker, ghClient, cfg)
 
+	// Image pruner: after-deploy retention hook + daily sweep.
+	pruner := prune.New(st, dc, cfg.ImageKeep, cfg.WorkDir())
+	worker.SetPruner(pruner)
+
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	workerDone := make(chan struct{})
 	go func() {
@@ -110,6 +115,9 @@ func serve() error {
 	// Backup scheduler (dumps + volume tarballs to S3-compatible storage).
 	backups := backup.NewManager(st, dc, cfg.WorkDir())
 	go backups.Run(workerCtx)
+
+	// Daily disk-cleanup sweep (image retention, dangling images, build cache).
+	go pruner.Run(workerCtx)
 
 	// HTTP server.
 	setupToken := server.NewToken()
@@ -160,7 +168,7 @@ func ensureInfra(dc docker.Client, cfg config.Config) {
 		return
 	}
 	pc := traefik.ProxyConfig{
-		ContainerName:  "slipway-traefik",
+		ContainerName:  "outhaul-traefik",
 		Image:          cfg.TraefikImage,
 		Network:        cfg.Network,
 		HTTPPort:       "80",

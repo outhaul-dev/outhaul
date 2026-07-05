@@ -58,14 +58,14 @@ func TestFakeContainerIP(t *testing.T) {
 	ctx := context.Background()
 	f := NewFake()
 	id, _ := f.CreateContainer(ctx, ContainerSpec{Name: "c1", Image: "img"})
-	ip, err := f.ContainerIP(ctx, id, "slipway")
+	ip, err := f.ContainerIP(ctx, id, "outhaul")
 	if err != nil {
 		t.Fatalf("ContainerIP: %v", err)
 	}
 	if ip == "" {
 		t.Error("expected a non-empty IP")
 	}
-	if _, err := f.ContainerIP(ctx, "missing", "slipway"); err == nil {
+	if _, err := f.ContainerIP(ctx, "missing", "outhaul"); err == nil {
 		t.Error("expected error for unknown container")
 	}
 }

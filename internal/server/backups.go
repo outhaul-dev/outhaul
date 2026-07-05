@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/cron"
-	"github.com/slipwaydev/slipway/internal/store"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/cron"
+	"github.com/james-smart/outhaul/internal/store"
 )
 
 // prefixRe restricts backup key prefixes to characters that stay sane in

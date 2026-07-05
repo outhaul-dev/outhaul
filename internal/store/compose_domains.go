@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 // AddComposeDomain publishes a stack service on a host and returns the row

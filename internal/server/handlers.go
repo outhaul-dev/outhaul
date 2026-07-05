@@ -15,14 +15,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/compose"
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/github"
-	"github.com/slipwaydev/slipway/internal/sshkey"
+	"github.com/james-smart/outhaul/internal/compose"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/github"
+	"github.com/james-smart/outhaul/internal/sshkey"
 )
 
 // appContainerPrefix is prepended to an app's name to get its container name.
-const appContainerPrefix = "slipway-app-"
+const appContainerPrefix = "outhaul-app-"
 
 // appNameRe restricts app names to values safe as container names, Traefik
 // router identifiers, and URL segments.
@@ -470,7 +470,7 @@ func (s *Server) handleSetEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if key == "PORT" {
-		http.Error(w, "PORT is managed by Slipway and cannot be set.", http.StatusBadRequest)
+		http.Error(w, "PORT is managed by Outhaul and cannot be set.", http.StatusBadRequest)
 		return
 	}
 	if err := s.store.SetEnv(r.Context(), id, key, value, isSecret); err != nil {
@@ -587,11 +587,39 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 			log.Printf("delete app %d: could not remove container %s: %v", id, c.ID, rerr)
 		}
 	}
+	// The app's built images go with it (the deployment rows about to be
+	// deleted are the only record of the tags). Best-effort like the container
+	// teardown: a leftover is reclaimed by the pruner's daily reconciliation.
+	if app.Kind != core.KindCompose {
+		if deps, derr := s.store.ListDeploymentsForApp(r.Context(), id); derr != nil {
+			log.Printf("delete app %d: could not list deployments (its images are now orphaned until the next sweep): %v", id, derr)
+		} else {
+			for _, tag := range distinctImages(deps) {
+				if rerr := s.runtime.RemoveImage(r.Context(), tag); rerr != nil {
+					log.Printf("delete app %d: could not remove image %s: %v", id, tag, rerr)
+				}
+			}
+		}
+	}
 	if err := s.store.DeleteApp(r.Context(), id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/apps", http.StatusSeeOther)
+}
+
+// distinctImages collects the unique unpruned image tags across deployments.
+func distinctImages(deps []core.Deployment) []string {
+	seen := map[string]bool{}
+	var tags []string
+	for _, d := range deps {
+		if d.Image == "" || d.ImagePruned || seen[d.Image] {
+			continue
+		}
+		seen[d.Image] = true
+		tags = append(tags, d.Image)
+	}
+	return tags
 }
 
 func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
@@ -639,6 +667,10 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	}
 	if src.Image == "" {
 		http.Error(w, "this deployment never finished a build, so there is no image to roll back to", http.StatusBadRequest)
+		return
+	}
+	if src.ImagePruned {
+		http.Error(w, "this deployment's image was pruned by image retention; deploy to rebuild from the branch instead", http.StatusBadRequest)
 		return
 	}
 	dep, err := s.store.CreateRollback(r.Context(), app.ID, src.Image, src.ID)

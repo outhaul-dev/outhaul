@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/secret"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/secret"
 )
 
 func gitTestStore(t *testing.T) *Store {
@@ -15,7 +15,7 @@ func gitTestStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st, err := Open(dir+"/slipway.db", box)
+	st, err := Open(dir+"/outhaul.db", box)
 	if err != nil {
 		t.Fatal(err)
 	}

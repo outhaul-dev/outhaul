@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 // seedFinishedDeploy walks a deployment through the real state machine to
@@ -45,7 +45,7 @@ func TestRollbackEnqueuesReuseOfImage(t *testing.T) {
 	e := newTestEnv(t)
 	e.login(t)
 	app := seedRunningApp(t, e, "")
-	src := seedFinishedDeploy(t, e, app.ID, "slipway/web:1")
+	src := seedFinishedDeploy(t, e, app.ID, "outhaul/web:1")
 
 	resp := e.postForm(t, "/deployments/"+itoa(src.ID)+"/rollback", url.Values{})
 	defer resp.Body.Close()
@@ -72,8 +72,8 @@ func TestRollbackEnqueuesReuseOfImage(t *testing.T) {
 	if dep.Status != core.StatusQueued {
 		t.Errorf("status = %q, want queued", dep.Status)
 	}
-	if dep.Image != "slipway/web:1" || dep.RollbackOf != src.ID {
-		t.Errorf("rollback row = image %q rollback_of %d, want slipway/web:1 / %d",
+	if dep.Image != "outhaul/web:1" || dep.RollbackOf != src.ID {
+		t.Errorf("rollback row = image %q rollback_of %d, want outhaul/web:1 / %d",
 			dep.Image, dep.RollbackOf, src.ID)
 	}
 	if e.deployer.notified == 0 {
@@ -116,6 +116,44 @@ func TestRollbackRejectsUnbuiltDeployment(t *testing.T) {
 	}
 }
 
+func TestRollbackRejectsPrunedImage(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	app := seedRunningApp(t, e, "")
+	src := seedFinishedDeploy(t, e, app.ID, "outhaul/web:1")
+	if err := e.store.MarkImagePruned(context.Background(), src.Image); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := e.postForm(t, "/deployments/"+itoa(src.ID)+"/rollback", url.Values{})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	if got := body(t, resp); !strings.Contains(got, "pruned") {
+		t.Errorf("error should explain the image was pruned, got %q", got)
+	}
+}
+
+func TestPrunedDeploymentHidesRollbackButton(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	app := seedRunningApp(t, e, "")
+	src := seedFinishedDeploy(t, e, app.ID, "outhaul/web:1")
+	if err := e.store.MarkImagePruned(context.Background(), src.Image); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{"/apps/" + itoa(app.ID), "/deployments/" + itoa(src.ID)} {
+		page := body(t, e.get(t, path))
+		if strings.Contains(page, "/deployments/"+itoa(src.ID)+"/rollback") {
+			t.Errorf("%s: pruned deployment must not offer a Rollback action", path)
+		}
+		if !strings.Contains(page, "image pruned") {
+			t.Errorf("%s: pruned deployment should say why rollback is gone", path)
+		}
+	}
+}
+
 func TestRollbackUnknownDeployment404(t *testing.T) {
 	e := newTestEnv(t)
 	e.login(t)
@@ -130,7 +168,7 @@ func TestAppPageShowsRollbackButtonAndProvenance(t *testing.T) {
 	e := newTestEnv(t)
 	e.login(t)
 	app := seedRunningApp(t, e, "")
-	src := seedFinishedDeploy(t, e, app.ID, "slipway/web:1")
+	src := seedFinishedDeploy(t, e, app.ID, "outhaul/web:1")
 	if _, err := e.store.CreateRollback(context.Background(), app.ID, src.Image, src.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +186,7 @@ func TestDeploymentPageShowsRollbackButton(t *testing.T) {
 	e := newTestEnv(t)
 	e.login(t)
 	app := seedRunningApp(t, e, "")
-	src := seedFinishedDeploy(t, e, app.ID, "slipway/web:1")
+	src := seedFinishedDeploy(t, e, app.ID, "outhaul/web:1")
 
 	page := body(t, e.get(t, "/deployments/"+itoa(src.ID)))
 	if !strings.Contains(page, "/deployments/"+itoa(src.ID)+"/rollback") {

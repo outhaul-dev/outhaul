@@ -3,7 +3,7 @@ package server
 import (
 	"net/http"
 
-	"github.com/slipwaydev/slipway/internal/core"
+	"github.com/james-smart/outhaul/internal/core"
 )
 
 // handleOverview renders the portal dashboard: headline counts plus the most

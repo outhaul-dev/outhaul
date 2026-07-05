@@ -1,4 +1,4 @@
-// Package server is Slipway's admin web UI and HTTP API: server-rendered
+// Package server is Outhaul's admin web UI and HTTP API: server-rendered
 // html/template pages (with htmx and a little vanilla JS, no build step),
 // argon2id auth, and an SSE endpoint that streams build logs from the logstream
 // broker. It depends on store, logstream, and a Deployer (the deploy worker).
@@ -17,12 +17,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/slipwaydev/slipway/internal/compose"
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/docker"
-	"github.com/slipwaydev/slipway/internal/github"
-	"github.com/slipwaydev/slipway/internal/logstream"
-	"github.com/slipwaydev/slipway/internal/store"
+	"github.com/james-smart/outhaul/internal/compose"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/docker"
+	"github.com/james-smart/outhaul/internal/github"
+	"github.com/james-smart/outhaul/internal/logstream"
+	"github.com/james-smart/outhaul/internal/store"
 )
 
 // Deployer is the slice of the deploy worker the server needs.
@@ -56,6 +56,7 @@ type Runtime interface {
 	RemoveContainer(ctx context.Context, id string, force bool) error
 	ContainerLogs(ctx context.Context, id string, tail int) (io.ReadCloser, error)
 	ContainerStats(ctx context.Context, id string) (docker.Stats, error)
+	RemoveImage(ctx context.Context, ref string) error
 }
 
 // Server holds the HTTP layer's dependencies.
@@ -80,7 +81,7 @@ type Server struct {
 
 // New constructs a Server, parsing the embedded templates. setupToken guards the
 // first-boot admin-creation flow (printed by the caller as a one-time URL).
-// publicURL is Slipway's externally reachable base URL, used to build the
+// publicURL is Outhaul's externally reachable base URL, used to build the
 // GitHub App manifest's callback and webhook URLs.
 func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databases, bk Backups, br *logstream.Broker, gh github.Client, publicURL, setupToken string) (*Server, error) {
 	s := &Server{

@@ -6,14 +6,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/slipwaydev/slipway/internal/docker"
+	"github.com/james-smart/outhaul/internal/docker"
 )
 
 func testProxyConfig() ProxyConfig {
 	return ProxyConfig{
-		ContainerName: "slipway-traefik",
+		ContainerName: "outhaul-traefik",
 		Image:         "traefik:v3.3",
-		Network:       "slipway",
+		Network:       "outhaul",
 		HTTPPort:      "80",
 	}
 }
@@ -132,7 +132,7 @@ func tlsProxyConfig() ProxyConfig {
 	pc.TLSEnabled = true
 	pc.ACMEEmail = "ops@example.com"
 	pc.HTTPSPort = "443"
-	pc.ACMEStorageDir = "/var/lib/slipway/traefik/acme"
+	pc.ACMEStorageDir = "/var/lib/outhaul/traefik/acme"
 	return pc
 }
 
@@ -192,19 +192,19 @@ func TestEnsureProxyRecreatesOnConfigDrift(t *testing.T) {
 	if err := EnsureProxy(ctx, f, testProxyConfig(), nil); err != nil {
 		t.Fatalf("EnsureProxy http: %v", err)
 	}
-	before, _ := f.FindContainer(ctx, "slipway-traefik")
+	before, _ := f.FindContainer(ctx, "outhaul-traefik")
 
 	if err := EnsureProxy(ctx, f, tlsProxyConfig(), nil); err != nil {
 		t.Fatalf("EnsureProxy tls: %v", err)
 	}
-	after, _ := f.FindContainer(ctx, "slipway-traefik")
+	after, _ := f.FindContainer(ctx, "outhaul-traefik")
 	if after == nil {
 		t.Fatal("traefik container missing after drift recreate")
 	}
 	if after.ID == before.ID {
 		t.Error("expected traefik to be recreated on config drift (new container)")
 	}
-	if after.Labels["slipway.config-hash"] == before.Labels["slipway.config-hash"] {
+	if after.Labels["outhaul.config-hash"] == before.Labels["outhaul.config-hash"] {
 		t.Error("config hash should differ after enabling TLS")
 	}
 }
@@ -237,14 +237,14 @@ func TestEnsureProxyKeepsOldContainerWhenPullFails(t *testing.T) {
 	if err := EnsureProxy(ctx, f, testProxyConfig(), nil); err != nil {
 		t.Fatalf("EnsureProxy: %v", err)
 	}
-	before, _ := f.FindContainer(ctx, "slipway-traefik")
+	before, _ := f.FindContainer(ctx, "outhaul-traefik")
 
 	// Config drifts (TLS on) but the image pull now fails.
 	f.FailPull = func(string) error { return errors.New("registry down") }
 	if err := EnsureProxy(ctx, f, tlsProxyConfig(), nil); err == nil {
 		t.Fatal("expected EnsureProxy to fail when the pull fails")
 	}
-	after, _ := f.FindContainer(ctx, "slipway-traefik")
+	after, _ := f.FindContainer(ctx, "outhaul-traefik")
 	if after == nil || after.ID != before.ID {
 		t.Error("old traefik container must survive a failed pull (no teardown before pull)")
 	}

@@ -9,9 +9,13 @@
     <button type="submit" class="btn btn-danger">Cancel</button>
   </form>
   {{else if and .Deployment.Status.IsTerminal .Deployment.Image (ne .App.Kind "compose")}}
+  {{if .Deployment.ImagePruned}}
+  <span class="muted" title="the built image was removed by image retention; deploy to rebuild from the branch">image pruned</span>
+  {{else}}
   <form method="post" action="/deployments/{{.Deployment.ID}}/rollback" class="inline" onsubmit="return confirm('Roll back {{.App.Name}} to the image built by deployment #{{.Deployment.ID}}? Current env vars and domain settings will apply.');">
     <button type="submit" class="btn btn-quiet">Rollback to this deployment</button>
   </form>
+  {{end}}
   {{end}}
 </div>
 

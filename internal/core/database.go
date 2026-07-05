@@ -27,7 +27,7 @@ const (
 type Database struct {
 	ID        int64
 	ProjectID int64
-	Name      string // unique, DNS-safe; container is named slipway-db-<name>
+	Name      string // unique, DNS-safe; container is named outhaul-db-<name>
 	Engine    string // EnginePostgres | EngineMySQL | EngineRedis
 	Image     string // Docker image ref (a default per engine, overridable)
 	Username  string // login user; empty for Redis (password-only auth)

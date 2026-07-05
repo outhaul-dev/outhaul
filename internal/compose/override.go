@@ -5,13 +5,13 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/slipwaydev/slipway/internal/core"
-	"github.com/slipwaydev/slipway/internal/traefik"
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/traefik"
 )
 
 // OverrideFile is the name of the generated override, written next to the
 // app's compose file and passed as a second -f.
-const OverrideFile = "slipway.override.yml"
+const OverrideFile = "outhaul.override.yml"
 
 // Override renders the compose override that publishes stack services on
 // their configured domains. Instead of rewriting the user's compose file
@@ -47,8 +47,8 @@ func Override(app core.App, domains []core.ComposeDomain, network string, tlsEna
 	for _, svc := range services {
 		labels := map[string]string{
 			"traefik.enable":         "true",
-			"slipway.managed":        "true",
-			"slipway.app":            app.Name,
+			"outhaul.managed":        "true",
+			"outhaul.app":            app.Name,
 			"traefik.docker.network": network,
 		}
 		for _, d := range byService[svc] {
@@ -79,7 +79,7 @@ func Override(app core.App, domains []core.ComposeDomain, network string, tlsEna
 
 // domainRouter names the Traefik router for one compose domain.
 func domainRouter(appName string, domainID int64) string {
-	return fmt.Sprintf("slipway-%s-d%d", appName, domainID)
+	return fmt.Sprintf("outhaul-%s-d%d", appName, domainID)
 }
 
 // quoteYAML renders s as a double-quoted YAML scalar. Backslash and double
