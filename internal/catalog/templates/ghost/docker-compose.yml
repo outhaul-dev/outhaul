@@ -1,0 +1,25 @@
+services:
+  ghost:
+    image: ghost:6-alpine
+    restart: unless-stopped
+    environment:
+      database__client: mysql
+      database__connection__host: db
+      database__connection__user: root
+      database__connection__password: ${MYSQL_ROOT_PASSWORD}
+      database__connection__database: ghost
+      url: http://${GHOST_HOST}
+    volumes:
+      - ghost-content:/var/lib/ghost/content
+
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    volumes:
+      - db-data:/var/lib/mysql
+
+volumes:
+  ghost-content:
+  db-data:

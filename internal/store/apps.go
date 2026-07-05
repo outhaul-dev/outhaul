@@ -12,7 +12,7 @@ import (
 
 // appCols is the column list read into core.App by scanApp (excludes the
 // write-only ssh_private_key, which is fetched separately and decrypted).
-const appCols = `id, project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_secret, ssh_public_key, github_repo, kind, compose_path, dockerfile_path, watch_paths`
+const appCols = `id, project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_secret, ssh_public_key, github_repo, kind, compose_path, dockerfile_path, watch_paths, template_id, compose_raw`
 
 // CreateApp inserts an app and returns it with ID and CreatedAt populated. The
 // SSH private key (if any) is encrypted at rest.
@@ -37,11 +37,11 @@ func (s *Store) CreateApp(ctx context.Context, app core.App) (core.App, error) {
 	res, err := s.db.ExecContext(ctx,
 		`INSERT INTO apps
 		   (project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_secret, ssh_private_key, ssh_public_key, github_repo,
-		    kind, compose_path, dockerfile_path, watch_paths)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    kind, compose_path, dockerfile_path, watch_paths, template_id, compose_raw)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		app.ProjectID, app.Name, app.RepoURL, app.Domain, fmtTime(app.CreatedAt),
 		app.Branch, boolToInt(app.AutoDeploy), app.Source, app.WebhookSecret, encKey, app.SSHPublicKey, app.GithubRepo,
-		app.Kind, app.ComposePath, app.DockerfilePath, joinWatchPaths(app.WatchPaths))
+		app.Kind, app.ComposePath, app.DockerfilePath, joinWatchPaths(app.WatchPaths), app.TemplateID, app.ComposeRaw)
 	if err != nil {
 		return core.App{}, err
 	}
@@ -222,7 +222,7 @@ func scanApp(row scanner) (core.App, error) {
 	)
 	if err := row.Scan(&app.ID, &app.ProjectID, &app.Name, &app.RepoURL, &app.Domain, &createdAt,
 		&app.Branch, &autoDeploy, &app.Source, &app.WebhookSecret, &app.SSHPublicKey, &app.GithubRepo,
-		&app.Kind, &app.ComposePath, &app.DockerfilePath, &watchPaths); err != nil {
+		&app.Kind, &app.ComposePath, &app.DockerfilePath, &watchPaths, &app.TemplateID, &app.ComposeRaw); err != nil {
 		return core.App{}, err
 	}
 	t, err := parseTime(createdAt)

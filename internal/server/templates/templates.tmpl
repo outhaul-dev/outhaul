@@ -1,0 +1,38 @@
+{{define "content"}}
+<div class="pagehead">
+  <h1>Templates</h1>
+</div>
+
+{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+<p class="page-intro">One-click deploys of popular open-source apps. Each template
+creates a compose stack with generated domains and credentials — everything is
+editable on the app page afterwards.</p>
+
+<div class="project-cards">
+  {{$projects := .Projects}}{{$selected := .SelectedProject}}
+  {{range .Templates}}
+  <div class="project-card template-card">
+    <div class="project-card-head">
+      <span class="project-card-name">{{.Name}}</span>
+      <span class="badge">{{.Version}}</span>
+    </div>
+    <div class="project-card-desc">{{.Description}}</div>
+    <div class="project-card-meta">
+      {{range .Tags}}<span class="tag">{{.}}</span> {{end}}
+      {{if .Links.Website}}· <a href="{{.Links.Website}}" target="_blank" rel="noopener">website</a>{{end}}
+      {{if .Links.Github}}· <a href="{{.Links.Github}}" target="_blank" rel="noopener">github</a>{{end}}
+    </div>
+    <form method="post" action="/templates/{{.ID}}" class="template-deploy">
+      <input type="text" name="name" value="{{.ID}}" aria-label="App name">
+      {{if $projects}}
+      <select name="project_id" aria-label="Project">
+        {{range $projects}}<option value="{{.ID}}"{{if eq .ID $selected}} selected{{end}}>{{.Name}}</option>{{end}}
+      </select>
+      {{end}}
+      <button type="submit" class="btn btn-primary">Deploy</button>
+    </form>
+  </div>
+  {{end}}
+</div>
+{{end}}

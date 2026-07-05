@@ -1,0 +1,21 @@
+{
+  "name": "n8n",
+  "description": "Workflow automation: connect APIs and services with a visual editor.",
+  "version": "1.104.0",
+  "tags": ["automation"],
+  "links": {
+    "website": "https://n8n.io",
+    "docs": "https://docs.n8n.io",
+    "github": "https://github.com/n8n-io/n8n"
+  },
+  "variables": {
+    "main_domain": "${domain}"
+  },
+  "env": [
+    { "key": "N8N_HOST", "value": "${main_domain}" },
+    { "key": "GENERIC_TIMEZONE", "value": "Etc/UTC" }
+  ],
+  "domains": [
+    { "service": "n8n", "port": 5678, "host": "${main_domain}" }
+  ]
+}

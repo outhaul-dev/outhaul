@@ -1,0 +1,18 @@
+{
+  "name": "Umami",
+  "description": "Privacy-focused, GDPR-friendly web analytics.",
+  "version": "3.0.3",
+  "tags": ["analytics"],
+  "links": {
+    "website": "https://umami.is",
+    "docs": "https://umami.is/docs",
+    "github": "https://github.com/umami-software/umami"
+  },
+  "env": [
+    { "key": "APP_SECRET", "value": "${base64:64}", "secret": true },
+    { "key": "POSTGRES_PASSWORD", "value": "${password:24}", "secret": true }
+  ],
+  "domains": [
+    { "service": "umami", "port": 3000 }
+  ]
+}

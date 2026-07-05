@@ -267,6 +267,22 @@ input:focus, textarea:focus { outline: none; border-color: var(--accent); box-sh
 .project-card-desc { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
 .project-card-meta { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); margin-top: 8px; }
 
+/* ---- Template gallery ---- */
+.page-intro { font-size: 13px; color: var(--text-secondary); margin: 0 0 16px; max-width: 640px; }
+.template-card { display: flex; flex-direction: column; }
+.template-card .project-card-meta a { color: var(--text-secondary); }
+.tag {
+  display: inline-block; font-family: var(--font-mono); font-size: 10px;
+  padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+.template-deploy { display: flex; gap: 6px; margin-top: auto; padding-top: 12px; }
+.template-deploy input, .template-deploy select {
+  flex: 1; min-width: 0; background: var(--bg-0); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text-primary);
+  font-family: var(--font-mono); font-size: 12px; padding: 6px 8px;
+}
+
 /* ---- Command / copy block ---- */
 .cmd {
   background: var(--bg-0); border: 1px solid var(--border); border-radius: var(--radius);

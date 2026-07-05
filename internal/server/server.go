@@ -77,7 +77,8 @@ type Server struct {
 	pages      map[string]*template.Template
 	setupToken string
 	publicURL  string
-	secure     bool // Secure cookie flag; the admin UI is served directly over HTTP (not behind Traefik), so this stays false
+	serverIP   string // for generated sslip.io template domains; may be empty
+	secure     bool   // Secure cookie flag; the admin UI is served directly over HTTP (not behind Traefik), so this stays false
 
 	stateMu     sync.Mutex
 	stateTokens map[string]time.Time // CSRF states for the GitHub App manifest flow
@@ -87,7 +88,7 @@ type Server struct {
 // first-boot admin-creation flow (printed by the caller as a one-time URL).
 // publicURL is Outhaul's externally reachable base URL, used to build the
 // GitHub App manifest's callback and webhook URLs.
-func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databases, bk Backups, br *logstream.Broker, gh github.Client, publicURL, setupToken string) (*Server, error) {
+func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databases, bk Backups, br *logstream.Broker, gh github.Client, publicURL, serverIP, setupToken string) (*Server, error) {
 	s := &Server{
 		store:       st,
 		deployer:    d,
@@ -98,6 +99,7 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 		broker:      br,
 		gh:          gh,
 		publicURL:   publicURL,
+		serverIP:    serverIP,
 		setupToken:  setupToken,
 		stateTokens: map[string]time.Time{},
 	}
@@ -110,7 +112,7 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 // parseTemplates builds one template set per page, each combining base.tmpl with
 // the page template (so every page can define its own "content" block).
 func (s *Server) parseTemplates() error {
-	pages := []string{"login", "setup", "overview", "projects", "project", "apps", "app", "database", "deployment", "deployments", "github_connect", "settings", "restore", "placeholder"}
+	pages := []string{"login", "setup", "overview", "projects", "project", "apps", "app", "database", "deployment", "deployments", "github_connect", "settings", "restore", "placeholder", "templates"}
 	s.pages = make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.New("base").Funcs(templateFuncs())
@@ -158,6 +160,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /databases/{id}/stop", s.requireAuth(s.handleStopDatabase))
 	mux.HandleFunc("POST /databases/{id}/settings", s.requireAuth(s.handleDatabaseSettings))
 	mux.HandleFunc("POST /databases/{id}/delete", s.requireAuth(s.handleDeleteDatabase))
+	mux.HandleFunc("GET /templates", s.requireAuth(s.handleTemplatesList))
+	mux.HandleFunc("POST /templates/{id}", s.requireAuth(s.handleDeployTemplate))
 	mux.HandleFunc("GET /apps", s.requireAuth(s.handleAppsList))
 	mux.HandleFunc("POST /apps", s.requireAuth(s.handleCreateApp))
 	mux.HandleFunc("GET /apps/{id}", s.requireAuth(s.handleAppDetail))

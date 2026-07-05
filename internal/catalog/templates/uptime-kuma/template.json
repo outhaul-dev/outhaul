@@ -1,0 +1,14 @@
+{
+  "name": "Uptime Kuma",
+  "description": "Self-hosted uptime monitoring with status pages and alerting.",
+  "version": "2.1.0",
+  "tags": ["monitoring"],
+  "links": {
+    "website": "https://uptime.kuma.pet",
+    "docs": "https://github.com/louislam/uptime-kuma/wiki",
+    "github": "https://github.com/louislam/uptime-kuma"
+  },
+  "domains": [
+    { "service": "uptime-kuma", "port": 3001 }
+  ]
+}

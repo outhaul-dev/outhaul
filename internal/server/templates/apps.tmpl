@@ -17,10 +17,10 @@
     <tbody>
       {{range .Apps}}
       <tr>
-        <td><a href="/apps/{{.ID}}" class="rowlink">{{.Name}}</a>{{if eq .Kind "compose"}} <span class="badge">Compose</span>{{end}}{{if eq .Kind "dockerfile"}} <span class="badge">Dockerfile</span>{{end}}</td>
+        <td><a href="/apps/{{.ID}}" class="rowlink">{{.Name}}</a>{{if .TemplateID}} <span class="badge">Template</span>{{else if eq .Kind "compose"}} <span class="badge">Compose</span>{{end}}{{if eq .Kind "dockerfile"}} <span class="badge">Dockerfile</span>{{end}}</td>
         <td><a href="/projects/{{.ProjectID}}" class="rowlink">{{.ProjectName}}</a></td>
         <td>{{if .Domains}}{{range .Domains}}<div><a href="http://{{.Domain}}" target="_blank" rel="noreferrer" class="mono">{{.Domain}}</a></div>{{end}}{{else if .Domain}}<a href="http://{{.Domain}}" target="_blank" rel="noreferrer" class="mono">{{.Domain}}</a>{{else}}<span class="muted">—</span>{{end}}</td>
-        <td class="mono muted truncate">{{.RepoURL}}</td>
+        <td class="mono muted truncate">{{if .TemplateID}}template: {{.TemplateID}}{{else}}{{.RepoURL}}{{end}}</td>
         <td class="mono muted">{{.Branch}}</td>
         <td>
           {{if .Latest}}<span class="badge {{stateClass .Latest.Status}}">{{.Latest.Status}}</span>

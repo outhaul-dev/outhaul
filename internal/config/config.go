@@ -28,6 +28,7 @@ type Config struct {
 	ImageKeep     int           // built images kept per app; 0 disables pruning
 
 	PublicURL string // externally reachable base URL of the admin UI (for GitHub callbacks/webhooks); empty disables GitHub App setup
+	ServerIP  string // public IP used in generated sslip.io template domains; empty means auto-detect
 }
 
 // Getenv matches os.Getenv; injected so Load is testable without touching the
@@ -50,6 +51,7 @@ func Load(getenv Getenv) Config {
 		ImageKeep:     intOr(getenv("OUTHAUL_IMAGE_KEEP"), 5),
 
 		PublicURL: getenv("OUTHAUL_PUBLIC_URL"),
+		ServerIP:  getenv("OUTHAUL_SERVER_IP"),
 	}
 }
 
