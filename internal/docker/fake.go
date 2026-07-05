@@ -51,11 +51,13 @@ type Fake struct {
 	FailRemoveImage func(ref string) error
 }
 
-// ExecCall records one ExecContainer invocation.
+// ExecCall records one ExecContainer invocation. Stdin holds everything the
+// caller fed the exec (nil when stdin was detached).
 type ExecCall struct {
 	ContainerID string
 	Cmd         []string
 	Env         []string
+	Stdin       []byte
 }
 
 // NewFake returns an empty Fake.
@@ -214,13 +216,20 @@ func (f *Fake) ContainerIP(_ context.Context, id, _ string) (string, error) {
 	return f.IPs[id], nil
 }
 
-func (f *Fake) ExecContainer(_ context.Context, id string, cmd, env []string, stdout, stderr io.Writer) (int, error) {
+func (f *Fake) ExecContainer(_ context.Context, id string, cmd, env []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+	var in []byte
+	if stdin != nil {
+		var err error
+		if in, err = io.ReadAll(stdin); err != nil {
+			return 0, err
+		}
+	}
 	f.mu.Lock()
 	if _, ok := f.Containers[id]; !ok {
 		f.mu.Unlock()
 		return 0, fmt.Errorf("no such container: %s", id)
 	}
-	f.Execs = append(f.Execs, ExecCall{ContainerID: id, Cmd: cmd, Env: env})
+	f.Execs = append(f.Execs, ExecCall{ContainerID: id, Cmd: cmd, Env: env, Stdin: in})
 	hook := f.OnExec
 	f.mu.Unlock()
 	if hook == nil {

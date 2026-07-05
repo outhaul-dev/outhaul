@@ -387,10 +387,11 @@ func volumeMounts(mounts []Mount) []mount.Mount {
 	return vols
 }
 
-func (r *real) ExecContainer(ctx context.Context, id string, cmd, env []string, stdout, stderr io.Writer) (int, error) {
+func (r *real) ExecContainer(ctx context.Context, id string, cmd, env []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	exec, err := r.cli.ContainerExecCreate(ctx, id, container.ExecOptions{
 		Cmd:          cmd,
 		Env:          env,
+		AttachStdin:  stdin != nil,
 		AttachStdout: true,
 		AttachStderr: true,
 	})
@@ -402,6 +403,20 @@ func (r *real) ExecContainer(ctx context.Context, id string, cmd, env []string, 
 		return 0, err
 	}
 	defer resp.Close()
+	// Feed stdin concurrently with draining output, half-closing the exec's
+	// input when the reader is exhausted so the tool sees EOF and finishes.
+	inErr := make(chan error, 1)
+	if stdin != nil {
+		go func() {
+			_, err := io.Copy(resp.Conn, stdin)
+			if cerr := resp.CloseWrite(); err == nil {
+				err = cerr
+			}
+			inErr <- err
+		}()
+	} else {
+		inErr <- nil
+	}
 	if stdout == nil {
 		stdout = io.Discard
 	}
@@ -410,6 +425,9 @@ func (r *real) ExecContainer(ctx context.Context, id string, cmd, env []string, 
 	}
 	if _, err := stdcopy.StdCopy(stdout, stderr, resp.Reader); err != nil {
 		return 0, err
+	}
+	if err := <-inErr; err != nil {
+		return 0, fmt.Errorf("write stdin: %w", err)
 	}
 	info, err := r.cli.ContainerExecInspect(ctx, exec.ID)
 	if err != nil {

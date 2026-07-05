@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/james-smart/outhaul/internal/blobstore"
 	"github.com/james-smart/outhaul/internal/compose"
 	"github.com/james-smart/outhaul/internal/core"
 	"github.com/james-smart/outhaul/internal/docker"
@@ -74,9 +75,26 @@ type fakeBackups struct {
 	ran     []int64 // backup IDs passed to RunNow
 	tested  []string
 	testErr error // returned by TestDestination when set
+
+	restored   []string           // "<backupID> <key>" per RestoreNow call
+	objects    []blobstore.Object // returned by ListRestoreObjects
+	listErr    error
+	restoreDir string // returned by RestoreDir ("" falls back to "dir")
 }
 
 func (f *fakeBackups) RunNow(b core.Backup) { f.ran = append(f.ran, b.ID) }
+func (f *fakeBackups) RestoreNow(b core.Backup, objectKey string) {
+	f.restored = append(f.restored, fmt.Sprintf("%d %s", b.ID, objectKey))
+}
+func (f *fakeBackups) ListRestoreObjects(context.Context, core.Backup) ([]blobstore.Object, error) {
+	return f.objects, f.listErr
+}
+func (f *fakeBackups) RestoreDir(context.Context, core.Backup) (string, error) {
+	if f.restoreDir == "" {
+		return "dir", nil
+	}
+	return f.restoreDir, nil
+}
 func (f *fakeBackups) TestDestination(_ context.Context, d core.Destination) error {
 	f.tested = append(f.tested, d.Name)
 	return f.testErr

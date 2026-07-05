@@ -1,0 +1,34 @@
+{{define "content"}}
+<div class="pagehead">
+  <div>
+    <div class="crumbs"><a href="{{.ReturnPath}}">← back</a></div>
+    <h1>Restore from backup</h1>
+  </div>
+</div>
+
+<section class="panel">
+  <p class="env-note">Archives this schedule has written to <span class="mono">{{.Destination}}</span> under <span class="mono">/{{.Dir}}/</span>, newest first. Restoring replaces the target's current data with the archive — these are the backups Outhaul made, restored with the engine's own tools.</p>
+  {{if .Objects}}
+  <table class="table">
+    <thead><tr><th>Archive</th><th>Size</th><th></th></tr></thead>
+    <tbody>
+      {{range .Objects}}
+      <tr>
+        <td class="mono truncate">{{.Key}}</td>
+        <td class="mono muted">{{fmtSize .Size}}</td>
+        <td>
+          <form method="post" action="/backups/{{$.Backup.ID}}/restore" class="inline" onsubmit="return confirm({{$.Confirm}});">
+            <input type="hidden" name="key" value="{{.Key}}">
+            <button type="submit" class="btn btn-danger">Restore</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  <p class="muted env-note">The restore runs in the background; its outcome lands in the schedule's run history on the previous page.</p>
+  {{else}}
+  <p class="empty">No archives yet — run the backup first.</p>
+  {{end}}
+</section>
+{{end}}

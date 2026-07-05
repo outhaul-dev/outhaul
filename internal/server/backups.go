@@ -170,6 +170,67 @@ func (s *Server) handleRunBackup(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, returnPath, http.StatusSeeOther)
 }
 
+// handleRestorePage lists the archives a schedule can restore from — the
+// objects under its own bucket directory, newest first.
+func (s *Server) handleRestorePage(w http.ResponseWriter, r *http.Request) {
+	b, returnPath, ok := s.backupFromPath(w, r)
+	if !ok {
+		return
+	}
+	dir, err := s.backups.RestoreDir(r.Context(), b)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	objs, err := s.backups.ListRestoreObjects(r.Context(), b)
+	if err != nil {
+		http.Error(w, "listing archives failed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	dest, err := s.store.GetDestination(r.Context(), b.DestinationID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	confirm := "Restore this archive? The database's CURRENT DATA IS REPLACED with the archive's contents. Consider Run now (a fresh backup) first."
+	active := "projects"
+	if b.TargetKind == core.BackupTargetApp {
+		confirm = "Restore this archive? The stack is stopped, the volume EMPTIED and refilled from the archive, then restarted. Consider Run now (a fresh backup) first."
+		active = "apps"
+	}
+	s.render(w, http.StatusOK, "restore", map[string]any{
+		"Title": "Restore", "Active": active,
+		"Backup":      b,
+		"Destination": dest.Name,
+		"Dir":         dir,
+		"Objects":     objs,
+		"ReturnPath":  returnPath,
+		"Confirm":     confirm,
+	})
+}
+
+// handleRestoreBackup starts an asynchronous restore of one archive. The key
+// must sit under the schedule's own directory — the restore page only ever
+// posts those; anything else is a crafted request.
+func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
+	b, returnPath, ok := s.backupFromPath(w, r)
+	if !ok {
+		return
+	}
+	dir, err := s.backups.RestoreDir(r.Context(), b)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	key := strings.TrimSpace(r.FormValue("key"))
+	if key == "" || !strings.HasPrefix(key, dir+"/") || key == dir+"/" {
+		http.Error(w, "archive key is not under this backup's directory", http.StatusBadRequest)
+		return
+	}
+	s.backups.RestoreNow(b, key)
+	http.Redirect(w, r, returnPath, http.StatusSeeOther)
+}
+
 func (s *Server) handleToggleBackup(w http.ResponseWriter, r *http.Request) {
 	b, returnPath, ok := s.backupFromPath(w, r)
 	if !ok {

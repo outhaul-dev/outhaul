@@ -90,7 +90,16 @@ func (f *fakeS3) handler() http.HandlerFunc {
 			delete(f.objects, key)
 			w.WriteHeader(http.StatusNoContent)
 		case http.MethodGet:
-			f.list(w, r)
+			if r.URL.Query().Get("list-type") == "2" {
+				f.list(w, r)
+				return
+			}
+			b, ok := f.objects[key]
+			if !ok {
+				http.Error(w, "<Error><Code>NoSuchKey</Code></Error>", http.StatusNotFound)
+				return
+			}
+			w.Write(b)
 		default:
 			http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
 		}
@@ -188,6 +197,29 @@ func TestPutListDelete(t *testing.T) {
 	}
 	if _, ok := f.objects["pre/db/1.gz"]; ok {
 		t.Error("object survived Delete")
+	}
+}
+
+func TestGetStreamsObject(t *testing.T) {
+	c, f := newTestClient(t)
+	ctx := context.Background()
+	f.objects["pre/db/1.gz"] = []byte("dump-bytes")
+
+	rc, err := c.Get(ctx, "pre/db/1.gz")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	defer rc.Close()
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "dump-bytes" {
+		t.Errorf("Get body = %q", got)
+	}
+
+	if _, err := c.Get(ctx, "does/not/exist"); err == nil || !strings.Contains(err.Error(), "NoSuchKey") {
+		t.Errorf("missing key: err = %v, want the S3 NoSuchKey error surfaced", err)
 	}
 }
 

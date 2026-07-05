@@ -1,7 +1,8 @@
 // Package blobstore talks to S3-compatible object storage (AWS S3, MinIO,
 // Cloudflare R2, Backblaze B2, Wasabi, …) with exactly the surface backups
-// need: put, list, delete. Requests are SigV4-signed with the standard
-// library — no SDK — the same house call as the hand-rolled GitHub App JWT.
+// and restores need: put, get, list, delete. Requests are SigV4-signed with
+// the standard library — no SDK — the same house call as the hand-rolled
+// GitHub App JWT.
 // Addressing is always path-style (endpoint/bucket/key), which every
 // S3-compatible accepts. Uploads are a single PUT, so one object is capped at
 // S3's 5 GB single-PUT limit; multipart is a deliberate seam.
@@ -30,6 +31,10 @@ type Object struct {
 type Client interface {
 	// Put uploads size bytes from r as key.
 	Put(ctx context.Context, key string, r io.Reader, size int64) error
+	// Get streams key's content; the caller must close the reader. A missing
+	// key is an error (unlike Delete, there is nothing sensible to do without
+	// the bytes).
+	Get(ctx context.Context, key string) (io.ReadCloser, error)
 	// List returns all objects under prefix (paginated internally), sorted by
 	// key ascending.
 	List(ctx context.Context, prefix string) ([]Object, error)
@@ -95,6 +100,18 @@ func (s *s3) Put(ctx context.Context, key string, r io.Reader, size int64) error
 	}
 	resp.Body.Close()
 	return nil
+}
+
+func (s *s3) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	req, err := s.newRequest(ctx, http.MethodGet, key, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := s.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get %s: %w", key, err)
+	}
+	return resp.Body, nil
 }
 
 func (s *s3) Delete(ctx context.Context, key string) error {

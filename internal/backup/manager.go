@@ -98,22 +98,30 @@ func (m *Manager) Tick(ctx context.Context, now time.Time) {
 }
 
 // RunNow executes a backup in the background, skipping silently if the same
-// backup is already in flight (a long run overlapping its next tick).
+// backup is already in flight (a long run overlapping its next tick, or a
+// restore from the same schedule).
 func (m *Manager) RunNow(b core.Backup) {
+	m.launch(b.ID, func(ctx context.Context) { m.run(ctx, b) })
+}
+
+// launch runs job in a goroutine under the per-schedule in-flight guard,
+// bounded by runTimeout. Backups and restores of the same schedule share the
+// guard so they can never overlap each other.
+func (m *Manager) launch(backupID int64, job func(ctx context.Context)) {
 	m.mu.Lock()
-	if m.inFlight[b.ID] {
+	if m.inFlight[backupID] {
 		m.mu.Unlock()
 		return
 	}
-	m.inFlight[b.ID] = true
+	m.inFlight[backupID] = true
 	m.mu.Unlock()
 
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
 		defer cancel()
-		m.run(ctx, b)
+		job(ctx)
 		m.mu.Lock()
-		delete(m.inFlight, b.ID)
+		delete(m.inFlight, backupID)
 		m.mu.Unlock()
 		if m.runDone != nil {
 			m.runDone <- struct{}{}
@@ -133,7 +141,7 @@ func (m *Manager) TestDestination(ctx context.Context, d core.Destination) error
 
 // run executes one backup attempt and records its outcome.
 func (m *Manager) run(ctx context.Context, b core.Backup) {
-	runID, err := m.store.StartBackupRun(ctx, b.ID)
+	runID, err := m.store.StartBackupRun(ctx, b.ID, core.RunKindBackup)
 	if err != nil {
 		log.Printf("backup %d: record run: %v", b.ID, err)
 		return
@@ -202,7 +210,7 @@ func (m *Manager) backupDatabase(ctx context.Context, b core.Backup, blob blobst
 
 	f, err := m.stage(true, func(w io.Writer) error {
 		var stderr strings.Builder
-		exit, err := m.docker.ExecContainer(ctx, c.ID, cmd, env, w, limitWriter(&stderr))
+		exit, err := m.docker.ExecContainer(ctx, c.ID, cmd, env, nil, w, limitWriter(&stderr))
 		if err != nil {
 			return fmt.Errorf("%s: %w", cmd[0], err)
 		}

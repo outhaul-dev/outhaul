@@ -110,7 +110,7 @@ func TestBackupRunsHistoryCapped(t *testing.T) {
 	b := mustBackup(t, s, core.BackupTargetDatabase, db.ID, dest.ID)
 
 	for i := 0; i < runHistoryCap+5; i++ {
-		id, err := s.StartBackupRun(ctx, b.ID)
+		id, err := s.StartBackupRun(ctx, b.ID, core.RunKindBackup)
 		if err != nil {
 			t.Fatal(err)
 		}
