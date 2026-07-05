@@ -17,7 +17,9 @@ Outhaul is a deliberately minimal alternative to Dokploy/Coolify.
 > also hold **shared environment variables** that apps reference as
 > `${{project.KEY}}`. Repos
 > with a `docker-compose.yml` deploy as **compose stacks** (multi-service,
-> with any number of domains routed to the stack's services), and **watch
+> with any number of domains routed to the stack's services), repos that
+> carry their own **Dockerfile** build with it instead of Nixpacks (same
+> blue-green pipeline), and **watch
 > paths** scope auto-deploy to pushes that change matching files. The app page
 > live-tails **runtime container logs** (per service for compose stacks) and
 > shows **live metrics** (CPU, memory, network, and uptime, aggregated across
@@ -41,8 +43,9 @@ Outhaul is a deliberately minimal alternative to Dokploy/Coolify.
 ## Running
 
 Requirements on the host: a reachable **Docker** daemon, **git**, and
-**[nixpacks](https://nixpacks.com)** on `PATH`. Compose apps additionally
-need the **docker CLI with the compose v2 plugin** (`docker compose`).
+**[nixpacks](https://nixpacks.com)** on `PATH`. Dockerfile apps additionally
+need the **docker CLI** (`docker build`), and compose apps the **docker CLI
+with the compose v2 plugin** (`docker compose`).
 
 ```sh
 go build -o outhaul .

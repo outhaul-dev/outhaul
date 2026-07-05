@@ -11,8 +11,9 @@ const (
 
 // App deploy kinds: the strategy that turns the repo into running containers.
 const (
-	KindNixpacks = "nixpacks" // one Nixpacks-built container, blue-green cutover
-	KindCompose  = "compose"  // docker compose stack, recreated in place
+	KindNixpacks   = "nixpacks"   // one Nixpacks-built container, blue-green cutover
+	KindDockerfile = "dockerfile" // one container built from the repo's Dockerfile, same cutover
+	KindCompose    = "compose"    // docker compose stack, recreated in place
 )
 
 // App is a deployable unit: a Git repo served on a domain.
@@ -31,9 +32,10 @@ type App struct {
 	GithubRepo    string // "owner/name" when Source == SourceGithub
 	SSHPublicKey  string // authorized_keys line to add as a deploy key (Source == SourceSSH)
 
-	Kind        string   // KindNixpacks | KindCompose — deploy strategy
-	ComposePath string   // compose file, relative to the repo root (Kind == KindCompose)
-	WatchPaths  []string // glob patterns gating auto-deploy; empty = every push deploys
+	Kind           string   // KindNixpacks | KindDockerfile | KindCompose — deploy strategy
+	ComposePath    string   // compose file, relative to the repo root (Kind == KindCompose)
+	DockerfilePath string   // Dockerfile, relative to the repo root (Kind == KindDockerfile)
+	WatchPaths     []string // glob patterns gating auto-deploy; empty = every push deploys
 
 	// SSHPrivateKey is write-only: set by the caller on create (stored
 	// encrypted) and NEVER populated on reads, so it cannot leak via templates.

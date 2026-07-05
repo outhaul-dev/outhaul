@@ -67,13 +67,14 @@ func (f *fakeCloner) Clone(_ context.Context, spec CloneSpec, dir string, out io
 // --- harness ---
 
 type harness struct {
-	store   *store.Store
-	docker  *docker.Fake
-	builder *fakeBuilder
-	compose *compose.Fake
-	cloner  *fakeCloner
-	broker  *logstream.Broker
-	worker  *Worker
+	store      *store.Store
+	docker     *docker.Fake
+	builder    *fakeBuilder // the nixpacks-slot builder
+	dockerfile *fakeBuilder // the dockerfile-slot builder
+	compose    *compose.Fake
+	cloner     *fakeCloner
+	broker     *logstream.Broker
+	worker     *Worker
 }
 
 func newHarness(t *testing.T) *harness {
@@ -89,15 +90,17 @@ func newHarness(t *testing.T) *harness {
 	t.Cleanup(func() { st.Close() })
 
 	h := &harness{
-		store:   st,
-		docker:  docker.NewFake(),
-		builder: &fakeBuilder{},
-		compose: &compose.Fake{},
-		cloner:  &fakeCloner{},
-		broker:  logstream.New(),
+		store:      st,
+		docker:     docker.NewFake(),
+		builder:    &fakeBuilder{},
+		dockerfile: &fakeBuilder{},
+		compose:    &compose.Fake{},
+		cloner:     &fakeCloner{},
+		broker:     logstream.New(),
 	}
 	cfg := config.Config{DataDir: t.TempDir(), Network: "outhaul"}
-	h.worker = NewWorker(st, h.docker, h.builder, h.compose, h.cloner, h.broker, &github.Fake{}, cfg)
+	h.worker = NewWorker(st, h.docker, Builders{Nixpacks: h.builder, Dockerfile: h.dockerfile},
+		h.compose, h.cloner, h.broker, &github.Fake{}, cfg)
 	h.worker.healthCheck = func(context.Context, string, time.Duration) bool { return true }
 	return h
 }

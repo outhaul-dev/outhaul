@@ -171,6 +171,13 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	// form's optional domain/service/port trio seeds the first row after the
 	// app exists.
 	var firstDomain *core.ComposeDomain
+	if kind == core.KindDockerfile {
+		verr := ""
+		if app.DockerfilePath, verr = parseDockerfilePath(r); verr != "" {
+			s.renderAppsWithError(w, r, verr, name, repo, domain)
+			return
+		}
+	}
 	if kind == core.KindCompose {
 		app.Domain = ""
 		verr := ""
@@ -235,7 +242,8 @@ func newSecret() string {
 
 // handleAppSettings updates the mutable per-app deploy settings: branch,
 // auto-deploy-on-push, and watch paths for every app; plus the compose file
-// path for compose apps. Compose domains have their own endpoints.
+// path for compose apps and the Dockerfile path for dockerfile apps. Compose
+// domains have their own endpoints.
 func (s *Server) handleAppSettings(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(r.PathValue("id"))
 	if !ok {
@@ -264,6 +272,17 @@ func (s *Server) handleAppSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.store.UpdateAppComposePath(r.Context(), id, composePath); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if app.Kind == core.KindDockerfile {
+		dockerfilePath, verr := parseDockerfilePath(r)
+		if verr != "" {
+			http.Error(w, verr, http.StatusBadRequest)
+			return
+		}
+		if err := s.store.UpdateAppDockerfilePath(r.Context(), id, dockerfilePath); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -727,16 +746,19 @@ func deploymentPath(id int64) string {
 // validateApp returns an empty string when valid, else an error message. The
 // repo-URL rule is relaxed per source: github needs an "owner/name" repo
 // selection, ssh needs a non-empty clone URL with no whitespace, and public
-// needs an http(s) URL. A domain is required for nixpacks apps (they exist to
-// be served) but optional for compose stacks (which may be internal-only).
+// needs an http(s) URL. A domain is required for single-container apps
+// (nixpacks/dockerfile — they exist to be served) but optional for compose
+// stacks (which may be internal-only).
 func validateApp(app core.App) string {
 	if !appNameRe.MatchString(app.Name) {
 		return "Name must be lowercase letters, digits and hyphens (2–40 chars)."
 	}
-	if app.Kind != core.KindNixpacks && app.Kind != core.KindCompose {
+	switch app.Kind {
+	case core.KindNixpacks, core.KindDockerfile, core.KindCompose:
+	default:
 		return "Choose a deploy method."
 	}
-	if app.Kind == core.KindNixpacks && app.Domain == "" {
+	if app.Kind != core.KindCompose && app.Domain == "" {
 		return "Domain must be a bare hostname (e.g. app.example.com)."
 	}
 	if app.Domain != "" && strings.ContainsAny(app.Domain, " /") {
@@ -764,9 +786,18 @@ func validateApp(app core.App) string {
 
 // parseComposePath reads and normalizes the compose_path form field.
 func parseComposePath(r *http.Request) (string, string) {
-	p, ok := cleanComposePath(r.FormValue("compose_path"))
+	p, ok := cleanRepoPath(r.FormValue("compose_path"), "docker-compose.yml")
 	if !ok {
 		return "", "Compose file must be a relative path inside the repository (e.g. docker-compose.yml)."
+	}
+	return p, ""
+}
+
+// parseDockerfilePath reads and normalizes the dockerfile_path form field.
+func parseDockerfilePath(r *http.Request) (string, string) {
+	p, ok := cleanRepoPath(r.FormValue("dockerfile_path"), "Dockerfile")
+	if !ok {
+		return "", "Dockerfile must be a relative path inside the repository (e.g. Dockerfile)."
 	}
 	return p, ""
 }
@@ -789,12 +820,13 @@ func parseDomainFields(domain, service, portStr string) (core.ComposeDomain, str
 	return core.ComposeDomain{Domain: domain, Service: strings.TrimSpace(service), Port: port}, ""
 }
 
-// cleanComposePath normalizes a repo-relative compose file path, rejecting
-// anything that could escape the clone (absolute paths, ".." elements).
-func cleanComposePath(p string) (string, bool) {
+// cleanRepoPath normalizes a repo-relative file path (empty = fallback),
+// rejecting anything that could escape the clone (absolute paths, ".."
+// elements).
+func cleanRepoPath(p, fallback string) (string, bool) {
 	p = strings.TrimSpace(strings.ReplaceAll(p, "\\", "/"))
 	if p == "" {
-		p = "docker-compose.yml"
+		p = fallback
 	}
 	p = path.Clean(p)
 	if path.IsAbs(p) || p == "." || p == ".." || strings.HasPrefix(p, "../") {
