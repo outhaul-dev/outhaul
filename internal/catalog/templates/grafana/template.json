@@ -1,0 +1,17 @@
+{
+  "name": "Grafana",
+  "description": "Dashboards and visualization for metrics, logs, and traces.",
+  "version": "12.4",
+  "tags": ["monitoring", "dashboards"],
+  "links": {
+    "website": "https://grafana.com",
+    "docs": "https://grafana.com/docs/",
+    "github": "https://github.com/grafana/grafana"
+  },
+  "env": [
+    { "key": "GF_ADMIN_PASSWORD", "value": "${password:16}", "secret": true }
+  ],
+  "domains": [
+    { "service": "grafana", "port": 3000 }
+  ]
+}

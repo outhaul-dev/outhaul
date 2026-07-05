@@ -1,0 +1,21 @@
+{
+  "name": "Ghost",
+  "description": "Professional publishing platform for blogs and newsletters.",
+  "version": "6",
+  "tags": ["cms", "blog"],
+  "links": {
+    "website": "https://ghost.org",
+    "docs": "https://ghost.org/docs/",
+    "github": "https://github.com/TryGhost/Ghost"
+  },
+  "variables": {
+    "main_domain": "${domain}"
+  },
+  "env": [
+    { "key": "GHOST_HOST", "value": "${main_domain}" },
+    { "key": "MYSQL_ROOT_PASSWORD", "value": "${password:24}", "secret": true }
+  ],
+  "domains": [
+    { "service": "ghost", "port": 2368, "host": "${main_domain}" }
+  ]
+}

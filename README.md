@@ -20,7 +20,11 @@ Outhaul is a deliberately minimal alternative to Dokploy/Coolify.
 > with any number of domains routed to the stack's services), repos that
 > carry their own **Dockerfile** build with it instead of Nixpacks (same
 > blue-green pipeline), and **watch
-> paths** scope auto-deploy to pushes that change matching files. The app page
+> paths** scope auto-deploy to pushes that change matching files. A built-in
+> **template gallery** (Uptime Kuma, Grafana, Umami, n8n, Vaultwarden,
+> PocketBase, Ghost, MinIO) deploys popular open-source apps as compose
+> stacks in one click, with generated credentials and zero-DNS `sslip.io`
+> domains — all editable afterwards like any compose app. The app page
 > live-tails **runtime container logs** (per service for compose stacks) and
 > shows **live metrics** (CPU, memory, network, and uptime, aggregated across
 > a compose stack). Any past deployment with a built image can be **rolled
@@ -113,6 +117,7 @@ No config files — defaults with `OUTHAUL_*` environment overrides:
 | `OUTHAUL_HEALTH_TIMEOUT`| `60s`                | Deploy health-check deadline               |
 | `OUTHAUL_IMAGE_KEEP`    | `5`                  | Built images kept per app for rollback (`0` keeps all) |
 | `OUTHAUL_PUBLIC_URL`    | (empty)              | Public base URL of the admin UI; enables GitHub App + webhook URLs |
+| `OUTHAUL_SERVER_IP`     | (auto-detected)      | Public IP embedded in generated `sslip.io` template domains |
 
 Apps are expected to listen on `$PORT` (Outhaul sets it and points Traefik at it).
 

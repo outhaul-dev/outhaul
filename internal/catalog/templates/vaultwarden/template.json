@@ -1,0 +1,21 @@
+{
+  "name": "Vaultwarden",
+  "description": "Lightweight Bitwarden-compatible password manager server.",
+  "version": "1.34.3",
+  "tags": ["security", "passwords"],
+  "links": {
+    "website": "https://github.com/dani-garcia/vaultwarden",
+    "docs": "https://github.com/dani-garcia/vaultwarden/wiki",
+    "github": "https://github.com/dani-garcia/vaultwarden"
+  },
+  "variables": {
+    "main_domain": "${domain}"
+  },
+  "env": [
+    { "key": "DOMAIN", "value": "https://${main_domain}" },
+    { "key": "SIGNUPS_ALLOWED", "value": "true" }
+  ],
+  "domains": [
+    { "service": "vaultwarden", "port": 80, "host": "${main_domain}" }
+  ]
+}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/james-smart/outhaul/internal/backup"
 	"github.com/james-smart/outhaul/internal/builder"
+	"github.com/james-smart/outhaul/internal/catalog"
 	"github.com/james-smart/outhaul/internal/compose"
 	"github.com/james-smart/outhaul/internal/config"
 	"github.com/james-smart/outhaul/internal/dbaas"
@@ -121,9 +122,14 @@ func serve() error {
 	// Daily disk-cleanup sweep (image retention, dangling images, build cache).
 	go pruner.Run(workerCtx)
 
-	// HTTP server.
+	// HTTP server. Generated template domains embed the server's public IP
+	// (sslip.io), configurable for hosts whose outbound and public IPs differ.
+	serverIP := cfg.ServerIP
+	if serverIP == "" {
+		serverIP = catalog.DetectServerIP()
+	}
 	setupToken := server.NewToken()
-	srv, err := server.New(st, worker, dc, compose.NewDocker(), dbm, backups, broker, ghClient, cfg.PublicURL, setupToken)
+	srv, err := server.New(st, worker, dc, compose.NewDocker(), dbm, backups, broker, ghClient, cfg.PublicURL, serverIP, setupToken)
 	if err != nil {
 		stopWorker()
 		return fmt.Errorf("build server: %w", err)

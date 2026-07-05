@@ -313,6 +313,38 @@ opt-in via `ARG`. Deliberate seams: context override, `--target` build
 stage, `--no-cache`, BuildKit `--secret` mounts, buildpacks/static builds,
 and Dockerfile autodetection at create time.
 
+### One-click templates (done)
+
+`internal/catalog` is a built-in gallery of popular open-source apps (Uptime
+Kuma, Grafana, Umami, n8n, Vaultwarden, PocketBase, Ghost, MinIO) that deploy
+as compose stacks with one click (design in
+`docs/superpowers/specs/2026-07-05-one-click-templates.md`, grounded in
+Dokploy's `Dokploy/templates` blueprints and its template processors). Where
+Dokploy fetches blueprints from GitHub at deploy time, Outhaul embeds the
+curated catalog in the binary (`go:embed`): no network dependency, and every
+release ships a catalog its own tests have rendered. Each template is a
+compose file plus a `template.json` manifest — JSON, not Dokploy's TOML, so
+no new dependency — declaring variables (Dokploy's helper syntax:
+`${domain}`, `${password:24}`, `${base64:64}`, `${hash}`, `${uuid}`,
+`${email}`, `${username}`), the domains to route (service + port, mapped to
+`ComposeDomain` rows), and env vars with an explicit secret flag.
+
+Deploying a template creates a normal compose app with no repo (`Source =
+"template"`): the compose text is snapshotted into `apps.compose_raw` —
+Dokploy's raw-compose source — and `runComposePipeline` writes the snapshot
+into the work dir instead of cloning. Everything downstream (.env, the
+domain override, `up --wait` health gating, runtime logs, metrics,
+stop/restart/delete, volume backups) is the existing compose machinery,
+unbranched. Generated domains use Dokploy's zero-DNS shape
+`<app>-<hash>-<ip-dashed>.sslip.io` (server IP from `OUTHAUL_SERVER_IP` or
+auto-detected via the outbound-UDP local-address trick); generated
+credentials land in the app's ordinary env vars, encrypted at rest and
+editable on the app page. The catalog test cross-checks each entry both
+ways: every manifest env key must be consumed by its compose file, and every
+`${VAR}` the compose file reads must be fed by the manifest. Deliberate
+seams: file mounts, template upgrades, user-pasted compose, a remote
+catalog URL, and the jwt/timestamp/randomPort helpers.
+
 ### Disk cleanup: image retention, dangling images, build cache (done)
 
 Left alone, a PaaS host fills its disk: every nixpacks deploy keeps its
@@ -426,6 +458,12 @@ outhaul/
         override.go           # Override: generated outhaul.override.yml publishing services on their domains
         fake.go               # in-memory fake for unit tests
 
+    catalog/                  # built-in one-click template gallery (go:embed)
+        catalog.go            # load + validate embedded templates (compose + template.json manifest)
+        expand.go             # variable engine: ${domain}/${password:n}/... helpers + references
+        ip.go                 # outbound-IP detection for generated sslip.io domains
+        templates/*/          # one dir per template: docker-compose.yml + template.json
+
     logstream/               # in-memory pub/sub broker: build/deploy log lines -> SSE subscribers
         broker.go
 
@@ -464,13 +502,14 @@ outhaul/
     deploy/                   # the worker/orchestrator — drives the state machine
         worker.go             # dispatcher loop: claim queued work, per-app serialization, concurrency across apps
         pipeline.go           # one single-container deployment (nixpacks/dockerfile): clone -> build -> start -> health -> running
-        pipeline_compose.go   # one compose deployment: clone -> .env/override -> compose build -> up --wait
+        pipeline_compose.go   # one compose deployment: clone (or template snapshot) -> .env/override -> compose build -> up --wait
         git.go                # clone a repo (public, SSH deploy key, or GitHub App installation token)
 
     server/
         server.go             # http.ServeMux, route table, middleware, graceful Shutdown
         auth.go               # argon2id, session cookies, first-boot setup token
         handlers.go           # apps list/create, deploy trigger, deployment detail
+        catalog.go            # template gallery + one-click deploy-from-template
         databases.go          # managed-database pages: create, detail, lifecycle, settings
         backups.go            # backup schedules + destinations (create/test/delete, run-now)
         sse.go                # SSE handlers: build logs (logstream broker) + runtime container logs (docker follow)

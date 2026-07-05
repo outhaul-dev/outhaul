@@ -20,8 +20,12 @@
     {{else}}
     <div><dt>Domain</dt><dd>{{if .App.Domain}}<a href="http://{{.App.Domain}}" target="_blank" rel="noreferrer" class="mono">{{.App.Domain}}</a>{{else}}<span class="muted">— internal only</span>{{end}}</dd></div>
     {{end}}
+    {{if .App.TemplateID}}
+    <div><dt>Template</dt><dd class="mono">{{.App.TemplateID}}</dd></div>
+    {{else}}
     <div><dt>Repository</dt><dd class="mono">{{.App.RepoURL}}</dd></div>
     {{if eq .App.Kind "compose"}}<div><dt>Compose file</dt><dd class="mono">{{.App.ComposePath}}</dd></div>{{end}}
+    {{end}}
   </dl>
 </section>
 
@@ -194,6 +198,7 @@
 })();
 </script>
 
+{{if not .App.TemplateID}}
 <section class="panel">
   <h2 class="panel-title">Deploy settings</h2>
   <form method="post" action="/apps/{{.App.ID}}/settings" class="grid-form">
@@ -232,6 +237,7 @@
   <div class="cmd"><code>{{.WebhookURL}}</code></div>
   {{end}}
 </section>
+{{end}}
 
 <section class="panel">
   <h2 class="panel-title">Environment</h2>

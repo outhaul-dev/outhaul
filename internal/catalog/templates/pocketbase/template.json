@@ -1,0 +1,18 @@
+{
+  "name": "PocketBase",
+  "description": "Backend in one file: embedded database, auth, file storage, and admin UI.",
+  "version": "latest",
+  "tags": ["backend", "database"],
+  "links": {
+    "website": "https://pocketbase.io",
+    "docs": "https://pocketbase.io/docs/",
+    "github": "https://github.com/pocketbase/pocketbase"
+  },
+  "env": [
+    { "key": "ADMIN_EMAIL", "value": "${email}" },
+    { "key": "ADMIN_PASSWORD", "value": "${password:32}", "secret": true }
+  ],
+  "domains": [
+    { "service": "pocketbase", "port": 8090 }
+  ]
+}
