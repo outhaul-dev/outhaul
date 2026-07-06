@@ -1,0 +1,28 @@
+{{define "content"}}
+<div class="pagehead"><h1>Containers</h1></div>
+
+<p class="page-intro">Every container Outhaul is running across your apps and databases.</p>
+
+<section class="panel">
+  <h2 class="panel-title">Running containers</h2>
+  {{if .Containers}}
+  <table class="table">
+    <thead>
+      <tr><th>Name</th><th>Kind</th><th>Image</th><th>State</th></tr>
+    </thead>
+    <tbody>
+      {{range .Containers}}
+      <tr>
+        <td class="mono">{{.Name}}</td>
+        <td>{{.Kind}}</td>
+        <td class="mono muted truncate">{{.Image}}</td>
+        <td><span class="badge {{if eq .State "running"}}state-running{{else}}state-stopped{{end}}">{{.State}}</span></td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No containers running yet.</p>
+  {{end}}
+</section>
+{{end}}

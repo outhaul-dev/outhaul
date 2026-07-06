@@ -721,7 +721,7 @@ func (s *Server) handleDeploymentDetail(w http.ResponseWriter, r *http.Request) 
 	project, _ := s.store.GetProject(r.Context(), app.ProjectID)
 	s.render(w, http.StatusOK, "deployment", map[string]any{
 		"Title":      "Deployment #" + r.PathValue("id"),
-		"Active":     "deployments",
+		"Active":     "apps",
 		"App":        app,
 		"Project":    project,
 		"Deployment": dep,
