@@ -90,6 +90,12 @@ func TestComposeDomainsMigrationBackfill(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM domains`).Scan(&n); err != nil || n != 2 {
 		t.Errorf("domains rows = %d (%v), want 2", n, err)
 	}
+
+	// 0015 syncs apps.domain to the folded row's host for every migrated app.
+	var shopMirror string
+	if err := db.QueryRow(`SELECT domain FROM apps WHERE name = 'shop'`).Scan(&shopMirror); err != nil || shopMirror != "shop.example.com" {
+		t.Errorf("compose app primary mirror = %q (%v), want shop.example.com after 0015 sync", shopMirror, err)
+	}
 	if _, err := db.Query(`SELECT 1 FROM compose_domains`); err == nil {
 		t.Error("compose_domains table should be dropped by 0015")
 	}

@@ -111,9 +111,13 @@ Dokploy's layout) + `compose build`; `deploying` = `compose up -d --wait`
 with the health timeout as the gate. **No blue-green for stacks** — compose
 recreates containers in place (Dokploy behaves the same); the single-app
 cutover is unchanged. Exposing a stack is opt-in and multi-domain (Dokploy's
-model): a compose app has any number of `compose_domains` rows, each routing
-one host to one service's container port, managed from a Domains panel on the
-app page. The pipeline layers a generated `outhaul.override.yml` over the
+model): every app, whatever its kind, has any number of rows in a single
+`domains` table (`core.Domain`: host, optional compose service, container
+port, optional path + internal-path rewrite, per-row TLS toggle), managed
+from a Domains panel on the app page; `apps.domain` is an auto-maintained
+"primary" mirror of the first row (by host, path) that list views read. For
+compose apps each row routes one host (optionally scoped to a path) to one
+service's container port. The pipeline layers a generated `outhaul.override.yml` over the
 user's file (never rewriting it), attaching each published service to the
 shared network and giving it one Traefik router per domain (named
 `outhaul-<app>-d<domainID>`, unique and stable) plus `traefik.docker.network`.

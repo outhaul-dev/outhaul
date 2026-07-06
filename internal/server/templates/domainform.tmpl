@@ -39,9 +39,10 @@
         {{if eq .App.Kind "compose"}}
         <label class="field">
           <span>Service {{template "hint" "Which service in the compose stack this domain routes to."}}</span>
-          <select name="service" id="domain-service">
-            {{range .Stack}}<option value="{{.Service}}">{{.Service}}</option>{{end}}
-          </select>
+          <input type="text" name="service" id="domain-service" list="domain-service-options" placeholder="web" autocomplete="off">
+          <datalist id="domain-service-options">
+            {{range .Stack}}<option value="{{.Service}}"></option>{{end}}
+          </datalist>
         </label>
         <label class="field">
           <span>Container port {{template "hint" "The port that service listens on inside its container, e.g. 3000."}}</span>

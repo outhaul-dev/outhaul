@@ -26,3 +26,10 @@ INSERT INTO domains (app_id, host, service, port, path, internal_path, tls, crea
 SELECT id, domain, '', 8080, '', '', 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
   FROM apps
  WHERE domain != '' AND kind IN ('nixpacks', 'dockerfile');
+
+-- Sync the apps.domain "primary" mirror now that routing lives in `domains`:
+-- every app's mirror becomes its first row's host (host, path order), or '' when
+-- it has none — matching what AddDomain/UpdateDomain/DeleteDomain maintain going
+-- forward, so migrated apps match freshly-created ones.
+UPDATE apps SET domain = COALESCE(
+    (SELECT host FROM domains WHERE domains.app_id = apps.id ORDER BY host, path LIMIT 1), '');
