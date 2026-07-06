@@ -1,5 +1,6 @@
 {{define "content"}}
 <div class="authcard">
+  <div class="authmark">{{template "brandmark" .}}</div>
   <h1 class="authtitle">outhaul</h1>
   <p class="authsub">Sign in to continue</p>
   {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}

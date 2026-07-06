@@ -200,6 +200,8 @@ input[type=checkbox] { accent-color: var(--accent); }
   border: 1px solid var(--border); border-radius: var(--radius-lg);
   padding: 28px 26px; box-shadow: var(--shadow-1);
 }
+.authmark { display: flex; justify-content: center; margin-bottom: 14px; }
+.authmark .brand-mark { width: 48px; height: 48px; }
 .authtitle {
   font-family: var(--font-mono); font-weight: 600; letter-spacing: 0.04em;
   font-size: 20px; margin: 0 0 2px; text-align: center;
@@ -218,11 +220,13 @@ input[type=checkbox] { accent-color: var(--accent); }
   display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh;
 }
 .sidebar-brand {
+  display: flex; align-items: center; gap: 10px;
   font-family: var(--font-mono); font-weight: 600; letter-spacing: 0.04em;
   font-size: 15px; color: var(--text-primary); padding: 13px 18px;
   border-bottom: 1px solid var(--border);
 }
 .sidebar-brand:hover { color: var(--accent-text); }
+.brand-mark { flex: 0 0 auto; width: 26px; height: 26px; }
 .sidebar-nav { flex: 1; overflow-y: auto; padding: 12px 10px; }
 .nav-group { margin-bottom: 14px; }
 .nav-group-label {
@@ -230,13 +234,21 @@ input[type=checkbox] { accent-color: var(--accent); }
   color: var(--text-tertiary); padding: 4px 10px 6px;
 }
 .nav-item {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  display: flex; align-items: center; gap: 10px;
   padding: 6px 10px; border-radius: var(--radius); color: var(--text-secondary);
   font-size: 13px;
 }
 .nav-item:hover { background: var(--bg-2); color: var(--text-primary); }
 .nav-item.active { background: var(--bg-3); color: var(--text-primary); }
+.nav-ico {
+  flex: 0 0 auto; width: 16px; height: 16px;
+  fill: none; stroke: currentColor; stroke-width: 2;
+  stroke-linecap: round; stroke-linejoin: round;
+  color: var(--text-tertiary);
+}
+.nav-item:hover .nav-ico, .nav-item.active .nav-ico { color: var(--accent-text); }
 .soon {
+  margin-left: auto;
   font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em;
   color: var(--text-tertiary); border: 1px solid var(--border);
   border-radius: 999px; padding: 1px 6px;
