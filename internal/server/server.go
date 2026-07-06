@@ -25,6 +25,7 @@ import (
 	"github.com/james-smart/outhaul/internal/docker"
 	"github.com/james-smart/outhaul/internal/github"
 	"github.com/james-smart/outhaul/internal/gitrepo"
+	"github.com/james-smart/outhaul/internal/hostmetrics"
 	"github.com/james-smart/outhaul/internal/logstream"
 	"github.com/james-smart/outhaul/internal/store"
 )
@@ -78,6 +79,7 @@ type Server struct {
 	backups   Backups
 	broker    *logstream.Broker
 	gh        github.Client
+	metrics   metricsSampler // host/self resource sampler for the Metrics page
 
 	pages      map[string]*template.Template
 	setupToken string
@@ -107,6 +109,7 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 		backups:     bk,
 		broker:      br,
 		gh:          gh,
+		metrics:     hostmetrics.NewSampler("/"),
 		publicURL:   publicURL,
 		serverIP:    serverIP,
 		tlsEnabled:  tlsEnabled,
@@ -181,6 +184,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /apps/{id}", s.requireAuth(s.handleAppDetail))
 	mux.HandleFunc("GET /apps/{id}/logs", s.requireAuth(s.handleRuntimeLogsSSE))
 	mux.HandleFunc("GET /apps/{id}/stats", s.requireAuth(s.handleAppStats))
+	mux.HandleFunc("GET /metrics/sample", s.requireAuth(s.handleMetricsSample))
 	mux.HandleFunc("POST /apps/{id}/deploy", s.requireAuth(s.handleDeploy))
 	mux.HandleFunc("POST /apps/{id}/settings", s.requireAuth(s.handleAppSettings))
 	mux.HandleFunc("POST /apps/{id}/domains", s.requireAuth(s.handleAddDomain))
