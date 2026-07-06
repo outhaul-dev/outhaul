@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/james-smart/outhaul/internal/core"
@@ -120,8 +121,12 @@ func TestDeleteDatabaseBlockedWhileAttached(t *testing.T) {
 	db, _ := s.CreateDatabase(ctx, core.Database{Name: "web-db", Engine: core.EnginePostgres, Username: "u", Password: "p", DBName: "web"})
 	att, _ := s.AttachDatabase(ctx, app.ID, db.ID, "DATABASE_URL")
 
-	if err := s.DeleteDatabase(ctx, db.ID); err == nil {
+	err := s.DeleteDatabase(ctx, db.ID)
+	if err == nil {
 		t.Fatal("expected delete to be blocked while attached")
+	}
+	if !strings.Contains(err.Error(), "detach it first") {
+		t.Fatalf("expected guard message, got FK/other error: %v", err)
 	}
 	// After detaching, delete succeeds.
 	if err := s.DetachDatabase(ctx, app.ID, att.ID); err != nil {
