@@ -1,6 +1,9 @@
 {{define "content"}}
 <div class="pagehead">
   <h1>Apps</h1>
+  <div class="pagehead-actions">
+    <button type="button" class="btn btn-primary" onclick="openAppDialog()">+ New app</button>
+  </div>
 </div>
 
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}

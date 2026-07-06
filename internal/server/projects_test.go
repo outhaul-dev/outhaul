@@ -300,3 +300,22 @@ func TestProjectPageHasCreateModals(t *testing.T) {
 		t.Error("project page should have the action bar")
 	}
 }
+
+func TestAppFormIsAWizard(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	e.postForm(t, "/projects", url.Values{"name": {"shop"}}).Body.Close()
+	shop := projectByName(t, e, "shop")
+
+	page := body(t, e.get(t, "/projects/"+itoa(shop.ID)))
+	if strings.Count(page, `data-step`) < 3 {
+		t.Errorf("app form should have 3 wizard steps, markup:\n%s", page)
+	}
+	if !strings.Contains(page, `name="project_id"`) {
+		t.Error("app form must still submit a project_id")
+	}
+	// On a project page the project is implied — a hidden input, not a <select>.
+	if strings.Contains(page, `<select name="project_id"`) {
+		t.Error("project page app form should not show a project dropdown (InProject)")
+	}
+}

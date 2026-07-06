@@ -1,128 +1,208 @@
 {{define "appform"}}
-<section class="panel">
-  <h2 class="panel-title">New app</h2>
+<dialog id="app-dialog" class="modal" open>
   {{if .Projects}}
-  <form method="post" action="/apps" class="grid-form">
+  <form method="post" action="/apps">
     {{if .Return}}<input type="hidden" name="return" value="{{.Return}}">{{end}}
-    <label class="field">
-      <span>Name</span>
-      <input type="text" name="name" placeholder="web" value="{{with .Form}}{{.Name}}{{end}}" required>
-    </label>
-    <label class="field">
-      <span>Project</span>
-      <select name="project_id">
-        {{range .Projects}}<option value="{{.ID}}"{{if eq .ID $.SelectedProject}} selected{{end}}>{{.Name}}</option>{{end}}
-      </select>
-    </label>
-    <label class="field">
-      <span>Deploy</span>
-      <select name="kind" id="kind-select">
-        <option value="nixpacks">Nixpacks build (single service)</option>
-        <option value="dockerfile">Dockerfile build (single service)</option>
-        <option value="compose">Docker Compose (multi-service stack)</option>
-      </select>
-    </label>
-    <label class="field">
-      <span>Source</span>
-      <select name="source" id="source-select">
-        <option value="public">Public Git URL</option>
-        <option value="ssh">Private (SSH deploy key)</option>
-        {{if .GithubConnected}}<option value="github">GitHub App</option>{{end}}
-      </select>
-    </label>
-    {{if .GithubConnected}}
-    <label class="field" data-source="github">
-      <span>GitHub repository</span>
-      <select name="github_repo" id="github-repo-select">
-        {{range .GithubRepos}}<option value="{{.FullName}}" data-default-branch="{{.DefaultBranch}}">{{.FullName}}</option>{{end}}
-      </select>
-    </label>
-    {{end}}
-    <label class="field" data-source="public ssh">
-      <span>Git URL</span>
-      <input type="text" name="repo_url" placeholder="https://github.com/owner/repo.git" value="{{with .Form}}{{.RepoURL}}{{end}}">
-    </label>
-    <label class="field">
-      <span>Branch</span>
-      <input type="text" name="branch" id="branch-input" placeholder="main" value="main">
-    </label>
-    <label class="field" data-kind="compose" hidden>
-      <span>Compose file</span>
-      <input type="text" name="compose_path" placeholder="docker-compose.yml">
-    </label>
-    <label class="field" data-kind="dockerfile" hidden>
-      <span>Dockerfile</span>
-      <input type="text" name="dockerfile_path" placeholder="Dockerfile">
-    </label>
-    <label class="field">
-      <span>Domain</span>
-      <input type="text" name="domain" id="domain-input" placeholder="web.example.com" value="{{with .Form}}{{.Domain}}{{end}}" required>
-    </label>
-    <label class="field" data-kind="compose" hidden>
-      <span>Expose service</span>
-      <input type="text" name="compose_service" placeholder="web">
-    </label>
-    <label class="field" data-kind="compose" hidden>
-      <span>Service port</span>
-      <input type="text" name="compose_port" placeholder="3000" inputmode="numeric">
-    </label>
-    <label class="field-check">
-      <input type="checkbox" name="auto_deploy"> <span>Auto-deploy on push</span>
-    </label>
-    <button type="submit" class="btn btn-primary">Create app</button>
+    <div class="modal-head">
+      <h3 class="modal-title">New app</h3>
+      <button type="button" class="modal-close" aria-label="Close" onclick="this.closest('dialog').close()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="wizard-steps">
+        <span class="dot" data-dot>1 · Source</span>
+        <span class="dot" data-dot>2 · Build</span>
+        <span class="dot" data-dot>3 · Expose</span>
+      </div>
+
+      <!-- Step 1: Source -->
+      <div class="stack" data-step>
+        <label class="field">
+          <span>Name {{template "hint" "A short identifier for this app, used in its container name and default domain. Lowercase, no spaces."}}</span>
+          <input type="text" name="name" placeholder="web" value="{{with .Form}}{{.Name}}{{end}}" required>
+        </label>
+        {{if .InProject}}
+        <input type="hidden" name="project_id" value="{{.SelectedProject}}">
+        {{else}}
+        <label class="field">
+          <span>Project {{template "hint" "Which project this app belongs to. Projects group related apps and share variables."}}</span>
+          <select name="project_id">
+            {{range .Projects}}<option value="{{.ID}}"{{if eq .ID $.SelectedProject}} selected{{end}}>{{.Name}}</option>{{end}}
+          </select>
+        </label>
+        {{end}}
+        <label class="field">
+          <span>Source {{template "hint" "Where your code lives. Public Git URL needs no credentials; SSH uses a deploy key; GitHub App lets you pick a connected repo and auto-deploy on push."}}</span>
+          <select name="source" id="source-select">
+            <option value="public">Public Git URL</option>
+            <option value="ssh">Private (SSH deploy key)</option>
+            {{if .GithubConnected}}<option value="github">GitHub App</option>{{end}}
+          </select>
+        </label>
+        {{if .GithubConnected}}
+        <label class="field" data-source="github">
+          <span>GitHub repository</span>
+          <select name="github_repo" id="github-repo-select">
+            {{range .GithubRepos}}<option value="{{.FullName}}" data-default-branch="{{.DefaultBranch}}">{{.FullName}}</option>{{end}}
+          </select>
+        </label>
+        {{end}}
+        <label class="field" data-source="public ssh">
+          <span>Git URL {{template "hint" "The clone URL of your repository, e.g. https://github.com/owner/repo.git"}}</span>
+          <input type="text" name="repo_url" placeholder="https://github.com/owner/repo.git" value="{{with .Form}}{{.RepoURL}}{{end}}">
+        </label>
+        <label class="field">
+          <span>Branch {{template "hint" "The Git branch to deploy. For a GitHub repo this is filled with the repo's default branch automatically."}}</span>
+          <input type="text" name="branch" id="branch-input" placeholder="main" value="main">
+        </label>
+      </div>
+
+      <!-- Step 2: Build -->
+      <div class="stack" data-step>
+        <label class="field">
+          <span>Build method {{template "hint" "Nixpacks auto-detects your language and builds an image for you — no Dockerfile needed. Pick Dockerfile if your repo has one, or Compose for a multi-service stack."}}</span>
+          <select name="kind" id="kind-select">
+            <option value="nixpacks">Nixpacks build (single service)</option>
+            <option value="dockerfile">Dockerfile build (single service)</option>
+            <option value="compose">Docker Compose (multi-service stack)</option>
+          </select>
+        </label>
+        <label class="field" data-kind="dockerfile" hidden>
+          <span>Dockerfile {{template "hint" "Path to the Dockerfile within the repo, relative to its root. Defaults to ./Dockerfile."}}</span>
+          <input type="text" name="dockerfile_path" placeholder="Dockerfile">
+        </label>
+        <label class="field" data-kind="compose" hidden>
+          <span>Compose file {{template "hint" "Path to the docker-compose file within the repo. Defaults to ./docker-compose.yml."}}</span>
+          <input type="text" name="compose_path" placeholder="docker-compose.yml">
+        </label>
+      </div>
+
+      <!-- Step 3: Expose -->
+      <div class="stack" data-step>
+        <label class="field">
+          <span>Domain {{template "hint" "The hostname Traefik routes to this app, e.g. web.example.com. For a Compose stack you can leave this blank to keep the stack internal-only."}}</span>
+          <input type="text" name="domain" id="domain-input" placeholder="web.example.com" value="{{with .Form}}{{.Domain}}{{end}}" required>
+        </label>
+        <label class="field" data-kind="compose" hidden>
+          <span>Expose service {{template "hint" "Which service in the compose stack the domain should route to, e.g. web."}}</span>
+          <input type="text" name="compose_service" placeholder="web">
+        </label>
+        <label class="field" data-kind="compose" hidden>
+          <span>Service port {{template "hint" "The container port that service listens on, e.g. 3000."}}</span>
+          <input type="text" name="compose_port" placeholder="3000" inputmode="numeric">
+        </label>
+        <label class="field-check">
+          <input type="checkbox" name="auto_deploy"> <span>Auto-deploy on push {{template "hint" "Redeploy automatically whenever you push to the selected branch (GitHub App source only)."}}</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="modal-foot">
+      <button type="button" class="btn" data-nav="back">Back</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn btn-primary" data-nav="next">Next &rarr;</button>
+      <button type="submit" class="btn btn-primary" data-nav="submit">Create app</button>
+    </div>
   </form>
-  <p class="muted env-note" data-kind="compose" hidden>Domain, service and port publish one stack service (leave the domain blank for an internal-only stack). More domains can be added on the app page after creating it.</p>
-  <script>
-    // Progressive enhancement: reveal each kind's/source's fields only when
-    // that option is selected — e.g. the GitHub repo dropdown appears only
-    // once the "GitHub App" source is chosen, the Git URL box only for
-    // public/ssh. Domain is optional only for compose (leave it blank for an
-    // internal-only stack). Without JS everything shows; the server validates
-    // either way.
-    (function () {
-      var kind = document.getElementById('kind-select');
-      if (kind) {
-        var applyKind = function () {
-          document.querySelectorAll('[data-kind]').forEach(function (el) {
-            el.hidden = el.getAttribute('data-kind') !== kind.value;
-          });
-          document.getElementById('domain-input').required = kind.value !== 'compose';
-        };
-        kind.addEventListener('change', applyKind);
-        applyKind();
-      }
-
-      var source = document.getElementById('source-select');
-      var repo = document.getElementById('github-repo-select');
-      var branch = document.getElementById('branch-input');
-
-      // When a GitHub repo is chosen, default the branch to that repo's real
-      // default branch (e.g. "master") instead of the hardcoded "main" — the
-      // most common cause of a "branch not found" clone failure.
-      var syncBranch = function () {
-        if (!repo || !branch || !source || source.value !== 'github') return;
-        var opt = repo.options[repo.selectedIndex];
-        var def = opt && opt.getAttribute('data-default-branch');
-        if (def) branch.value = def;
-      };
-      if (repo) repo.addEventListener('change', syncBranch);
-
-      if (source) {
-        var applySource = function () {
-          document.querySelectorAll('[data-source]').forEach(function (el) {
-            // data-source is a space-separated list of sources the field applies to.
-            el.hidden = el.getAttribute('data-source').split(' ').indexOf(source.value) === -1;
-          });
-          syncBranch();
-        };
-        source.addEventListener('change', applySource);
-        applySource();
-      }
-    })();
-  </script>
-  {{if not .GithubConnected}}<p class="env-note"><a href="/github/connect">Connect a GitHub App</a> to deploy private GitHub repos and auto-deploy on push.</p>{{end}}
   {{else}}
-  <p class="empty">No projects yet. <a href="/projects">Create a project</a> first, then add apps to it.</p>
+  <div class="modal-body">
+    <p class="empty">No projects yet. <a href="/projects">Create a project</a> first, then add apps to it.</p>
+  </div>
   {{end}}
-</section>
+</dialog>
+
+<script>
+  // App-create wizard. The dialog ships `open` (inline, usable without JS);
+  // JS closes it and exposes openAppDialog() for the action-bar button. Steps,
+  // the source/kind field toggles, and the default-branch auto-fill are all
+  // client-side; the server validates the submitted form regardless.
+  (function () {
+    var dialog = document.getElementById('app-dialog');
+    if (!dialog) return;
+
+    // ---- field toggles (moved from the old inline form) ----
+    var kind = document.getElementById('kind-select');
+    function applyKind() {
+      if (!kind) return;
+      document.querySelectorAll('[data-kind]').forEach(function (el) {
+        el.hidden = el.getAttribute('data-kind') !== kind.value;
+      });
+      var domain = document.getElementById('domain-input');
+      if (domain) domain.required = kind.value !== 'compose';
+    }
+    if (kind) kind.addEventListener('change', applyKind);
+
+    var source = document.getElementById('source-select');
+    var repo = document.getElementById('github-repo-select');
+    var branch = document.getElementById('branch-input');
+    function syncBranch() {
+      if (!repo || !branch || !source || source.value !== 'github') return;
+      var opt = repo.options[repo.selectedIndex];
+      var def = opt && opt.getAttribute('data-default-branch');
+      if (def) branch.value = def;
+    }
+    if (repo) repo.addEventListener('change', syncBranch);
+    function applySource() {
+      if (!source) return;
+      document.querySelectorAll('[data-source]').forEach(function (el) {
+        el.hidden = el.getAttribute('data-source').split(' ').indexOf(source.value) === -1;
+      });
+      syncBranch();
+    }
+    if (source) source.addEventListener('change', applySource);
+
+    // ---- wizard step navigation ----
+    var steps = Array.prototype.slice.call(dialog.querySelectorAll('[data-step]'));
+    var dots = Array.prototype.slice.call(dialog.querySelectorAll('[data-dot]'));
+    var backBtn = dialog.querySelector('[data-nav="back"]');
+    var nextBtn = dialog.querySelector('[data-nav="next"]');
+    var submitBtn = dialog.querySelector('[data-nav="submit"]');
+    var current = 0;
+
+    function show(i) {
+      current = i;
+      steps.forEach(function (s, n) { s.hidden = n !== i; });
+      dots.forEach(function (d, n) {
+        d.classList.toggle('current', n === i);
+        d.classList.toggle('done', n < i);
+      });
+      if (backBtn) backBtn.disabled = i === 0;
+      if (nextBtn) nextBtn.hidden = i === steps.length - 1;
+      if (submitBtn) submitBtn.hidden = i !== steps.length - 1;
+    }
+    // Validate the visible fields of the current step before advancing, so no
+    // required field is left empty in a hidden step at submit time (which the
+    // browser reports as "an invalid form control is not focusable").
+    function stepValid() {
+      var fields = steps[current].querySelectorAll('input, select, textarea');
+      for (var i = 0; i < fields.length; i++) {
+        if (fields[i].offsetParent !== null && !fields[i].checkValidity()) {
+          fields[i].reportValidity();
+          return false;
+        }
+      }
+      return true;
+    }
+    if (nextBtn) nextBtn.addEventListener('click', function () {
+      if (stepValid() && current < steps.length - 1) show(current + 1);
+    });
+    if (backBtn) backBtn.addEventListener('click', function () {
+      if (current > 0) show(current - 1);
+    });
+
+    // Only present if the form (i.e. at least one project) rendered.
+    if (steps.length) {
+      applyKind();
+      applySource();
+      show(0);
+    }
+
+    // Progressive enhancement: leave inline mode, expose the modal opener.
+    if (dialog.open) dialog.close();
+    dialog.addEventListener('click', function (e) { if (e.target === dialog) dialog.close(); });
+    window.openAppDialog = function () {
+      if (steps.length) show(0);
+      dialog.showModal();
+    };
+  })();
+</script>
 {{end}}
