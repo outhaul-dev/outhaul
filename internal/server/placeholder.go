@@ -28,5 +28,4 @@ func (s *Server) handlePlaceholder(p placeholderPage) http.HandlerFunc {
 var placeholderPages = []placeholderPage{
 	{"registry", "Registry", "Connect a private container registry to pull and push images."},
 	{"infrastructure", "Infrastructure", "See the host, Docker, and Traefik that power your deployments."},
-	{"metrics", "Metrics", "Live CPU, memory, and network metrics are already on every app's page. A host-wide metrics dashboard is coming soon."},
 }

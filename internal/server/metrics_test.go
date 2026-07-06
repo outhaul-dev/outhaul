@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/james-smart/outhaul/internal/docker"
@@ -164,5 +165,21 @@ func TestMetricsSampleNoContainers(t *testing.T) {
 	}
 	if m.Self.Goroutines != 7 {
 		t.Errorf("self = %+v", m.Self)
+	}
+}
+
+func TestMetricsPageRenders(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+
+	page := body(t, e.get(t, "/metrics"))
+	if !strings.Contains(page, "Outhaul itself") {
+		t.Error("metrics page missing the self-usage hero panel")
+	}
+	if !strings.Contains(page, "/metrics/sample") {
+		t.Error("metrics page missing the poller endpoint")
+	}
+	if strings.Contains(page, "coming soon") {
+		t.Error("metrics page still renders as a placeholder")
 	}
 }

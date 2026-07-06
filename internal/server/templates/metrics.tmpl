@@ -1,0 +1,115 @@
+{{define "content"}}
+<div class="pagehead">
+  <div>
+    <h1>Metrics</h1>
+    <p class="muted">Live resource usage — sampled while this page is open, nothing is stored.</p>
+  </div>
+</div>
+
+<section class="panel">
+  <div class="log-head">
+    <h2 class="panel-title">Outhaul itself</h2>
+    <span class="log-status" id="metrics-indicator">connecting…</span>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="stat-label">CPU</div><div class="stat-value" id="self-cpu">—<span class="unit">%</span></div><div class="stat-sub">100% = one core</div></div>
+    <div class="stat"><div class="stat-label">Memory</div><div class="stat-value" id="self-mem">—</div><div class="stat-sub">resident set</div></div>
+    <div class="stat"><div class="stat-label">Goroutines</div><div class="stat-value" id="self-goroutines">—</div><div class="stat-sub">concurrent tasks</div></div>
+    <div class="stat"><div class="stat-label">Heap</div><div class="stat-value" id="self-heap">—</div><div class="stat-sub">Go heap in use</div></div>
+  </div>
+</section>
+
+<section class="panel">
+  <h2 class="panel-title">Server</h2>
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-label">CPU</div>
+      <div class="stat-value" id="host-cpu">—<span class="unit">%</span></div>
+      <div class="meter"><div class="meter-fill" id="host-cpu-bar"></div></div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Memory</div>
+      <div class="stat-value" id="host-mem">—</div>
+      <div class="stat-sub" id="host-mem-sub">usage</div>
+      <div class="meter"><div class="meter-fill" id="host-mem-bar"></div></div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Disk</div>
+      <div class="stat-value" id="host-disk">—</div>
+      <div class="stat-sub" id="host-disk-sub">root filesystem</div>
+      <div class="meter"><div class="meter-fill" id="host-disk-bar"></div></div>
+    </div>
+    <div class="stat">
+      <div class="stat-label">Load</div>
+      <div class="stat-value" id="host-load" style="font-size:16px">—</div>
+      <div class="stat-sub">1 · 5 · 15 min</div>
+    </div>
+  </div>
+</section>
+
+<section class="panel">
+  <h2 class="panel-title">Containers</h2>
+  <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Name</th><th>Kind</th><th>CPU</th><th>Memory</th><th>Net I/O</th></tr></thead>
+      <tbody id="container-rows">
+        <tr><td colspan="5" class="empty">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<script>
+(function () {
+  var ind = document.getElementById('metrics-indicator');
+  function set(id, v) { var el = document.getElementById(id); if (el) el.textContent = v; }
+  function setCpu(id, v) {
+    var el = document.getElementById(id); if (!el) return;
+    el.textContent = ''; el.appendChild(document.createTextNode(v));
+    var u = document.createElement('span'); u.className = 'unit'; u.textContent = '%'; el.appendChild(u);
+  }
+  function bar(id, pct) {
+    var el = document.getElementById(id); if (el) el.style.width = Math.max(0, Math.min(100, pct || 0)) + '%';
+  }
+  function rows(list) {
+    var tb = document.getElementById('container-rows');
+    tb.textContent = '';
+    if (!list || !list.length) {
+      var tr = document.createElement('tr'), td = document.createElement('td');
+      td.colSpan = 5; td.className = 'empty'; td.textContent = 'No running containers.';
+      tr.appendChild(td); tb.appendChild(tr); return;
+    }
+    list.forEach(function (c) {
+      var tr = document.createElement('tr');
+      [[c.name, 'mono'], [c.kind, ''], [c.cpu + '%', 'mono'], [c.mem, 'mono'], [c.net, 'mono muted']]
+        .forEach(function (cell) {
+          var td = document.createElement('td');
+          if (cell[1]) td.className = cell[1];
+          td.textContent = cell[0];
+          tr.appendChild(td);
+        });
+      tb.appendChild(tr);
+    });
+  }
+  function poll() {
+    fetch('/metrics/sample', {headers: {'Accept': 'application/json'}})
+      .then(function (r) { if (!r.ok) { throw new Error(r.status); } return r.json(); })
+      .then(function (m) {
+        setCpu('self-cpu', m.self.cpu);
+        set('self-mem', m.self.mem);
+        set('self-goroutines', m.self.goroutines);
+        set('self-heap', m.self.heap);
+        setCpu('host-cpu', m.host.cpu); bar('host-cpu-bar', m.host.cpuPct);
+        set('host-mem', m.host.mem); set('host-mem-sub', m.host.memSub || 'usage'); bar('host-mem-bar', m.host.memPct);
+        set('host-disk', m.host.disk); set('host-disk-sub', m.host.diskSub || 'root filesystem'); bar('host-disk-bar', m.host.diskPct);
+        set('host-load', m.host.load);
+        rows(m.containers);
+        ind.textContent = 'live';
+      })
+      .catch(function () { ind.textContent = 'unavailable'; })
+      .then(function () { setTimeout(poll, 3000); }); // re-arm after each response; never overlap the ~1s docker sampling
+  }
+  poll();
+})();
+</script>
+{{end}}
