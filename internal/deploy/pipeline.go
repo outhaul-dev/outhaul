@@ -233,7 +233,11 @@ func (w *Worker) cloneWorkDir(ctx context.Context, dep core.Deployment, app core
 func (w *Worker) createContainer(ctx context.Context, app core.App, image, name string, env []string, traefikOn bool) (string, error) {
 	var labels map[string]string
 	if traefikOn {
-		labels = traefik.Labels(app, AppPort, w.cfg.TLSEnabled())
+		domains, err := w.store.ListDomains(ctx, app.ID)
+		if err != nil {
+			return "", fmt.Errorf("load domains: %w", err)
+		}
+		labels = traefik.AppLabels(app, domains, AppPort, w.cfg.TLSEnabled())
 	} else {
 		labels = map[string]string{
 			"traefik.enable":  "false",

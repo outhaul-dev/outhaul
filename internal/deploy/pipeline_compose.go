@@ -30,7 +30,7 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 		w.fail(dep, core.StatusBuilding, err.Error(), out)
 		return
 	}
-	domains, err := w.store.ListComposeDomains(ctx, app.ID)
+	domains, err := w.store.ListDomains(ctx, app.ID)
 	if err != nil {
 		w.fail(dep, core.StatusBuilding, "load domains: "+err.Error(), out)
 		return
@@ -109,7 +109,7 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 	if len(domains) > 0 {
 		hosts := make([]string, len(domains))
 		for i, d := range domains {
-			hosts[i] = "http://" + d.Domain
+			hosts[i] = "http://" + d.Host
 		}
 		logf(out, "Done. %s is live at %s", app.Name, strings.Join(hosts, ", "))
 	} else {

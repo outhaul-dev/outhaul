@@ -26,8 +26,8 @@ func TestTemplateAppDeploysWithoutCloning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateApp: %v", err)
 	}
-	if _, err := h.store.AddComposeDomain(ctx, core.ComposeDomain{
-		AppID: app.ID, Domain: "kuma-abc123.sslip.io", Service: "kuma", Port: 3001,
+	if _, err := h.store.AddDomain(ctx, core.Domain{
+		AppID: app.ID, Host: "kuma-abc123.sslip.io", Service: "kuma", Port: 3001,
 	}); err != nil {
 		t.Fatal(err)
 	}

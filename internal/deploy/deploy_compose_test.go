@@ -25,10 +25,10 @@ func (h *harness) composeApp(t *testing.T, name, composePath, domain string) cor
 		t.Fatalf("CreateApp: %v", err)
 	}
 	if domain != "" {
-		if _, err := h.store.AddComposeDomain(context.Background(), core.ComposeDomain{
-			AppID: app.ID, Domain: domain, Service: "web", Port: 3000,
+		if _, err := h.store.AddDomain(context.Background(), core.Domain{
+			AppID: app.ID, Host: domain, Service: "web", Port: 3000,
 		}); err != nil {
-			t.Fatalf("AddComposeDomain: %v", err)
+			t.Fatalf("AddDomain: %v", err)
 		}
 	}
 	return app
@@ -94,8 +94,8 @@ func TestComposePipelineHappyPath(t *testing.T) {
 func TestComposePipelineMultipleDomains(t *testing.T) {
 	h := newHarness(t)
 	app := h.composeApp(t, "shop", "docker-compose.yml", "shop.example.com")
-	if _, err := h.store.AddComposeDomain(context.Background(), core.ComposeDomain{
-		AppID: app.ID, Domain: "api.example.com", Service: "api", Port: 8080,
+	if _, err := h.store.AddDomain(context.Background(), core.Domain{
+		AppID: app.ID, Host: "api.example.com", Service: "api", Port: 8080,
 	}); err != nil {
 		t.Fatal(err)
 	}

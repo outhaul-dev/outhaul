@@ -162,7 +162,7 @@ func TestPipelineHappyPath(t *testing.T) {
 	if c == nil || !c.Running() {
 		t.Fatalf("app container not running: %+v", c)
 	}
-	if c.Labels["traefik.http.routers.outhaul-web.rule"] != "Host(`web.test`)" {
+	if c.Labels["traefik.http.routers.outhaul-web-d1.rule"] != "Host(`web.test`)" {
 		t.Errorf("missing/incorrect traefik rule label: %v", c.Labels)
 	}
 	spec := lastCreatedNamed(t, h, "outhaul-app-web")
@@ -572,4 +572,39 @@ func containsPrefix(ss []string, prefix string) bool {
 		}
 	}
 	return false
+}
+
+// TestNixpacksAppRoutesEveryDomainRow: a single-container app with more than
+// one domain row gets one router per row on its canonical container. The
+// harness has no ACME email (TLSEnabled() is false), so each row contributes
+// exactly one ".rule" label; if TLS were enabled a row would also gain a
+// "-tls" router sharing the same rule, which is why this counts distinct
+// domain-row router prefixes rather than raw ".rule" keys.
+func TestNixpacksAppRoutesEveryDomainRow(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	app := h.app(t, "web") // seeds web.test as domain row 1
+	if _, err := h.store.AddDomain(ctx, core.Domain{AppID: app.ID, Host: "alias.test", Port: 8080, TLS: true}); err != nil {
+		t.Fatalf("AddDomain: %v", err)
+	}
+	dep := h.claimedDeployment(t, app.ID)
+
+	h.worker.runPipeline(ctx, dep)
+
+	c, _ := h.docker.FindContainer(ctx, "outhaul-app-web")
+	if c == nil {
+		t.Fatal("app container missing")
+	}
+	routers := map[string]bool{}
+	for k := range c.Labels {
+		if !strings.HasPrefix(k, "traefik.http.routers.outhaul-web-d") || !strings.HasSuffix(k, ".rule") {
+			continue
+		}
+		router := strings.TrimSuffix(strings.TrimPrefix(k, "traefik.http.routers."), ".rule")
+		router = strings.TrimSuffix(router, "-tls") // collapse a TLS mirror onto its base router
+		routers[router] = true
+	}
+	if len(routers) != 2 {
+		t.Errorf("distinct domain-row routers = %d, want one per domain row (2): %v", len(routers), c.Labels)
+	}
 }
