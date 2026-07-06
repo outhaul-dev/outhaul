@@ -5,7 +5,7 @@ CREATE TABLE volumes (
     app_id     INTEGER NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
     name       TEXT    NOT NULL,
     mount_path TEXT    NOT NULL,
-    created_at TEXT    NOT NULL DEFAULT (datetime('now')),
+    created_at TEXT    NOT NULL,
     UNIQUE(app_id, mount_path),
     UNIQUE(name)
 );

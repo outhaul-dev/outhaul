@@ -14,9 +14,11 @@ const volumeCols = `id, app_id, name, mount_path, created_at`
 var volumeSlugStrip = regexp.MustCompile(`[^a-z0-9]+`)
 
 // deriveVolumeName builds the immutable Docker volume name for an app volume:
-// outhaul-<app>-<slug(path)>. App names are unique and valid Docker
-// identifiers and the mount path is unique per app, so the result is globally
-// unique and a valid Docker volume name.
+// outhaul-<app>-<slug(path)>. The "-" separator is ambiguous and an
+// all-non-alphanumeric path slugs to "" (leaving a trailing dash), so the
+// result is only collision-resistant for normal filesystem paths, not
+// provably unique; the volumes table's UNIQUE(name) constraint backstops the
+// rest, failing safe as an insert error.
 func deriveVolumeName(appName, mountPath string) string {
 	slug := strings.Trim(volumeSlugStrip.ReplaceAllString(strings.ToLower(mountPath), "-"), "-")
 	return "outhaul-" + appName + "-" + slug

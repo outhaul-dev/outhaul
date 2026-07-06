@@ -12,6 +12,7 @@ func TestDeriveVolumeName(t *testing.T) {
 		"/data":         "outhaul-web-data",
 		"/var/lib/data": "outhaul-web-var-lib-data",
 		"/app/Uploads/": "outhaul-web-app-uploads",
+		"/":             "outhaul-web-", // degenerate: an empty slug leaves a trailing dash
 	}
 	for path, want := range cases {
 		if got := deriveVolumeName("web", path); got != want {
