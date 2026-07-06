@@ -63,8 +63,9 @@ func New(hostKey ssh.Signer, keyring Keyring, repos *gitrepo.Manager) *Server {
 	return s
 }
 
-// Serve binds addr and accepts connections until ctx is cancelled.
-func (s *Server) Serve(ctx context.Context, addr string) error {
+// Listen binds addr and stores the listener. Call before Serve so a bind
+// failure (e.g. the port is in use) surfaces synchronously to the caller.
+func (s *Server) Listen(addr string) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
@@ -72,7 +73,15 @@ func (s *Server) Serve(ctx context.Context, addr string) error {
 	s.mu.Lock()
 	s.ln = ln
 	s.mu.Unlock()
+	return nil
+}
 
+// Serve accepts connections until ctx is cancelled. Listen must have been
+// called first.
+func (s *Server) Serve(ctx context.Context) error {
+	if s.currentListener() == nil {
+		return fmt.Errorf("gitssh: Serve called before Listen")
+	}
 	go func() {
 		<-ctx.Done()
 		s.mu.Lock()

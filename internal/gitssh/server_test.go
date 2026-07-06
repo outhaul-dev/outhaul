@@ -53,7 +53,10 @@ func testServer(t *testing.T) (*Server, *store.Store, string) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	go func() { _ = srv.Serve(ctx, "127.0.0.1:0") }()
+	if err := srv.Listen("127.0.0.1:0"); err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	go func() { _ = srv.Serve(ctx) }()
 	waitAddr(t, srv)
 	return srv, st, gitRoot
 }

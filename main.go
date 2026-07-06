@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -21,7 +22,10 @@ import (
 	"github.com/james-smart/outhaul/internal/dbaas"
 	"github.com/james-smart/outhaul/internal/deploy"
 	"github.com/james-smart/outhaul/internal/docker"
+	"github.com/james-smart/outhaul/internal/githook"
 	"github.com/james-smart/outhaul/internal/github"
+	"github.com/james-smart/outhaul/internal/gitrepo"
+	"github.com/james-smart/outhaul/internal/gitssh"
 	"github.com/james-smart/outhaul/internal/logstream"
 	"github.com/james-smart/outhaul/internal/prune"
 	"github.com/james-smart/outhaul/internal/secret"
@@ -34,6 +38,9 @@ func main() {
 	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
 	log.SetPrefix("outhaul: ")
 
+	if len(os.Args) >= 2 && os.Args[1] == "git-hook" {
+		os.Exit(runGitHook(os.Args[2:]))
+	}
 	if len(os.Args) < 2 || os.Args[1] != "serve" {
 		usage()
 		os.Exit(2)
@@ -48,6 +55,21 @@ func usage() {
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "Starts the Outhaul admin UI and deploy worker.")
 	fmt.Fprintln(os.Stderr, "Configuration via OUTHAUL_* environment variables (see ARCHITECTURE.md).")
+}
+
+// runGitHook is the post-receive relay: `outhaul git-hook <app> <socket>`. It
+// reads ref updates from stdin and streams the deploy back to stdout, exiting
+// with the deploy's status.
+func runGitHook(args []string) int {
+	if len(args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: outhaul git-hook <app> <socket>")
+		return 2
+	}
+	code, err := githook.RunHook(args[1], args[0], os.Stdin, os.Stdout)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "outhaul: %v\n", err)
+	}
+	return code
 }
 
 func serve() error {
@@ -128,11 +150,26 @@ func serve() error {
 	if serverIP == "" {
 		serverIP = catalog.DetectServerIP()
 	}
+	// git-push-to-deploy: bare-repo manager, deploy bridge, and SSH server. All
+	// startup failures are non-fatal — the admin UI still comes up, and git-push
+	// is simply unavailable until the cause is fixed.
+	self, exErr := os.Executable()
+	if exErr != nil {
+		log.Printf("WARNING: cannot resolve binary path; git-push disabled: %v", exErr)
+		self = ""
+	}
+	repos := gitrepo.New(cfg.GitDir(), self, cfg.GitHookSocketPath())
+	sshSrv := startGitPush(workerCtx, cfg, st, worker, broker, serverIP, repos, self)
+
 	setupToken := server.NewToken()
 	srv, err := server.New(st, worker, dc, compose.NewDocker(), dbm, backups, broker, ghClient, cfg.PublicURL, serverIP, cfg.TLSEnabled(), setupToken)
 	if err != nil {
 		stopWorker()
 		return fmt.Errorf("build server: %w", err)
+	}
+	srv.SetRepos(repos)
+	if sshSrv != nil {
+		srv.SetSSHControl(sshSrv)
 	}
 	printSetupHint(srv, cfg, setupToken)
 
@@ -222,6 +259,57 @@ func shutdown(httpServer *http.Server, stopWorker context.CancelFunc, workerDone
 	}
 	log.Print("stopped cleanly")
 	return nil
+}
+
+// startGitPush brings up the deploy bridge (unix socket) and the git-push SSH
+// server. Every failure is non-fatal and logged; it returns the SSH server (for
+// live port rebinds from the UI) or nil if git-push could not start.
+func startGitPush(ctx context.Context, cfg config.Config, st *store.Store, worker *deploy.Worker, broker *logstream.Broker, serverIP string, repos *gitrepo.Manager, self string) *gitssh.Server {
+	if self == "" {
+		return nil
+	}
+	if err := os.MkdirAll(cfg.GitDir(), 0o700); err != nil {
+		log.Printf("WARNING: git-push disabled (create git dir): %v", err)
+		return nil
+	}
+	// Deploy bridge on the local unix socket the post-receive hook relays to.
+	_ = os.Remove(cfg.GitHookSocketPath()) // clear a stale socket from a crash
+	hookLn, err := net.Listen("unix", cfg.GitHookSocketPath())
+	if err != nil {
+		log.Printf("WARNING: git-push disabled (hook socket): %v", err)
+		return nil
+	}
+	bridge := githook.NewBridge(st, broker, worker, repos, serverIP, cfg.HealthTimeout+5*time.Minute)
+	go bridge.Serve(ctx, hookLn)
+
+	// SSH server (public-key auth against push_keys).
+	hostKey, err := gitssh.LoadOrCreateHostKey(cfg.SSHHostKeyPath())
+	if err != nil {
+		log.Printf("WARNING: git-push SSH server disabled (host key): %v", err)
+		return nil
+	}
+	sshSrv := gitssh.New(hostKey, st, repos)
+	addr := resolveSSHAddr(st, cfg)
+	if err := sshSrv.Listen(addr); err != nil {
+		log.Printf("WARNING: git-push SSH server disabled (bind %s): %v", addr, err)
+		return nil
+	}
+	go func() {
+		if err := sshSrv.Serve(ctx); err != nil {
+			log.Printf("gitssh: %v", err)
+		}
+	}()
+	log.Printf("git-push SSH server listening on %s", addr)
+	return sshSrv
+}
+
+// resolveSSHAddr returns the stored ssh_addr setting if set, else the configured
+// default (OUTHAUL_SSH_ADDR or :2222).
+func resolveSSHAddr(st *store.Store, cfg config.Config) string {
+	if v, ok, err := st.GetSetting(context.Background(), "ssh_addr"); err == nil && ok && v != "" {
+		return v
+	}
+	return cfg.SSHAddr
 }
 
 // printSetupHint prints the one-time setup URL on first boot.

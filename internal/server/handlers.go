@@ -845,6 +845,11 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if app.Source == core.SourcePush && s.repos != nil {
+		if rerr := s.repos.Remove(app.Name); rerr != nil {
+			log.Printf("delete app %d: remove bare repo: %v", id, rerr)
+		}
+	}
 	http.Redirect(w, r, "/apps", http.StatusSeeOther)
 }
 
@@ -999,6 +1004,10 @@ func validateApp(app core.App) string {
 		}
 		if !strings.HasPrefix(app.RepoURL, "ssh://") && !(strings.Contains(app.RepoURL, "@") && strings.Contains(app.RepoURL, ":")) {
 			return "Repository must be an SSH clone URL (e.g. git@github.com:owner/repo.git or ssh://…)."
+		}
+	case core.SourcePush:
+		if app.RepoURL != "" {
+			return "A push-to-deploy app has no repository URL."
 		}
 	default: // public
 		if app.RepoURL == "" || !(strings.HasPrefix(app.RepoURL, "http://") || strings.HasPrefix(app.RepoURL, "https://")) {

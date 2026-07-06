@@ -24,6 +24,7 @@ import (
 	"github.com/james-smart/outhaul/internal/core"
 	"github.com/james-smart/outhaul/internal/docker"
 	"github.com/james-smart/outhaul/internal/github"
+	"github.com/james-smart/outhaul/internal/gitrepo"
 	"github.com/james-smart/outhaul/internal/logstream"
 	"github.com/james-smart/outhaul/internal/store"
 )
@@ -84,6 +85,9 @@ type Server struct {
 	serverIP   string // for generated sslip.io template domains; may be empty
 	tlsEnabled bool   // ACME configured: HTTPS automation is available
 	secure     bool   // Secure cookie flag; the admin UI is served directly over HTTP (not behind Traefik), so this stays false
+
+	repos      *gitrepo.Manager // push-app bare repos; nil disables push-repo cleanup
+	sshControl SSHControl       // git-push SSH server; nil disables the port setting
 
 	stateMu     sync.Mutex
 	stateTokens map[string]time.Time // CSRF states for the GitHub App manifest flow
