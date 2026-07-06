@@ -112,3 +112,22 @@ func TestDetachDatabaseScopedToApp(t *testing.T) {
 		t.Fatalf("attachment not deleted: got %d, want 0", len(got))
 	}
 }
+
+func TestDeleteDatabaseBlockedWhileAttached(t *testing.T) {
+	s := openWithBox(t)
+	ctx := context.Background()
+	app, _ := s.CreateApp(ctx, core.App{Name: "web", Source: core.SourcePublic, Kind: core.KindNixpacks, Branch: "main"})
+	db, _ := s.CreateDatabase(ctx, core.Database{Name: "web-db", Engine: core.EnginePostgres, Username: "u", Password: "p", DBName: "web"})
+	att, _ := s.AttachDatabase(ctx, app.ID, db.ID, "DATABASE_URL")
+
+	if err := s.DeleteDatabase(ctx, db.ID); err == nil {
+		t.Fatal("expected delete to be blocked while attached")
+	}
+	// After detaching, delete succeeds.
+	if err := s.DetachDatabase(ctx, app.ID, att.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteDatabase(ctx, db.ID); err != nil {
+		t.Fatalf("delete after detach: %v", err)
+	}
+}

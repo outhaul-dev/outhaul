@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/james-smart/outhaul/internal/core"
@@ -105,6 +106,18 @@ func (s *Store) SetDatabaseExtPort(ctx context.Context, id int64, port int) erro
 // DeleteDatabase removes the row and its backup schedules. The caller is
 // responsible for the container and data directory (see dbaas.Manager.Remove).
 func (s *Store) DeleteDatabase(ctx context.Context, id int64) error {
+	atts, err := s.AttachmentsForDatabase(ctx, id)
+	if err != nil {
+		return err
+	}
+	if len(atts) > 0 {
+		appIDs := make([]string, 0, len(atts))
+		for _, a := range atts {
+			appIDs = append(appIDs, fmt.Sprintf("app %d (%s)", a.AppID, a.EnvVar))
+		}
+		return fmt.Errorf("database is attached to %s; detach it first", strings.Join(appIDs, ", "))
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
