@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
 
 	"github.com/james-smart/outhaul/internal/core"
 	"github.com/james-smart/outhaul/internal/dbaas"
@@ -139,13 +140,16 @@ func (m *Manager) spawn(ctx context.Context, parent core.App, cfg core.PreviewCo
 		return err
 	}
 
-	if err := m.copyEnv(ctx, parent.ID, child.ID); err != nil {
+	if err := m.copyEnv(ctx, parent.ID, child.ID, ev.Number); err != nil {
 		return err
 	}
 	if err := m.provisionDatabases(ctx, parent, child); err != nil {
 		return err
 	}
 	if err := m.mintDomains(ctx, parent, child, cfg, ev.Number); err != nil {
+		return err
+	}
+	if err := m.injectPreviewURL(ctx, child.ID); err != nil {
 		return err
 	}
 
@@ -159,7 +163,8 @@ func (m *Manager) spawn(ctx context.Context, parent core.App, cfg core.PreviewCo
 
 // copyEnv copies the parent's non-prod env into the child (shared+preview),
 // preserving scope. Prod-only vars are dropped here AND again at deploy time.
-func (m *Manager) copyEnv(ctx context.Context, parentID, childID int64) error {
+// It also injects the preview marker vars OUTHAUL_PREVIEW and OUTHAUL_PR_NUMBER.
+func (m *Manager) copyEnv(ctx context.Context, parentID, childID int64, pr int) error {
 	vars, err := m.store.ListEnv(ctx, parentID)
 	if err != nil {
 		return err
@@ -170,7 +175,25 @@ func (m *Manager) copyEnv(ctx context.Context, parentID, childID int64) error {
 		}
 	}
 	_ = m.store.SetEnvScoped(ctx, childID, "OUTHAUL_PREVIEW", "true", false, core.ScopeShared)
+	_ = m.store.SetEnvScoped(ctx, childID, "OUTHAUL_PR_NUMBER", strconv.Itoa(pr), false, core.ScopeShared)
 	return nil
+}
+
+// injectPreviewURL sets OUTHAUL_PREVIEW_URL from the child's first minted domain
+// (scheme per that domain's TLS). Apps with no routed domain get no URL var.
+func (m *Manager) injectPreviewURL(ctx context.Context, childID int64) error {
+	doms, err := m.store.ListDomains(ctx, childID)
+	if err != nil {
+		return err
+	}
+	if len(doms) == 0 {
+		return nil
+	}
+	scheme := "http://"
+	if doms[0].TLS {
+		scheme = "https://"
+	}
+	return m.store.SetEnvScoped(ctx, childID, "OUTHAUL_PREVIEW_URL", scheme+doms[0].Host, false, core.ScopeShared)
 }
 
 // provisionDatabases creates a fresh empty database per parent attachment and
@@ -255,11 +278,15 @@ func (m *Manager) teardown(ctx context.Context, parent core.App, pr int, repo st
 	}
 	atts, _ := m.store.ListAttachments(ctx, child.ID)
 	for _, a := range atts {
-		if db, err := m.store.GetDatabase(ctx, a.DatabaseID); err == nil {
-			if err := m.dbprov.Destroy(ctx, db); err != nil {
-				log.Printf("previewmgr: destroy db %s: %v", db.Name, err)
-				failed = true
-			}
+		db, err := m.store.GetDatabase(ctx, a.DatabaseID)
+		if err != nil {
+			log.Printf("previewmgr: lookup db %d for teardown: %v", a.DatabaseID, err)
+			failed = true
+			continue
+		}
+		if err := m.dbprov.Destroy(ctx, db); err != nil {
+			log.Printf("previewmgr: destroy db %s: %v", db.Name, err)
+			failed = true
 		}
 	}
 	if failed {

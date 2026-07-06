@@ -244,6 +244,12 @@ func TestSpawnCreatesChildAppDomainsAndDeploys(t *testing.T) {
 	if !hasEnv(envs, "OUTHAUL_PREVIEW", "true") {
 		t.Errorf("child env missing OUTHAUL_PREVIEW=true: %+v", envs)
 	}
+	if !hasEnv(envs, "OUTHAUL_PR_NUMBER", "42") {
+		t.Errorf("child env missing OUTHAUL_PR_NUMBER=42: %+v", envs)
+	}
+	if !hasEnv(envs, "OUTHAUL_PREVIEW_URL", "https://web-pr-42.1.2.3.4.sslip.io") {
+		t.Errorf("child env missing OUTHAUL_PREVIEW_URL: %+v", envs)
+	}
 
 	// Deployment enqueued + worker notified.
 	deps, err := h.st.ListDeploymentsForApp(ctx, child.ID)
@@ -333,6 +339,11 @@ func TestClosedTearsDown(t *testing.T) {
 	if h.dbprov.destroyed != 1 {
 		t.Errorf("destroyed = %d, want 1", h.dbprov.destroyed)
 	}
+
+	got := h.gh.comments[repo+"#42"]
+	if len(got) == 0 || got[len(got)-1] != "Preview environment destroyed." {
+		t.Errorf("teardown comment = %v, want a \"Preview environment destroyed.\" notice", got)
+	}
 }
 
 func TestSynchronizeRedeploys(t *testing.T) {
@@ -369,6 +380,101 @@ func TestSynchronizeRedeploys(t *testing.T) {
 	}
 	if len(deps) != 2 {
 		t.Errorf("child deployments = %d, want 2", len(deps))
+	}
+}
+
+func TestTeardownFailureLeavesAppForRetry(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	repo := "acme/web"
+	parent := h.seedGithubApp(t, "web", repo, nil)
+	h.seedAttachment(t, parent, "web-db", "DATABASE_URL")
+
+	if err := h.mgr.Handle(ctx, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
+		t.Fatalf("Handle opened: %v", err)
+	}
+	child, err := h.st.GetPreviewByPR(ctx, parent.ID, 42)
+	if err != nil {
+		t.Fatalf("child missing before close: %v", err)
+	}
+
+	// Container removal fails: teardown must abort before deleting the app row.
+	h.docker.fail = true
+	if err := h.mgr.Handle(ctx, prEvent("closed", 42, "feature-x", repo, false)); err != nil {
+		t.Fatalf("Handle closed: %v", err)
+	}
+
+	// (a) The app row survives so the sweeper can retry.
+	after, err := h.st.GetPreviewByPR(ctx, parent.ID, 42)
+	if err != nil {
+		t.Fatalf("child app should survive a failed teardown: %v", err)
+	}
+	if after.ID != child.ID {
+		t.Fatalf("surviving child id = %d, want %d", after.ID, child.ID)
+	}
+	// (b) It is marked teardown_failed.
+	if after.PreviewStatus != core.PreviewTeardownFailed {
+		t.Errorf("child status = %q, want %q", after.PreviewStatus, core.PreviewTeardownFailed)
+	}
+	// (c) The attachment (and thus the resource wiring) is still present, so a
+	// retry re-runs teardown against the same resources rather than orphaning.
+	atts, err := h.st.ListAttachments(ctx, child.ID)
+	if err != nil {
+		t.Fatalf("ListAttachments child: %v", err)
+	}
+	if len(atts) != 1 {
+		t.Errorf("child attachments = %d, want 1 (preserved for retry)", len(atts))
+	}
+}
+
+func TestSpawnDropsProdScopedEnv(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	repo := "acme/web"
+	parent := h.seedGithubApp(t, "web", repo, nil)
+	if err := h.st.SetEnvScoped(ctx, parent.ID, "SHARED_VAR", "s", false, core.ScopeShared); err != nil {
+		t.Fatalf("SetEnvScoped shared: %v", err)
+	}
+	if err := h.st.SetEnvScoped(ctx, parent.ID, "PROD_SECRET", "x", true, core.ScopeProd); err != nil {
+		t.Fatalf("SetEnvScoped prod: %v", err)
+	}
+
+	if err := h.mgr.Handle(ctx, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	child, err := h.st.GetPreviewByPR(ctx, parent.ID, 42)
+	if err != nil {
+		t.Fatalf("child missing: %v", err)
+	}
+
+	envs, err := h.st.ListEnv(ctx, child.ID)
+	if err != nil {
+		t.Fatalf("ListEnv child: %v", err)
+	}
+	if !hasEnv(envs, "SHARED_VAR", "s") {
+		t.Errorf("child env missing SHARED_VAR: %+v", envs)
+	}
+	if !hasEnv(envs, "OUTHAUL_PREVIEW", "true") {
+		t.Errorf("child env missing OUTHAUL_PREVIEW: %+v", envs)
+	}
+	for _, v := range envs {
+		if v.Key == "PROD_SECRET" {
+			t.Errorf("prod-scoped var leaked into preview: %+v", v)
+		}
+	}
+}
+
+func TestSpawnSuppressesCommentWhenDisabled(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	repo := "acme/web"
+	h.seedGithubApp(t, "web", repo, func(c *core.PreviewConfig) { c.PostPRComment = false })
+
+	if err := h.mgr.Handle(ctx, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if len(h.gh.comments) != 0 {
+		t.Errorf("expected no PR comments with PostPRComment=false, got %v", h.gh.comments)
 	}
 }
 
