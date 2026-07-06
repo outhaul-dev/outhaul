@@ -58,3 +58,46 @@ func ParsePush(body []byte) (PushEvent, error) {
 	}
 	return PushEvent{RepoFullName: full, Branch: branch, Changed: changed}, nil
 }
+
+// PullRequestEvent is the subset of a pull_request webhook Outhaul acts on.
+type PullRequestEvent struct {
+	Action           string // opened|reopened|synchronize|closed
+	Number           int
+	HeadRef          string // PR branch
+	HeadSHA          string
+	BaseRepoFullName string // "owner/name" of the repo the PR targets
+	IsFork           bool   // head repo differs from base repo
+}
+
+// ParsePullRequest reads a GitHub pull_request payload.
+func ParsePullRequest(body []byte) (PullRequestEvent, error) {
+	var p struct {
+		Action      string `json:"action"`
+		Number      int    `json:"number"`
+		PullRequest struct {
+			Head struct {
+				Ref  string `json:"ref"`
+				SHA  string `json:"sha"`
+				Repo struct {
+					FullName string `json:"full_name"`
+				} `json:"repo"`
+			} `json:"head"`
+			Base struct {
+				Repo struct {
+					FullName string `json:"full_name"`
+				} `json:"repo"`
+			} `json:"base"`
+		} `json:"pull_request"`
+	}
+	if err := json.Unmarshal(body, &p); err != nil {
+		return PullRequestEvent{}, err
+	}
+	return PullRequestEvent{
+		Action:           p.Action,
+		Number:           p.Number,
+		HeadRef:          p.PullRequest.Head.Ref,
+		HeadSHA:          p.PullRequest.Head.SHA,
+		BaseRepoFullName: p.PullRequest.Base.Repo.FullName,
+		IsFork:           p.PullRequest.Head.Repo.FullName != p.PullRequest.Base.Repo.FullName,
+	}, nil
+}

@@ -94,3 +94,44 @@ func TestParsePushThinPayloadHasNoChangedFiles(t *testing.T) {
 		t.Errorf("Changed = %v, want empty", ev.Changed)
 	}
 }
+
+func TestParsePullRequest(t *testing.T) {
+	body := []byte(`{
+	  "action": "opened",
+	  "number": 42,
+	  "pull_request": {
+	    "head": {"ref": "feature-x", "sha": "abc123",
+	             "repo": {"full_name": "me/fork"}},
+	    "base": {"repo": {"full_name": "me/app"}}
+	  }
+	}`)
+	ev, err := ParsePullRequest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.Action != "opened" || ev.Number != 42 || ev.HeadRef != "feature-x" ||
+		ev.HeadSHA != "abc123" || ev.BaseRepoFullName != "me/app" || !ev.IsFork {
+		t.Fatalf("parsed = %+v", ev)
+	}
+}
+
+func TestParsePullRequestNonFork(t *testing.T) {
+	body := []byte(`{
+	  "action": "synchronize",
+	  "number": 7,
+	  "pull_request": {
+	    "head": {"ref": "feat", "sha": "def456", "repo": {"full_name": "me/app"}},
+	    "base": {"repo": {"full_name": "me/app"}}
+	  }
+	}`)
+	ev, err := ParsePullRequest(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ev.IsFork {
+		t.Fatalf("same-repo PR should not be a fork: %+v", ev)
+	}
+	if ev.Action != "synchronize" || ev.Number != 7 {
+		t.Fatalf("parsed = %+v", ev)
+	}
+}
