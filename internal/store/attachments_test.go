@@ -73,3 +73,42 @@ func TestAttachDatabaseCrossProjectRejected(t *testing.T) {
 		t.Fatal("expected cross-project attach to be rejected")
 	}
 }
+
+func TestDetachDatabaseScopedToApp(t *testing.T) {
+	s := openWithBox(t) // CreateDatabase needs a secret box
+	ctx := context.Background()
+
+	appA, err := s.CreateApp(ctx, core.App{Name: "web", Source: core.SourcePublic, Kind: core.KindNixpacks, Branch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appB, err := s.CreateApp(ctx, core.App{Name: "api", Source: core.SourcePublic, Kind: core.KindNixpacks, Branch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := s.CreateDatabase(ctx, core.Database{Name: "shared-db", Engine: core.EnginePostgres, Username: "u", Password: "p", DBName: "shared"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	att, err := s.AttachDatabase(ctx, appA.ID, db.ID, "DATABASE_URL")
+	if err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+
+	// Wrong app id must not delete the attachment.
+	if err := s.DetachDatabase(ctx, appB.ID, att.ID); err != nil {
+		t.Fatalf("DetachDatabase (wrong app): %v", err)
+	}
+	if got, _ := s.ListAttachments(ctx, appA.ID); len(got) != 1 {
+		t.Fatalf("attachment deleted through the wrong app: got %d, want 1", len(got))
+	}
+
+	// Correct app id removes it.
+	if err := s.DetachDatabase(ctx, appA.ID, att.ID); err != nil {
+		t.Fatalf("DetachDatabase: %v", err)
+	}
+	if got, _ := s.ListAttachments(ctx, appA.ID); len(got) != 0 {
+		t.Fatalf("attachment not deleted: got %d, want 0", len(got))
+	}
+}
