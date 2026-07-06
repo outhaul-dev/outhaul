@@ -364,13 +364,13 @@ dialog.modal::backdrop { background: rgba(0,0,0,0.55); }
   cursor: help; position: relative; vertical-align: middle;
 }
 .hint:focus { outline: 1px solid var(--accent); }
+/* Positioned with fixed coords by the hint script (base.tmpl) so the bubble is
+   never clipped by the modal, a scroll container, or the viewport edge. */
 .hint .hint-bub {
-  display: none; position: absolute; bottom: calc(100% + 6px); left: 50%;
-  transform: translateX(-50%); width: max-content; max-width: 260px;
+  display: none; position: fixed; left: 0; top: 0; width: max-content; max-width: 260px;
   background: var(--bg-4); color: var(--text-primary);
   border: 1px solid var(--border-strong); border-radius: var(--radius-md);
   padding: 8px 10px; font-family: var(--font-sans); font-style: normal;
   font-size: 12px; line-height: 1.45; text-align: left; letter-spacing: 0;
-  box-shadow: 0 6px 20px rgba(0,0,0,0.4); z-index: 5; white-space: normal;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.4); z-index: 1000; white-space: normal;
 }
-.hint:hover .hint-bub, .hint:focus .hint-bub, .hint:focus-within .hint-bub { display: block; }

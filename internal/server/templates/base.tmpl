@@ -52,5 +52,43 @@
     </div>
   </div>
   {{end}}
+  <script>
+    // (i) field hints: reveal the bubble on hover/focus and position it with
+    // fixed coordinates so it is never clipped by a modal, a scroll container,
+    // or the viewport edge. Flips below the icon when there is no room above.
+    (function () {
+      function show(hint) {
+        var bub = hint.querySelector('.hint-bub');
+        if (!bub) return;
+        bub.style.visibility = 'hidden';
+        bub.style.display = 'block';
+        var r = hint.getBoundingClientRect();
+        var bw = bub.offsetWidth, bh = bub.offsetHeight, m = 8;
+        var left = Math.min(Math.max(m, r.left + r.width / 2 - bw / 2), window.innerWidth - bw - m);
+        var top = r.top - bh - 6;
+        if (top < m) top = r.bottom + 6;
+        bub.style.left = left + 'px';
+        bub.style.top = top + 'px';
+        bub.style.visibility = 'visible';
+      }
+      function hide(hint) {
+        var bub = hint.querySelector('.hint-bub');
+        if (bub) { bub.style.display = 'none'; bub.style.visibility = ''; }
+      }
+      document.addEventListener('mouseover', function (e) {
+        var h = e.target.closest && e.target.closest('.hint'); if (h) show(h);
+      });
+      document.addEventListener('mouseout', function (e) {
+        var h = e.target.closest && e.target.closest('.hint');
+        if (h && !h.contains(e.relatedTarget)) hide(h);
+      });
+      document.addEventListener('focusin', function (e) {
+        var h = e.target.closest && e.target.closest('.hint'); if (h) show(h);
+      });
+      document.addEventListener('focusout', function (e) {
+        var h = e.target.closest && e.target.closest('.hint'); if (h) hide(h);
+      });
+    })();
+  </script>
 </body>
 </html>{{end}}
