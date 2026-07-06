@@ -657,3 +657,15 @@ func TestDeleteAppWhenContainerGone(t *testing.T) {
 		t.Error("app row not deleted")
 	}
 }
+
+func TestAppSettingsHasHints(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	e.postForm(t, "/apps", appForm("web", "web.example.com")).Body.Close()
+	web, _ := e.store.GetAppByName(context.Background(), "web")
+
+	page := body(t, e.get(t, "/apps/"+itoa(web.ID)))
+	if !strings.Contains(page, `class="hint"`) {
+		t.Error("app page should render (i) field hints")
+	}
+}

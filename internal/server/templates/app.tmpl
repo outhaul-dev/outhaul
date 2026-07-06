@@ -203,14 +203,14 @@
   <h2 class="panel-title">Deploy settings</h2>
   <form method="post" action="/apps/{{.App.ID}}/settings" class="grid-form">
     <label class="field"><span>Source</span><input type="text" value="{{.App.Source}}" disabled></label>
-    <label class="field"><span>Branch</span><input type="text" name="branch" value="{{.App.Branch}}"></label>
+    <label class="field"><span>Branch {{template "hint" "The Git branch to deploy. Changing this affects the next deploy."}}</span><input type="text" name="branch" value="{{.App.Branch}}"></label>
     {{if eq .App.Kind "compose"}}
-    <label class="field"><span>Compose file</span><input type="text" name="compose_path" value="{{.App.ComposePath}}"></label>
+    <label class="field"><span>Compose file {{template "hint" "Path to the docker-compose file within the repo. Defaults to ./docker-compose.yml."}}</span><input type="text" name="compose_path" value="{{.App.ComposePath}}"></label>
     {{end}}
     {{if eq .App.Kind "dockerfile"}}
-    <label class="field"><span>Dockerfile</span><input type="text" name="dockerfile_path" value="{{.App.DockerfilePath}}"></label>
+    <label class="field"><span>Dockerfile {{template "hint" "Path to the Dockerfile within the repo, relative to its root. Defaults to ./Dockerfile."}}</span><input type="text" name="dockerfile_path" value="{{.App.DockerfilePath}}"></label>
     {{end}}
-    <label class="field-check"><input type="checkbox" name="auto_deploy" {{if .App.AutoDeploy}}checked{{end}}> <span>Auto-deploy on push</span></label>
+    <label class="field-check"><input type="checkbox" name="auto_deploy" {{if .App.AutoDeploy}}checked{{end}}> <span>Auto-deploy on push {{template "hint" "Redeploy automatically whenever you push to this branch (GitHub App source only)."}}</span></label>
     <label class="field field-wide">
       <span>Watch paths</span>
       <textarea name="watch_paths" rows="3" placeholder="src/**&#10;package.json">{{joinLines .App.WatchPaths}}</textarea>
