@@ -205,3 +205,33 @@ func TestReclaimRefusesNonOrphan(t *testing.T) {
 		t.Error("in-use volume must not be removed")
 	}
 }
+
+func TestVolumesPageComposeVolumesAndSkipsForeign(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, err := e.store.CreateApp(context.Background(), core.App{Name: "shop", RepoURL: "https://x/y.git", Kind: core.KindCompose, ComposePath: "docker-compose.yml"})
+	if err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+	// Owned by the live compose app.
+	e.runtime.Volumes["outhaul-shop_data"] = map[string]string{"com.docker.compose.project": "outhaul-shop"}
+	// Outhaul project with no app row → orphan.
+	e.runtime.Volumes["outhaul-ghost_data"] = map[string]string{"com.docker.compose.project": "outhaul-ghost"}
+	// Foreign stack → skipped entirely.
+	e.runtime.Volumes["randomstack_data"] = map[string]string{"com.docker.compose.project": "someuser-stack"}
+
+	resp := e.get(t, "/volumes")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("volumes page: status %d", resp.StatusCode)
+	}
+	page := body(t, resp)
+	if !strings.Contains(page, "outhaul-shop_data") || !strings.Contains(page, "/apps/"+itoa(app.ID)) {
+		t.Error("owned compose volume not shown with its app link")
+	}
+	if !strings.Contains(page, "outhaul-ghost_data") || !strings.Contains(page, "orphan") {
+		t.Error("orphaned compose volume not shown/flagged")
+	}
+	if strings.Contains(page, "randomstack_data") {
+		t.Error("foreign (non-outhaul) compose volume must be skipped entirely")
+	}
+}

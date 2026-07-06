@@ -125,6 +125,9 @@ func (s *Server) handleReclaimVolume(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "refusing to remove a volume that is still attached to an app (or not managed by Outhaul)", http.StatusBadRequest)
 		return
 	}
+	// force=false is intentional: it's the final backstop so Docker refuses the
+	// removal if a container has re-attached this volume between the orphan
+	// re-check above and now (guards a racing re-attach). Do not switch to true.
 	if err := s.runtime.RemoveVolume(r.Context(), name, false); err != nil {
 		http.Error(w, "could not remove volume: "+err.Error(), http.StatusInternalServerError)
 		return
