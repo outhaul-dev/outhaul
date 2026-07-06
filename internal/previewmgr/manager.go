@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"time"
 
 	"github.com/james-smart/outhaul/internal/core"
 	"github.com/james-smart/outhaul/internal/dbaas"
@@ -22,6 +23,8 @@ type Store interface {
 	GetPreviewConfig(ctx context.Context, appID int64) (core.PreviewConfig, error)
 	GetPreviewByPR(ctx context.Context, parentID int64, pr int) (core.App, error)
 	ListPreviewsForParent(ctx context.Context, parentID int64) ([]core.App, error)
+	ListPreviews(ctx context.Context) ([]core.App, error)
+	LastDeploymentAt(ctx context.Context, appID int64) (time.Time, bool, error)
 	CreateApp(ctx context.Context, app core.App) (core.App, error)
 	SetPreviewStatus(ctx context.Context, appID int64, status string) error
 	ListEnv(ctx context.Context, appID int64) ([]core.EnvVar, error)

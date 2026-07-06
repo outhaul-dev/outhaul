@@ -106,6 +106,24 @@ func (s *Store) ListRecentDeployments(ctx context.Context, limit int) ([]core.De
 	return ds, rows.Err()
 }
 
+// LastDeploymentAt returns the newest deployment's creation time for an app,
+// ok=false when the app has no deployments.
+func (s *Store) LastDeploymentAt(ctx context.Context, appID int64) (time.Time, bool, error) {
+	var maxCreated sql.NullString
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT MAX(created_at) FROM deployments WHERE app_id = ?`, appID).Scan(&maxCreated); err != nil {
+		return time.Time{}, false, err
+	}
+	if !maxCreated.Valid {
+		return time.Time{}, false, nil
+	}
+	t, err := parseTime(maxCreated.String)
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	return t, true, nil
+}
+
 // CountDeployments returns the total number of deployment rows.
 func (s *Store) CountDeployments(ctx context.Context) (int, error) {
 	var n int
