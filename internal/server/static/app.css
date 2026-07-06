@@ -313,3 +313,64 @@ input[type=checkbox] { accent-color: var(--accent); }
   .sidebar-nav { display: flex; flex-wrap: wrap; }
   .nav-group { margin-bottom: 0; }
 }
+
+/* ---- Action bar (project-page create buttons) ---- */
+.action-bar { display: flex; gap: 10px; margin-bottom: 18px; }
+
+/* ---- Modal dialog ----
+   A <dialog> renders open+inline without JS (progressive enhancement); JS
+   closes it on load and reopens it as a true modal via showModal(). */
+dialog.modal {
+  width: min(560px, calc(100vw - 32px));
+  background: var(--bg-1); color: var(--text-primary);
+  border: 1px solid var(--border); border-radius: var(--radius-lg);
+  padding: 0; box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+}
+dialog.modal::backdrop { background: rgba(0,0,0,0.55); }
+.modal-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px; border-bottom: 1px solid var(--border);
+}
+.modal-title { font-size: 14px; font-weight: 600; margin: 0; }
+.modal-close {
+  background: none; border: none; color: var(--text-muted);
+  font-size: 18px; line-height: 1; cursor: pointer; padding: 0 4px;
+}
+.modal-close:hover { color: var(--text-primary); }
+.modal-body { padding: 16px 18px; }
+.modal-foot {
+  display: flex; justify-content: space-between; gap: 10px;
+  padding: 14px 18px; border-top: 1px solid var(--border);
+}
+.modal-foot .spacer { flex: 1; }
+.modal .stack { display: flex; flex-direction: column; gap: 14px; }
+
+/* ---- Wizard step progress ---- */
+.wizard-steps { display: flex; gap: 6px; margin-bottom: 16px; }
+.wizard-steps .dot {
+  flex: 1; text-align: center; font-size: 11px; padding: 5px 4px;
+  border-radius: var(--radius); background: var(--bg-3);
+  color: var(--text-tertiary); border: 1px solid var(--border);
+}
+.wizard-steps .dot.current { background: var(--accent); color: var(--text-inverse); border-color: var(--accent-active); }
+.wizard-steps .dot.done { color: var(--text-secondary); border-color: var(--border-strong); }
+
+/* ---- (i) field hint ---- */
+.hint {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 15px; height: 15px; margin-left: 6px; border-radius: 50%;
+  background: var(--bg-4); color: var(--text-secondary);
+  font-family: var(--font-mono); font-size: 10px; font-style: italic;
+  cursor: help; position: relative; vertical-align: middle;
+}
+.hint:focus { outline: 1px solid var(--accent); }
+.hint .hint-bub {
+  display: none; position: absolute; bottom: calc(100% + 6px); left: 50%;
+  transform: translateX(-50%); width: max-content; max-width: 260px;
+  background: var(--bg-4); color: var(--text-primary);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-md);
+  padding: 8px 10px; font-family: var(--font-sans); font-style: normal;
+  font-size: 12px; line-height: 1.45; text-align: left; letter-spacing: 0;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.4); z-index: 5; white-space: normal;
+}
+.hint:hover .hint-bub, .hint:focus .hint-bub, .hint:focus-within .hint-bub { display: block; }
