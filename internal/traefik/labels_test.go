@@ -6,74 +6,113 @@ import (
 	"github.com/james-smart/outhaul/internal/core"
 )
 
-func TestLabels(t *testing.T) {
-	app := core.App{Name: "web", Domain: "web.example.com"}
+func router(app string, id int64) string { return RouterName(app, id) }
 
-	got := Labels(app, 8080, false)
-
-	want := map[string]string{
-		"traefik.enable":                               "true",
-		"outhaul.managed":                              "true",
-		"outhaul.app":                                  "web",
-		"traefik.http.routers.outhaul-web.rule":        "Host(`web.example.com`)",
-		"traefik.http.routers.outhaul-web.entrypoints": "web",
-		"traefik.http.services.outhaul-web.loadbalancer.server.port": "8080",
+func TestRouteLabelsHostOnly(t *testing.T) {
+	got := RouteLabels("r", "web.example.com", 8080, "", "", false)
+	if got["traefik.http.routers.r.rule"] != "Host(`web.example.com`)" {
+		t.Errorf("rule = %q", got["traefik.http.routers.r.rule"])
 	}
-
-	if len(got) != len(want) {
-		t.Fatalf("got %d labels, want %d\n got=%v", len(got), len(want), got)
+	if got["traefik.http.services.r.loadbalancer.server.port"] != "8080" {
+		t.Errorf("port = %q", got["traefik.http.services.r.loadbalancer.server.port"])
 	}
-	for k, v := range want {
-		if got[k] != v {
-			t.Errorf("label %q = %q, want %q", k, got[k], v)
-		}
+	if _, ok := got["traefik.http.routers.r.middlewares"]; ok {
+		t.Error("host-only route should carry no middleware")
 	}
 }
 
-func TestLabelsRouterNameIsNamespacedPerApp(t *testing.T) {
-	// Two apps must not collide on router/service names.
-	a := Labels(core.App{Name: "api", Domain: "api.test"}, 3000, false)
-	b := Labels(core.App{Name: "web", Domain: "web.test"}, 3000, false)
-
-	if a["traefik.http.routers.outhaul-api.rule"] == "" {
-		t.Error("api router label missing")
+func TestRouteLabelsPathPrefixNoRewrite(t *testing.T) {
+	got := RouteLabels("r", "web.example.com", 8080, "/api", "", false)
+	if got["traefik.http.routers.r.rule"] != "Host(`web.example.com`) && PathPrefix(`/api`)" {
+		t.Errorf("rule = %q", got["traefik.http.routers.r.rule"])
 	}
-	if b["traefik.http.routers.outhaul-web.rule"] == "" {
-		t.Error("web router label missing")
-	}
-	// The api app must not define a web router (no cross-talk).
-	if _, ok := a["traefik.http.routers.outhaul-web.rule"]; ok {
-		t.Error("api labels leaked a web router")
+	if _, ok := got["traefik.http.routers.r.middlewares"]; ok {
+		t.Error("blank internal path should not add a middleware")
 	}
 }
 
-func TestLabelsPortRendered(t *testing.T) {
-	got := Labels(core.App{Name: "svc", Domain: "svc.test"}, 5000, false)
-	if got["traefik.http.services.outhaul-svc.loadbalancer.server.port"] != "5000" {
-		t.Errorf("port label = %q", got["traefik.http.services.outhaul-svc.loadbalancer.server.port"])
+func TestRouteLabelsStripPrefix(t *testing.T) {
+	got := RouteLabels("r", "web.example.com", 8080, "/api", "/", false)
+	if got["traefik.http.routers.r.middlewares"] != "r-strip" {
+		t.Errorf("middlewares = %q, want r-strip", got["traefik.http.routers.r.middlewares"])
+	}
+	if got["traefik.http.middlewares.r-strip.stripprefix.prefixes"] != "/api" {
+		t.Errorf("stripprefix = %q", got["traefik.http.middlewares.r-strip.stripprefix.prefixes"])
+	}
+	if _, ok := got["traefik.http.middlewares.r-addpfx.addprefix.prefix"]; ok {
+		t.Error("internal '/' should strip only, never add a prefix")
 	}
 }
 
-func TestLabelsTLSAddsWebsecureRouter(t *testing.T) {
-	got := Labels(core.App{Name: "web", Domain: "web.example.com"}, 8080, true)
+func TestRouteLabelsStripThenAddPrefix(t *testing.T) {
+	got := RouteLabels("r", "web.example.com", 8080, "/api", "/v1", false)
+	if got["traefik.http.routers.r.middlewares"] != "r-strip,r-addpfx" {
+		t.Errorf("middlewares = %q, want r-strip,r-addpfx", got["traefik.http.routers.r.middlewares"])
+	}
+	if got["traefik.http.middlewares.r-strip.stripprefix.prefixes"] != "/api" {
+		t.Errorf("stripprefix = %q", got["traefik.http.middlewares.r-strip.stripprefix.prefixes"])
+	}
+	if got["traefik.http.middlewares.r-addpfx.addprefix.prefix"] != "/v1" {
+		t.Errorf("addprefix = %q", got["traefik.http.middlewares.r-addpfx.addprefix.prefix"])
+	}
+}
 
-	if got["traefik.http.routers.outhaul-web-tls.entrypoints"] != "websecure" {
+func TestRouteLabelsTLSMirrorsRuleAndMiddlewares(t *testing.T) {
+	got := RouteLabels("r", "web.example.com", 8080, "/api", "/", true)
+	if got["traefik.http.routers.r-tls.entrypoints"] != "websecure" {
 		t.Errorf("missing websecure entrypoint: %v", got)
 	}
-	if got["traefik.http.routers.outhaul-web-tls.tls"] != "true" {
-		t.Errorf("tls not enabled on the secure router: %v", got)
-	}
-	if got["traefik.http.routers.outhaul-web-tls.tls.certresolver"] != "le" {
+	if got["traefik.http.routers.r-tls.tls.certresolver"] != "le" {
 		t.Errorf("certresolver not set: %v", got)
 	}
-	if got["traefik.http.routers.outhaul-web-tls.rule"] != "Host(`web.example.com`)" {
-		t.Errorf("secure router rule wrong: %v", got)
+	if got["traefik.http.routers.r-tls.rule"] != "Host(`web.example.com`) && PathPrefix(`/api`)" {
+		t.Errorf("secure rule = %q", got["traefik.http.routers.r-tls.rule"])
 	}
-	if got["traefik.http.routers.outhaul-web-tls.service"] != "outhaul-web" {
-		t.Errorf("secure router should reuse the app service: %v", got)
+	if got["traefik.http.routers.r-tls.middlewares"] != "r-strip" {
+		t.Errorf("secure router should reuse middlewares: %q", got["traefik.http.routers.r-tls.middlewares"])
 	}
-	http := Labels(core.App{Name: "web", Domain: "web.example.com"}, 8080, false)
-	if _, ok := http["traefik.http.routers.outhaul-web-tls.tls"]; ok {
-		t.Error("HTTP-only labels leaked a TLS router")
+	if got["traefik.http.routers.r-tls.service"] != "r" {
+		t.Errorf("secure router should reuse the service: %q", got["traefik.http.routers.r-tls.service"])
+	}
+}
+
+func TestAppLabelsOneRouterPerDomain(t *testing.T) {
+	app := core.App{Name: "web"}
+	domains := []core.Domain{
+		{ID: 1, Host: "a.example.com"},
+		{ID: 2, Host: "b.example.com"},
+	}
+	got := AppLabels(app, domains, 8080, false)
+	if got["traefik.enable"] != "true" || got["outhaul.app"] != "web" {
+		t.Errorf("ownership markers missing: %v", got)
+	}
+	if got["traefik.http.routers."+router("web", 1)+".rule"] != "Host(`a.example.com`)" {
+		t.Errorf("router for domain 1 wrong: %v", got)
+	}
+	if got["traefik.http.routers."+router("web", 2)+".rule"] != "Host(`b.example.com`)" {
+		t.Errorf("router for domain 2 wrong: %v", got)
+	}
+}
+
+func TestAppLabelsNoDomainsIsInternalOnly(t *testing.T) {
+	got := AppLabels(core.App{Name: "web"}, nil, 8080, false)
+	if got["traefik.enable"] != "false" {
+		t.Errorf("app with no domains should disable Traefik: %v", got)
+	}
+}
+
+func TestAppLabelsPerRowTLS(t *testing.T) {
+	app := core.App{Name: "web"}
+	off := AppLabels(app, []core.Domain{{ID: 1, Host: "a.example.com", TLS: true}}, 8080, false)
+	if _, ok := off["traefik.http.routers."+router("web", 1)+"-tls.tls"]; ok {
+		t.Error("no TLS router expected when globalTLS is off")
+	}
+	on := AppLabels(app, []core.Domain{{ID: 1, Host: "a.example.com", TLS: true}}, 8080, true)
+	if on["traefik.http.routers."+router("web", 1)+"-tls.tls"] != "true" {
+		t.Error("TLS router expected when both row.TLS and globalTLS are set")
+	}
+	opt := AppLabels(app, []core.Domain{{ID: 1, Host: "a.example.com", TLS: false}}, 8080, true)
+	if _, ok := opt["traefik.http.routers."+router("web", 1)+"-tls.tls"]; ok {
+		t.Error("row that opted out of TLS should get no secure router")
 	}
 }

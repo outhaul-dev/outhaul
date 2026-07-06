@@ -29,8 +29,8 @@ const OverrideFile = "outhaul.override.yml"
 //
 // The structure is three fixed levels deep, so it is rendered directly — no
 // YAML dependency. All user-influenced values go through quoteYAML.
-func Override(app core.App, domains []core.ComposeDomain, network string, tlsEnabled bool) []byte {
-	byService := map[string][]core.ComposeDomain{}
+func Override(app core.App, domains []core.Domain, network string, tlsEnabled bool) []byte {
+	byService := map[string][]core.Domain{}
 	var services []string
 	for _, d := range domains {
 		if _, seen := byService[d.Service]; !seen {
@@ -52,7 +52,7 @@ func Override(app core.App, domains []core.ComposeDomain, network string, tlsEna
 			"traefik.docker.network": network,
 		}
 		for _, d := range byService[svc] {
-			for k, v := range traefik.RouteLabels(domainRouter(app.Name, d.ID), d.Domain, d.Port, tlsEnabled) {
+			for k, v := range traefik.RouteLabels(traefik.RouterName(app.Name, d.ID), d.Host, d.Port, d.Path, d.InternalPath, d.TLS && tlsEnabled) {
 				labels[k] = v
 			}
 		}
@@ -75,11 +75,6 @@ func Override(app core.App, domains []core.ComposeDomain, network string, tlsEna
 	fmt.Fprintf(&b, "  %s:\n", quoteYAML(network))
 	b.WriteString("    external: true\n")
 	return []byte(b.String())
-}
-
-// domainRouter names the Traefik router for one compose domain.
-func domainRouter(appName string, domainID int64) string {
-	return fmt.Sprintf("outhaul-%s-d%d", appName, domainID)
 }
 
 // quoteYAML renders s as a double-quoted YAML scalar. Backslash and double

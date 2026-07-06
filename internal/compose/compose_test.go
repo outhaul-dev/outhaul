@@ -49,8 +49,8 @@ func TestProjectName(t *testing.T) {
 
 func TestOverride(t *testing.T) {
 	app := core.App{Name: "shop"}
-	domains := []core.ComposeDomain{
-		{ID: 1, Domain: "shop.example.com", Service: "web", Port: 3000},
+	domains := []core.Domain{
+		{ID: 1, Host: "shop.example.com", Service: "web", Port: 3000, TLS: true},
 	}
 
 	got := string(Override(app, domains, "outhaul", false))
@@ -79,15 +79,32 @@ func TestOverride(t *testing.T) {
 	}
 }
 
+func TestOverridePathAndTLS(t *testing.T) {
+	app := core.App{Name: "shop"}
+	domains := []core.Domain{
+		{ID: 7, Host: "shop.example.com", Service: "api", Port: 8000, Path: "/api", InternalPath: "/", TLS: true},
+	}
+	got := string(Override(app, domains, "outhaul", true))
+	if !strings.Contains(got, "PathPrefix(`/api`)") {
+		t.Errorf("override missing path rule:\n%s", got)
+	}
+	if !strings.Contains(got, "stripprefix.prefixes") {
+		t.Errorf("override missing strip middleware:\n%s", got)
+	}
+	if !strings.Contains(got, "websecure") {
+		t.Errorf("override missing TLS router:\n%s", got)
+	}
+}
+
 // TestOverrideMultipleDomains: several domains on one stack — two sharing a
 // service, one on another service — render as one block per service, each
 // domain with its own uniquely named router.
 func TestOverrideMultipleDomains(t *testing.T) {
 	app := core.App{Name: "shop"}
-	domains := []core.ComposeDomain{
-		{ID: 7, Domain: "shop.example.com", Service: "web", Port: 3000},
-		{ID: 8, Domain: "www.example.com", Service: "web", Port: 3000},
-		{ID: 9, Domain: "api.example.com", Service: "api", Port: 8080},
+	domains := []core.Domain{
+		{ID: 7, Host: "shop.example.com", Service: "web", Port: 3000},
+		{ID: 8, Host: "www.example.com", Service: "web", Port: 3000},
+		{ID: 9, Host: "api.example.com", Service: "api", Port: 8080},
 	}
 
 	got := string(Override(app, domains, "outhaul", false))
