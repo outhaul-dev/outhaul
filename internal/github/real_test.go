@@ -102,6 +102,98 @@ func TestHTTPClientListRepos(t *testing.T) {
 	}
 }
 
+func TestHTTPClientUpsertPRComment(t *testing.T) {
+	t.Run("create", func(t *testing.T) {
+		var gotMethod, gotPath, gotCT, gotAuth, gotBody string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/repos/me/app/issues/42/comments":
+				if got := r.Header.Get("Authorization"); got != "token tok" {
+					t.Errorf("list auth = %q", got)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.Write([]byte("[]"))
+			case r.Method == http.MethodPost && r.URL.Path == "/repos/me/app/issues/42/comments":
+				gotMethod, gotPath = r.Method, r.URL.Path
+				gotCT = r.Header.Get("Content-Type")
+				gotAuth = r.Header.Get("Authorization")
+				var payload struct {
+					Body string `json:"body"`
+				}
+				json.NewDecoder(r.Body).Decode(&payload)
+				gotBody = payload.Body
+				w.WriteHeader(http.StatusCreated)
+			default:
+				t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			}
+		}))
+		defer srv.Close()
+
+		c := New()
+		c.BaseURL = srv.URL
+		if err := c.UpsertPRComment(context.Background(), "tok", "me/app", 42, "hello"); err != nil {
+			t.Fatalf("UpsertPRComment: %v", err)
+		}
+		if gotMethod != http.MethodPost || gotPath != "/repos/me/app/issues/42/comments" {
+			t.Errorf("create request = %s %s, want POST /repos/me/app/issues/42/comments", gotMethod, gotPath)
+		}
+		if gotCT != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", gotCT)
+		}
+		if gotAuth != "token tok" {
+			t.Errorf("Authorization = %q", gotAuth)
+		}
+		if !strings.Contains(gotBody, previewCommentMarker) || !strings.Contains(gotBody, "hello") {
+			t.Errorf("posted body = %q, want marker and text", gotBody)
+		}
+	})
+
+	t.Run("update", func(t *testing.T) {
+		var gotMethod, gotPath, gotCT, gotAuth, gotBody string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/repos/me/app/issues/42/comments":
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode([]map[string]any{
+					{"id": 111, "body": "unrelated chatter"},
+					{"id": 555, "body": previewCommentMarker + "\nold"},
+				})
+			case r.Method == http.MethodPatch && r.URL.Path == "/repos/me/app/issues/comments/555":
+				gotMethod, gotPath = r.Method, r.URL.Path
+				gotCT = r.Header.Get("Content-Type")
+				gotAuth = r.Header.Get("Authorization")
+				var payload struct {
+					Body string `json:"body"`
+				}
+				json.NewDecoder(r.Body).Decode(&payload)
+				gotBody = payload.Body
+				w.WriteHeader(http.StatusOK)
+			default:
+				t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			}
+		}))
+		defer srv.Close()
+
+		c := New()
+		c.BaseURL = srv.URL
+		if err := c.UpsertPRComment(context.Background(), "tok", "me/app", 42, "fresh"); err != nil {
+			t.Fatalf("UpsertPRComment: %v", err)
+		}
+		if gotMethod != http.MethodPatch || gotPath != "/repos/me/app/issues/comments/555" {
+			t.Errorf("update request = %s %s, want PATCH /repos/me/app/issues/comments/555", gotMethod, gotPath)
+		}
+		if gotCT != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", gotCT)
+		}
+		if gotAuth != "token tok" {
+			t.Errorf("Authorization = %q", gotAuth)
+		}
+		if !strings.Contains(gotBody, previewCommentMarker) || !strings.Contains(gotBody, "fresh") {
+			t.Errorf("patched body = %q, want marker and text", gotBody)
+		}
+	})
+}
+
 func TestHTTPClientErrorStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
