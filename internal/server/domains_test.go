@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"net/http"
 	"net/url"
 	"strings"
 	"testing"
@@ -78,6 +79,63 @@ func TestAddDomainSslipGeneratesHost(t *testing.T) {
 	}
 	if !hasSslip {
 		t.Errorf("expected a generated sslip.io host: %+v", got)
+	}
+}
+
+func TestAddDomainSslipRequiresServerIP(t *testing.T) {
+	e := newTestEnv(t)
+	e.srv.serverIP = ""
+	e.completeSetup(t)
+	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+
+	r := e.postForm(t, "/apps/"+itoa(app.ID)+"/domains", url.Values{"host_kind": {"sslip"}})
+	r.Body.Close()
+	if r.StatusCode < 400 {
+		t.Errorf("sslip host with no server IP should be rejected, got %d", r.StatusCode)
+	}
+}
+
+func TestAddDomainRejectsInjectionHost(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+
+	form := url.Values{"host_kind": {"custom"}, "host": {"x`)||Host(`y"}}
+	r := e.postForm(t, "/apps/"+itoa(app.ID)+"/domains", form)
+	r.Body.Close()
+	if r.StatusCode < 400 {
+		t.Errorf("injection host should be rejected, got %d", r.StatusCode)
+	}
+}
+
+func TestUpdateDomainChangesServiceAndPort(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "shop", RepoURL: "https://x/y.git", Kind: core.KindCompose, ComposePath: "docker-compose.yml"})
+	d, _ := e.store.AddDomain(context.Background(), core.Domain{AppID: app.ID, Host: "shop.test", Service: "web", Port: 3000, TLS: true})
+
+	up := url.Values{"host_kind": {"custom"}, "host": {"shop.test"}, "service": {"api"}, "port": {"9000"}}
+	r := e.postForm(t, "/apps/"+itoa(app.ID)+"/domains/"+itoa(d.ID), up)
+	r.Body.Close()
+	if r.StatusCode >= 400 {
+		t.Fatalf("update failed: %d", r.StatusCode)
+	}
+	got, _ := e.store.GetDomain(context.Background(), app.ID, d.ID)
+	if got.Service != "api" || got.Port != 9000 {
+		t.Errorf("service/port not updated: %+v", got)
+	}
+}
+
+func TestUpdateNonexistentDomain404(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+
+	form := url.Values{"host_kind": {"custom"}, "host": {"x.test"}}
+	r := e.postForm(t, "/apps/"+itoa(app.ID)+"/domains/9999", form)
+	r.Body.Close()
+	if r.StatusCode != http.StatusNotFound {
+		t.Errorf("update of missing domain = %d, want 404", r.StatusCode)
 	}
 }
 

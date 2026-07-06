@@ -34,6 +34,13 @@ var envKeyRe = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
 // composeServiceRe matches compose service names (the compose spec's own rule).
 var composeServiceRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 
+// domainHostRe matches a bare, lowercase hostname (dot-separated DNS labels).
+var domainHostRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$`)
+
+// urlPathRe matches a safe absolute URL path prefix (no backticks, spaces, or
+// other characters that could corrupt a Traefik rule).
+var urlPathRe = regexp.MustCompile(`^/[A-Za-z0-9._~%/-]*$`)
+
 // deployAppPort mirrors deploy.AppPort — the port single-container apps listen
 // on — for domain rows created without a compose service.
 const deployAppPort = 8080
@@ -492,7 +499,8 @@ func (s *Server) parseDomainForm(r *http.Request, app core.App) (core.Domain, st
 		}
 		host = app.Name + "." + s.serverIP + ".sslip.io"
 	}
-	if host == "" || strings.ContainsAny(host, " /") {
+	host = strings.ToLower(host)
+	if !domainHostRe.MatchString(host) {
 		return core.Domain{}, "Domain must be a bare hostname (e.g. app.example.com)."
 	}
 
@@ -535,8 +543,8 @@ func cleanURLPath(p string) (string, string) {
 	if p == "" {
 		return "", ""
 	}
-	if !strings.HasPrefix(p, "/") || strings.ContainsAny(p, " ") || strings.Contains(p, "..") {
-		return "", "Paths must start with '/' and contain no spaces or '..' (e.g. /api)."
+	if !urlPathRe.MatchString(p) || strings.Contains(p, "..") {
+		return "", "Paths must be an absolute path like /api (letters, digits, . _ ~ % - / only, no '..')."
 	}
 	if p != "/" {
 		p = strings.TrimRight(p, "/")
