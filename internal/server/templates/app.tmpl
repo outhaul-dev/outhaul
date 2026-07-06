@@ -87,6 +87,40 @@
 
 {{template "domainform" .}}
 
+{{if ne .App.Kind "compose"}}
+<section class="panel">
+  <div class="log-head">
+    <h2 class="panel-title">Volumes</h2>
+    <button type="button" class="btn btn-primary" onclick="openVolumeDialog()">+ Add volume</button>
+  </div>
+  {{if .Volumes}}
+  <table class="table">
+    <thead><tr><th>Mount path</th><th>Docker volume</th><th></th></tr></thead>
+    <tbody>
+      {{range .Volumes}}
+      <tr>
+        <td class="mono">{{.MountPath}}</td>
+        <td class="mono muted">{{.Name}}</td>
+        <td>
+          <button type="button" class="linkbtn"
+            onclick='openVolumeDialog({"id":"{{.ID}}","mount_path":"{{.MountPath}}"})'>edit</button>
+          <form method="post" action="/apps/{{$.App.ID}}/volumes/{{.ID}}/delete" class="inline" onsubmit="return confirm('Detach the volume at {{.MountPath}}? The data is kept.');">
+            <button type="submit" class="linkbtn">detach</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No volumes. This app is stateless until you attach one — data written outside a volume is lost on the next deploy.</p>
+  {{end}}
+  <p class="muted env-note">Volume changes apply on this app's next deploy. Detaching keeps the underlying data.</p>
+</section>
+
+{{template "volumeform" .}}
+{{end}}
+
 <section class="panel">
   <div class="log-head">
     <h2 class="panel-title">Metrics</h2>

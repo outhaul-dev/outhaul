@@ -1,0 +1,57 @@
+{{define "volumeform"}}
+<dialog id="volume-dialog" class="modal" open aria-labelledby="volume-dialog-title">
+  <form method="post" id="volume-form" action="/apps/{{.App.ID}}/volumes">
+    <div class="modal-head">
+      <h3 class="modal-title" id="volume-dialog-title">New volume</h3>
+      <button type="button" class="modal-close" aria-label="Close" onclick="this.closest('dialog').close()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="stack">
+        <label class="field">
+          <span>Mount path {{template "hint" "Absolute path inside the container where the volume is mounted, e.g. /data. Kept across redeploys."}}</span>
+          <input type="text" name="mount_path" id="volume-mount-path" placeholder="/data" autocomplete="off">
+        </label>
+        <p class="muted env-note">Volume changes apply on this app's next deploy. Detaching keeps the underlying data.</p>
+      </div>
+    </div>
+
+    <div class="modal-foot">
+      <button type="submit" class="btn btn-primary" id="volume-submit">Create volume</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+  // Volume dialog: same progressive-enhancement pattern as the domain wizard.
+  // Ships open (inline, usable without JS); JS makes it modal and exposes
+  // openVolumeDialog(row) so the Volumes section can open it fresh or
+  // prefilled for an edit. The server validates the submitted form regardless.
+  (function () {
+    var dialog = document.getElementById('volume-dialog');
+    if (!dialog) return;
+    var form = document.getElementById('volume-form');
+    var addAction = form.getAttribute('action');
+    var title = document.getElementById('volume-dialog-title');
+    var submitBtn = document.getElementById('volume-submit');
+    var input = document.getElementById('volume-mount-path');
+
+    if (dialog.open) dialog.close();
+    dialog.addEventListener('click', function (e) { if (e.target === dialog) dialog.close(); });
+
+    window.openVolumeDialog = function (row) {
+      if (row) {
+        title.textContent = 'Edit volume';
+        submitBtn.textContent = 'Save volume';
+        form.setAttribute('action', addAction + '/' + row.id);
+        input.value = row.mount_path || '';
+      } else {
+        title.textContent = 'New volume';
+        submitBtn.textContent = 'Create volume';
+        form.setAttribute('action', addAction);
+        form.reset();
+      }
+      dialog.showModal();
+    };
+  })();
+</script>
+{{end}}

@@ -41,6 +41,10 @@ var domainHostRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-
 // other characters that could corrupt a Traefik rule).
 var urlPathRe = regexp.MustCompile(`^/[A-Za-z0-9._~%/-]*$`)
 
+// mountPathRe matches a safe absolute container mount path (no backticks,
+// spaces, or shell metacharacters); "" and ".." are rejected by the caller.
+var mountPathRe = regexp.MustCompile(`^/[A-Za-z0-9._/-]+$`)
+
 // deployAppPort mirrors deploy.AppPort — the port single-container apps listen
 // on — for domain rows created without a compose service.
 const deployAppPort = 8080
@@ -358,6 +362,14 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	var volumes []core.Volume
+	if app.Kind != core.KindCompose {
+		volumes, err = s.store.ListVolumes(r.Context(), id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 	if app.Kind == core.KindCompose {
 		cs, err := s.runtime.ListContainers(r.Context(),
 			map[string]string{"com.docker.compose.project": compose.ProjectName(app.Name)})
@@ -388,6 +400,7 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 		"Runtime":      runtimeState,
 		"Stack":        stack,
 		"Domains":      domains,
+		"Volumes":      volumes,
 		"ServerIP":     s.serverIP,
 		"TLSAvailable": s.tlsEnabled,
 	}
@@ -494,6 +507,96 @@ func (s *Server) handleDeleteDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
+// handleAddVolume attaches a persistent volume to a single-container app. The
+// volume is created and mounted on the app's next deploy.
+func (s *Server) handleAddVolume(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	app, err := s.store.GetApp(r.Context(), id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	mountPath, verr := parseVolumeForm(r, app)
+	if verr != "" {
+		http.Error(w, verr, http.StatusBadRequest)
+		return
+	}
+	if _, err := s.store.AddVolume(r.Context(), id, mountPath); err != nil {
+		http.Error(w, "Could not add volume (is that path already used?): "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
+// handleUpdateVolume changes a volume's mount path (its Docker name is fixed).
+func (s *Server) handleUpdateVolume(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	volumeID, ok2 := parseID(r.PathValue("volumeID"))
+	if !ok || !ok2 {
+		http.NotFound(w, r)
+		return
+	}
+	app, err := s.store.GetApp(r.Context(), id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := s.store.GetVolume(r.Context(), id, volumeID); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	mountPath, verr := parseVolumeForm(r, app)
+	if verr != "" {
+		http.Error(w, verr, http.StatusBadRequest)
+		return
+	}
+	if err := s.store.UpdateVolume(r.Context(), id, volumeID, mountPath); err != nil {
+		http.Error(w, "Could not update volume: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
+// handleDeleteVolume detaches a volume (removes the row); the Docker volume is
+// left in place and becomes a reclaimable orphan in the inventory.
+func (s *Server) handleDeleteVolume(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	volumeID, ok2 := parseID(r.PathValue("volumeID"))
+	if !ok || !ok2 {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := s.store.GetApp(r.Context(), id); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if err := s.store.DeleteVolume(r.Context(), id, volumeID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
+// parseVolumeForm validates the mount path. Volumes are only for
+// single-container apps (compose stacks declare their own in the compose file).
+func parseVolumeForm(r *http.Request, app core.App) (string, string) {
+	if app.Kind == core.KindCompose {
+		return "", "Compose stacks declare volumes in their compose file."
+	}
+	mountPath := strings.TrimSpace(r.FormValue("mount_path"))
+	if !mountPathRe.MatchString(mountPath) || strings.Contains(mountPath, "..") {
+		return "", "Mount path must be an absolute path like /data (letters, digits, . _ - / only, no '..')."
+	}
+	if mountPath != "/" {
+		mountPath = strings.TrimRight(mountPath, "/")
+	}
+	return mountPath, ""
 }
 
 // parseDomainForm reads and validates the wizard's fields for one route. For a

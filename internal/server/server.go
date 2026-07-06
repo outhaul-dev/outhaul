@@ -122,7 +122,7 @@ func (s *Server) parseTemplates() error {
 		t := template.New("base").Funcs(templateFuncs())
 		// appform.tmpl is a shared partial (the create-app form, used by the
 		// Apps and project-detail pages); parsing it into every set is harmless.
-		t, err := t.ParseFS(templatesFS, "templates/base.tmpl", "templates/appform.tmpl", "templates/hint.tmpl", "templates/domainform.tmpl", "templates/backups.tmpl", "templates/"+p+".tmpl")
+		t, err := t.ParseFS(templatesFS, "templates/base.tmpl", "templates/appform.tmpl", "templates/hint.tmpl", "templates/domainform.tmpl", "templates/volumeform.tmpl", "templates/backups.tmpl", "templates/"+p+".tmpl")
 		if err != nil {
 			return err
 		}
@@ -178,6 +178,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /apps/{id}/domains", s.requireAuth(s.handleAddDomain))
 	mux.HandleFunc("POST /apps/{id}/domains/{domainID}", s.requireAuth(s.handleUpdateDomain))
 	mux.HandleFunc("POST /apps/{id}/domains/{domainID}/delete", s.requireAuth(s.handleDeleteDomain))
+	mux.HandleFunc("POST /apps/{id}/volumes", s.requireAuth(s.handleAddVolume))
+	mux.HandleFunc("POST /apps/{id}/volumes/{volumeID}", s.requireAuth(s.handleUpdateVolume))
+	mux.HandleFunc("POST /apps/{id}/volumes/{volumeID}/delete", s.requireAuth(s.handleDeleteVolume))
 	mux.HandleFunc("POST /apps/{id}/env", s.requireAuth(s.handleSetEnv))
 	mux.HandleFunc("POST /apps/{id}/env/delete", s.requireAuth(s.handleDeleteEnv))
 	mux.HandleFunc("POST /apps/{id}/stop", s.requireAuth(s.handleStopApp))
