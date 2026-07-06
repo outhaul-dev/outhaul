@@ -308,7 +308,11 @@ func (f *Fake) ListVolumesFull(_ context.Context, match map[string]string) ([]Vo
 			}
 		}
 		if ok {
-			out = append(out, VolumeInfo{Name: name, Labels: labels})
+			cp := make(map[string]string, len(labels))
+			for k, val := range labels {
+				cp[k] = val
+			}
+			out = append(out, VolumeInfo{Name: name, Labels: cp})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })

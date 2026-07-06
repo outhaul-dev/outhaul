@@ -152,4 +152,8 @@ func TestFakeRemoveVolume(t *testing.T) {
 	if _, ok := f.Volumes["v1"]; ok {
 		t.Fatal("volume still present after RemoveVolume")
 	}
+	// Not-found is success per the Client contract.
+	if err := f.RemoveVolume(ctx, "does-not-exist", false); err != nil {
+		t.Fatalf("RemoveVolume of a missing volume should be nil, got %v", err)
+	}
 }
