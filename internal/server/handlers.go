@@ -391,18 +391,43 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 	} else if c, err := s.runtime.FindContainer(r.Context(), appContainerPrefix+app.Name); err == nil && c != nil {
 		runtimeState = c.State
 	}
+	attachments, err := s.store.ListAttachments(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	projDatabases, err := s.store.ListDatabasesByProject(r.Context(), app.ProjectID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	dbName := map[int64]string{}
+	for _, d := range projDatabases {
+		dbName[d.ID] = d.Name
+	}
+	type attachRow struct {
+		ID     int64
+		EnvVar string
+		DBName string
+	}
+	attachRows := make([]attachRow, 0, len(attachments))
+	for _, a := range attachments {
+		attachRows = append(attachRows, attachRow{ID: a.ID, EnvVar: a.EnvVar, DBName: dbName[a.DatabaseID]})
+	}
 	data := map[string]any{
-		"Title":        app.Name,
-		"Active":       "apps",
-		"App":          app,
-		"Deployments":  deployments,
-		"Env":          maskEnv(envVars),
-		"Runtime":      runtimeState,
-		"Stack":        stack,
-		"Domains":      domains,
-		"Volumes":      volumes,
-		"ServerIP":     s.serverIP,
-		"TLSAvailable": s.tlsEnabled,
+		"Title":         app.Name,
+		"Active":        "apps",
+		"App":           app,
+		"Deployments":   deployments,
+		"Env":           maskEnv(envVars),
+		"Runtime":       runtimeState,
+		"Stack":         stack,
+		"Domains":       domains,
+		"Volumes":       volumes,
+		"Attachments":   attachRows,
+		"ProjDatabases": projDatabases,
+		"ServerIP":      s.serverIP,
+		"TLSAvailable":  s.tlsEnabled,
 	}
 	// Breadcrumb context; tolerate a missing project rather than 500 the page.
 	if p, err := s.store.GetProject(r.Context(), app.ProjectID); err == nil {

@@ -138,6 +138,43 @@ git push outhaul {{.PushBranch}}</pre>
 {{end}}
 
 <section class="panel">
+  <h2 class="panel-title">Databases</h2>
+  {{if .Attachments}}
+  <table class="table">
+    <thead><tr><th>Env var</th><th>Database</th><th></th></tr></thead>
+    <tbody>
+      {{range .Attachments}}
+      <tr>
+        <td class="mono">{{.EnvVar}}</td>
+        <td class="mono muted">{{.DBName}}</td>
+        <td>
+          <form method="post" action="/apps/{{$.App.ID}}/attachments/{{.ID}}/delete" class="inline">
+            <button type="submit" class="linkbtn">detach</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No databases attached. Attaching one injects its connection URL as an env var at deploy time.</p>
+  {{end}}
+  {{if .ProjDatabases}}
+  <form method="post" action="/apps/{{.App.ID}}/attachments" class="grid-form env-add">
+    <label class="field"><span>Database</span>
+      <select name="database_id" required>
+        {{range .ProjDatabases}}<option value="{{.ID}}">{{.Name}} ({{.Engine}})</option>{{end}}
+      </select>
+    </label>
+    <label class="field"><span>Env var</span><input type="text" name="env_var" value="DATABASE_URL" required></label>
+    <button type="submit" class="btn btn-primary">Attach</button>
+  </form>
+  {{else}}
+  <p class="muted env-note">Create a database in this project to attach it here.</p>
+  {{end}}
+</section>
+
+<section class="panel">
   <div class="log-head">
     <h2 class="panel-title">Metrics</h2>
     <span class="log-status" id="metrics-indicator">connecting…</span>

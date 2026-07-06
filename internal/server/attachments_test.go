@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/james-smart/outhaul/internal/core"
@@ -56,5 +57,22 @@ func TestAttachAndDetachDatabase(t *testing.T) {
 	atts, _ = e.store.ListAttachments(context.Background(), app.ID)
 	if len(atts) != 0 {
 		t.Fatalf("expected 0 after detach, got %d", len(atts))
+	}
+}
+
+func TestAppPageShowsAttachments(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, err := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	if err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+	db := seedDatabase(t, e, "web-db", "postgres")
+	if _, err := e.store.AttachDatabase(context.Background(), app.ID, db.ID, "DATABASE_URL"); err != nil {
+		t.Fatal(err)
+	}
+	body := body(t, e.get(t, "/apps/"+itoa(app.ID)))
+	if !strings.Contains(body, "DATABASE_URL") || !strings.Contains(body, "web-db") {
+		t.Fatalf("app page missing attachment; body:\n%s", body)
 	}
 }
