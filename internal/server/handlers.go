@@ -390,7 +390,6 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 		"Domains":      domains,
 		"ServerIP":     s.serverIP,
 		"TLSAvailable": s.tlsEnabled,
-		"OpenDialog":   "",
 	}
 	// Breadcrumb context; tolerate a missing project rather than 500 the page.
 	if p, err := s.store.GetProject(r.Context(), app.ProjectID); err == nil {
@@ -454,7 +453,8 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if _, err := s.store.GetDomain(r.Context(), id, domainID); err != nil {
+	existing, err := s.store.GetDomain(r.Context(), id, domainID)
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -465,6 +465,12 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 	}
 	d.ID = domainID
 	d.AppID = id
+	// When HTTPS automation is unavailable the wizard disables the toggle, which
+	// would submit no value and silently clear a previously-enabled certificate.
+	// Preserve the stored intent so re-enabling ACME later restores HTTPS.
+	if !s.tlsEnabled {
+		d.TLS = existing.TLS
+	}
 	if err := s.store.UpdateDomain(r.Context(), d); err != nil {
 		http.Error(w, "Could not update domain: "+err.Error(), http.StatusBadRequest)
 		return

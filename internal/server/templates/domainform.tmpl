@@ -1,5 +1,5 @@
 {{define "domainform"}}
-<dialog id="domain-dialog" class="modal" open{{if eq .OpenDialog "domain-dialog"}} data-reopen{{end}} aria-labelledby="domain-dialog-title">
+<dialog id="domain-dialog" class="modal" open aria-labelledby="domain-dialog-title">
   <form method="post" id="domain-form" action="/apps/{{.App.ID}}/domains">
     <div class="modal-head">
       <h3 class="modal-title" id="domain-dialog-title">New domain</h3>
@@ -182,7 +182,6 @@
       show(0);
       dialog.showModal();
     };
-    if (dialog.hasAttribute('data-reopen')) dialog.showModal();
   })();
 </script>
 {{end}}

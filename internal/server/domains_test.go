@@ -153,6 +153,7 @@ func TestAddDomainInternalPathRequiresExternalPath(t *testing.T) {
 
 func TestUpdateAndDeleteDomain(t *testing.T) {
 	e := newTestEnv(t)
+	e.srv.tlsEnabled = true // ACME on: the TLS toggle is live, so an empty submit clears it
 	e.completeSetup(t)
 	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
 	d, _ := e.store.AddDomain(context.Background(), core.Domain{AppID: app.ID, Host: "edit.test", Port: 8080, TLS: true})
@@ -175,6 +176,23 @@ func TestUpdateAndDeleteDomain(t *testing.T) {
 	}
 	if list, _ := e.store.ListDomains(context.Background(), app.ID); len(list) != 1 { // only the seeded web.test remains
 		t.Errorf("delete left %d rows, want 1", len(list))
+	}
+}
+
+func TestUpdateDomainPreservesTLSWhenAcmeOff(t *testing.T) {
+	e := newTestEnv(t)
+	e.srv.tlsEnabled = false
+	e.completeSetup(t)
+	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	d, _ := e.store.AddDomain(context.Background(), core.Domain{AppID: app.ID, Host: "keep.test", Port: 8080, TLS: true})
+
+	// Edit the host only; the disabled TLS checkbox sends nothing.
+	up := url.Values{"host_kind": {"custom"}, "host": {"kept.test"}}
+	e.postForm(t, "/apps/"+itoa(app.ID)+"/domains/"+itoa(d.ID), up).Body.Close()
+
+	got, _ := e.store.GetDomain(context.Background(), app.ID, d.ID)
+	if got.Host != "kept.test" || !got.TLS {
+		t.Errorf("TLS should be preserved when ACME is off: %+v", got)
 	}
 }
 
