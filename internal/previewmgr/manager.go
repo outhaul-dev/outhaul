@@ -39,6 +39,10 @@ type Store interface {
 type Notifier interface{ Notify() }
 
 // DBProvisioner creates and destroys the isolated databases previews use.
+//
+// Destroy removes the preview's database container AND its store row. It must
+// not depend on the attachment still existing or being gone — teardown calls it
+// while the attachment row is still present.
 type DBProvisioner interface {
 	Provision(ctx context.Context, d core.Database) (core.Database, error)
 	Destroy(ctx context.Context, d core.Database) error
@@ -140,6 +144,22 @@ func (m *Manager) spawn(ctx context.Context, parent core.App, cfg core.PreviewCo
 		return err
 	}
 
+	// Any failure after the app row exists rolls the child back, so a later
+	// re-open (which routes to redeploy) never inherits a half-built preview.
+	if err := m.buildPreview(ctx, parent, child, cfg, ev); err != nil {
+		m.cleanupChild(ctx, child)
+		return err
+	}
+
+	m.notifier.Notify()
+	m.comment(ctx, cfg, ev.BaseRepoFullName, ev.Number, buildingComment(ev.HeadSHA))
+	return nil
+}
+
+// buildPreview populates a freshly-created child app: env, isolated databases,
+// domain rows, the preview URL var, and the first deployment. It returns the
+// first error; the caller rolls the child back on failure.
+func (m *Manager) buildPreview(ctx context.Context, parent, child core.App, cfg core.PreviewConfig, ev webhook.PullRequestEvent) error {
 	if err := m.copyEnv(ctx, parent.ID, child.ID, ev.Number); err != nil {
 		return err
 	}
@@ -152,13 +172,27 @@ func (m *Manager) spawn(ctx context.Context, parent core.App, cfg core.PreviewCo
 	if err := m.injectPreviewURL(ctx, child.ID); err != nil {
 		return err
 	}
-
 	if _, err := m.store.CreateDeployment(ctx, child.ID); err != nil {
 		return err
 	}
-	m.notifier.Notify()
-	m.comment(ctx, cfg, ev.BaseRepoFullName, ev.Number, buildingComment(ev.HeadSHA))
 	return nil
+}
+
+// cleanupChild best-effort destroys a partially-built preview: its provisioned
+// databases (via current attachments) and its app row. Used to roll back a
+// spawn that failed after the child app row was created.
+func (m *Manager) cleanupChild(ctx context.Context, child core.App) {
+	atts, _ := m.store.ListAttachments(ctx, child.ID)
+	for _, a := range atts {
+		if db, err := m.store.GetDatabase(ctx, a.DatabaseID); err == nil {
+			if err := m.dbprov.Destroy(ctx, db); err != nil {
+				log.Printf("previewmgr: rollback destroy db %s: %v", db.Name, err)
+			}
+		}
+	}
+	if err := m.store.DeleteApp(ctx, child.ID); err != nil {
+		log.Printf("previewmgr: rollback delete app %s: %v", child.Name, err)
+	}
 }
 
 // copyEnv copies the parent's non-prod env into the child (shared+preview),
@@ -223,6 +257,7 @@ func (m *Manager) provisionDatabases(ctx context.Context, parent, child core.App
 			return err
 		}
 		if _, err := m.store.AttachDatabase(ctx, child.ID, created.ID, a.EnvVar); err != nil {
+			_ = m.dbprov.Destroy(ctx, created) // don't leak the just-created DB
 			return err
 		}
 	}

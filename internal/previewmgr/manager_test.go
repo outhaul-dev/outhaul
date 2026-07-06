@@ -43,12 +43,16 @@ func (d *fakeDocker) RemoveApp(_ context.Context, name string) error {
 // real row. Provision inserts the row and marks it running; Destroy records the
 // call. Counters let tests assert how many DBs were created/destroyed.
 type fakeDBProvisioner struct {
-	st          *store.Store
-	provisioned int
-	destroyed   int
+	st            *store.Store
+	provisioned   int
+	destroyed     int
+	failProvision bool
 }
 
 func (p *fakeDBProvisioner) Provision(ctx context.Context, d core.Database) (core.Database, error) {
+	if p.failProvision {
+		return core.Database{}, context.DeadlineExceeded
+	}
 	created, err := p.st.CreateDatabase(ctx, d)
 	if err != nil {
 		return core.Database{}, err
@@ -424,6 +428,32 @@ func TestTeardownFailureLeavesAppForRetry(t *testing.T) {
 	}
 	if len(atts) != 1 {
 		t.Errorf("child attachments = %d, want 1 (preserved for retry)", len(atts))
+	}
+}
+
+func TestSpawnRollsBackOnFailure(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	repo := "acme/web"
+	parent := h.seedGithubApp(t, "web", repo, nil)
+	h.seedAttachment(t, parent, "web-db", "DATABASE_URL") // makes provisionDatabases run
+
+	h.dbprov.failProvision = true
+	if err := h.mgr.Handle(ctx, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	// (a) The child was rolled back — no dangling row.
+	if _, err := h.st.GetPreviewByPR(ctx, parent.ID, 42); err == nil {
+		t.Fatal("child should have been rolled back after a failed spawn")
+	}
+	// (b) No deploy was enqueued and the worker was not woken.
+	if h.notifier.notified {
+		t.Error("notifier should not fire when spawn fails")
+	}
+	// (c) No comment posted for a preview that never came up.
+	if len(h.gh.comments) != 0 {
+		t.Errorf("expected no PR comments on a failed spawn, got %v", h.gh.comments)
 	}
 }
 
