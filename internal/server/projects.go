@@ -127,6 +127,7 @@ func (s *Server) renderProject(w http.ResponseWriter, r *http.Request, status in
 		"Env":             maskEnv(envVars),
 		"Projects":        projects,
 		"SelectedProject": p.ID,
+		"InProject":       true,
 		"Return":          "/projects/" + strconv.FormatInt(p.ID, 10),
 	}
 	if errMsg != "" {

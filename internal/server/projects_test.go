@@ -264,3 +264,39 @@ func TestProjectsPageUsesProjectWording(t *testing.T) {
 		t.Error(`projects page should say "project", not "workspace"`)
 	}
 }
+
+// projectByName returns the project with the given name. Projects are created
+// via the HTTP form (which returns no ID), so tests look them up by name.
+func projectByName(t *testing.T, e *testEnv, name string) core.Project {
+	t.Helper()
+	projects, err := e.store.ListProjects(context.Background())
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	for _, p := range projects {
+		if p.Name == name {
+			return p
+		}
+	}
+	t.Fatalf("project %q not found", name)
+	return core.Project{}
+}
+
+func TestProjectPageHasCreateModals(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	e.postForm(t, "/projects", url.Values{"name": {"shop"}}).Body.Close()
+	shop := projectByName(t, e, "shop")
+
+	resp := e.get(t, "/projects/"+itoa(shop.ID))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET project = %d, want 200", resp.StatusCode)
+	}
+	page := body(t, resp)
+	if !strings.Contains(page, `id="db-dialog"`) {
+		t.Error("project page should contain the database create dialog")
+	}
+	if !strings.Contains(page, "action-bar") {
+		t.Error("project page should have the action bar")
+	}
+}
