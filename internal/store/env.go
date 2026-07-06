@@ -8,9 +8,23 @@ import (
 	"github.com/james-smart/outhaul/internal/core"
 )
 
-// SetEnv upserts an env var for an app, encrypting the value at rest.
+// SetEnv upserts an env var for an app, encrypting the value at rest. New rows
+// default to scope 'shared'; updates to an existing row leave its scope intact
+// (use SetEnvScoped to change scope explicitly).
 func (s *Store) SetEnv(ctx context.Context, appID int64, key, value string, isSecret bool) error {
-	return s.SetEnvScoped(ctx, appID, key, value, isSecret, core.ScopeShared)
+	if s.box == nil {
+		return fmt.Errorf("store: no secret box configured; cannot store env")
+	}
+	enc, err := s.box.Seal([]byte(value))
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx,
+		`INSERT INTO app_env (app_id, key, value, is_secret, scope, created_at)
+		 VALUES (?, ?, ?, ?, 'shared', ?)
+		 ON CONFLICT(app_id, key) DO UPDATE SET value=excluded.value, is_secret=excluded.is_secret`,
+		appID, key, enc, boolToInt(isSecret), fmtTime(time.Now().UTC()))
+	return err
 }
 
 // SetEnvScoped upserts an env var with an explicit scope.

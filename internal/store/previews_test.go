@@ -62,3 +62,64 @@ func TestCreatePreviewChildApp(t *testing.T) {
 		t.Fatalf("ListPreviews len = %d", len(list))
 	}
 }
+
+func TestSetEnvPreservesScope(t *testing.T) {
+	s := openWithBox(t)
+	ctx := context.Background()
+	app, _ := s.CreateApp(ctx, core.App{Name: "web", Source: core.SourcePublic, Kind: core.KindNixpacks, Branch: "main"})
+	if err := s.SetEnvScoped(ctx, app.ID, "K", "v", false, core.ScopeProd); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetEnv(ctx, app.ID, "K", "v2", false); err != nil {
+		t.Fatal(err)
+	}
+	vars, _ := s.ListEnv(ctx, app.ID)
+	if len(vars) != 1 || vars[0].Value != "v2" || vars[0].Scope != core.ScopeProd {
+		t.Fatalf("SetEnv clobbered scope or value: %+v", vars)
+	}
+}
+
+func TestListPreviewsForParent(t *testing.T) {
+	s := openWithBox(t)
+	ctx := context.Background()
+	parent, _ := s.CreateApp(ctx, core.App{Name: "web", Source: core.SourceGithub, Kind: core.KindNixpacks, Branch: "main"})
+	if _, err := s.CreateApp(ctx, core.App{
+		Name: core.PreviewAppName("web", 7), Source: core.SourceGithub, Kind: core.KindNixpacks,
+		Branch: "b7", ParentID: parent.ID, PRNumber: 7, Ephemeral: true, PreviewStatus: core.PreviewBuilding,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateApp(ctx, core.App{
+		Name: core.PreviewAppName("web", 3), Source: core.SourceGithub, Kind: core.KindNixpacks,
+		Branch: "b3", ParentID: parent.ID, PRNumber: 3, Ephemeral: true, PreviewStatus: core.PreviewBuilding,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := s.ListPreviewsForParent(ctx, parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 || list[0].PRNumber != 3 || list[1].PRNumber != 7 {
+		t.Fatalf("ListPreviewsForParent = %+v", list)
+	}
+}
+
+func TestSetPreviewStatus(t *testing.T) {
+	s := openWithBox(t)
+	ctx := context.Background()
+	parent, _ := s.CreateApp(ctx, core.App{Name: "web", Source: core.SourceGithub, Kind: core.KindNixpacks, Branch: "main"})
+	child, err := s.CreateApp(ctx, core.App{
+		Name: core.PreviewAppName("web", 9), Source: core.SourceGithub, Kind: core.KindNixpacks,
+		Branch: "b9", ParentID: parent.ID, PRNumber: 9, Ephemeral: true, PreviewStatus: core.PreviewBuilding,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetPreviewStatus(ctx, child.ID, core.PreviewReady); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetPreviewByPR(ctx, parent.ID, 9)
+	if err != nil || got.PreviewStatus != core.PreviewReady {
+		t.Fatalf("SetPreviewStatus: got %+v, err %v", got, err)
+	}
+}
