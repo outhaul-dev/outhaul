@@ -84,33 +84,33 @@ func TestComposeDomainsCRUD(t *testing.T) {
 		t.Fatalf("CreateApp: %v", err)
 	}
 
-	web, err := st.AddComposeDomain(ctx, core.ComposeDomain{
-		AppID: app.ID, Domain: "shop.example.com", Service: "web", Port: 3000,
+	web, err := st.AddDomain(ctx, core.Domain{
+		AppID: app.ID, Host: "shop.example.com", Service: "web", Port: 3000,
 	})
 	if err != nil {
-		t.Fatalf("AddComposeDomain: %v", err)
+		t.Fatalf("AddDomain: %v", err)
 	}
 	if web.ID == 0 {
-		t.Error("AddComposeDomain must return the row ID")
+		t.Error("AddDomain must return the row ID")
 	}
-	if _, err := st.AddComposeDomain(ctx, core.ComposeDomain{
-		AppID: app.ID, Domain: "api.example.com", Service: "api", Port: 8080,
+	if _, err := st.AddDomain(ctx, core.Domain{
+		AppID: app.ID, Host: "api.example.com", Service: "api", Port: 8080,
 	}); err != nil {
-		t.Fatalf("AddComposeDomain second: %v", err)
+		t.Fatalf("AddDomain second: %v", err)
 	}
 
-	// Duplicate domain on the same app violates UNIQUE(app_id, domain).
-	if _, err := st.AddComposeDomain(ctx, core.ComposeDomain{
-		AppID: app.ID, Domain: "shop.example.com", Service: "other", Port: 1,
+	// Duplicate domain on the same app violates UNIQUE(app_id, host, path).
+	if _, err := st.AddDomain(ctx, core.Domain{
+		AppID: app.ID, Host: "shop.example.com", Service: "other", Port: 1,
 	}); err == nil {
 		t.Error("duplicate domain on one app must be rejected")
 	}
 
-	domains, err := st.ListComposeDomains(ctx, app.ID)
+	domains, err := st.ListDomains(ctx, app.ID)
 	if err != nil {
-		t.Fatalf("ListComposeDomains: %v", err)
+		t.Fatalf("ListDomains: %v", err)
 	}
-	if len(domains) != 2 || domains[0].Domain != "api.example.com" || domains[1].Domain != "shop.example.com" {
+	if len(domains) != 2 || domains[0].Host != "api.example.com" || domains[1].Host != "shop.example.com" {
 		t.Fatalf("domains = %+v, want two ordered by domain", domains)
 	}
 	if domains[1].Service != "web" || domains[1].Port != 3000 || domains[1].AppID != app.ID {
@@ -118,16 +118,16 @@ func TestComposeDomainsCRUD(t *testing.T) {
 	}
 
 	// Deleting with the wrong app scope must not remove the row.
-	if err := st.DeleteComposeDomain(ctx, app.ID+999, web.ID); err != nil {
-		t.Fatalf("DeleteComposeDomain (wrong app): %v", err)
+	if err := st.DeleteDomain(ctx, app.ID+999, web.ID); err != nil {
+		t.Fatalf("DeleteDomain (wrong app): %v", err)
 	}
-	if ds, _ := st.ListComposeDomains(ctx, app.ID); len(ds) != 2 {
+	if ds, _ := st.ListDomains(ctx, app.ID); len(ds) != 2 {
 		t.Fatal("wrong-app delete must be a no-op")
 	}
-	if err := st.DeleteComposeDomain(ctx, app.ID, web.ID); err != nil {
-		t.Fatalf("DeleteComposeDomain: %v", err)
+	if err := st.DeleteDomain(ctx, app.ID, web.ID); err != nil {
+		t.Fatalf("DeleteDomain: %v", err)
 	}
-	if ds, _ := st.ListComposeDomains(ctx, app.ID); len(ds) != 1 || ds[0].Domain != "api.example.com" {
+	if ds, _ := st.ListDomains(ctx, app.ID); len(ds) != 1 || ds[0].Host != "api.example.com" {
 		t.Errorf("after delete domains = %+v, want just api.example.com", ds)
 	}
 }
@@ -142,15 +142,15 @@ func TestDeleteAppRemovesComposeDomains(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateApp: %v", err)
 	}
-	if _, err := st.AddComposeDomain(ctx, core.ComposeDomain{
-		AppID: app.ID, Domain: "shop.example.com", Service: "web", Port: 3000,
+	if _, err := st.AddDomain(ctx, core.Domain{
+		AppID: app.ID, Host: "shop.example.com", Service: "web", Port: 3000,
 	}); err != nil {
-		t.Fatalf("AddComposeDomain: %v", err)
+		t.Fatalf("AddDomain: %v", err)
 	}
 	if err := st.DeleteApp(ctx, app.ID); err != nil {
 		t.Fatalf("DeleteApp: %v", err)
 	}
-	if ds, _ := st.ListComposeDomains(ctx, app.ID); len(ds) != 0 {
+	if ds, _ := st.ListDomains(ctx, app.ID); len(ds) != 0 {
 		t.Errorf("domains must not survive their app: %+v", ds)
 	}
 }

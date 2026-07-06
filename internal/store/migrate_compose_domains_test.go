@@ -63,29 +63,34 @@ func TestComposeDomainsMigrationBackfill(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	var domain, service string
+	// The compose app's exposure survives the 0006→0015 move into `domains`.
+	var host, service string
 	var port int
-	err = db.QueryRow(`SELECT d.domain, d.service, d.port FROM compose_domains d
-	                   JOIN apps a ON a.id = d.app_id WHERE a.name = 'shop'`).Scan(&domain, &service, &port)
+	err = db.QueryRow(`SELECT d.host, d.service, d.port FROM domains d
+	                   JOIN apps a ON a.id = d.app_id WHERE a.name = 'shop'`).Scan(&host, &service, &port)
 	if err != nil {
-		t.Fatalf("backfilled domain row: %v", err)
+		t.Fatalf("shop domain row: %v", err)
 	}
-	if domain != "shop.example.com" || service != "web" || port != 3000 {
-		t.Errorf("backfill = %s → %s:%d, want shop.example.com → web:3000", domain, service, port)
+	if host != "shop.example.com" || service != "web" || port != 3000 {
+		t.Errorf("shop = %s → %s:%d, want shop.example.com → web:3000", host, service, port)
 	}
 
+	// The nixpacks app is backfilled as a service-less row on 8080.
+	err = db.QueryRow(`SELECT d.host, d.service, d.port FROM domains d
+	                   JOIN apps a ON a.id = d.app_id WHERE a.name = 'web'`).Scan(&host, &service, &port)
+	if err != nil {
+		t.Fatalf("web domain row: %v", err)
+	}
+	if host != "web.example.com" || service != "" || port != 8080 {
+		t.Errorf("web = %s → %s:%d, want web.example.com → :8080", host, service, port)
+	}
+
+	// The internal compose app (blank domain) gets no row; total is exactly 2.
 	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM compose_domains`).Scan(&n); err != nil || n != 1 {
-		t.Errorf("compose_domains rows = %d (%v), want only the exposed stack's", n, err)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM domains`).Scan(&n); err != nil || n != 2 {
+		t.Errorf("domains rows = %d (%v), want 2", n, err)
 	}
-	var shopDomain, webDomain string
-	if err := db.QueryRow(`SELECT domain FROM apps WHERE name = 'shop'`).Scan(&shopDomain); err != nil || shopDomain != "" {
-		t.Errorf("compose app domain = %q (%v), want blanked", shopDomain, err)
-	}
-	if err := db.QueryRow(`SELECT domain FROM apps WHERE name = 'web'`).Scan(&webDomain); err != nil || webDomain != "web.example.com" {
-		t.Errorf("nixpacks domain = %q (%v), want untouched", webDomain, err)
-	}
-	if _, err := db.Query(`SELECT compose_service FROM apps`); err == nil {
-		t.Error("compose_service column should be dropped by 0006")
+	if _, err := db.Query(`SELECT 1 FROM compose_domains`); err == nil {
+		t.Error("compose_domains table should be dropped by 0015")
 	}
 }

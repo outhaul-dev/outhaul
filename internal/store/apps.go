@@ -34,7 +34,12 @@ func (s *Store) CreateApp(ctx context.Context, app core.App) (core.App, error) {
 	if err != nil {
 		return core.App{}, err
 	}
-	res, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return core.App{}, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx,
 		`INSERT INTO apps
 		   (project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_secret, ssh_private_key, ssh_public_key, github_repo,
 		    kind, compose_path, dockerfile_path, watch_paths, template_id, compose_raw)
@@ -51,6 +56,21 @@ func (s *Store) CreateApp(ctx context.Context, app core.App) (core.App, error) {
 	}
 	app.ID = id
 	app.SSHPrivateKey = "" // never keep the plaintext around
+
+	// Single-container apps route via a domain row like everything else; seed it
+	// from the submitted primary domain in the same transaction as the app insert
+	// so we never leave an app with a domain mirror but no domain row. Compose
+	// apps pass Domain="" and seed their first row explicitly through the handler.
+	if app.Domain != "" && app.Kind != core.KindCompose {
+		if _, err := addDomainTx(ctx, tx, core.Domain{
+			AppID: app.ID, Host: app.Domain, Port: primaryDomainPort, TLS: true,
+		}); err != nil {
+			return core.App{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return core.App{}, err
+	}
 	return app, nil
 }
 
@@ -167,7 +187,7 @@ func (s *Store) UpdateAppSettings(ctx context.Context, id int64, branch string, 
 }
 
 // UpdateAppComposePath updates where a compose app's compose file lives.
-// Domain exposure is managed separately via the compose_domains table.
+// Domain exposure is managed separately via the domains table (see domains.go).
 func (s *Store) UpdateAppComposePath(ctx context.Context, id int64, composePath string) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE apps SET compose_path = ? WHERE id = ?`, composePath, id)
@@ -191,12 +211,12 @@ func (s *Store) DeleteApp(ctx context.Context, id int64) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM deployments WHERE app_id = ?`, id); err != nil {
 		return err
 	}
-	// app_env and compose_domains cascade on app delete, but delete explicitly
+	// app_env and domains cascade on app delete, but delete explicitly
 	// too so the behavior is robust to a future migration dropping the cascade.
 	if _, err := tx.ExecContext(ctx, `DELETE FROM app_env WHERE app_id = ?`, id); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM compose_domains WHERE app_id = ?`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM domains WHERE app_id = ?`, id); err != nil {
 		return err
 	}
 	if err := deleteBackupsForTargetTx(ctx, tx, core.BackupTargetApp, id); err != nil {

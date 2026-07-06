@@ -50,14 +50,26 @@ type App struct {
 	SSHPrivateKey string
 }
 
-// ComposeDomain publishes one compose-stack service on one host: Traefik
-// routes Domain to the named Service's container Port. A compose app may have
-// any number of these (Dokploy's model); zero means the stack is
-// internal-only. For nixpacks apps the single App.Domain plays this role.
-type ComposeDomain struct {
-	ID      int64
-	AppID   int64
-	Domain  string // bare hostname Traefik matches
-	Service string // compose service name inside the stack
-	Port    int    // container port that service listens on
+// Domain publishes one app route: Traefik matches Host (and optionally a Path
+// prefix) and forwards to a container Port, optionally rewriting the path to
+// InternalPath and terminating TLS. A nixpacks/dockerfile app's rows target its
+// single container on AppPort with an empty Service; a compose app's rows name
+// the stack Service to route to. Zero rows means the app is internal-only.
+type Domain struct {
+	ID           int64
+	AppID        int64
+	Host         string // bare hostname Traefik matches
+	Service      string // compose service; "" for nixpacks/dockerfile
+	Port         int    // container port; 8080 for nixpacks/dockerfile
+	Path         string // external PathPrefix, leading slash; "" = whole host
+	InternalPath string // path forwarded to the container; "" = unchanged
+	TLS          bool   // automate HTTPS for this route (needs global ACME)
+	CreatedAt    time.Time
+}
+
+// DomainListing is a Domain plus its app's identity, for the global Domains tab.
+type DomainListing struct {
+	Domain
+	AppName string
+	AppKind string
 }
