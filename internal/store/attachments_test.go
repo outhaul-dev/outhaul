@@ -136,3 +136,20 @@ func TestDeleteDatabaseBlockedWhileAttached(t *testing.T) {
 		t.Fatalf("delete after detach: %v", err)
 	}
 }
+
+func TestDeleteAppRemovesAttachments(t *testing.T) {
+	s := openWithBox(t) // CreateDatabase needs a secret box
+	ctx := context.Background()
+	app, _ := s.CreateApp(ctx, core.App{Name: "web", Source: core.SourcePublic, Kind: core.KindNixpacks, Branch: "main"})
+	db, _ := s.CreateDatabase(ctx, core.Database{Name: "web-db", Engine: core.EnginePostgres, Username: "u", Password: "p", DBName: "web"})
+	if _, err := s.AttachDatabase(ctx, app.ID, db.ID, "DATABASE_URL"); err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+
+	if err := s.DeleteApp(ctx, app.ID); err != nil {
+		t.Fatalf("DeleteApp: %v", err)
+	}
+	if got, err := s.ListAttachments(ctx, app.ID); err != nil || len(got) != 0 {
+		t.Fatalf("ListAttachments after delete = %+v, err %v", got, err)
+	}
+}
