@@ -10,6 +10,7 @@ import (
 
 	"github.com/james-smart/outhaul/internal/builder"
 	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/dbaas"
 	"github.com/james-smart/outhaul/internal/docker"
 	"github.com/james-smart/outhaul/internal/github"
 	"github.com/james-smart/outhaul/internal/traefik"
@@ -264,7 +265,47 @@ func (w *Worker) loadEnv(ctx context.Context, app core.App) ([]core.EnvVar, erro
 	if err != nil {
 		return nil, fmt.Errorf("load project env: %w", err)
 	}
-	return core.ResolveEnv(appVars, projectVars)
+	resolved, err := core.ResolveEnv(appVars, projectVars)
+	if err != nil {
+		return nil, err
+	}
+	atts, err := w.store.ListAttachments(ctx, app.ID)
+	if err != nil {
+		return nil, fmt.Errorf("load attachments: %w", err)
+	}
+	return injectAttachments(resolved, atts, func(id int64) (core.Database, error) {
+		return w.store.GetDatabase(ctx, id)
+	})
+}
+
+// injectAttachments appends each attachment's computed connection URL to base
+// as a secret var, replacing any existing var of the same key (an attachment
+// wins over a manual env var). load fetches a database by id. A non-running
+// attached database is a hard error: injecting a dead URL would fail opaquely
+// at runtime instead.
+func injectAttachments(base []core.EnvVar, atts []core.Attachment, load func(int64) (core.Database, error)) ([]core.EnvVar, error) {
+	for _, a := range atts {
+		db, err := load(a.DatabaseID)
+		if err != nil {
+			return nil, fmt.Errorf("load attached database for %s: %w", a.EnvVar, err)
+		}
+		if db.Status != core.DBRunning {
+			return nil, fmt.Errorf("attached database %q is not running (status %s)", db.Name, db.Status)
+		}
+		base = upsertEnv(base, core.EnvVar{Key: a.EnvVar, Value: dbaas.InternalURL(db), IsSecret: true})
+	}
+	return base, nil
+}
+
+// upsertEnv replaces an env var with the same key, or appends it.
+func upsertEnv(vars []core.EnvVar, v core.EnvVar) []core.EnvVar {
+	for i := range vars {
+		if vars[i].Key == v.Key {
+			vars[i] = v
+			return vars
+		}
+	}
+	return append(vars, v)
 }
 
 // cloneWorkDir creates the per-deploy work dir and clones the app's repo into
