@@ -206,6 +206,48 @@ func TestReclaimRefusesNonOrphan(t *testing.T) {
 	}
 }
 
+func TestBackupPanelVisibleAfterVolumeDetachedWhileScheduleExists(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, err := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	if err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+	v, err := e.store.AddVolume(context.Background(), app.ID, "/data")
+	if err != nil {
+		t.Fatalf("AddVolume: %v", err)
+	}
+	dest := seedDestination(t, e, "minio")
+	if _, err := e.store.CreateBackup(context.Background(), core.Backup{
+		TargetKind: core.BackupTargetApp, TargetID: app.ID, DestinationID: dest.ID,
+		Schedule: "0 3 * * *", Prefix: "prod",
+	}); err != nil {
+		t.Fatalf("CreateBackup: %v", err)
+	}
+
+	// The panel shows while the volume is attached.
+	page := body(t, e.get(t, "/apps/"+itoa(app.ID)))
+	if !strings.Contains(page, "0 3 * * *") || !strings.Contains(page, "/restore") {
+		t.Fatalf("backups panel not shown while a volume is attached")
+	}
+
+	// Detaching the volume must NOT hide the schedule — it keeps ticking, so its
+	// pause/remove/restore controls must stay reachable.
+	if err := e.store.DeleteVolume(context.Background(), app.ID, v.ID); err != nil {
+		t.Fatalf("DeleteVolume: %v", err)
+	}
+	if vols, _ := e.store.ListVolumes(context.Background(), app.ID); len(vols) != 0 {
+		t.Fatalf("volume not detached: %+v", vols)
+	}
+	page = body(t, e.get(t, "/apps/"+itoa(app.ID)))
+	if !strings.Contains(page, "0 3 * * *") {
+		t.Error("schedule vanished after detaching the volume — no way left to remove it")
+	}
+	if !strings.Contains(page, "/backups/") || !strings.Contains(page, "/restore") {
+		t.Error("backup controls (remove/restore) missing after volume detach")
+	}
+}
+
 func TestBackupTargetAllowedOnlyWithVolume(t *testing.T) {
 	e := newTestEnv(t)
 	e.completeSetup(t)

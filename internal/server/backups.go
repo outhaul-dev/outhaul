@@ -201,7 +201,7 @@ func (s *Server) handleRestorePage(w http.ResponseWriter, r *http.Request) {
 	confirm := "Restore this archive? The database's CURRENT DATA IS REPLACED with the archive's contents. Consider Run now (a fresh backup) first."
 	active := "projects"
 	if b.TargetKind == core.BackupTargetApp {
-		confirm = "Restore this archive? The stack is stopped, the volume EMPTIED and refilled from the archive, then restarted. Consider Run now (a fresh backup) first."
+		confirm = "Restore this archive? The app is stopped, the volume EMPTIED and refilled from the archive, then restarted. Consider Run now (a fresh backup) first."
 		active = "apps"
 	}
 	s.render(w, http.StatusOK, "restore", map[string]any{

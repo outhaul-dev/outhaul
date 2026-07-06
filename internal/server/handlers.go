@@ -412,8 +412,16 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 		data["WebhookURL"] = strings.TrimRight(s.publicURL, "/") + "/webhooks/app/" + app.WebhookSecret
 	}
 	// Volume backups apply to compose stacks and to single-container apps that
-	// have attached a persistent volume; stateless apps omit the panel.
-	if app.Kind == core.KindCompose || len(volumes) > 0 {
+	// have attached a persistent volume; stateless apps omit the panel. A
+	// schedule created while a volume was attached outlives its volume, so keep
+	// the panel whenever one still exists — otherwise a lingering schedule keeps
+	// ticking with no UI left to pause or remove it.
+	backups, err := s.store.ListBackupsForTarget(r.Context(), core.BackupTargetApp, app.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if app.Kind == core.KindCompose || len(volumes) > 0 || len(backups) > 0 {
 		panel, err := s.backupPanelData(r.Context(), core.BackupTargetApp, app.ID)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

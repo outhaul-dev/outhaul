@@ -119,6 +119,12 @@
 </section>
 
 {{template "volumeform" .}}
+
+{{/* Backups panel: shown once the handler supplies its data — a single-container
+     app gets it while it has a volume, or while a schedule still exists. */}}
+{{if .BackupKind}}
+{{template "backups" .}}
+{{end}}
 {{end}}
 
 <section class="panel">
