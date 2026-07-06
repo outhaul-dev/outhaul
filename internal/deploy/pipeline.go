@@ -269,6 +269,7 @@ func (w *Worker) loadEnv(ctx context.Context, app core.App) ([]core.EnvVar, erro
 	if err != nil {
 		return nil, err
 	}
+	resolved = core.EnvForScope(resolved, app.Ephemeral) // drop out-of-scope vars (prod for previews, preview for prod)
 	atts, err := w.store.ListAttachments(ctx, app.ID)
 	if err != nil {
 		return nil, fmt.Errorf("load attachments: %w", err)
