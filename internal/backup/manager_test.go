@@ -368,10 +368,50 @@ func TestComposeVolumesUploadOnePerVolume(t *testing.T) {
 	}
 }
 
-func TestAppBackupRejectsNixpacksAndEmptyStacks(t *testing.T) {
+func TestSingleContainerVolumeBackedUp(t *testing.T) {
+	h := newHarness(t)
+	dest := h.destination(t)
+	app, err := h.store.CreateApp(context.Background(), core.App{
+		Name: "web", RepoURL: "https://example.com/web.git", Kind: core.KindNixpacks,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.store.AddVolume(context.Background(), app.ID, "/data"); err != nil {
+		t.Fatalf("AddVolume: %v", err)
+	}
+	h.docker.Volumes["outhaul-web-data"] = core.VolumeLabels("web")
+	h.docker.OnRun = func(spec docker.ContainerSpec) (string, int, error) {
+		return "tarball-of-" + spec.Mounts[0].Source, 0, nil
+	}
+	b := h.backup(t, core.BackupTargetApp, app.ID, dest.ID, 0)
+
+	h.m.RunNow(b)
+	h.waitRun(t)
+
+	run := h.lastRun(t, b.ID)
+	if run.Status != core.RunOK {
+		t.Fatalf("run = %q (%s)", run.Status, run.Reason)
+	}
+	keys := h.blob.keys()
+	if len(keys) != 1 || !strings.HasPrefix(keys[0], "prod/web/outhaul-web-data/") || !strings.HasSuffix(keys[0], ".tar.gz") {
+		t.Fatalf("keys = %v, want one prod/web/outhaul-web-data/<ts>.tar.gz", keys)
+	}
+	if got := string(h.blob.objects[keys[0]]); got != "tarball-of-outhaul-web-data" {
+		t.Errorf("uploaded bytes = %q", got)
+	}
+	spec := h.docker.Runs[0]
+	if spec.Image != helperImage || !spec.Mounts[0].Volume || !spec.Mounts[0].ReadOnly {
+		t.Errorf("helper spec = %+v", spec)
+	}
+}
+
+func TestAppBackupRejectsVolumelessApps(t *testing.T) {
 	h := newHarness(t)
 	dest := h.destination(t)
 
+	// A nixpacks app with no volume (in the store or in Docker) still has
+	// nothing to back up.
 	nix, err := h.store.CreateApp(context.Background(), core.App{Name: "api", RepoURL: "r"})
 	if err != nil {
 		t.Fatal(err)
@@ -379,7 +419,7 @@ func TestAppBackupRejectsNixpacksAndEmptyStacks(t *testing.T) {
 	b := h.backup(t, core.BackupTargetApp, nix.ID, dest.ID, 0)
 	h.m.RunNow(b)
 	h.waitRun(t)
-	if run := h.lastRun(t, b.ID); run.Status != core.RunFailed || !strings.Contains(run.Reason, "stateless") {
+	if run := h.lastRun(t, b.ID); run.Status != core.RunFailed || !strings.Contains(run.Reason, "no named volumes") {
 		t.Errorf("nixpacks run = %q (%q)", run.Status, run.Reason)
 	}
 

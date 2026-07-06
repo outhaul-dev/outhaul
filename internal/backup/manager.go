@@ -255,16 +255,18 @@ func (m *Manager) backupAppVolumes(ctx context.Context, b core.Backup, blob blob
 	if err != nil {
 		return "", 0, fmt.Errorf("load app: %w", err)
 	}
-	if app.Kind != core.KindCompose {
-		return "", 0, fmt.Errorf("app %q is not a compose stack; nixpacks apps are stateless (nothing to back up)", app.Name)
+	var vols []string
+	if app.Kind == core.KindCompose {
+		vols, err = m.docker.ListVolumes(ctx,
+			map[string]string{"com.docker.compose.project": compose.ProjectName(app.Name)})
+	} else {
+		vols, err = m.docker.ListVolumes(ctx, core.VolumeLabels(app.Name))
 	}
-	vols, err := m.docker.ListVolumes(ctx,
-		map[string]string{"com.docker.compose.project": compose.ProjectName(app.Name)})
 	if err != nil {
 		return "", 0, err
 	}
 	if len(vols) == 0 {
-		return "", 0, fmt.Errorf("stack has no named volumes (bind mounts are not backed up)")
+		return "", 0, fmt.Errorf("app %q has no named volumes to back up", app.Name)
 	}
 	if err := m.docker.PullImage(ctx, helperImage, io.Discard); err != nil {
 		return "", 0, fmt.Errorf("pull %s: %w", helperImage, err)

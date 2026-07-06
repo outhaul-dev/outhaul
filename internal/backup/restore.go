@@ -206,20 +206,42 @@ func (m *Manager) restoreVolume(ctx context.Context, b core.Backup, blob blobsto
 	if err != nil {
 		return 0, fmt.Errorf("load app: %w", err)
 	}
-	if app.Kind != core.KindCompose {
-		return 0, fmt.Errorf("app %q is not a compose stack; nothing was ever backed up", app.Name)
-	}
 	vol, _, ok := strings.Cut(rel, "/")
 	if !ok || vol == "" {
 		return 0, fmt.Errorf("archive %q does not name a volume (expected …/%s/<volume>/<stamp>.tar.gz)", key, app.Name)
 	}
-	project := compose.ProjectName(app.Name)
-	vols, err := m.docker.ListVolumes(ctx, map[string]string{"com.docker.compose.project": project})
-	if err != nil {
-		return 0, err
+
+	// Discover the target volume and the containers to quiesce, per app kind.
+	var (
+		vols       []string
+		containers []docker.Container
+	)
+	if app.Kind == core.KindCompose {
+		project := compose.ProjectName(app.Name)
+		vols, err = m.docker.ListVolumes(ctx, map[string]string{"com.docker.compose.project": project})
+		if err != nil {
+			return 0, err
+		}
+		containers, err = m.docker.ListContainers(ctx, map[string]string{"com.docker.compose.project": project})
+		if err != nil {
+			return 0, err
+		}
+	} else {
+		vols, err = m.docker.ListVolumes(ctx, core.VolumeLabels(app.Name))
+		if err != nil {
+			return 0, err
+		}
+		// Single-container app: its one canonical container holds the volume.
+		// The name must match deploy.containerName ("outhaul-app-<name>"); they
+		// are kept in step by hand (restore can't import the deploy package).
+		if c, err := m.docker.FindContainer(ctx, "outhaul-app-"+app.Name); err != nil {
+			return 0, err
+		} else if c != nil {
+			containers = []docker.Container{*c}
+		}
 	}
 	if !slices.Contains(vols, vol) {
-		return 0, fmt.Errorf("volume %q does not exist for this stack — deploy the stack once first; restore never creates volumes", vol)
+		return 0, fmt.Errorf("volume %q does not exist for this app — deploy it once first; restore never creates volumes", vol)
 	}
 
 	f, err := m.download(ctx, blob, key)
@@ -231,14 +253,10 @@ func (m *Manager) restoreVolume(ctx context.Context, b core.Backup, blob blobsto
 		return f.size, fmt.Errorf("pull %s: %w", helperImage, err)
 	}
 
-	// Stop the stack while its data is replaced; restart is best-effort even
-	// when the untar failed — a broken volume with the stack down is strictly
-	// worse than a broken volume with it up, and the run row carries the
-	// failure either way.
-	containers, err := m.docker.ListContainers(ctx, map[string]string{"com.docker.compose.project": project})
-	if err != nil {
-		return f.size, err
-	}
+	// Stop whatever is running while the data is replaced; restart is
+	// best-effort even when the untar failed — a broken volume with the app
+	// down is strictly worse than a broken volume with it up, and the run row
+	// carries the failure either way.
 	var stopped []string
 	defer func() {
 		rctx := context.WithoutCancel(ctx)

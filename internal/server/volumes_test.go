@@ -206,6 +206,24 @@ func TestReclaimRefusesNonOrphan(t *testing.T) {
 	}
 }
 
+func TestBackupTargetAllowedOnlyWithVolume(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, err := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	if err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+	if _, err := e.srv.validateBackupTarget(context.Background(), core.BackupTargetApp, app.ID); err == nil {
+		t.Error("a volumeless single-container app should not be backupable")
+	}
+	if _, err := e.store.AddVolume(context.Background(), app.ID, "/data"); err != nil {
+		t.Fatalf("AddVolume: %v", err)
+	}
+	if _, err := e.srv.validateBackupTarget(context.Background(), core.BackupTargetApp, app.ID); err != nil {
+		t.Errorf("app with a volume should be backupable, got %v", err)
+	}
+}
+
 func TestVolumesPageComposeVolumesAndSkipsForeign(t *testing.T) {
 	e := newTestEnv(t)
 	e.completeSetup(t)

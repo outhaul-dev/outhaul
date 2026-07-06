@@ -277,6 +277,66 @@ func TestVolumeRestoreRejectsUnknownVolume(t *testing.T) {
 	}
 }
 
+// seedSingleContainerWithVolume creates a nixpacks app, its named volume
+// (labeled the way a real deploy would), and its running canonical container.
+func (h *harness) seedSingleContainerWithVolume(t *testing.T) core.App {
+	t.Helper()
+	app, err := h.store.CreateApp(context.Background(), core.App{
+		Name: "web", RepoURL: "https://example.com/web.git", Kind: core.KindNixpacks,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.store.AddVolume(context.Background(), app.ID, "/data"); err != nil {
+		t.Fatal(err)
+	}
+	h.docker.Volumes["outhaul-web-data"] = core.VolumeLabels("web")
+	c, err := h.docker.CreateContainer(context.Background(), docker.ContainerSpec{Name: "outhaul-app-web", Image: "web:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.docker.StartContainer(context.Background(), c)
+	return app
+}
+
+func TestRestoreVolumeSingleContainer(t *testing.T) {
+	h := newHarness(t)
+	dest := h.destination(t)
+	app := h.seedSingleContainerWithVolume(t)
+	b := h.backup(t, core.BackupTargetApp, app.ID, dest.ID, 0)
+
+	const key = "prod/web/outhaul-web-data/20260101T000000Z.tar.gz"
+	h.blob.objects[key] = []byte("tarball")
+
+	var stateDuringUntar string
+	h.docker.OnRun = func(spec docker.ContainerSpec) (string, int, error) {
+		c, _ := h.docker.FindContainer(context.Background(), "outhaul-app-web")
+		stateDuringUntar = c.State
+		return "", 0, nil
+	}
+
+	h.m.RestoreNow(b, key)
+	h.waitRun(t)
+
+	run := h.lastRun(t, b.ID)
+	if run.Status != core.RunOK {
+		t.Fatalf("run = %q (%s)", run.Status, run.Reason)
+	}
+	if stateDuringUntar != "exited" {
+		t.Errorf("app container state during untar = %q, want exited (stopped first)", stateDuringUntar)
+	}
+	if c, _ := h.docker.FindContainer(context.Background(), "outhaul-app-web"); c == nil || !c.Running() {
+		t.Error("canonical container should be running again after restore")
+	}
+	if len(h.docker.Runs) != 1 {
+		t.Fatalf("helper runs = %d, want 1", len(h.docker.Runs))
+	}
+	vol := h.docker.Runs[0].Mounts[0]
+	if vol.Source != "outhaul-web-data" || vol.Target != "/dst" || !vol.Volume || vol.ReadOnly {
+		t.Errorf("volume mount = %+v, want the named volume rw at /dst", vol)
+	}
+}
+
 func TestRestoreSharesInFlightGuardWithBackups(t *testing.T) {
 	h := newHarness(t)
 	dest := h.destination(t)

@@ -131,7 +131,13 @@ func (s *Server) validateBackupTarget(ctx context.Context, kind string, targetID
 			return "", errors.New("unknown app")
 		}
 		if app.Kind != core.KindCompose {
-			return "", errors.New("nixpacks apps are stateless and have nothing to back up; back up the database they use instead")
+			vols, err := s.store.ListVolumes(ctx, app.ID)
+			if err != nil {
+				return "", err
+			}
+			if len(vols) == 0 {
+				return "", errors.New("this app has no volumes to back up; attach one first (or back up the database it uses)")
+			}
 		}
 		return "/apps/" + strconv.FormatInt(app.ID, 10), nil
 	default:

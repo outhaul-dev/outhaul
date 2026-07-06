@@ -158,7 +158,7 @@ func TestCreateBackupValidation(t *testing.T) {
 		want string
 	}{
 		{"redis target", backupForm(core.BackupTargetDatabase, redis.ID, dest.ID), "redis"},
-		{"nixpacks target", backupForm(core.BackupTargetApp, nix.ID, dest.ID), "stateless"},
+		{"nixpacks target without a volume", backupForm(core.BackupTargetApp, nix.ID, dest.ID), "no volumes"},
 		{"bad cron", withField(backupForm(core.BackupTargetDatabase, pg.ID, dest.ID), "schedule", "every day"), "schedule"},
 		{"unknown destination", backupForm(core.BackupTargetDatabase, pg.ID, 999), "destination"},
 		{"bad retention", withField(backupForm(core.BackupTargetDatabase, pg.ID, dest.ID), "retention", "-1"), "Retention"},
