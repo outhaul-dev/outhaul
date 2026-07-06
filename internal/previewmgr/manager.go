@@ -1,0 +1,287 @@
+// Package previewmgr orchestrates GitHub-PR preview environments: spawning an
+// ephemeral child app per PR, redeploying it on new commits, and tearing it
+// down when the PR closes. It creates rows and enqueues deployments through the
+// normal pipeline; it never builds or runs containers itself.
+package previewmgr
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/dbaas"
+	"github.com/james-smart/outhaul/internal/webhook"
+)
+
+// Store is the slice of *store.Store the manager needs.
+type Store interface {
+	AppsByGithubRepo(ctx context.Context, repo string) ([]core.App, error)
+	GetApp(ctx context.Context, id int64) (core.App, error)
+	GetPreviewConfig(ctx context.Context, appID int64) (core.PreviewConfig, error)
+	GetPreviewByPR(ctx context.Context, parentID int64, pr int) (core.App, error)
+	ListPreviewsForParent(ctx context.Context, parentID int64) ([]core.App, error)
+	CreateApp(ctx context.Context, app core.App) (core.App, error)
+	SetPreviewStatus(ctx context.Context, appID int64, status string) error
+	ListEnv(ctx context.Context, appID int64) ([]core.EnvVar, error)
+	SetEnvScoped(ctx context.Context, appID int64, key, value string, isSecret bool, scope string) error
+	ListAttachments(ctx context.Context, appID int64) ([]core.Attachment, error)
+	AttachDatabase(ctx context.Context, appID, databaseID int64, envVar string) (core.Attachment, error)
+	GetDatabase(ctx context.Context, id int64) (core.Database, error)
+	ListDomains(ctx context.Context, appID int64) ([]core.Domain, error)
+	AddDomain(ctx context.Context, d core.Domain) (core.Domain, error)
+	CreateDeployment(ctx context.Context, appID int64) (core.Deployment, error)
+	DeleteApp(ctx context.Context, id int64) error
+}
+
+// Notifier wakes the deploy worker.
+type Notifier interface{ Notify() }
+
+// DBProvisioner creates and destroys the isolated databases previews use.
+type DBProvisioner interface {
+	Provision(ctx context.Context, d core.Database) (core.Database, error)
+	Destroy(ctx context.Context, d core.Database) error
+}
+
+// GithubCommenter posts the sticky PR comment.
+type GithubCommenter interface {
+	UpsertPRComment(ctx context.Context, token, repo string, pr int, body string) error
+}
+
+// TokenSource yields an installation token for API calls (nil disables comments).
+type TokenSource func(ctx context.Context) (token string, ok bool, err error)
+
+// Docker tears down a preview's containers/stack.
+type Docker interface {
+	RemoveApp(ctx context.Context, appName string) error
+}
+
+// Manager owns preview lifecycle.
+type Manager struct {
+	store    Store
+	notifier Notifier
+	dbprov   DBProvisioner
+	docker   Docker
+	gh       GithubCommenter
+	token    TokenSource
+	serverIP string
+}
+
+func New(st Store, n Notifier, db DBProvisioner, dk Docker, gh GithubCommenter, ts TokenSource, serverIP string) *Manager {
+	return &Manager{store: st, notifier: n, dbprov: db, docker: dk, gh: gh, token: ts, serverIP: serverIP}
+}
+
+// Handle routes one pull_request event to the right lifecycle action for every
+// enabled app targeting the PR's base repo.
+func (m *Manager) Handle(ctx context.Context, ev webhook.PullRequestEvent) error {
+	apps, err := m.store.AppsByGithubRepo(ctx, ev.BaseRepoFullName)
+	if err != nil {
+		return err
+	}
+	for _, app := range apps {
+		if app.Ephemeral {
+			continue // never nest previews of previews
+		}
+		cfg, err := m.store.GetPreviewConfig(ctx, app.ID)
+		if err != nil {
+			return err
+		}
+		if !cfg.Enabled {
+			continue
+		}
+		if err := m.handleApp(ctx, app, cfg, ev); err != nil {
+			log.Printf("previewmgr: app %d PR %d %s: %v", app.ID, ev.Number, ev.Action, err)
+		}
+	}
+	return nil
+}
+
+func (m *Manager) handleApp(ctx context.Context, parent core.App, cfg core.PreviewConfig, ev webhook.PullRequestEvent) error {
+	switch ev.Action {
+	case "opened", "reopened":
+		return m.spawn(ctx, parent, cfg, ev)
+	case "synchronize":
+		return m.redeploy(ctx, parent, ev)
+	case "closed":
+		return m.teardown(ctx, parent, ev.Number, ev.BaseRepoFullName, cfg)
+	}
+	return nil
+}
+
+func (m *Manager) spawn(ctx context.Context, parent core.App, cfg core.PreviewConfig, ev webhook.PullRequestEvent) error {
+	if ev.IsFork && !cfg.AllowForkPRs {
+		return nil
+	}
+	if _, err := m.store.GetPreviewByPR(ctx, parent.ID, ev.Number); err == nil {
+		return m.redeploy(ctx, parent, ev)
+	}
+	live, err := m.store.ListPreviewsForParent(ctx, parent.ID)
+	if err != nil {
+		return err
+	}
+	if len(live) >= cfg.MaxConcurrent {
+		m.comment(ctx, cfg, ev.BaseRepoFullName, ev.Number,
+			fmt.Sprintf("Preview skipped: max concurrent previews (%d) reached.", cfg.MaxConcurrent))
+		return nil
+	}
+
+	child := parent
+	child.ID = 0
+	child.Name = core.PreviewAppName(parent.Name, ev.Number)
+	child.Branch = ev.HeadRef
+	child.Domain = ""
+	child.ParentID = parent.ID
+	child.PRNumber = ev.Number
+	child.Ephemeral = true
+	child.PreviewStatus = core.PreviewBuilding
+	child, err = m.store.CreateApp(ctx, child)
+	if err != nil {
+		return err
+	}
+
+	if err := m.copyEnv(ctx, parent.ID, child.ID); err != nil {
+		return err
+	}
+	if err := m.provisionDatabases(ctx, parent, child); err != nil {
+		return err
+	}
+	if err := m.mintDomains(ctx, parent, child, cfg, ev.Number); err != nil {
+		return err
+	}
+
+	if _, err := m.store.CreateDeployment(ctx, child.ID); err != nil {
+		return err
+	}
+	m.notifier.Notify()
+	m.comment(ctx, cfg, ev.BaseRepoFullName, ev.Number, buildingComment(ev.HeadSHA))
+	return nil
+}
+
+// copyEnv copies the parent's non-prod env into the child (shared+preview),
+// preserving scope. Prod-only vars are dropped here AND again at deploy time.
+func (m *Manager) copyEnv(ctx context.Context, parentID, childID int64) error {
+	vars, err := m.store.ListEnv(ctx, parentID)
+	if err != nil {
+		return err
+	}
+	for _, v := range core.EnvForScope(vars, true) {
+		if err := m.store.SetEnvScoped(ctx, childID, v.Key, v.Value, v.IsSecret, v.Scope); err != nil {
+			return err
+		}
+	}
+	_ = m.store.SetEnvScoped(ctx, childID, "OUTHAUL_PREVIEW", "true", false, core.ScopeShared)
+	return nil
+}
+
+// provisionDatabases creates a fresh empty database per parent attachment and
+// attaches it to the child under the same env var. Compose apps whose DB is a
+// stack service have no attachments and get isolation from the recreated stack.
+func (m *Manager) provisionDatabases(ctx context.Context, parent, child core.App) error {
+	atts, err := m.store.ListAttachments(ctx, parent.ID)
+	if err != nil {
+		return err
+	}
+	for _, a := range atts {
+		src, err := m.store.GetDatabase(ctx, a.DatabaseID)
+		if err != nil {
+			return err
+		}
+		fresh := core.Database{
+			ProjectID: child.ProjectID,
+			Name:      fmt.Sprintf("%s-%s", child.Name, src.Name),
+			Engine:    src.Engine,
+			Image:     src.Image,
+			Username:  src.Username,
+			Password:  dbaas.NewPassword(),
+			DBName:    src.DBName,
+		}
+		created, err := m.dbprov.Provision(ctx, fresh)
+		if err != nil {
+			return err
+		}
+		if _, err := m.store.AttachDatabase(ctx, child.ID, created.ID, a.EnvVar); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// mintDomains creates a preview domain row per routed parent domain (compose:
+// one per service; single-container: the primary row). Internal-only services
+// keep no row.
+func (m *Manager) mintDomains(ctx context.Context, parent, child core.App, cfg core.PreviewConfig, pr int) error {
+	parentDomains, err := m.store.ListDomains(ctx, parent.ID)
+	if err != nil {
+		return err
+	}
+	for _, d := range parentDomains {
+		host := core.PreviewHost(cfg, parent.Name, pr, d.Service, m.serverIP)
+		if _, err := m.store.AddDomain(ctx, core.Domain{
+			AppID: child.ID, Host: host, Service: d.Service, Port: d.Port,
+			Path: d.Path, InternalPath: d.InternalPath, TLS: d.TLS,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *Manager) redeploy(ctx context.Context, parent core.App, ev webhook.PullRequestEvent) error {
+	child, err := m.store.GetPreviewByPR(ctx, parent.ID, ev.Number)
+	if err != nil {
+		return nil
+	}
+	if _, err := m.store.CreateDeployment(ctx, child.ID); err != nil {
+		return err
+	}
+	m.notifier.Notify()
+	cfg, _ := m.store.GetPreviewConfig(ctx, parent.ID)
+	m.comment(ctx, cfg, ev.BaseRepoFullName, ev.Number, buildingComment(ev.HeadSHA))
+	return nil
+}
+
+// teardown removes a preview's containers, databases, domains, and app row. It
+// is idempotent and best-effort per resource: a failure on one resource is
+// logged and the rest still proceed; the app row is deleted last.
+func (m *Manager) teardown(ctx context.Context, parent core.App, pr int, repo string, cfg core.PreviewConfig) error {
+	child, err := m.store.GetPreviewByPR(ctx, parent.ID, pr)
+	if err != nil {
+		return nil
+	}
+	failed := false
+	if err := m.docker.RemoveApp(ctx, child.Name); err != nil {
+		log.Printf("previewmgr: remove containers for %s: %v", child.Name, err)
+		failed = true
+	}
+	atts, _ := m.store.ListAttachments(ctx, child.ID)
+	for _, a := range atts {
+		if db, err := m.store.GetDatabase(ctx, a.DatabaseID); err == nil {
+			if err := m.dbprov.Destroy(ctx, db); err != nil {
+				log.Printf("previewmgr: destroy db %s: %v", db.Name, err)
+				failed = true
+			}
+		}
+	}
+	if failed {
+		_ = m.store.SetPreviewStatus(ctx, child.ID, core.PreviewTeardownFailed)
+		return fmt.Errorf("teardown of %s had failures; left for retry", child.Name)
+	}
+	if err := m.store.DeleteApp(ctx, child.ID); err != nil {
+		return err
+	}
+	m.comment(ctx, cfg, repo, pr, "Preview environment destroyed.")
+	return nil
+}
+
+func (m *Manager) comment(ctx context.Context, cfg core.PreviewConfig, repo string, pr int, body string) {
+	if !cfg.PostPRComment || m.token == nil || repo == "" {
+		return
+	}
+	tok, ok, err := m.token(ctx)
+	if err != nil || !ok {
+		return
+	}
+	if err := m.gh.UpsertPRComment(ctx, tok, repo, pr, body); err != nil {
+		log.Printf("previewmgr: PR comment %s#%d: %v", repo, pr, err)
+	}
+}
