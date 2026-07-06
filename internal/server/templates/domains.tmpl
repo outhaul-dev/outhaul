@@ -1,0 +1,30 @@
+{{define "content"}}
+<div class="pagehead">
+  <div>
+    <h1>Domains</h1>
+    <p class="muted">Every route across all apps. Domains are created and edited on each app's page.</p>
+  </div>
+</div>
+
+<section class="panel">
+  {{if .Domains}}
+  <table class="table">
+    <thead><tr><th>Domain</th><th>App</th><th>Target</th><th>Path</th><th>HTTPS</th><th></th></tr></thead>
+    <tbody>
+      {{range .Domains}}
+      <tr>
+        <td><a href="http{{if .TLS}}s{{end}}://{{.Host}}{{.Path}}" target="_blank" rel="noreferrer" class="mono">{{.Host}}{{.Path}}</a></td>
+        <td><a href="/apps/{{.AppID}}" class="rowlink">{{.AppName}}</a></td>
+        <td class="mono muted">{{if .Service}}{{.Service}}:{{.Port}}{{else}}({{.AppKind}}){{end}}</td>
+        <td class="mono muted">{{if .Path}}{{.Path}}{{if .InternalPath}} &rarr; {{.InternalPath}}{{end}}{{else}}/{{end}}</td>
+        <td>{{if .TLS}}<span class="badge state-running">TLS</span>{{else}}<span class="muted">http</span>{{end}}</td>
+        <td><a href="http{{if .TLS}}s{{end}}://{{.Host}}{{.Path}}" target="_blank" rel="noreferrer" class="linkbtn">open ↗</a></td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No domains yet. Open an app and use <strong>+ New domain</strong> to add one.</p>
+  {{end}}
+</section>
+{{end}}

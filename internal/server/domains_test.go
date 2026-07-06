@@ -222,3 +222,19 @@ func TestAppPageShowsDomainWizard(t *testing.T) {
 		}
 	}
 }
+
+func TestDomainsPageListsAcrossApps(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	// nixpacks app seeds web.test; compose app gets an explicit route.
+	e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	shop, _ := e.store.CreateApp(context.Background(), core.App{Name: "shop", RepoURL: "https://x/y.git", Kind: core.KindCompose, ComposePath: "docker-compose.yml"})
+	e.store.AddDomain(context.Background(), core.Domain{AppID: shop.ID, Host: "shop.test", Service: "api", Port: 8000, TLS: true})
+
+	page := body(t, e.get(t, "/domains"))
+	for _, want := range []string{"web.test", "shop.test", "api:8000"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("/domains page missing %q", want)
+		}
+	}
+}

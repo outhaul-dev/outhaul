@@ -28,7 +28,6 @@ func (s *Server) handlePlaceholder(p placeholderPage) http.HandlerFunc {
 var placeholderPages = []placeholderPage{
 	{"volumes", "Volumes", "Compose stacks' named volumes can already be backed up and restored from each app's Backups panel. A standalone volume browser is coming soon."},
 	{"registry", "Registry", "Connect a private container registry to pull and push images."},
-	{"domains", "Domains", "Domains are managed on each app's page today. A single place to see every domain, DNS hint, and certificate is coming soon."},
 	{"infrastructure", "Infrastructure", "See the host, Docker, and Traefik that power your deployments."},
 	{"metrics", "Metrics", "Live CPU, memory, and network metrics are already on every app's page. A host-wide metrics dashboard is coming soon."},
 }
