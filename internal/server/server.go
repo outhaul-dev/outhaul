@@ -5,12 +5,14 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"html/template"
 	"io"
 	"io/fs"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -219,19 +221,28 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-// render executes the named page template with the base layout.
+// render executes the named page template with the base layout. It renders into
+// a buffer first so a template error mid-execution becomes a clean 500 instead
+// of a corrupt, half-written 200 (whose second WriteHeader the net/http server
+// logs as a "superfluous response.WriteHeader call"). Pages are small, so the
+// extra buffer is negligible.
 func (s *Server) render(w http.ResponseWriter, status int, page string, data map[string]any) {
 	t, ok := s.pages[page]
 	if !ok {
 		http.Error(w, "unknown page: "+page, http.StatusInternalServerError)
 		return
 	}
+	var buf bytes.Buffer
+	if err := t.ExecuteTemplate(&buf, "base", data); err != nil {
+		// Nothing has been written to w yet, so a real 500 still reaches the
+		// client. Log the actual error, which the old direct-to-w path hid.
+		log.Printf("server: render %q: %v", page, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	if err := t.ExecuteTemplate(w, "base", data); err != nil {
-		// Response may be partially written; log via the standard logger.
-		http.Error(w, "render error: "+err.Error(), http.StatusInternalServerError)
-	}
+	_, _ = w.Write(buf.Bytes())
 }
 
 func templateFuncs() template.FuncMap {
