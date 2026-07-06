@@ -27,5 +27,4 @@ func (s *Server) handlePlaceholder(p placeholderPage) http.HandlerFunc {
 // of pretending nothing exists.
 var placeholderPages = []placeholderPage{
 	{"registry", "Registry", "Connect a private container registry to pull and push images."},
-	{"infrastructure", "Infrastructure", "See the host, Docker, and Traefik that power your deployments."},
 }
