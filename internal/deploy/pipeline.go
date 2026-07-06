@@ -114,61 +114,23 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 		return
 	}
 
-	// --- start new container, invisible to Traefik, and health-check it ---
-	// Named on the globally-unique deployment ID (not the app name) so it can
-	// never collide with a canonical name: app names permit trailing
-	// "-<digits>", so "outhaul-app-<name>-<depID>" could equal the canonical
-	// name of an app literally named "<name>-<depID>".
-	tempName := fmt.Sprintf("outhaul-deploy-%d", dep.ID)
-	logf(out, "Starting new container and waiting for it to become healthy...")
-	newID, err := w.createContainer(ctx, app, image, tempName, runtimeEnv, false)
+	// Choose a deploy strategy. Apps with a persistent volume cannot overlap two
+	// containers on the volume (single writer), so they stop-first (brief
+	// downtime). Stateless apps use the zero-downtime blue-green cutover.
+	vols, err := w.store.ListVolumes(ctx, app.ID)
 	if err != nil {
-		w.fail(dep, core.StatusDeploying, "start failed: "+err.Error(), out)
+		w.fail(dep, core.StatusDeploying, "load volumes: "+err.Error(), out)
 		return
 	}
-	// cleanupContainer removes a container regardless of pipeline cancellation
-	// (e.g. graceful shutdown cancels ctx), so temp containers never leak.
-	cleanupContainer := func(id string) {
-		rmCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_ = w.docker.RemoveContainer(rmCtx, id, true)
+	if len(vols) > 0 {
+		if !w.deployStopFirst(ctx, dep, app, image, runtimeEnv, out) {
+			return
+		}
+	} else {
+		if !w.deployBlueGreen(ctx, dep, app, image, runtimeEnv, out) {
+			return
+		}
 	}
-	ip, err := w.docker.ContainerIP(ctx, newID, w.cfg.Network)
-	if err != nil || ip == "" {
-		cleanupContainer(newID)
-		w.fail(dep, core.StatusDeploying, "could not resolve container IP", out)
-		return
-	}
-	healthURL := fmt.Sprintf("http://%s:%d/", ip, AppPort)
-	if !w.healthCheck(ctx, healthURL, w.cfg.HealthTimeout) {
-		cleanupContainer(newID)
-		w.fail(dep, core.StatusDeploying, "health check failed: app did not respond within the timeout", out)
-		return
-	}
-
-	// The app may have been deleted while we were building/health-checking (a
-	// deploying deployment is not cancellable). If so, abort before recreating
-	// the canonical container, or we'd orphan a container for a gone app.
-	if _, err := w.store.GetApp(ctx, app.ID); err != nil {
-		cleanupContainer(newID)
-		w.fail(dep, core.StatusDeploying, "app was deleted during deploy", out)
-		return
-	}
-
-	// --- healthy: cut over. Remove old, create canonical, then drop the temp. ---
-	logf(out, "Healthy. Cutting over to the new container...")
-	if err := w.removeContainerByName(ctx, containerName(app.Name)); err != nil {
-		cleanupContainer(newID)
-		w.fail(dep, core.StatusDeploying, "remove previous container: "+err.Error(), out)
-		return
-	}
-	if _, err := w.createContainer(ctx, app, image, containerName(app.Name), runtimeEnv, true); err != nil {
-		cleanupContainer(newID)
-		logf(out, "ERROR: cutover failed — the app has NO running container until the next successful deploy")
-		w.fail(dep, core.StatusDeploying, "cutover failed (app is down): "+err.Error(), out)
-		return
-	}
-	cleanupContainer(newID) // canonical is up; drop the temp
 
 	// --- deploying -> running ---
 	if _, err := w.store.SetStatus(context.Background(), dep.ID, core.StatusDeploying, core.StatusRunning, ""); err != nil {
@@ -184,6 +146,103 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 	}
 
 	logf(out, "Done. %s is live at http://%s", app.Name, app.Domain)
+}
+
+// deployBlueGreen runs the zero-downtime cutover used by stateless apps: start
+// a temp container invisible to Traefik, health-check it, then remove the old
+// canonical and create the new one. Returns true when the app is live on the
+// new container; false means it already recorded a failure.
+func (w *Worker) deployBlueGreen(ctx context.Context, dep core.Deployment, app core.App, image string, runtimeEnv []string, out io.Writer) bool {
+	// Named on the globally-unique deployment ID (not the app name) so it can
+	// never collide with a canonical name: app names permit trailing
+	// "-<digits>", so "outhaul-app-<name>-<depID>" could equal the canonical
+	// name of an app literally named "<name>-<depID>".
+	tempName := fmt.Sprintf("outhaul-deploy-%d", dep.ID)
+	logf(out, "Starting new container and waiting for it to become healthy...")
+	newID, err := w.createContainer(ctx, app, image, tempName, runtimeEnv, false)
+	if err != nil {
+		w.fail(dep, core.StatusDeploying, "start failed: "+err.Error(), out)
+		return false
+	}
+	// cleanupContainer removes a container regardless of pipeline cancellation
+	// (e.g. graceful shutdown cancels ctx), so temp containers never leak.
+	cleanupContainer := func(id string) {
+		rmCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = w.docker.RemoveContainer(rmCtx, id, true)
+	}
+	ip, err := w.docker.ContainerIP(ctx, newID, w.cfg.Network)
+	if err != nil || ip == "" {
+		cleanupContainer(newID)
+		w.fail(dep, core.StatusDeploying, "could not resolve container IP", out)
+		return false
+	}
+	healthURL := fmt.Sprintf("http://%s:%d/", ip, AppPort)
+	if !w.healthCheck(ctx, healthURL, w.cfg.HealthTimeout) {
+		cleanupContainer(newID)
+		w.fail(dep, core.StatusDeploying, "health check failed: app did not respond within the timeout", out)
+		return false
+	}
+
+	// The app may have been deleted while we were building/health-checking (a
+	// deploying deployment is not cancellable). If so, abort before recreating
+	// the canonical container, or we'd orphan a container for a gone app.
+	if _, err := w.store.GetApp(ctx, app.ID); err != nil {
+		cleanupContainer(newID)
+		w.fail(dep, core.StatusDeploying, "app was deleted during deploy", out)
+		return false
+	}
+
+	// --- healthy: cut over. Remove old, create canonical, then drop the temp. ---
+	logf(out, "Healthy. Cutting over to the new container...")
+	if err := w.removeContainerByName(ctx, containerName(app.Name)); err != nil {
+		cleanupContainer(newID)
+		w.fail(dep, core.StatusDeploying, "remove previous container: "+err.Error(), out)
+		return false
+	}
+	if _, err := w.createContainer(ctx, app, image, containerName(app.Name), runtimeEnv, true); err != nil {
+		cleanupContainer(newID)
+		logf(out, "ERROR: cutover failed — the app has NO running container until the next successful deploy")
+		w.fail(dep, core.StatusDeploying, "cutover failed (app is down): "+err.Error(), out)
+		return false
+	}
+	cleanupContainer(newID) // canonical is up; drop the temp
+	return true
+}
+
+// deployStopFirst runs the recreate deploy used by apps with a persistent
+// volume: remove the old canonical container, start the new canonical (which
+// mounts the volume), then health-check it. There is no overlap — a single
+// writer holds the volume at any moment — at the cost of brief downtime.
+// Returns true when the app is live; false means it already recorded a failure.
+func (w *Worker) deployStopFirst(ctx context.Context, dep core.Deployment, app core.App, image string, runtimeEnv []string, out io.Writer) bool {
+	logf(out, "App has persistent volumes; deploying stop-first (brief downtime).")
+	if err := w.removeContainerByName(ctx, containerName(app.Name)); err != nil {
+		w.fail(dep, core.StatusDeploying, "remove previous container: "+err.Error(), out)
+		return false
+	}
+	// The app may have been deleted while we were building.
+	if _, err := w.store.GetApp(ctx, app.ID); err != nil {
+		w.fail(dep, core.StatusDeploying, "app was deleted during deploy", out)
+		return false
+	}
+	newID, err := w.createContainer(ctx, app, image, containerName(app.Name), runtimeEnv, true)
+	if err != nil {
+		logf(out, "ERROR: start failed — the app has NO running container until the next successful deploy")
+		w.fail(dep, core.StatusDeploying, "start failed (app is down): "+err.Error(), out)
+		return false
+	}
+	ip, err := w.docker.ContainerIP(ctx, newID, w.cfg.Network)
+	if err != nil || ip == "" {
+		w.fail(dep, core.StatusDeploying, "could not resolve container IP", out)
+		return false
+	}
+	healthURL := fmt.Sprintf("http://%s:%d/", ip, AppPort)
+	if !w.healthCheck(ctx, healthURL, w.cfg.HealthTimeout) {
+		w.fail(dep, core.StatusDeploying, "health check failed: app did not respond within the timeout", out)
+		return false
+	}
+	return true
 }
 
 // loadEnv loads an app's env vars with ${{project.KEY}} references resolved
@@ -245,6 +304,22 @@ func (w *Worker) createContainer(ctx context.Context, app core.App, image, name 
 			"outhaul.app":     app.Name,
 		}
 	}
+	// Attach the app's persistent volumes (single-container apps only; compose
+	// runs its own pipeline). Create each Docker volume idempotently first so
+	// it carries Outhaul's labels for the inventory. Volumes survive container
+	// replacement, so data persists across deploys.
+	var mounts []docker.Mount
+	vols, err := w.store.ListVolumes(ctx, app.ID)
+	if err != nil {
+		return "", fmt.Errorf("load volumes: %w", err)
+	}
+	for _, v := range vols {
+		if err := w.docker.CreateVolume(ctx, v.Name, core.VolumeLabels(app.Name)); err != nil {
+			return "", fmt.Errorf("create volume %s: %w", v.Name, err)
+		}
+		mounts = append(mounts, docker.Mount{Source: v.Name, Target: v.MountPath, Volume: true})
+	}
+
 	// Only the canonical (Traefik-routed) container should survive a host
 	// reboot or Docker restart. The temp health-check container carries
 	// runtime env (including secrets); if Outhaul crashes between create and
@@ -261,6 +336,7 @@ func (w *Worker) createContainer(ctx context.Context, app core.App, image, name 
 		Env:           env,
 		Networks:      []string{w.cfg.Network},
 		RestartPolicy: restart,
+		Mounts:        mounts,
 	}
 	id, err := w.docker.CreateContainer(ctx, spec)
 	if err != nil {
