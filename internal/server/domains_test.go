@@ -177,3 +177,30 @@ func TestUpdateAndDeleteDomain(t *testing.T) {
 		t.Errorf("delete left %d rows, want 1", len(list))
 	}
 }
+
+func TestAppPageShowsDomainWizard(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+
+	// nixpacks app (seeds web.test) — wizard present, no compose service select.
+	web, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	page := body(t, e.get(t, "/apps/"+itoa(web.ID)))
+	for _, want := range []string{"id=\"domain-dialog\"", "openDomainDialog()", "web.test"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("nixpacks app page missing %q", want)
+		}
+	}
+	if strings.Contains(page, "id=\"domain-service\"") {
+		t.Error("nixpacks app page should not show the compose service select")
+	}
+
+	// compose app with a domain — service select present in the wizard.
+	shop, _ := e.store.CreateApp(context.Background(), core.App{Name: "shop", RepoURL: "https://x/y.git", Kind: core.KindCompose, ComposePath: "docker-compose.yml"})
+	e.store.AddDomain(context.Background(), core.Domain{AppID: shop.ID, Host: "shop.test", Service: "web", Port: 3000})
+	page = body(t, e.get(t, "/apps/"+itoa(shop.ID)))
+	for _, want := range []string{"id=\"domain-dialog\"", "shop.test", "id=\"domain-service\""} {
+		if !strings.Contains(page, want) {
+			t.Errorf("compose app page missing %q", want)
+		}
+	}
+}

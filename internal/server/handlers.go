@@ -380,14 +380,17 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 		runtimeState = c.State
 	}
 	data := map[string]any{
-		"Title":       app.Name,
-		"Active":      "apps",
-		"App":         app,
-		"Deployments": deployments,
-		"Env":         maskEnv(envVars),
-		"Runtime":     runtimeState,
-		"Stack":       stack,
-		"Domains":     domains,
+		"Title":        app.Name,
+		"Active":       "apps",
+		"App":          app,
+		"Deployments":  deployments,
+		"Env":          maskEnv(envVars),
+		"Runtime":      runtimeState,
+		"Stack":        stack,
+		"Domains":      domains,
+		"ServerIP":     s.serverIP,
+		"TLSAvailable": s.tlsEnabled,
+		"OpenDialog":   "",
 	}
 	// Breadcrumb context; tolerate a missing project rather than 500 the page.
 	if p, err := s.store.GetProject(r.Context(), app.ProjectID); err == nil {

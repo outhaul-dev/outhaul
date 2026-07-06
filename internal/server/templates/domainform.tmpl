@@ -1,0 +1,188 @@
+{{define "domainform"}}
+<dialog id="domain-dialog" class="modal" open{{if eq .OpenDialog "domain-dialog"}} data-reopen{{end}} aria-labelledby="domain-dialog-title">
+  <form method="post" id="domain-form" action="/apps/{{.App.ID}}/domains">
+    <div class="modal-head">
+      <h3 class="modal-title" id="domain-dialog-title">New domain</h3>
+      <button type="button" class="modal-close" aria-label="Close" onclick="this.closest('dialog').close()">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="wizard-steps">
+        <span class="dot" data-dot>1 · Host</span>
+        <span class="dot" data-dot>2 · Target</span>
+        <span class="dot" data-dot>3 · HTTPS</span>
+      </div>
+
+      <!-- Step 1: Host -->
+      <div class="stack" data-step>
+        <label class="field-check">
+          <input type="radio" name="host_kind" value="custom" checked>
+          <span>Custom domain {{template "hint" "A hostname you own and have pointed at this server's IP with a DNS A record, e.g. shop.example.com."}}</span>
+        </label>
+        <label class="field" data-host="custom">
+          <span>Host</span>
+          <input type="text" name="host" id="domain-host" placeholder="shop.example.com">
+        </label>
+        {{if .ServerIP}}
+        <label class="field-check">
+          <input type="radio" name="host_kind" value="sslip">
+          <span>Free sslip.io domain {{template "hint" "A zero-config hostname that resolves to this server's IP via sslip.io — handy for testing without owning a domain."}}</span>
+        </label>
+        <label class="field" data-host="sslip" hidden>
+          <span>Generated host</span>
+          <input type="text" value="{{.App.Name}}.{{.ServerIP}}.sslip.io" disabled>
+        </label>
+        {{end}}
+      </div>
+
+      <!-- Step 2: Target -->
+      <div class="stack" data-step>
+        {{if eq .App.Kind "compose"}}
+        <label class="field">
+          <span>Service {{template "hint" "Which service in the compose stack this domain routes to."}}</span>
+          <select name="service" id="domain-service">
+            {{range .Stack}}<option value="{{.Service}}">{{.Service}}</option>{{end}}
+          </select>
+        </label>
+        <label class="field">
+          <span>Container port {{template "hint" "The port that service listens on inside its container, e.g. 3000."}}</span>
+          <input type="text" name="port" id="domain-port" placeholder="3000" inputmode="numeric">
+        </label>
+        {{end}}
+        <label class="field">
+          <span>Path <em>(optional)</em> {{template "hint" "Route only requests under this URL prefix, e.g. /api. Leave blank to route the whole host."}}</span>
+          <input type="text" name="path" placeholder="/api">
+        </label>
+        <label class="field">
+          <span>Internal path <em>(optional)</em> {{template "hint" "Rewrite the matched prefix to this before forwarding to the container. Blank = forward unchanged; '/' strips the prefix; '/v1' replaces it. Requires a path above."}}</span>
+          <input type="text" name="internal_path" placeholder="/">
+        </label>
+      </div>
+
+      <!-- Step 3: HTTPS -->
+      <div class="stack" data-step>
+        <label class="field-check">
+          <input type="checkbox" name="tls" id="domain-tls"{{if .TLSAvailable}} checked{{end}}{{if not .TLSAvailable}} disabled{{end}}>
+          <span>Automate HTTPS (Let's Encrypt) {{template "hint" "Obtain and renew a TLS certificate for this domain automatically. Requires DNS pointing here and port 443 reachable."}}</span>
+        </label>
+        {{if not .TLSAvailable}}
+        <p class="env-note">HTTPS automation needs an ACME email in the server config. Set one to enable per-domain certificates.</p>
+        {{end}}
+        <p class="muted env-note">Domain changes apply on this app's next deploy.</p>
+      </div>
+    </div>
+
+    <div class="modal-foot">
+      <button type="button" class="btn" data-nav="back">Back</button>
+      <span class="spacer"></span>
+      <button type="button" class="btn btn-primary" data-nav="next">Next &rarr;</button>
+      <button type="submit" class="btn btn-primary" data-nav="submit">Create domain</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+  // Domain wizard: same progressive-enhancement + step pattern as the app-create
+  // wizard. Ships open (inline, usable without JS); JS makes it modal and exposes
+  // openDomainDialog(row) so the Domains section can open it fresh or prefilled
+  // for an edit. The server validates the submitted form regardless.
+  (function () {
+    var dialog = document.getElementById('domain-dialog');
+    if (!dialog) return;
+    var form = document.getElementById('domain-form');
+    var addAction = form.getAttribute('action');
+    var title = document.getElementById('domain-dialog-title');
+    var submitBtn = dialog.querySelector('[data-nav="submit"]');
+
+    function applyHostKind() {
+      var checked = dialog.querySelector('input[name="host_kind"]:checked');
+      var kind = checked ? checked.value : 'custom';
+      dialog.querySelectorAll('[data-host]').forEach(function (el) {
+        el.hidden = el.getAttribute('data-host') !== kind;
+      });
+      var host = document.getElementById('domain-host');
+      if (host) host.required = kind === 'custom';
+    }
+    dialog.querySelectorAll('input[name="host_kind"]').forEach(function (r) {
+      r.addEventListener('change', applyHostKind);
+    });
+
+    var steps = Array.prototype.slice.call(dialog.querySelectorAll('[data-step]'));
+    var dots = Array.prototype.slice.call(dialog.querySelectorAll('[data-dot]'));
+    var backBtn = dialog.querySelector('[data-nav="back"]');
+    var nextBtn = dialog.querySelector('[data-nav="next"]');
+    var current = 0;
+    function show(i) {
+      current = i;
+      steps.forEach(function (s, n) { s.hidden = n !== i; });
+      dots.forEach(function (d, n) {
+        d.classList.toggle('current', n === i);
+        d.classList.toggle('done', n < i);
+      });
+      if (backBtn) backBtn.disabled = i === 0;
+      if (nextBtn) nextBtn.hidden = i === steps.length - 1;
+      if (submitBtn) submitBtn.hidden = i !== steps.length - 1;
+    }
+    function stepValid() {
+      var fields = steps[current].querySelectorAll('input, select, textarea');
+      for (var i = 0; i < fields.length; i++) {
+        if (fields[i].offsetParent !== null && !fields[i].checkValidity()) {
+          fields[i].reportValidity();
+          return false;
+        }
+      }
+      return true;
+    }
+    if (nextBtn) nextBtn.addEventListener('click', function () {
+      if (stepValid() && current < steps.length - 1) show(current + 1);
+    });
+    if (backBtn) backBtn.addEventListener('click', function () {
+      if (current > 0) show(current - 1);
+    });
+    form.addEventListener('submit', function (e) {
+      if (current < steps.length - 1) {
+        e.preventDefault();
+        if (stepValid()) show(current + 1);
+      }
+    });
+
+    applyHostKind();
+    show(0);
+
+    if (dialog.open) dialog.close();
+    dialog.addEventListener('click', function (e) { if (e.target === dialog) dialog.close(); });
+
+    function setField(name, val) {
+      var el = form.querySelector('[name="' + name + '"]');
+      if (!el) return;
+      if (el.type === 'checkbox') { el.checked = val === '1' || val === 'true'; }
+      else { el.value = val; }
+    }
+    window.openDomainDialog = function (row) {
+      if (row) {
+        title.textContent = 'Edit domain';
+        submitBtn.textContent = 'Save domain';
+        form.setAttribute('action', addAction + '/' + row.id);
+        var custom = form.querySelector('input[name="host_kind"][value="custom"]');
+        if (custom) custom.checked = true;
+        applyHostKind();
+        setField('host', row.host || '');
+        setField('service', row.service || '');
+        setField('port', row.port || '');
+        setField('path', row.path || '');
+        setField('internal_path', row.internal_path || '');
+        var tls = document.getElementById('domain-tls');
+        if (tls && !tls.disabled) tls.checked = row.tls === '1';
+      } else {
+        title.textContent = 'New domain';
+        submitBtn.textContent = 'Create domain';
+        form.setAttribute('action', addAction);
+        form.reset();
+        applyHostKind();
+      }
+      show(0);
+      dialog.showModal();
+    };
+    if (dialog.hasAttribute('data-reopen')) dialog.showModal();
+  })();
+</script>
+{{end}}

@@ -120,7 +120,7 @@ func (s *Server) parseTemplates() error {
 		t := template.New("base").Funcs(templateFuncs())
 		// appform.tmpl is a shared partial (the create-app form, used by the
 		// Apps and project-detail pages); parsing it into every set is harmless.
-		t, err := t.ParseFS(templatesFS, "templates/base.tmpl", "templates/appform.tmpl", "templates/hint.tmpl", "templates/backups.tmpl", "templates/"+p+".tmpl")
+		t, err := t.ParseFS(templatesFS, "templates/base.tmpl", "templates/appform.tmpl", "templates/hint.tmpl", "templates/domainform.tmpl", "templates/backups.tmpl", "templates/"+p+".tmpl")
 		if err != nil {
 			return err
 		}
