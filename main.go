@@ -129,7 +129,7 @@ func serve() error {
 		serverIP = catalog.DetectServerIP()
 	}
 	setupToken := server.NewToken()
-	srv, err := server.New(st, worker, dc, compose.NewDocker(), dbm, backups, broker, ghClient, cfg.PublicURL, serverIP, setupToken)
+	srv, err := server.New(st, worker, dc, compose.NewDocker(), dbm, backups, broker, ghClient, cfg.PublicURL, serverIP, cfg.TLSEnabled(), setupToken)
 	if err != nil {
 		stopWorker()
 		return fmt.Errorf("build server: %w", err)

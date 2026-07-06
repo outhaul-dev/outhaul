@@ -34,6 +34,10 @@ var envKeyRe = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
 // composeServiceRe matches compose service names (the compose spec's own rule).
 var composeServiceRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 
+// deployAppPort mirrors deploy.AppPort — the port single-container apps listen
+// on — for domain rows created without a compose service.
+const deployAppPort = 8080
+
 func (s *Server) handleAppsList(w http.ResponseWriter, r *http.Request) {
 	apps, err := s.store.ListApps(r.Context())
 	if err != nil {
@@ -71,13 +75,13 @@ func (s *Server) handleAppsList(w http.ResponseWriter, r *http.Request) {
 type appRow struct {
 	core.App
 	ProjectName string
-	Domains     []core.ComposeDomain // a compose app's published domains
+	Domains     []core.Domain // the app's published domains
 	Latest      *core.Deployment
 }
 
 // appRows decorates apps with their project name, latest deployment status,
-// and (for compose apps) published domains. projectNames may be nil when the
-// listing is already scoped to one project.
+// and published domains. projectNames may be nil when the listing is already
+// scoped to one project.
 func (s *Server) appRows(ctx context.Context, apps []core.App, projectNames map[int64]string) ([]appRow, error) {
 	rows := make([]appRow, 0, len(apps))
 	for _, a := range apps {
@@ -86,10 +90,8 @@ func (s *Server) appRows(ctx context.Context, apps []core.App, projectNames map[
 			return nil, err
 		}
 		row := appRow{App: a, ProjectName: projectNames[a.ProjectID], Latest: latest}
-		if a.Kind == core.KindCompose {
-			if row.Domains, err = s.store.ListComposeDomains(ctx, a.ID); err != nil {
-				return nil, err
-			}
+		if row.Domains, err = s.store.ListDomains(ctx, a.ID); err != nil {
+			return nil, err
 		}
 		rows = append(rows, row)
 	}
@@ -170,7 +172,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	// Compose domains live in their own table (a stack can have many); the
 	// form's optional domain/service/port trio seeds the first row after the
 	// app exists.
-	var firstDomain *core.ComposeDomain
+	var firstDomain *core.Domain
 	if kind == core.KindDockerfile {
 		verr := ""
 		if app.DockerfilePath, verr = parseDockerfilePath(r); verr != "" {
@@ -217,7 +219,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	}
 	if firstDomain != nil {
 		firstDomain.AppID = created.ID
-		if _, err := s.store.AddComposeDomain(r.Context(), *firstDomain); err != nil {
+		if _, err := s.store.AddDomain(r.Context(), *firstDomain); err != nil {
 			// The app row exists; surface the domain failure instead of hiding it.
 			s.renderAppsWithError(w, r,
 				"App created, but the domain could not be added: "+err.Error(), name, repo, domain)
@@ -344,12 +346,12 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 		State   string
 	}
 	var stack []serviceRow
-	var domains []core.ComposeDomain
+	domains, err := s.store.ListDomains(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if app.Kind == core.KindCompose {
-		if domains, err = s.store.ListComposeDomains(r.Context(), id); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
 		cs, err := s.runtime.ListContainers(r.Context(),
 			map[string]string{"com.docker.compose.project": compose.ProjectName(app.Name)})
 		if err == nil && len(cs) > 0 {
@@ -402,10 +404,10 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 	s.render(w, http.StatusOK, "app", data)
 }
 
-// handleAddComposeDomain publishes a stack service on another domain. The row
-// is stored immediately but only reaches Traefik on the next deploy, when the
-// override file is regenerated — the same contract as Dokploy.
-func (s *Server) handleAddComposeDomain(w http.ResponseWriter, r *http.Request) {
+// handleAddDomain publishes a route on an app. Compose apps name a service and
+// port; single-container apps route to their container on AppPort with no
+// service. Rows reach Traefik on the app's next deploy — the existing contract.
+func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(r.PathValue("id"))
 	if !ok {
 		http.NotFound(w, r)
@@ -416,25 +418,51 @@ func (s *Server) handleAddComposeDomain(w http.ResponseWriter, r *http.Request) 
 		http.NotFound(w, r)
 		return
 	}
-	if app.Kind != core.KindCompose {
-		http.Error(w, "Domains can only be added to compose apps; edit a nixpacks app's single domain instead.", http.StatusBadRequest)
-		return
-	}
-	d, verr := parseDomainFields(r.FormValue("domain"), r.FormValue("service"), r.FormValue("port"))
+	d, verr := s.parseDomainForm(r, app)
 	if verr != "" {
 		http.Error(w, verr, http.StatusBadRequest)
 		return
 	}
 	d.AppID = id
-	if _, err := s.store.AddComposeDomain(r.Context(), d); err != nil {
-		// Most likely the UNIQUE(app_id, domain) constraint.
+	if _, err := s.store.AddDomain(r.Context(), d); err != nil {
 		http.Error(w, "Could not add domain (is it already configured?): "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
-func (s *Server) handleDeleteComposeDomain(w http.ResponseWriter, r *http.Request) {
+// handleUpdateDomain rewrites an existing route in place.
+func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	domainID, ok2 := parseID(r.PathValue("domainID"))
+	if !ok || !ok2 {
+		http.NotFound(w, r)
+		return
+	}
+	app, err := s.store.GetApp(r.Context(), id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := s.store.GetDomain(r.Context(), id, domainID); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	d, verr := s.parseDomainForm(r, app)
+	if verr != "" {
+		http.Error(w, verr, http.StatusBadRequest)
+		return
+	}
+	d.ID = domainID
+	d.AppID = id
+	if err := s.store.UpdateDomain(r.Context(), d); err != nil {
+		http.Error(w, "Could not update domain: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
+func (s *Server) handleDeleteDomain(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(r.PathValue("id"))
 	domainID, ok2 := parseID(r.PathValue("domainID"))
 	if !ok || !ok2 {
@@ -445,11 +473,75 @@ func (s *Server) handleDeleteComposeDomain(w http.ResponseWriter, r *http.Reques
 		http.NotFound(w, r)
 		return
 	}
-	if err := s.store.DeleteComposeDomain(r.Context(), id, domainID); err != nil {
+	if err := s.store.DeleteDomain(r.Context(), id, domainID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
+// parseDomainForm reads and validates the wizard's fields for one route. For a
+// compose app it requires a service + port; for a single-container app it forces
+// service="" and port=AppPort. host_kind=="sslip" mints a host under the
+// server's sslip.io wildcard instead of the custom field.
+func (s *Server) parseDomainForm(r *http.Request, app core.App) (core.Domain, string) {
+	host := strings.TrimSpace(r.FormValue("host"))
+	if r.FormValue("host_kind") == "sslip" {
+		if s.serverIP == "" {
+			return core.Domain{}, "This server has no public IP configured, so a sslip.io domain can't be generated. Enter a custom domain."
+		}
+		host = app.Name + "." + s.serverIP + ".sslip.io"
+	}
+	if host == "" || strings.ContainsAny(host, " /") {
+		return core.Domain{}, "Domain must be a bare hostname (e.g. app.example.com)."
+	}
+
+	d := core.Domain{Host: host, TLS: r.FormValue("tls") != ""}
+
+	urlPath, verr := cleanURLPath(r.FormValue("path"))
+	if verr != "" {
+		return core.Domain{}, verr
+	}
+	internalPath, verr := cleanURLPath(r.FormValue("internal_path"))
+	if verr != "" {
+		return core.Domain{}, verr
+	}
+	// An internal path only rewrites a matched external prefix, so it is
+	// meaningless without one.
+	if internalPath != "" && urlPath == "" {
+		return core.Domain{}, "An internal path only applies when an external path is set."
+	}
+	d.Path, d.InternalPath = urlPath, internalPath
+
+	if app.Kind == core.KindCompose {
+		if !composeServiceRe.MatchString(strings.TrimSpace(r.FormValue("service"))) {
+			return core.Domain{}, "Name the compose service to expose on the domain (e.g. web)."
+		}
+		port, err := strconv.Atoi(strings.TrimSpace(r.FormValue("port")))
+		if err != nil || port < 1 || port > 65535 {
+			return core.Domain{}, "Container port must be a number between 1 and 65535."
+		}
+		d.Service, d.Port = strings.TrimSpace(r.FormValue("service")), port
+	} else {
+		d.Service, d.Port = "", deployAppPort
+	}
+	return d, ""
+}
+
+// cleanURLPath validates an optional external/internal path: empty is allowed
+// (meaning "no path" / "unchanged"); otherwise it must be a clean absolute path.
+func cleanURLPath(p string) (string, string) {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return "", ""
+	}
+	if !strings.HasPrefix(p, "/") || strings.ContainsAny(p, " ") || strings.Contains(p, "..") {
+		return "", "Paths must start with '/' and contain no spaces or '..' (e.g. /api)."
+	}
+	if p != "/" {
+		p = strings.TrimRight(p, "/")
+	}
+	return p, ""
 }
 
 // envRow is an env var prepared for display: secret values are masked.
@@ -809,19 +901,19 @@ func parseDockerfilePath(r *http.Request) (string, string) {
 // parseDomainFields validates one domain→service:port publication. Publishing
 // needs all three: the host Traefik matches, the compose service it routes
 // to, and the container port that service listens on.
-func parseDomainFields(domain, service, portStr string) (core.ComposeDomain, string) {
+func parseDomainFields(domain, service, portStr string) (core.Domain, string) {
 	domain = strings.TrimSpace(domain)
 	if domain == "" || strings.ContainsAny(domain, " /") {
-		return core.ComposeDomain{}, "Domain must be a bare hostname (e.g. app.example.com)."
+		return core.Domain{}, "Domain must be a bare hostname (e.g. app.example.com)."
 	}
 	if !composeServiceRe.MatchString(strings.TrimSpace(service)) {
-		return core.ComposeDomain{}, "Name the compose service to expose on the domain (e.g. web)."
+		return core.Domain{}, "Name the compose service to expose on the domain (e.g. web)."
 	}
 	port, err := strconv.Atoi(strings.TrimSpace(portStr))
 	if err != nil || port < 1 || port > 65535 {
-		return core.ComposeDomain{}, "Service port must be a number between 1 and 65535."
+		return core.Domain{}, "Service port must be a number between 1 and 65535."
 	}
-	return core.ComposeDomain{Domain: domain, Service: strings.TrimSpace(service), Port: port}, ""
+	return core.Domain{Host: domain, Service: strings.TrimSpace(service), Port: port, TLS: true}, ""
 }
 
 // cleanRepoPath normalizes a repo-relative file path (empty = fallback),

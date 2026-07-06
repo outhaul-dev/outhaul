@@ -41,14 +41,16 @@ func TestCreateComposeApp(t *testing.T) {
 	if app.ComposePath != "docker-compose.yml" {
 		t.Errorf("ComposePath = %q, want the docker-compose.yml default", app.ComposePath)
 	}
-	if app.Domain != "" {
-		t.Errorf("App.Domain = %q; compose domains must live in their own table", app.Domain)
+	// apps.domain mirrors the first domain row (store.syncPrimaryDomainTx); it
+	// is a read-only denormalization, not a second source of truth.
+	if app.Domain != "shop.example.com" {
+		t.Errorf("App.Domain = %q, want it mirrored from the seeded domain row", app.Domain)
 	}
-	domains, err := e.store.ListComposeDomains(context.Background(), app.ID)
+	domains, err := e.store.ListDomains(context.Background(), app.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(domains) != 1 || domains[0].Domain != "shop.example.com" ||
+	if len(domains) != 1 || domains[0].Host != "shop.example.com" ||
 		domains[0].Service != "web" || domains[0].Port != 3000 {
 		t.Errorf("domains = %+v, want the form's domain seeded as web:3000", domains)
 	}
@@ -72,7 +74,7 @@ func TestCreateComposeAppWithoutDomain(t *testing.T) {
 	if app.Domain != "" {
 		t.Errorf("internal-only stack should have no domain: %+v", app)
 	}
-	if ds, _ := e.store.ListComposeDomains(context.Background(), app.ID); len(ds) != 0 {
+	if ds, _ := e.store.ListDomains(context.Background(), app.ID); len(ds) != 0 {
 		t.Errorf("internal-only stack should have no domain rows: %+v", ds)
 	}
 }
@@ -150,7 +152,7 @@ func TestComposeAppSettingsUpdate(t *testing.T) {
 		t.Errorf("compose path not updated: %+v", got)
 	}
 	// Domains are managed by their own endpoints, untouched by settings saves.
-	if ds, _ := e.store.ListComposeDomains(context.Background(), app.ID); len(ds) != 1 {
+	if ds, _ := e.store.ListDomains(context.Background(), app.ID); len(ds) != 1 {
 		t.Errorf("settings save must not touch domains: %+v", ds)
 	}
 }
@@ -163,20 +165,20 @@ func TestComposeDomainAddAndRemove(t *testing.T) {
 
 	// Add a second domain on another service.
 	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/domains", url.Values{
-		"domain": {"api.example.com"}, "service": {"api"}, "port": {"8080"},
+		"host_kind": {"custom"}, "host": {"api.example.com"}, "service": {"api"}, "port": {"8080"},
 	})
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("add domain = %d, want 303; body=%s", resp.StatusCode, body(t, resp))
 	}
 	resp.Body.Close()
-	domains, _ := e.store.ListComposeDomains(context.Background(), app.ID)
-	if len(domains) != 2 || domains[0].Domain != "api.example.com" {
+	domains, _ := e.store.ListDomains(context.Background(), app.ID)
+	if len(domains) != 2 || domains[0].Host != "api.example.com" {
 		t.Fatalf("domains = %+v, want api.example.com added", domains)
 	}
 
 	// A duplicate host on the same app is rejected.
 	resp = e.postForm(t, "/apps/"+itoa(app.ID)+"/domains", url.Values{
-		"domain": {"api.example.com"}, "service": {"other"}, "port": {"1234"},
+		"host_kind": {"custom"}, "host": {"api.example.com"}, "service": {"other"}, "port": {"1234"},
 	})
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("duplicate domain = %d, want 400", resp.StatusCode)
@@ -185,9 +187,9 @@ func TestComposeDomainAddAndRemove(t *testing.T) {
 
 	// Bad fields are rejected.
 	for name, form := range map[string]url.Values{
-		"missing service": {"domain": {"x.example.com"}, "port": {"80"}},
-		"bad port":        {"domain": {"x.example.com"}, "service": {"web"}, "port": {"99999"}},
-		"bad domain":      {"domain": {"not a host"}, "service": {"web"}, "port": {"80"}},
+		"missing service": {"host_kind": {"custom"}, "host": {"x.example.com"}, "port": {"80"}},
+		"bad port":        {"host_kind": {"custom"}, "host": {"x.example.com"}, "service": {"web"}, "port": {"99999"}},
+		"bad domain":      {"host_kind": {"custom"}, "host": {"not a host"}, "service": {"web"}, "port": {"80"}},
 	} {
 		resp = e.postForm(t, "/apps/"+itoa(app.ID)+"/domains", form)
 		if resp.StatusCode != http.StatusBadRequest {
@@ -202,13 +204,13 @@ func TestComposeDomainAddAndRemove(t *testing.T) {
 		t.Fatalf("delete domain = %d, want 303", resp.StatusCode)
 	}
 	resp.Body.Close()
-	domains, _ = e.store.ListComposeDomains(context.Background(), app.ID)
-	if len(domains) != 1 || domains[0].Domain != "shop.example.com" {
+	domains, _ = e.store.ListDomains(context.Background(), app.ID)
+	if len(domains) != 1 || domains[0].Host != "shop.example.com" {
 		t.Errorf("domains after delete = %+v, want just shop.example.com", domains)
 	}
 }
 
-func TestComposeDomainRejectedForNixpacksApp(t *testing.T) {
+func TestDomainAddedToNixpacksApp(t *testing.T) {
 	e := newTestEnv(t)
 	e.completeSetup(t)
 	e.postForm(t, "/apps", url.Values{
@@ -217,13 +219,24 @@ func TestComposeDomainRejectedForNixpacksApp(t *testing.T) {
 	}).Body.Close()
 	app, _ := e.store.GetAppByName(context.Background(), "web")
 
+	// service/port in the form are ignored for a single-container app.
 	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/domains", url.Values{
-		"domain": {"extra.example.com"}, "service": {"web"}, "port": {"80"},
+		"host_kind": {"custom"}, "host": {"extra.example.com"}, "service": {"web"}, "port": {"80"},
 	})
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("add domain to nixpacks app = %d, want 400", resp.StatusCode)
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("add domain to nixpacks app = %d, want 303; body=%s", resp.StatusCode, body(t, resp))
 	}
 	resp.Body.Close()
+	domains, _ := e.store.ListDomains(context.Background(), app.ID)
+	var extra *core.Domain
+	for i := range domains {
+		if domains[i].Host == "extra.example.com" {
+			extra = &domains[i]
+		}
+	}
+	if extra == nil || extra.Service != "" || extra.Port != 8080 {
+		t.Errorf("nixpacks domain not stored with forced service/port: %+v", domains)
+	}
 }
 
 func TestComposeLifecycleUsesRunner(t *testing.T) {
@@ -310,7 +323,7 @@ func TestComposeAppDetailShowsStack(t *testing.T) {
 	if !strings.Contains(page, "/apps/"+itoa(app.ID)+"/domains") {
 		t.Error("domains panel missing the add-domain form")
 	}
-	domains, _ := e.store.ListComposeDomains(context.Background(), app.ID)
+	domains, _ := e.store.ListDomains(context.Background(), app.ID)
 	if len(domains) != 1 {
 		t.Fatalf("domains = %+v", domains)
 	}

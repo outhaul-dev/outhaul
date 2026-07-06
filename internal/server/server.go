@@ -78,6 +78,7 @@ type Server struct {
 	setupToken string
 	publicURL  string
 	serverIP   string // for generated sslip.io template domains; may be empty
+	tlsEnabled bool   // ACME configured: HTTPS automation is available
 	secure     bool   // Secure cookie flag; the admin UI is served directly over HTTP (not behind Traefik), so this stays false
 
 	stateMu     sync.Mutex
@@ -88,7 +89,7 @@ type Server struct {
 // first-boot admin-creation flow (printed by the caller as a one-time URL).
 // publicURL is Outhaul's externally reachable base URL, used to build the
 // GitHub App manifest's callback and webhook URLs.
-func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databases, bk Backups, br *logstream.Broker, gh github.Client, publicURL, serverIP, setupToken string) (*Server, error) {
+func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databases, bk Backups, br *logstream.Broker, gh github.Client, publicURL, serverIP string, tlsEnabled bool, setupToken string) (*Server, error) {
 	s := &Server{
 		store:       st,
 		deployer:    d,
@@ -100,6 +101,7 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 		gh:          gh,
 		publicURL:   publicURL,
 		serverIP:    serverIP,
+		tlsEnabled:  tlsEnabled,
 		setupToken:  setupToken,
 		stateTokens: map[string]time.Time{},
 	}
@@ -170,8 +172,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /apps/{id}/stats", s.requireAuth(s.handleAppStats))
 	mux.HandleFunc("POST /apps/{id}/deploy", s.requireAuth(s.handleDeploy))
 	mux.HandleFunc("POST /apps/{id}/settings", s.requireAuth(s.handleAppSettings))
-	mux.HandleFunc("POST /apps/{id}/domains", s.requireAuth(s.handleAddComposeDomain))
-	mux.HandleFunc("POST /apps/{id}/domains/{domainID}/delete", s.requireAuth(s.handleDeleteComposeDomain))
+	mux.HandleFunc("POST /apps/{id}/domains", s.requireAuth(s.handleAddDomain))
+	mux.HandleFunc("POST /apps/{id}/domains/{domainID}", s.requireAuth(s.handleUpdateDomain))
+	mux.HandleFunc("POST /apps/{id}/domains/{domainID}/delete", s.requireAuth(s.handleDeleteDomain))
 	mux.HandleFunc("POST /apps/{id}/env", s.requireAuth(s.handleSetEnv))
 	mux.HandleFunc("POST /apps/{id}/env/delete", s.requireAuth(s.handleDeleteEnv))
 	mux.HandleFunc("POST /apps/{id}/stop", s.requireAuth(s.handleStopApp))

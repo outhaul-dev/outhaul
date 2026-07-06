@@ -16,7 +16,7 @@
 <section class="panel">
   <dl class="meta">
     {{if eq .App.Kind "compose"}}
-    <div><dt>Domains</dt><dd>{{if .Domains}}{{range .Domains}}<div><a href="http://{{.Domain}}" target="_blank" rel="noreferrer" class="mono">{{.Domain}}</a> <span class="muted mono">→ {{.Service}}:{{.Port}}</span></div>{{end}}{{else}}<span class="muted">— internal only</span>{{end}}</dd></div>
+    <div><dt>Domains</dt><dd>{{if .Domains}}{{range .Domains}}<div><a href="http://{{.Host}}" target="_blank" rel="noreferrer" class="mono">{{.Host}}</a> <span class="muted mono">→ {{.Service}}:{{.Port}}</span></div>{{end}}{{else}}<span class="muted">— internal only</span>{{end}}</dd></div>
     {{else}}
     <div><dt>Domain</dt><dd>{{if .App.Domain}}<a href="http://{{.App.Domain}}" target="_blank" rel="noreferrer" class="mono">{{.App.Domain}}</a>{{else}}<span class="muted">— internal only</span>{{end}}</dd></div>
     {{end}}
@@ -57,7 +57,7 @@
     <tbody>
       {{range .Domains}}
       <tr>
-        <td><a href="http://{{.Domain}}" target="_blank" rel="noreferrer" class="mono">{{.Domain}}</a></td>
+        <td><a href="http://{{.Host}}" target="_blank" rel="noreferrer" class="mono">{{.Host}}</a></td>
         <td class="mono">{{.Service}}</td>
         <td class="mono">{{.Port}}</td>
         <td>

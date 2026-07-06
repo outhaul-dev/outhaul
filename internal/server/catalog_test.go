@@ -49,7 +49,7 @@ func TestDeployTemplate(t *testing.T) {
 		t.Errorf("ComposeRaw missing the template's compose content: %q", app.ComposeRaw)
 	}
 
-	domains, err := e.store.ListComposeDomains(ctx, app.ID)
+	domains, err := e.store.ListDomains(ctx, app.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,8 +57,8 @@ func TestDeployTemplate(t *testing.T) {
 		t.Fatalf("domains = %+v, want one for uptime-kuma:3001", domains)
 	}
 	// The test env's server IP (203.0.113.7) must land in the generated host.
-	if !strings.HasSuffix(domains[0].Domain, "-203-0-113-7.sslip.io") || !strings.HasPrefix(domains[0].Domain, "kuma-") {
-		t.Errorf("generated domain = %q, want kuma-<hash>-203-0-113-7.sslip.io", domains[0].Domain)
+	if !strings.HasSuffix(domains[0].Host, "-203-0-113-7.sslip.io") || !strings.HasPrefix(domains[0].Host, "kuma-") {
+		t.Errorf("generated domain = %q, want kuma-<hash>-203-0-113-7.sslip.io", domains[0].Host)
 	}
 
 	// One click = the first deployment is already queued.
