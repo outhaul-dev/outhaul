@@ -270,6 +270,51 @@ func (f *Fake) ListVolumes(_ context.Context, match map[string]string) ([]string
 	return names, nil
 }
 
+func (f *Fake) CreateVolume(_ context.Context, name string, labels map[string]string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.Volumes[name]; ok {
+		return nil // idempotent
+	}
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	f.Volumes[name] = labels
+	return nil
+}
+
+func (f *Fake) RemoveVolume(_ context.Context, name string, _ bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.Volumes, name)
+	return nil
+}
+
+func (f *Fake) ListVolumesFull(_ context.Context, match map[string]string) ([]VolumeInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []VolumeInfo
+	for name, labels := range f.Volumes {
+		ok := true
+		for k, v := range match {
+			if v == "" {
+				if _, present := labels[k]; !present {
+					ok = false
+					break
+				}
+			} else if labels[k] != v {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			out = append(out, VolumeInfo{Name: name, Labels: labels})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
 func (f *Fake) RunContainer(_ context.Context, spec ContainerSpec, stdout, _ io.Writer) (int, error) {
 	f.mu.Lock()
 	f.Runs = append(f.Runs, spec)

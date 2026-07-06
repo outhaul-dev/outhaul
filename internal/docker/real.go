@@ -464,6 +464,40 @@ func (r *real) ListVolumes(ctx context.Context, match map[string]string) ([]stri
 	return names, nil
 }
 
+func (r *real) CreateVolume(ctx context.Context, name string, labels map[string]string) error {
+	_, err := r.cli.VolumeCreate(ctx, volume.CreateOptions{Name: name, Labels: labels})
+	return err
+}
+
+func (r *real) RemoveVolume(ctx context.Context, name string, force bool) error {
+	err := r.cli.VolumeRemove(ctx, name, force)
+	if client.IsErrNotFound(err) {
+		return nil // already gone: that is the state we wanted
+	}
+	return err
+}
+
+func (r *real) ListVolumesFull(ctx context.Context, match map[string]string) ([]VolumeInfo, error) {
+	args := filters.NewArgs()
+	for k, v := range match {
+		if v == "" {
+			args.Add("label", k) // presence
+		} else {
+			args.Add("label", k+"="+v)
+		}
+	}
+	resp, err := r.cli.VolumeList(ctx, volume.ListOptions{Filters: args})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]VolumeInfo, 0, len(resp.Volumes))
+	for _, v := range resp.Volumes {
+		out = append(out, VolumeInfo{Name: v.Name, Labels: v.Labels})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
 func (r *real) RunContainer(ctx context.Context, spec ContainerSpec, stdout, stderr io.Writer) (int, error) {
 	id, err := r.CreateContainer(ctx, spec)
 	if err != nil {

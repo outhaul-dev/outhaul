@@ -106,3 +106,50 @@ func TestFakeFindReturnsCopy(t *testing.T) {
 		t.Fatal("FindContainer returned a reference into internal state")
 	}
 }
+
+func TestFakeCreateAndListVolumesFull(t *testing.T) {
+	ctx := context.Background()
+	f := NewFake()
+	if err := f.CreateVolume(ctx, "outhaul-web-data",
+		map[string]string{"outhaul.managed": "true", "outhaul.role": "data", "outhaul.app": "web"}); err != nil {
+		t.Fatalf("CreateVolume: %v", err)
+	}
+	// Idempotent: creating again with the same name is not an error.
+	if err := f.CreateVolume(ctx, "outhaul-web-data", nil); err != nil {
+		t.Fatalf("CreateVolume idempotent: %v", err)
+	}
+	got, err := f.ListVolumesFull(ctx, map[string]string{"outhaul.role": "data"})
+	if err != nil {
+		t.Fatalf("ListVolumesFull: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "outhaul-web-data" || got[0].Labels["outhaul.app"] != "web" {
+		t.Fatalf("ListVolumesFull = %+v", got)
+	}
+}
+
+func TestFakeListVolumesFullLabelPresence(t *testing.T) {
+	ctx := context.Background()
+	f := NewFake()
+	f.Volumes["proj_data"] = map[string]string{"com.docker.compose.project": "outhaul-shop"}
+	f.Volumes["loose"] = map[string]string{"other": "x"}
+	// An empty match value means "label present with any value".
+	got, err := f.ListVolumesFull(ctx, map[string]string{"com.docker.compose.project": ""})
+	if err != nil {
+		t.Fatalf("ListVolumesFull: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "proj_data" {
+		t.Fatalf("presence match = %+v, want just proj_data", got)
+	}
+}
+
+func TestFakeRemoveVolume(t *testing.T) {
+	ctx := context.Background()
+	f := NewFake()
+	f.Volumes["v1"] = map[string]string{"outhaul.managed": "true"}
+	if err := f.RemoveVolume(ctx, "v1", false); err != nil {
+		t.Fatalf("RemoveVolume: %v", err)
+	}
+	if _, ok := f.Volumes["v1"]; ok {
+		t.Fatal("volume still present after RemoveVolume")
+	}
+}

@@ -64,6 +64,12 @@ type Container struct {
 // Running reports whether the container is currently running.
 func (c Container) Running() bool { return c.State == "running" }
 
+// VolumeInfo is a named volume with its labels, for inventory/attribution.
+type VolumeInfo struct {
+	Name   string
+	Labels map[string]string
+}
+
 // Client is the container-runtime surface Outhaul depends on.
 type Client interface {
 	// Ping verifies the daemon is reachable.
@@ -128,6 +134,18 @@ type Client interface {
 	// every key=value in match. Used to enumerate a compose stack's named
 	// volumes via its com.docker.compose.project label.
 	ListVolumes(ctx context.Context, match map[string]string) ([]string, error)
+
+	// CreateVolume idempotently creates a named volume with the given labels.
+	// Creating a volume that already exists is not an error.
+	CreateVolume(ctx context.Context, name string, labels map[string]string) error
+
+	// RemoveVolume removes a named volume. force removes it even if it is
+	// referenced; a volume that does not exist is treated as success.
+	RemoveVolume(ctx context.Context, name string, force bool) error
+
+	// ListVolumesFull is ListVolumes with labels returned. A match value of ""
+	// matches the presence of that label key with any value.
+	ListVolumesFull(ctx context.Context, match map[string]string) ([]VolumeInfo, error)
 
 	// RunContainer runs a one-shot container to completion: create from spec,
 	// stream its stdout/stderr to the writers (either may be nil) while it
