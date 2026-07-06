@@ -132,3 +132,76 @@ func TestAppPageHidesVolumesSectionForCompose(t *testing.T) {
 		t.Error("compose app page should not show the volumes section")
 	}
 }
+
+func TestVolumesPageListsAppAndOrphanVolumes(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, err := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	if err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+	v, err := e.store.AddVolume(context.Background(), app.ID, "/data")
+	if err != nil {
+		t.Fatalf("AddVolume: %v", err)
+	}
+	// The attached volume exists in Docker (as after a deploy).
+	e.runtime.Volumes[v.Name] = map[string]string{
+		"outhaul.managed": "true", "outhaul.role": "data", "outhaul.app": "web",
+	}
+	// An orphan: managed data volume with no DB row.
+	e.runtime.Volumes["outhaul-web-old"] = map[string]string{
+		"outhaul.managed": "true", "outhaul.role": "data", "outhaul.app": "web",
+	}
+
+	resp := e.get(t, "/volumes")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("volumes page: status %d", resp.StatusCode)
+	}
+	page := body(t, resp)
+	if !strings.Contains(page, v.Name) || !strings.Contains(page, "/data") {
+		t.Error("attached volume not shown with its mount path")
+	}
+	if !strings.Contains(page, "outhaul-web-old") || !strings.Contains(page, "orphan") {
+		t.Error("orphan volume not shown/flagged")
+	}
+}
+
+func TestReclaimOrphanVolume(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	e.runtime.Volumes["outhaul-web-old"] = map[string]string{
+		"outhaul.managed": "true", "outhaul.role": "data", "outhaul.app": "web",
+	}
+	resp := e.postForm(t, "/volumes/reclaim", url.Values{"name": {"outhaul-web-old"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("reclaim: status %d, body %q", resp.StatusCode, body(t, resp))
+	}
+	resp.Body.Close()
+	if _, ok := e.runtime.Volumes["outhaul-web-old"]; ok {
+		t.Error("orphan volume was not removed")
+	}
+}
+
+func TestReclaimRefusesNonOrphan(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, err := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	if err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+	v, err := e.store.AddVolume(context.Background(), app.ID, "/data")
+	if err != nil {
+		t.Fatalf("AddVolume: %v", err)
+	}
+	e.runtime.Volumes[v.Name] = map[string]string{
+		"outhaul.managed": "true", "outhaul.role": "data", "outhaul.app": "web",
+	}
+	resp := e.postForm(t, "/volumes/reclaim", url.Values{"name": {v.Name}})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 reclaiming an in-use volume, got %d", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if _, ok := e.runtime.Volumes[v.Name]; !ok {
+		t.Error("in-use volume must not be removed")
+	}
+}

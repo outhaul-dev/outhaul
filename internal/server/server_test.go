@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -111,6 +112,10 @@ type fakeRuntime struct {
 	stats     map[string]docker.Stats // container ID -> sample for ContainerStats
 
 	removedImages []string // refs passed to RemoveImage
+
+	// Volumes is test-settable: volume name -> labels. Mirrors docker.Fake's
+	// ListVolumesFull/RemoveVolume semantics for the Volumes inventory tests.
+	Volumes map[string]map[string]string
 }
 
 func (f *fakeRuntime) FindContainer(_ context.Context, name string) (*docker.Container, error) {
@@ -153,6 +158,40 @@ func (f *fakeRuntime) RemoveImage(_ context.Context, ref string) error {
 	return nil
 }
 
+// ListVolumesFull mirrors docker.Fake's semantics: a match value of "" matches
+// the presence of that label key with any value.
+func (f *fakeRuntime) ListVolumesFull(_ context.Context, match map[string]string) ([]docker.VolumeInfo, error) {
+	var out []docker.VolumeInfo
+	for name, labels := range f.Volumes {
+		ok := true
+		for k, v := range match {
+			if v == "" {
+				if _, present := labels[k]; !present {
+					ok = false
+					break
+				}
+			} else if labels[k] != v {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			cp := make(map[string]string, len(labels))
+			for k, v := range labels {
+				cp[k] = v
+			}
+			out = append(out, docker.VolumeInfo{Name: name, Labels: cp})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func (f *fakeRuntime) RemoveVolume(_ context.Context, name string, _ bool) error {
+	delete(f.Volumes, name)
+	return nil
+}
+
 type testEnv struct {
 	srv       *Server
 	deployer  *fakeDeployer
@@ -182,7 +221,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	t.Cleanup(func() { st.Close() })
 
 	dep := &fakeDeployer{}
-	rt := &fakeRuntime{}
+	rt := &fakeRuntime{Volumes: map[string]map[string]string{}}
 	cp := &compose.Fake{}
 	dbm := &fakeDatabases{}
 	bk := &fakeBackups{}

@@ -115,7 +115,7 @@
   {{else}}
   <p class="empty">No volumes. This app is stateless until you attach one — data written outside a volume is lost on the next deploy.</p>
   {{end}}
-  <p class="muted env-note">Volume changes apply on this app's next deploy. Detaching keeps the underlying data.</p>
+  <p class="muted env-note">Volume changes apply on this app's next deploy. Detaching keeps the underlying data — reclaim it later from the <a href="/volumes">Volumes</a> tab.</p>
 </section>
 
 {{template "volumeform" .}}

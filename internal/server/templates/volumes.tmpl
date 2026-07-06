@@ -1,0 +1,40 @@
+{{define "content"}}
+<div class="pagehead">
+  <div>
+    <h1>Volumes</h1>
+    <p class="muted">Persistent storage across all apps. Detached and deleted-app volumes show as orphans and can be reclaimed.</p>
+  </div>
+</div>
+
+<section class="panel">
+  {{if .Volumes}}
+  <table class="table">
+    <thead><tr><th>Volume</th><th>Owner</th><th>Kind</th><th>Mount path</th><th></th></tr></thead>
+    <tbody>
+      {{range .Volumes}}
+      <tr>
+        <td class="mono">{{.Name}}</td>
+        <td>
+          {{if .Orphan}}<span class="badge state-failed">orphan</span>
+          {{else}}<a href="/apps/{{.AppID}}" class="rowlink">{{.AppName}}</a>{{end}}
+        </td>
+        <td class="muted">{{if eq .Kind "compose"}}compose{{else}}app volume{{end}}</td>
+        <td class="mono muted">{{if .MountPath}}{{.MountPath}}{{else}}—{{end}}</td>
+        <td>
+          {{if .Orphan}}
+          <form method="post" action="/volumes/reclaim" class="inline"
+                onsubmit="return confirm('Permanently delete volume {{.Name}} and all its data? This cannot be undone.')">
+            <input type="hidden" name="name" value="{{.Name}}">
+            <button type="submit" class="linkbtn">reclaim</button>
+          </form>
+          {{end}}
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No volumes yet. Attach one to a single-container app from its page, or deploy a compose stack that declares volumes.</p>
+  {{end}}
+</section>
+{{end}}

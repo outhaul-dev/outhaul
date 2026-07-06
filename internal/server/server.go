@@ -63,6 +63,8 @@ type Runtime interface {
 	ContainerLogs(ctx context.Context, id string, tail int) (io.ReadCloser, error)
 	ContainerStats(ctx context.Context, id string) (docker.Stats, error)
 	RemoveImage(ctx context.Context, ref string) error
+	ListVolumesFull(ctx context.Context, match map[string]string) ([]docker.VolumeInfo, error)
+	RemoveVolume(ctx context.Context, name string, force bool) error
 }
 
 // Server holds the HTTP layer's dependencies.
@@ -116,7 +118,7 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 // parseTemplates builds one template set per page, each combining base.tmpl with
 // the page template (so every page can define its own "content" block).
 func (s *Server) parseTemplates() error {
-	pages := []string{"login", "setup", "overview", "projects", "project", "apps", "app", "database", "databases", "deployment", "containers", "github_connect", "settings", "restore", "placeholder", "templates", "domains"}
+	pages := []string{"login", "setup", "overview", "projects", "project", "apps", "app", "database", "databases", "deployment", "containers", "github_connect", "settings", "restore", "placeholder", "templates", "domains", "volumes"}
 	s.pages = make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.New("base").Funcs(templateFuncs())
@@ -160,6 +162,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /projects/{id}/databases", s.requireAuth(s.handleCreateDatabase))
 	mux.HandleFunc("GET /databases", s.requireAuth(s.handleDatabasesList))
 	mux.HandleFunc("GET /domains", s.requireAuth(s.handleDomainsList))
+	mux.HandleFunc("GET /volumes", s.requireAuth(s.handleVolumesList))
+	mux.HandleFunc("POST /volumes/reclaim", s.requireAuth(s.handleReclaimVolume))
 	mux.HandleFunc("GET /databases/{id}", s.requireAuth(s.handleDatabaseDetail))
 	mux.HandleFunc("GET /databases/{id}/logs", s.requireAuth(s.handleDatabaseLogsSSE))
 	mux.HandleFunc("POST /databases/{id}/start", s.requireAuth(s.handleStartDatabase))
