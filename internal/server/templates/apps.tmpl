@@ -13,6 +13,7 @@
 <section class="panel">
   <h2 class="panel-title">Deployed apps</h2>
   {{if .Apps}}
+  <div class="table-wrap">
   <table class="table">
     <thead>
       <tr><th>Name</th><th>Project</th><th>Domain</th><th>Repository</th><th>Branch</th><th>Status</th></tr>
@@ -33,6 +34,7 @@
       {{end}}
     </tbody>
   </table>
+  </div>
   {{else}}
   <p class="empty">No apps yet. Create one above to deploy your first service.</p>
   {{end}}

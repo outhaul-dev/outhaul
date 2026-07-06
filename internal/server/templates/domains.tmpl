@@ -8,6 +8,7 @@
 
 <section class="panel">
   {{if .Domains}}
+  <div class="table-wrap">
   <table class="table">
     <thead><tr><th>Domain</th><th>App</th><th>Target</th><th>Path</th><th>HTTPS</th><th></th></tr></thead>
     <tbody>
@@ -23,6 +24,7 @@
       {{end}}
     </tbody>
   </table>
+  </div>
   {{else}}
   <p class="empty">No domains yet. Open an app and use <strong>+ New domain</strong> to add one.</p>
   {{end}}

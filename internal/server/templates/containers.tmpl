@@ -6,6 +6,7 @@
 <section class="panel">
   <h2 class="panel-title">Running containers</h2>
   {{if .Containers}}
+  <div class="table-wrap">
   <table class="table">
     <thead>
       <tr><th>Name</th><th>Kind</th><th>Image</th><th>State</th></tr>
@@ -21,6 +22,7 @@
       {{end}}
     </tbody>
   </table>
+  </div>
   {{else}}
   <p class="empty">No containers running yet.</p>
   {{end}}

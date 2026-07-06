@@ -100,6 +100,10 @@ a:hover { color: var(--link-hover); }
 .meta dd { margin: 0; }
 
 /* Tables */
+/* Wrap a .table in .table-wrap so a wide table (e.g. a long sslip.io domain in
+   a mono cell) scrolls horizontally within its panel instead of overflowing
+   the page. */
+.table-wrap { overflow-x: auto; }
 .table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .table th {
   text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
