@@ -1,1 +1,1 @@
-{{define "hint"}}<span class="hint" tabindex="0" role="note" aria-label="Help: {{.}}">i<span class="hint-bub">{{.}}</span></span>{{end}}
+{{define "hint"}}<span class="hint" tabindex="0" role="note" aria-label="Help: {{.}}" onclick="event.preventDefault();event.stopPropagation();">i<span class="hint-bub">{{.}}</span></span>{{end}}

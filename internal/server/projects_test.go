@@ -341,3 +341,19 @@ func TestDatabaseCreateErrorReopensDialog(t *testing.T) {
 		t.Error("database dialog should preserve the entered name on error")
 	}
 }
+
+func TestAppCreateErrorReopensDialog(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+
+	// An invalid app name is rejected and re-renders the apps page; the
+	// create-app dialog must be flagged to reopen so the error is visible.
+	resp := e.postForm(t, "/apps", appForm("Bad Name", "x.example.com"))
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad app create = %d, want 400", resp.StatusCode)
+	}
+	page := body(t, resp)
+	if !strings.Contains(page, "data-reopen") {
+		t.Error("errored app dialog should be flagged to reopen")
+	}
+}
