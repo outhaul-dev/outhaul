@@ -213,6 +213,10 @@ func (s *Server) runGit(ctx context.Context, ch ssh.Channel, command, fp string)
 		fmt.Fprintf(ch.Stderr(), "outhaul: %v\n", err)
 		return 1
 	}
+	if !core.ValidAppName(repo) {
+		fmt.Fprintf(ch.Stderr(), "outhaul: invalid app name %q (lowercase letters, digits, hyphens; 2-40 chars)\n", repo)
+		return 1
+	}
 	log.Printf("gitssh: %s -> %s %s", fp, verb, repo)
 	app, aerr := s.keyring.GetAppByName(ctx, repo)
 	switch {

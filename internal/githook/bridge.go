@@ -113,6 +113,9 @@ func (b *Bridge) resolveOrCreate(ctx context.Context, req request) (core.App, er
 
 // coldCreate builds a new push app from the first pushed branch.
 func (b *Bridge) coldCreate(ctx context.Context, req request) (core.App, error) {
+	if !core.ValidAppName(req.App) {
+		return core.App{}, fmt.Errorf("invalid app name %q", req.App)
+	}
 	if len(req.Refs) == 0 {
 		return core.App{}, fmt.Errorf("nothing pushed")
 	}
@@ -141,7 +144,7 @@ func (b *Bridge) coldCreate(ctx context.Context, req request) (core.App, error) 
 	case core.KindDockerfile:
 		app.DockerfilePath = "Dockerfile"
 	}
-	if b.serverIP != "" {
+	if b.serverIP != "" && kind != core.KindCompose {
 		app.Domain = req.App + "." + b.serverIP + ".sslip.io"
 	}
 	created, err := b.store.CreateApp(ctx, app)

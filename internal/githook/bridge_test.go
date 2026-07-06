@@ -203,3 +203,52 @@ func markFailed(t *testing.T, st *store.Store, dep core.Deployment, reason strin
 		t.Fatalf("SetStatus building→failed: %v", err)
 	}
 }
+
+func TestRunHookOverUnixSocketDeploys(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "hook.sock")
+	st := newBridgeStore(t)
+	br := logstream.New()
+	repos := gitrepo.New(filepath.Join(dir, "git"), "/bin/true", sock)
+	b := NewBridge(st, br, fakeNotifier{}, repos, "", 30*time.Second)
+
+	ctx := context.Background()
+	app, err := st.CreateApp(ctx, core.App{Name: "api", Source: core.SourcePush, Branch: "main", Kind: core.KindNixpacks})
+	if err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	serveCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go b.Serve(serveCtx, ln)
+
+	// Fake worker: publish a line, mark running, close the topic.
+	go func() {
+		dep := waitForDeployment(t, st, app.ID)
+		br.Publish(dep.ID, "→ building image")
+		markTerminal(t, st, dep, core.StatusRunning)
+		br.Close(dep.ID)
+	}()
+
+	// RunHook relays post-receive stdin ("<old> <new> <ref>") and streams output.
+	stdin := strings.NewReader("0000 abcd refs/heads/main\n")
+	var out strings.Builder
+	code, err := RunHook(sock, "api", stdin, &out)
+	if err != nil {
+		t.Fatalf("RunHook: %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; output:\n%s", code, out.String())
+	}
+	body := out.String()
+	if !strings.Contains(body, "→ building image") || !strings.Contains(body, "✓ deployed") {
+		t.Fatalf("missing streamed/success output:\n%s", body)
+	}
+	if strings.Contains(body, "exit ") || strings.Contains(body, "\x00") {
+		t.Fatalf("client should have stripped the exit sentinel; output:\n%s", body)
+	}
+}

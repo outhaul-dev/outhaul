@@ -26,7 +26,7 @@ const appContainerPrefix = core.AppContainerPrefix
 
 // appNameRe restricts app names to values safe as container names, Traefik
 // router identifiers, and URL segments.
-var appNameRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,38}[a-z0-9]$`)
+var appNameRe = core.AppNameRe
 
 // envKeyRe restricts env var names to conventional shell identifiers.
 var envKeyRe = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)

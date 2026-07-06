@@ -15,7 +15,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 // renderSettings renders the settings page (also used to redisplay it with an
-// error after a rejected destination change).
+// error after a rejected destination, push-key, or SSH-address change).
 func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, status int, errMsg string) {
 	data := map[string]any{"Title": "Settings", "Active": "settings"}
 	if !s.publicURLSet() {
