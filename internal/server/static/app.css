@@ -251,8 +251,9 @@ input[type=checkbox] { accent-color: var(--accent); }
 .stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-tertiary); }
 .stat-value { font-family: var(--font-mono); font-size: 22px; color: var(--text-primary); margin-top: 4px; }
 .stat-value .unit { font-size: 12px; color: var(--text-secondary); margin-left: 3px; }
+.stat-value.compact { font-size: 16px; } /* for wider values like the "1 · 5 · 15" load triple */
 .stat-sub { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
-.meter { height: 6px; background: var(--bg-2); border: 1px solid var(--border); border-radius: 999px; overflow: hidden; margin-top: 8px; }
+.meter { height: 8px; background: var(--bg-2); border: 1px solid var(--border); border-radius: 999px; overflow: hidden; margin-top: 8px; } /* border-box: 1px borders leave a 6px fill */
 .meter-fill { height: 100%; width: 0; background: var(--accent); transition: width 0.4s ease; }
 .not-live {
   font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em;
