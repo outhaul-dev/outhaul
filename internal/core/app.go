@@ -48,6 +48,13 @@ type App struct {
 	// SSHPrivateKey is write-only: set by the caller on create (stored
 	// encrypted) and NEVER populated on reads, so it cannot leak via templates.
 	SSHPrivateKey string
+
+	// Preview environments: a preview is an ephemeral child app cloned from a
+	// parent. Normal apps have ParentID == 0 and Ephemeral == false.
+	ParentID      int64  // parent app id when this is a preview; 0 otherwise
+	PRNumber      int    // GitHub PR number when this is a preview; 0 otherwise
+	Ephemeral     bool   // true for preview apps (drives filtering + teardown)
+	PreviewStatus string // "" for normal apps; building|ready|failed|teardown_failed
 }
 
 // Domain publishes one app route: Traefik matches Host (and optionally a Path
