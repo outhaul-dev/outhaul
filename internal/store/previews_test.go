@@ -41,3 +41,24 @@ func TestEnvScopePersists(t *testing.T) {
 		t.Fatalf("scope not persisted: %+v", vars)
 	}
 }
+
+func TestCreatePreviewChildApp(t *testing.T) {
+	s := openWithBox(t)
+	ctx := context.Background()
+	parent, _ := s.CreateApp(ctx, core.App{Name: "web", Source: core.SourceGithub, Kind: core.KindNixpacks, Branch: "main"})
+	child, err := s.CreateApp(ctx, core.App{
+		Name: core.PreviewAppName("web", 42), Source: core.SourceGithub, Kind: core.KindNixpacks,
+		Branch: "feature-x", ParentID: parent.ID, PRNumber: 42, Ephemeral: true, PreviewStatus: core.PreviewBuilding,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetPreviewByPR(ctx, parent.ID, 42)
+	if err != nil || got.ID != child.ID || !got.Ephemeral || got.PRNumber != 42 || got.ParentID != parent.ID {
+		t.Fatalf("GetPreviewByPR = %+v, err %v", got, err)
+	}
+	list, _ := s.ListPreviews(ctx)
+	if len(list) != 1 {
+		t.Fatalf("ListPreviews len = %d", len(list))
+	}
+}

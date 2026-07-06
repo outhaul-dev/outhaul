@@ -12,7 +12,7 @@ import (
 
 // appCols is the column list read into core.App by scanApp (excludes the
 // write-only ssh_private_key, which is fetched separately and decrypted).
-const appCols = `id, project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_secret, ssh_public_key, github_repo, kind, compose_path, dockerfile_path, watch_paths, template_id, compose_raw`
+const appCols = `id, project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_secret, ssh_public_key, github_repo, kind, compose_path, dockerfile_path, watch_paths, template_id, compose_raw, parent_id, pr_number, ephemeral, preview_status`
 
 // CreateApp inserts an app and returns it with ID and CreatedAt populated. The
 // SSH private key (if any) is encrypted at rest.
@@ -42,11 +42,12 @@ func (s *Store) CreateApp(ctx context.Context, app core.App) (core.App, error) {
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO apps
 		   (project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_secret, ssh_private_key, ssh_public_key, github_repo,
-		    kind, compose_path, dockerfile_path, watch_paths, template_id, compose_raw)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    kind, compose_path, dockerfile_path, watch_paths, template_id, compose_raw, parent_id, pr_number, ephemeral, preview_status)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		app.ProjectID, app.Name, app.RepoURL, app.Domain, fmtTime(app.CreatedAt),
 		app.Branch, boolToInt(app.AutoDeploy), app.Source, app.WebhookSecret, encKey, app.SSHPublicKey, app.GithubRepo,
-		app.Kind, app.ComposePath, app.DockerfilePath, joinWatchPaths(app.WatchPaths), app.TemplateID, app.ComposeRaw)
+		app.Kind, app.ComposePath, app.DockerfilePath, joinWatchPaths(app.WatchPaths), app.TemplateID, app.ComposeRaw,
+		app.ParentID, app.PRNumber, boolToInt(app.Ephemeral), app.PreviewStatus)
 	if err != nil {
 		return core.App{}, err
 	}
@@ -234,6 +235,12 @@ func (s *Store) DeleteApp(ctx context.Context, id int64) error {
 	return tx.Commit()
 }
 
+// SetPreviewStatus records a preview child app's lifecycle status.
+func (s *Store) SetPreviewStatus(ctx context.Context, appID int64, status string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE apps SET preview_status = ? WHERE id = ?`, status, appID)
+	return err
+}
+
 // scanner is satisfied by both *sql.Row and *sql.Rows.
 type scanner interface {
 	Scan(dest ...any) error
@@ -245,10 +252,12 @@ func scanApp(row scanner) (core.App, error) {
 		createdAt  string
 		autoDeploy int
 		watchPaths string
+		ephemeral  int
 	)
 	if err := row.Scan(&app.ID, &app.ProjectID, &app.Name, &app.RepoURL, &app.Domain, &createdAt,
 		&app.Branch, &autoDeploy, &app.Source, &app.WebhookSecret, &app.SSHPublicKey, &app.GithubRepo,
-		&app.Kind, &app.ComposePath, &app.DockerfilePath, &watchPaths, &app.TemplateID, &app.ComposeRaw); err != nil {
+		&app.Kind, &app.ComposePath, &app.DockerfilePath, &watchPaths, &app.TemplateID, &app.ComposeRaw,
+		&app.ParentID, &app.PRNumber, &ephemeral, &app.PreviewStatus); err != nil {
 		return core.App{}, err
 	}
 	t, err := parseTime(createdAt)
@@ -258,6 +267,7 @@ func scanApp(row scanner) (core.App, error) {
 	app.CreatedAt = t
 	app.AutoDeploy = autoDeploy != 0
 	app.WatchPaths = splitWatchPaths(watchPaths)
+	app.Ephemeral = ephemeral != 0
 	return app, nil
 }
 
