@@ -2,6 +2,8 @@ package deploy
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/james-smart/outhaul/internal/core"
@@ -61,6 +63,42 @@ func TestPipelineVolumeAppRemovesOldBeforeStart(t *testing.T) {
 	c, _ := h.docker.FindContainer(ctx, "outhaul-app-data")
 	if c == nil || !c.Running() {
 		t.Fatalf("new canonical not running: %+v", c)
+	}
+}
+
+// Stop-first removes the old canonical before creating the new one, so a
+// failed create leaves the app with NO container — the deploy must report the
+// app is down (the blue-green equivalent is TestPipelineCutoverFailureReportsAppDown).
+func TestPipelineVolumeAppStartFailureReportsAppDown(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	app := h.app(t, "data")
+	if _, err := h.store.AddVolume(ctx, app.ID, "/data"); err != nil {
+		t.Fatalf("AddVolume: %v", err)
+	}
+	oldID, _ := h.docker.CreateContainer(ctx, docker.ContainerSpec{Name: "outhaul-app-data", Image: "old:1"})
+	h.docker.StartContainer(ctx, oldID)
+	// Fail creation of the new canonical container.
+	h.docker.FailCreate = func(spec docker.ContainerSpec) error {
+		if spec.Name == "outhaul-app-data" {
+			return errors.New("daemon hiccup")
+		}
+		return nil
+	}
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(ctx, dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed {
+		t.Fatalf("status = %q, want failed", got.Status)
+	}
+	if !strings.Contains(got.Reason, "app is down") {
+		t.Errorf("reason = %q, want it to mention the app is down", got.Reason)
+	}
+	// Stop-first already removed the old canonical, so there is no running app.
+	if c, _ := h.docker.FindContainer(ctx, "outhaul-app-data"); c != nil {
+		t.Errorf("expected no canonical container after a failed stop-first start, got %+v", c)
 	}
 }
 

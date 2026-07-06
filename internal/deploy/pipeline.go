@@ -214,7 +214,10 @@ func (w *Worker) deployBlueGreen(ctx context.Context, dep core.Deployment, app c
 // volume: remove the old canonical container, start the new canonical (which
 // mounts the volume), then health-check it. There is no overlap — a single
 // writer holds the volume at any moment — at the cost of brief downtime.
-// Returns true when the app is live; false means it already recorded a failure.
+// Traefik routes to the new container as soon as it starts, before the health
+// check passes (inherent to stop-first — the app was already down after the
+// remove). Returns true when the app is live; false means it already recorded
+// a failure.
 func (w *Worker) deployStopFirst(ctx context.Context, dep core.Deployment, app core.App, image string, runtimeEnv []string, out io.Writer) bool {
 	logf(out, "App has persistent volumes; deploying stop-first (brief downtime).")
 	if err := w.removeContainerByName(ctx, containerName(app.Name)); err != nil {
@@ -239,6 +242,10 @@ func (w *Worker) deployStopFirst(ctx context.Context, dep core.Deployment, app c
 	}
 	healthURL := fmt.Sprintf("http://%s:%d/", ip, AppPort)
 	if !w.healthCheck(ctx, healthURL, w.cfg.HealthTimeout) {
+		// Intentionally leave the new canonical running (degraded-but-live,
+		// reclaimed by the next deploy's removeContainerByName) rather than
+		// tearing it down: there is no old container to fall back to, so a
+		// teardown here would turn a degraded app into a full outage.
 		w.fail(dep, core.StatusDeploying, "health check failed: app did not respond within the timeout", out)
 		return false
 	}
