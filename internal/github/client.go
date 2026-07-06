@@ -23,4 +23,7 @@ type Client interface {
 	ExchangeManifest(ctx context.Context, code string) (ManifestResult, error)
 	InstallationToken(ctx context.Context, appJWT string, installationID int64) (string, error)
 	ListRepos(ctx context.Context, token string) ([]Repo, error)
+	// UpsertPRComment creates or updates the single Outhaul preview comment on a
+	// PR, identified by a hidden marker in the body.
+	UpsertPRComment(ctx context.Context, token, repoFullName string, pr int, body string) error
 }

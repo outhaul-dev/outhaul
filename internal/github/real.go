@@ -1,13 +1,19 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
+
+// previewCommentMarker is the hidden HTML comment that identifies Outhaul's
+// single sticky preview comment on a PR.
+const previewCommentMarker = "<!-- outhaul-preview -->"
 
 // HTTPClient is the real GitHub API client.
 type HTTPClient struct {
@@ -29,6 +35,36 @@ func (c *HTTPClient) do(ctx context.Context, method, url, auth string, out any) 
 		return err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("github %s %s: status %d: %s", method, url, resp.StatusCode, body)
+	}
+	if out != nil {
+		return json.NewDecoder(resp.Body).Decode(out)
+	}
+	return nil
+}
+
+// doJSON is like do but marshals reqBody to a JSON request body.
+func (c *HTTPClient) doJSON(ctx context.Context, method, url, auth string, reqBody, out any) error {
+	buf, err := json.Marshal(reqBody)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(buf))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
 	if auth != "" {
 		req.Header.Set("Authorization", auth)
 	}
@@ -93,4 +129,24 @@ func (c *HTTPClient) ListRepos(ctx context.Context, token string) ([]Repo, error
 		repos = append(repos, Repo{FullName: x.FullName, DefaultBranch: x.DefaultBranch})
 	}
 	return repos, nil
+}
+
+func (c *HTTPClient) UpsertPRComment(ctx context.Context, token, repo string, pr int, body string) error {
+	full := previewCommentMarker + "\n" + body
+	var comments []struct {
+		ID   int64  `json:"id"`
+		Body string `json:"body"`
+	}
+	list := fmt.Sprintf("%s/repos/%s/issues/%d/comments?per_page=100", c.BaseURL, repo, pr)
+	if err := c.do(ctx, http.MethodGet, list, "token "+token, &comments); err != nil {
+		return err
+	}
+	for _, cm := range comments {
+		if strings.Contains(cm.Body, previewCommentMarker) {
+			edit := fmt.Sprintf("%s/repos/%s/issues/comments/%d", c.BaseURL, repo, cm.ID)
+			return c.doJSON(ctx, http.MethodPatch, edit, "token "+token, map[string]string{"body": full}, nil)
+		}
+	}
+	create := fmt.Sprintf("%s/repos/%s/issues/%d/comments", c.BaseURL, repo, pr)
+	return c.doJSON(ctx, http.MethodPost, create, "token "+token, map[string]string{"body": full}, nil)
 }
