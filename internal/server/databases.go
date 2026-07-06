@@ -64,24 +64,32 @@ func (s *Server) handleCreateDatabase(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.FormValue("name"))
 	engine := r.FormValue("engine")
 	image := strings.TrimSpace(r.FormValue("image"))
+	// Carries the submitted values back into the re-rendered dialog on any
+	// validation error below, so a rejected submission doesn't lose what the
+	// operator typed. The raw (unvalidated) external_port string is used so it
+	// round-trips even when it fails parseExtPort.
+	dbForm := map[string]string{
+		"name": name, "engine": engine, "image": image,
+		"external_port": r.FormValue("external_port"),
+	}
 
 	if !appNameRe.MatchString(name) {
-		s.renderProject(w, r, http.StatusBadRequest, p, "Database name must be lowercase letters, digits and hyphens (2–40 chars).")
+		s.renderProject(w, r, http.StatusBadRequest, p, "Database name must be lowercase letters, digits and hyphens (2–40 chars).", dbForm)
 		return
 	}
 	// "root" would collide with MySQL's built-in superuser (the database's name
 	// doubles as its username); reserve it across engines for one simple rule.
 	if name == "root" {
-		s.renderProject(w, r, http.StatusBadRequest, p, "The name \"root\" is reserved.")
+		s.renderProject(w, r, http.StatusBadRequest, p, "The name \"root\" is reserved.", dbForm)
 		return
 	}
 	if !dbaas.ValidEngine(engine) {
-		s.renderProject(w, r, http.StatusBadRequest, p, "Unknown database engine.")
+		s.renderProject(w, r, http.StatusBadRequest, p, "Unknown database engine.", dbForm)
 		return
 	}
 	extPort, msg := parseExtPort(r.FormValue("external_port"))
 	if msg != "" {
-		s.renderProject(w, r, http.StatusBadRequest, p, msg)
+		s.renderProject(w, r, http.StatusBadRequest, p, msg, dbForm)
 		return
 	}
 	if image == "" {
@@ -103,7 +111,7 @@ func (s *Server) handleCreateDatabase(w http.ResponseWriter, r *http.Request) {
 	d, err = s.store.CreateDatabase(r.Context(), d)
 	if err != nil {
 		// Most likely a duplicate name (UNIQUE constraint).
-		s.renderProject(w, r, http.StatusBadRequest, p, "Could not create database: "+err.Error())
+		s.renderProject(w, r, http.StatusBadRequest, p, "Could not create database: "+err.Error(), dbForm)
 		return
 	}
 	s.databases.Provision(d)

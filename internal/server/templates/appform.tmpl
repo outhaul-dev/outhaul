@@ -1,13 +1,14 @@
 {{define "appform"}}
-<dialog id="app-dialog" class="modal" open>
+<dialog id="app-dialog" class="modal" open{{if eq .OpenDialog "app-dialog"}} data-reopen{{end}} aria-labelledby="app-dialog-title">
   {{if .Projects}}
   <form method="post" action="/apps">
     {{if .Return}}<input type="hidden" name="return" value="{{.Return}}">{{end}}
     <div class="modal-head">
-      <h3 class="modal-title">New app</h3>
+      <h3 class="modal-title" id="app-dialog-title">New app</h3>
       <button type="button" class="modal-close" aria-label="Close" onclick="this.closest('dialog').close()">&times;</button>
     </div>
     <div class="modal-body">
+      {{if and .Error (eq .OpenDialog "app-dialog")}}<div class="alert alert-error">{{.Error}}</div>{{end}}
       <div class="wizard-steps">
         <span class="dot" data-dot>1 · Source</span>
         <span class="dot" data-dot>2 · Build</span>
@@ -54,6 +55,7 @@
           <span>Branch {{template "hint" "The Git branch to deploy. For a GitHub repo this is filled with the repo's default branch automatically."}}</span>
           <input type="text" name="branch" id="branch-input" placeholder="main" value="main">
         </label>
+        {{if not .GithubConnected}}<p class="env-note"><a href="/github/connect">Connect a GitHub App</a> to deploy private GitHub repos and auto-deploy on push.</p>{{end}}
       </div>
 
       <!-- Step 2: Build -->
@@ -104,6 +106,10 @@
     </div>
   </form>
   {{else}}
+  <div class="modal-head">
+    <h3 class="modal-title" id="app-dialog-title">New app</h3>
+    <button type="button" class="modal-close" aria-label="Close" onclick="this.closest('dialog').close()">&times;</button>
+  </div>
   <div class="modal-body">
     <p class="empty">No projects yet. <a href="/projects">Create a project</a> first, then add apps to it.</p>
   </div>
@@ -189,6 +195,17 @@
       if (current > 0) show(current - 1);
     });
 
+    // Enter in a field triggers native submit; on a non-final step, treat it
+    // like Next (validate + advance) instead of letting the browser try to
+    // submit a form whose later-step required fields are still hidden/empty.
+    var form = dialog.querySelector('form');
+    if (form) form.addEventListener('submit', function (e) {
+      if (current < steps.length - 1) {
+        e.preventDefault();
+        if (stepValid()) show(current + 1);
+      }
+    });
+
     // Only present if the form (i.e. at least one project) rendered.
     if (steps.length) {
       applyKind();
@@ -203,6 +220,7 @@
       if (steps.length) show(0);
       dialog.showModal();
     };
+    if (dialog.hasAttribute('data-reopen')) dialog.showModal();
   })();
 </script>
 {{end}}

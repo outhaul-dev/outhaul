@@ -6,7 +6,7 @@
   </div>
 </div>
 
-{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+{{if and .Error (ne .OpenDialog "app-dialog")}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 
 {{template "appform" .}}
 

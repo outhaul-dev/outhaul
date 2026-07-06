@@ -305,8 +305,9 @@ func (s *Server) renderAppsWithError(w http.ResponseWriter, r *http.Request, msg
 	data := map[string]any{
 		"Title": "Apps", "Active": "apps", "Apps": rows,
 		"Projects": projects, "SelectedProject": selectedProject(projects),
-		"Error": msg,
-		"Form":  map[string]string{"Name": name, "RepoURL": repo, "Domain": domain},
+		"Error":      msg,
+		"Form":       map[string]string{"Name": name, "RepoURL": repo, "Domain": domain},
+		"OpenDialog": "app-dialog",
 	}
 	for k, v := range s.githubRepoData(r) {
 		data[k] = v

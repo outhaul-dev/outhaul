@@ -90,8 +90,11 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 }
 
 // renderProject renders the project-detail page (also used to redisplay it
-// with an error after a rejected settings change or delete).
-func (s *Server) renderProject(w http.ResponseWriter, r *http.Request, status int, p core.Project, errMsg string) {
+// with an error after a rejected settings change, delete, or database
+// creation). dbForm carries the submitted database-create form values so a
+// rejected submission re-populates the reopened dialog instead of losing
+// what the operator typed; pass nil for non-database-form callers.
+func (s *Server) renderProject(w http.ResponseWriter, r *http.Request, status int, p core.Project, errMsg string, dbForm map[string]string) {
 	apps, err := s.store.ListAppsByProject(r.Context(), p.ID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -129,9 +132,13 @@ func (s *Server) renderProject(w http.ResponseWriter, r *http.Request, status in
 		"SelectedProject": p.ID,
 		"InProject":       true,
 		"Return":          "/projects/" + strconv.FormatInt(p.ID, 10),
+		"DBForm":          dbForm,
 	}
 	if errMsg != "" {
 		data["Error"] = errMsg
+	}
+	if dbForm != nil {
+		data["OpenDialog"] = "db-dialog"
 	}
 	for k, v := range s.githubRepoData(r) {
 		data[k] = v
@@ -150,7 +157,7 @@ func (s *Server) handleProjectDetail(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	s.renderProject(w, r, http.StatusOK, p, "")
+	s.renderProject(w, r, http.StatusOK, p, "", nil)
 }
 
 // handleProjectSettings renames a project and updates its description.
@@ -168,12 +175,12 @@ func (s *Server) handleProjectSettings(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.FormValue("name"))
 	description := strings.TrimSpace(r.FormValue("description"))
 	if !appNameRe.MatchString(name) {
-		s.renderProject(w, r, http.StatusBadRequest, p, "Name must be lowercase letters, digits and hyphens (2–40 chars).")
+		s.renderProject(w, r, http.StatusBadRequest, p, "Name must be lowercase letters, digits and hyphens (2–40 chars).", nil)
 		return
 	}
 	if err := s.store.UpdateProject(r.Context(), id, name, description); err != nil {
 		// Most likely a duplicate name (UNIQUE constraint).
-		s.renderProject(w, r, http.StatusBadRequest, p, "Could not update project: "+err.Error())
+		s.renderProject(w, r, http.StatusBadRequest, p, "Could not update project: "+err.Error(), nil)
 		return
 	}
 	http.Redirect(w, r, "/projects/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
@@ -196,7 +203,7 @@ func (s *Server) handleSetProjectEnv(w http.ResponseWriter, r *http.Request) {
 	}
 	key := strings.TrimSpace(r.FormValue("key"))
 	if !envKeyRe.MatchString(key) {
-		s.renderProject(w, r, http.StatusBadRequest, p, "Key must be UPPER_SNAKE_CASE (letters, digits, underscore).")
+		s.renderProject(w, r, http.StatusBadRequest, p, "Key must be UPPER_SNAKE_CASE (letters, digits, underscore).", nil)
 		return
 	}
 	if err := s.store.SetProjectEnv(r.Context(), id, key, r.FormValue("value"), r.FormValue("secret") != ""); err != nil {
@@ -243,7 +250,7 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 			apps, _ := s.store.ListAppsByProject(r.Context(), id)
 			dbs, _ := s.store.ListDatabasesByProject(r.Context(), id)
 			s.renderProject(w, r, http.StatusConflict, p,
-				fmt.Sprintf("This project still has %d app(s) and %d database(s). Delete them before deleting the project.", len(apps), len(dbs)))
+				fmt.Sprintf("This project still has %d app(s) and %d database(s). Delete them before deleting the project.", len(apps), len(dbs)), nil)
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)

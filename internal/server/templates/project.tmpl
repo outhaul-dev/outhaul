@@ -6,7 +6,7 @@
   </div>
 </div>
 
-{{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+{{if and .Error (ne .OpenDialog "db-dialog")}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 
 <section class="panel">
   <dl class="meta">
@@ -72,24 +72,25 @@
   {{else}}
   <p class="empty">No databases in this project yet.</p>
   {{end}}
-  <dialog id="db-dialog" class="modal" open>
+  <dialog id="db-dialog" class="modal" open{{if eq .OpenDialog "db-dialog"}} data-reopen{{end}} aria-labelledby="db-dialog-title">
     <form method="post" action="/projects/{{.Project.ID}}/databases">
       <div class="modal-head">
-        <h3 class="modal-title">New database</h3>
+        <h3 class="modal-title" id="db-dialog-title">New database</h3>
         <button type="button" class="modal-close" aria-label="Close" onclick="this.closest('dialog').close()">&times;</button>
       </div>
       <div class="modal-body">
+        {{if and .Error (eq .OpenDialog "db-dialog")}}<div class="alert alert-error">{{.Error}}</div>{{end}}
         <div class="stack">
-          <label class="field"><span>Name</span><input type="text" name="name" placeholder="shop-db" required></label>
+          <label class="field"><span>Name</span><input type="text" name="name" placeholder="shop-db" value="{{with .DBForm}}{{index . "name"}}{{end}}" required></label>
           <label class="field"><span>Engine</span>
             <select name="engine">
-              <option value="postgres">PostgreSQL</option>
-              <option value="mysql">MySQL</option>
-              <option value="redis">Redis</option>
+              <option value="postgres"{{if and $.DBForm (eq (index $.DBForm "engine") "postgres")}} selected{{end}}>PostgreSQL</option>
+              <option value="mysql"{{if and $.DBForm (eq (index $.DBForm "engine") "mysql")}} selected{{end}}>MySQL</option>
+              <option value="redis"{{if and $.DBForm (eq (index $.DBForm "engine") "redis")}} selected{{end}}>Redis</option>
             </select>
           </label>
-          <label class="field"><span>Image <em>(optional)</em></span><input type="text" name="image" placeholder="engine default"></label>
-          <label class="field"><span>External port <em>(optional)</em></span><input type="text" name="external_port" placeholder="internal only" inputmode="numeric"></label>
+          <label class="field"><span>Image <em>(optional)</em></span><input type="text" name="image" placeholder="engine default" value="{{with .DBForm}}{{index . "image"}}{{end}}"></label>
+          <label class="field"><span>External port <em>(optional)</em></span><input type="text" name="external_port" placeholder="internal only" inputmode="numeric" value="{{with .DBForm}}{{index . "external_port"}}{{end}}"></label>
         </div>
         <p class="muted env-note">Credentials are generated and stored encrypted; the database runs on the shared Docker network with its data under the server's data directory. Connection details live on the database's page after creation.</p>
       </div>
@@ -160,13 +161,16 @@
 </section>
 
 <script>
-  // Progressive enhancement: dialogs ship open (inline & usable without JS);
-  // once JS runs we close them so the action-bar buttons open them modally.
+  // Progressive enhancement for the database dialog: it ships open (inline &
+  // usable without JS); once JS runs we close it so the action-bar button opens
+  // it modally, reopen it if the server flagged a validation error, and close
+  // it on backdrop click. (#app-dialog manages itself in appform's own script.)
   (function () {
-    document.querySelectorAll('dialog.modal[open]').forEach(function (d) { d.close(); });
-    document.querySelectorAll('dialog.modal').forEach(function (d) {
-      d.addEventListener('click', function (e) { if (e.target === d) d.close(); });
-    });
+    var d = document.getElementById('db-dialog');
+    if (!d) return;
+    if (d.open) d.close();
+    d.addEventListener('click', function (e) { if (e.target === d) d.close(); });
+    if (d.hasAttribute('data-reopen')) d.showModal();
   })();
 </script>
 {{end}}

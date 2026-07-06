@@ -319,3 +319,25 @@ func TestAppFormIsAWizard(t *testing.T) {
 		t.Error("project page app form should not show a project dropdown (InProject)")
 	}
 }
+
+func TestDatabaseCreateErrorReopensDialog(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	e.postForm(t, "/projects", url.Values{"name": {"shop"}}).Body.Close()
+	shop := projectByName(t, e, "shop")
+
+	// An invalid database name is rejected and re-renders the project page.
+	resp := e.postForm(t, "/projects/"+itoa(shop.ID)+"/databases", url.Values{
+		"name": {"Bad Name"}, "engine": {"postgres"},
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad db create = %d, want 400", resp.StatusCode)
+	}
+	page := body(t, resp)
+	if !strings.Contains(page, "data-reopen") {
+		t.Error("errored database dialog should be flagged to reopen")
+	}
+	if !strings.Contains(page, `value="Bad Name"`) {
+		t.Error("database dialog should preserve the entered name on error")
+	}
+}
