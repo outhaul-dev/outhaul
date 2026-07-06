@@ -41,6 +41,23 @@ func TestAddVolumeRejectsRelativePath(t *testing.T) {
 	}
 }
 
+func TestAddVolumeRejectsTraversalOnAbsolutePath(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+
+	// This path PASSES mountPathRe (leading slash, allowed chars) so it exercises
+	// the strings.Contains(mountPath, "..") backstop directly.
+	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/volumes", url.Values{"mount_path": {"/data/../etc"}})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a traversal path, got %d", resp.StatusCode)
+	}
+	if vols, _ := e.store.ListVolumes(context.Background(), app.ID); len(vols) != 0 {
+		t.Fatalf("no volume should be stored on a rejected path: %+v", vols)
+	}
+}
+
 func TestAddVolumeRejectsForComposeApp(t *testing.T) {
 	e := newTestEnv(t)
 	e.completeSetup(t)
