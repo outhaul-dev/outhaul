@@ -362,6 +362,9 @@ dialog.modal::backdrop { background: rgba(0,0,0,0.55); }
   background: var(--bg-4); color: var(--text-secondary);
   font-family: var(--font-mono); font-size: 10px; font-style: italic;
   cursor: help; position: relative; vertical-align: middle;
+  /* Reset the uppercase inherited from the .field label span (also applies to
+     the bubble, so hint text reads as normal sentence case). */
+  text-transform: none;
 }
 .hint:focus { outline: 1px solid var(--accent); }
 /* Positioned with fixed coords by the hint script (base.tmpl) so the bubble is
