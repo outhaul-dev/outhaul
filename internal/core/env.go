@@ -13,6 +13,36 @@ type EnvVar struct {
 	Key      string
 	Value    string
 	IsSecret bool
+	Scope    string // ScopeShared (default) | ScopeProd | ScopePreview
+}
+
+// Env var scopes control which deploys a variable reaches. The empty string is
+// treated as ScopeShared so existing rows need no backfill.
+const (
+	ScopeShared  = "shared"  // both production and preview deploys
+	ScopeProd    = "prod"    // production deploys only (never leaks to previews)
+	ScopePreview = "preview" // preview deploys only
+)
+
+// EnvForScope returns the vars that apply to a deploy. previewMode true drops
+// prod-only vars; false drops preview-only vars. Shared/empty always apply.
+func EnvForScope(vars []EnvVar, previewMode bool) []EnvVar {
+	out := make([]EnvVar, 0, len(vars))
+	for _, v := range vars {
+		switch v.Scope {
+		case ScopeProd:
+			if !previewMode {
+				out = append(out, v)
+			}
+		case ScopePreview:
+			if previewMode {
+				out = append(out, v)
+			}
+		default: // shared or empty
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 // projectRefRe matches ${{project.KEY}} placeholders in app env values —

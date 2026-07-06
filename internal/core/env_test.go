@@ -81,6 +81,32 @@ func TestResolveEnvUndefinedReferenceErrors(t *testing.T) {
 	}
 }
 
+func TestEnvForScope(t *testing.T) {
+	vars := []EnvVar{
+		{Key: "SHARED", Value: "s", Scope: ScopeShared},
+		{Key: "PROD", Value: "p", Scope: ScopeProd},
+		{Key: "PREV", Value: "v", Scope: ScopePreview},
+		{Key: "LEGACY", Value: "l"}, // empty scope == shared
+	}
+	prod := EnvForScope(vars, false) // production deploy
+	if hasKey(prod, "PREV") || !hasKey(prod, "PROD") || !hasKey(prod, "SHARED") || !hasKey(prod, "LEGACY") {
+		t.Fatalf("prod scope wrong: %+v", prod)
+	}
+	prev := EnvForScope(vars, true) // preview deploy
+	if hasKey(prev, "PROD") || !hasKey(prev, "PREV") || !hasKey(prev, "SHARED") || !hasKey(prev, "LEGACY") {
+		t.Fatalf("preview scope wrong: %+v", prev)
+	}
+}
+
+func hasKey(vars []EnvVar, key string) bool {
+	for _, v := range vars {
+		if v.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
 func TestResolveEnvNotRecursive(t *testing.T) {
 	// Placeholders inside project values are not expanded — one level only.
 	project := []EnvVar{
