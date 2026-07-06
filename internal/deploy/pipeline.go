@@ -432,5 +432,5 @@ func (w *Worker) githubToken(ctx context.Context) (string, error) {
 // App names are validated on creation to be safe as container/label
 // identifiers, so no escaping is needed here.
 func containerName(appName string) string {
-	return "outhaul-app-" + appName
+	return core.AppContainerName(appName)
 }

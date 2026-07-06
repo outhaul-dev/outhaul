@@ -22,7 +22,7 @@ import (
 )
 
 // appContainerPrefix is prepended to an app's name to get its container name.
-const appContainerPrefix = "outhaul-app-"
+const appContainerPrefix = core.AppContainerPrefix
 
 // appNameRe restricts app names to values safe as container names, Traefik
 // router identifiers, and URL segments.

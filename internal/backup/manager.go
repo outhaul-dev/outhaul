@@ -248,7 +248,8 @@ func dumpCommand(db core.Database) (cmd, env []string, ext string, err error) {
 	}
 }
 
-// backupAppVolumes tars each of a compose stack's named volumes with a
+// backupAppVolumes tars each of an app's named volumes — a compose stack's
+// project volumes or a single-container app's labeled data volumes — with a
 // transient helper container and uploads one archive per volume.
 func (m *Manager) backupAppVolumes(ctx context.Context, b core.Backup, blob blobstore.Client) (string, int64, error) {
 	app, err := m.store.GetApp(ctx, b.TargetID)

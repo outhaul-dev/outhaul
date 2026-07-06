@@ -22,6 +22,13 @@ func VolumeLabels(appName string) map[string]string {
 	}
 }
 
+// AppContainerPrefix is the fixed prefix of a single-container app's canonical
+// Docker container name. Shared so deploy, restore, and the server agree on it.
+const AppContainerPrefix = "outhaul-app-"
+
+// AppContainerName is the canonical container name for a single-container app.
+func AppContainerName(name string) string { return AppContainerPrefix + name }
+
 // Volume is a persistent Docker named volume mounted into a single-container
 // app at MountPath. Name is the Docker volume name, derived once at creation
 // and immutable thereafter; MountPath is editable (it remounts the same

@@ -196,8 +196,8 @@ func restoreCommand(db core.Database) (cmd, env []string, err error) {
 	}
 }
 
-// restoreVolume unpacks one volume archive back into the stack's named
-// volume: stop the stack's running containers, empty the volume, untar the
+// restoreVolume unpacks one volume archive back into the app's named
+// volume: stop the app's running container(s), empty the volume, untar the
 // staged archive into it with the helper container, restart what was
 // running. rel is the key relative to the schedule's directory —
 // <volume>/<stamp>.tar.gz — naming the target volume.
@@ -231,10 +231,10 @@ func (m *Manager) restoreVolume(ctx context.Context, b core.Backup, blob blobsto
 		if err != nil {
 			return 0, err
 		}
-		// Single-container app: its one canonical container holds the volume.
-		// The name must match deploy.containerName ("outhaul-app-<name>"); they
-		// are kept in step by hand (restore can't import the deploy package).
-		if c, err := m.docker.FindContainer(ctx, "outhaul-app-"+app.Name); err != nil {
+		// Single-container app: its one canonical container, named via
+		// core.AppContainerName, holds the volume. The shared const keeps
+		// restore in step with deploy without importing the deploy package.
+		if c, err := m.docker.FindContainer(ctx, core.AppContainerName(app.Name)); err != nil {
 			return 0, err
 		} else if c != nil {
 			containers = []docker.Container{*c}
