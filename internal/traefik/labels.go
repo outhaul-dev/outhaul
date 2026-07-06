@@ -72,7 +72,9 @@ func RouteLabels(router, host string, port int, urlPath, internalPath string, tl
 // external urlPath into the internalPath the container receives, writing their
 // definition labels into dst and returning the router's middleware names in
 // application order. No rewrite is needed when there is no path, the internal
-// path is blank (forward unchanged), or it already equals the external path.
+// path is blank (forward unchanged), or it already equals the external path. An
+// internal path only ever rewrites a matched external prefix, so it is ignored
+// without one — input validation rejects that combination before it reaches here.
 func rewriteMiddlewares(router, urlPath, internalPath string, dst map[string]string) []string {
 	if urlPath == "" || internalPath == "" || internalPath == urlPath {
 		return nil
