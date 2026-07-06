@@ -14,14 +14,14 @@
     </label>
     <label class="field">
       <span>Description</span>
-      <input type="text" name="description" placeholder="What lives in this workspace (optional)" value="{{with .Form}}{{.Description}}{{end}}">
+      <input type="text" name="description" placeholder="What lives in this project (optional)" value="{{with .Form}}{{.Description}}{{end}}">
     </label>
     <button type="submit" class="btn btn-primary">Create project</button>
   </form>
 </section>
 
 <section class="panel">
-  <h2 class="panel-title">Workspaces</h2>
+  <h2 class="panel-title">Projects</h2>
   {{if .Projects}}
   <div class="project-cards">
     {{range .Projects}}

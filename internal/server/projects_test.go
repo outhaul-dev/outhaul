@@ -251,3 +251,16 @@ func TestAppDetailBreadcrumbNamesProject(t *testing.T) {
 		t.Error("app detail breadcrumb should link the app's project")
 	}
 }
+
+func TestProjectsPageUsesProjectWording(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	resp := e.get(t, "/projects")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /projects = %d, want 200", resp.StatusCode)
+	}
+	page := body(t, resp)
+	if strings.Contains(strings.ToLower(page), "workspace") {
+		t.Error(`projects page should say "project", not "workspace"`)
+	}
+}
