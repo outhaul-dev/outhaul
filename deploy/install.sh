@@ -116,6 +116,9 @@ if [ ! -f "$ENV_FILE" ]; then
 
 #OUTHAUL_LISTEN_ADDR=:8080
 #OUTHAUL_DATA_DIR=/var/lib/outhaul
+
+# git-push-to-deploy SSH server (also changeable live from Settings):
+#OUTHAUL_SSH_ADDR=:2222
 EOF
 	chmod 0600 "$ENV_FILE"
 fi
@@ -138,4 +141,7 @@ First boot prints a one-time setup URL. Show it with:
 
 The admin UI listens on :8080; app traffic is served by Traefik on :80
 (and :443 once OUTHAUL_ACME_EMAIL is set in /etc/outhaul.env).
+
+Git-push-to-deploy listens on :2222 (OUTHAUL_SSH_ADDR) — open it on your
+firewall to push from elsewhere, e.g.: ufw allow 2222
 EOF

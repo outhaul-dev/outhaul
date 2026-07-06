@@ -404,6 +404,24 @@ branches no-op. `OUTHAUL_PUBLIC_URL` supplies the externally reachable base
 URL the GitHub App manifest and webhook URLs are built from; GitHub App setup
 is unavailable until it is configured.
 
+### Push-to-deploy (done)
+
+A fourth app source, alongside public/SSH/GitHub: Outhaul hosts the repo
+itself. `internal/gitrepo` owns a bare repo per push app plus its
+`post-receive` hook; `internal/gitssh` embeds an SSH server (default
+`OUTHAUL_SSH_ADDR`, `:2222`, overridable live from Settings and persisted to
+the `ssh_addr` setting) that authenticates `git push` against registered
+**push keys** — SHA256-fingerprinted SSH public keys managed from
+Settings — rather than per-app deploy keys, since the repo is local. A push
+runs the hook, which relays over a unix socket (`internal/githook`) to the
+deploy worker so the build streams back into the pusher's terminal exactly
+like a browser-triggered deploy; a cold push to a name with no existing app
+auto-creates one first, detecting the build kind (nixpacks/Dockerfile/compose)
+from the pushed tree and minting a `sslip.io` domain when the server IP is
+known. An app's page
+shows its `ssh://git@<server>:<port>/<app>` remote and the `git remote add` /
+`git push` incantation once it exists.
+
 ---
 
 ## Package layout

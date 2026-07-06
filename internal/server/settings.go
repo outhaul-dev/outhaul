@@ -2,6 +2,10 @@ package server
 
 import (
 	"net/http"
+	"strings"
+
+	"github.com/james-smart/outhaul/internal/core"
+	"golang.org/x/crypto/ssh"
 )
 
 // handleSettings renders the settings hub: GitHub App connection status,
@@ -27,6 +31,13 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, status i
 		return
 	}
 	data["Destinations"] = dests
+	keys, err := s.store.ListPushKeys(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	data["PushKeys"] = keys
+	data["SSHAddr"] = s.sshAddr()
 	if r.URL.Query().Get("ok") != "" {
 		data["Notice"] = "Password updated."
 	}
@@ -72,4 +83,66 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, "/settings?ok=1", http.StatusSeeOther)
+}
+
+// handleAddPushKey validates an authorized_keys line, derives its SHA256
+// fingerprint, and stores it.
+func (s *Server) handleAddPushKey(w http.ResponseWriter, r *http.Request) {
+	label := strings.TrimSpace(r.FormValue("label"))
+	keyText := strings.TrimSpace(r.FormValue("public_key"))
+	if label == "" || keyText == "" {
+		s.renderSettings(w, r, http.StatusBadRequest, "Label and public key are required.")
+		return
+	}
+	pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(keyText))
+	if err != nil {
+		s.renderSettings(w, r, http.StatusBadRequest, "That does not look like a valid SSH public key.")
+		return
+	}
+	fp := ssh.FingerprintSHA256(pub)
+	if _, err := s.store.AddPushKey(r.Context(), core.PushKey{
+		Label:       label,
+		Fingerprint: fp,
+		PublicKey:   strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub))),
+	}); err != nil {
+		s.renderSettings(w, r, http.StatusBadRequest, "Could not add key (is it already registered?).")
+		return
+	}
+	http.Redirect(w, r, "/settings", http.StatusSeeOther)
+}
+
+// handleDeletePushKey removes a push key by ID.
+func (s *Server) handleDeletePushKey(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	if !ok {
+		http.Error(w, "bad id", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.DeletePushKey(r.Context(), id); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/settings", http.StatusSeeOther)
+}
+
+// handleSetSSHAddr persists and live-rebinds the git-push SSH listen address.
+func (s *Server) handleSetSSHAddr(w http.ResponseWriter, r *http.Request) {
+	addr := strings.TrimSpace(r.FormValue("ssh_addr"))
+	if addr == "" || !strings.Contains(addr, ":") {
+		s.renderSettings(w, r, http.StatusBadRequest, "Enter an address like :2222 or 0.0.0.0:2222.")
+		return
+	}
+	if s.sshControl == nil {
+		s.renderSettings(w, r, http.StatusServiceUnavailable, "The git-push SSH server is not running.")
+		return
+	}
+	if err := s.sshControl.Rebind(addr); err != nil {
+		s.renderSettings(w, r, http.StatusBadRequest, "Could not bind "+addr+": "+err.Error()+" (the previous port is still active).")
+		return
+	}
+	if err := s.store.SetSetting(r.Context(), "ssh_addr", addr); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/settings", http.StatusSeeOther)
 }

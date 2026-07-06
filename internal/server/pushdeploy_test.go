@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -35,6 +36,32 @@ func TestCreatePushApp(t *testing.T) {
 	}
 	if app.RepoURL != "" {
 		t.Errorf("push app should have empty RepoURL, got %q", app.RepoURL)
+	}
+}
+
+func TestPushAppDetailShowsRemote(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	app, err := env.store.CreateApp(context.Background(), core.App{
+		Name: "pushed", Domain: "pushed.example.com",
+		Source: core.SourcePush, Branch: "main", Kind: core.KindNixpacks,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest("GET", "/apps/"+strconv.FormatInt(app.ID, 10), nil)
+	env.authed(req)
+	rec := httptest.NewRecorder()
+	env.srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body)
+	}
+	page := rec.Body.String()
+	if !strings.Contains(page, "Deploy with git push") {
+		t.Error("push app page missing the git-push setup hint")
+	}
+	if !strings.Contains(page, "git remote add outhaul ssh://git@") {
+		t.Error("push app page missing the ssh remote snippet")
 	}
 }
 

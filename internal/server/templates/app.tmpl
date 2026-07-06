@@ -29,6 +29,16 @@
   </dl>
 </section>
 
+{{if .PushRemote}}
+<section class="panel">
+  <h2 class="panel-title">Deploy with git push</h2>
+  <p class="muted">Add this remote once, then push to deploy — the build streams into your terminal.</p>
+  <pre class="mono">git remote add outhaul {{.PushRemote}}
+git push outhaul {{.PushBranch}}</pre>
+  <p class="muted env-note">Your push key must be registered under <a href="/settings">Settings → Push keys</a>, and the SSH port must be reachable from your machine.</p>
+</section>
+{{end}}
+
 {{if eq .App.Kind "compose"}}
 <section class="panel">
   <h2 class="panel-title">Services</h2>

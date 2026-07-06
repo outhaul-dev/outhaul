@@ -213,6 +213,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /settings/destinations", s.requireAuth(s.handleCreateDestination))
 	mux.HandleFunc("POST /settings/destinations/{id}/test", s.requireAuth(s.handleTestDestination))
 	mux.HandleFunc("POST /settings/destinations/{id}/delete", s.requireAuth(s.handleDeleteDestination))
+	mux.HandleFunc("POST /settings/push-keys", s.requireAuth(s.handleAddPushKey))
+	mux.HandleFunc("POST /settings/push-keys/{id}/delete", s.requireAuth(s.handleDeletePushKey))
+	mux.HandleFunc("POST /settings/ssh", s.requireAuth(s.handleSetSSHAddr))
 
 	mux.HandleFunc("GET /github/connect", s.requireAuth(s.handleGithubConnect))
 	// callback and setup are called by GitHub directly (no session cookie); the

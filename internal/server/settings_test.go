@@ -31,6 +31,21 @@ func TestChangePasswordRejectsWrongCurrent(t *testing.T) {
 	}
 }
 
+func TestSettingsShowsPushKeysPanel(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	page := body(t, e.get(t, "/settings"))
+	if !strings.Contains(page, "Push keys") {
+		t.Error("settings page missing push keys panel")
+	}
+	if !strings.Contains(page, "Git-push SSH port") {
+		t.Error("settings page missing git-push SSH port panel")
+	}
+	if !strings.Contains(page, "not running") {
+		t.Error("settings page should report the SSH server as not running in tests")
+	}
+}
+
 func TestChangePasswordUpdates(t *testing.T) {
 	e := newTestEnv(t)
 	e.login(t)

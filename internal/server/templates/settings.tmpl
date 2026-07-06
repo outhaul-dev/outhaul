@@ -53,6 +53,45 @@
 </section>
 
 <section class="panel">
+  <h2 class="panel-title">Push keys</h2>
+  <p class="muted env-note">SSH public keys allowed to <code>git push</code> to deploy. Add your laptop or CI key, then push to a push-to-deploy app's <code>ssh://git@…</code> remote.</p>
+  {{if .PushKeys}}
+  <table class="table">
+    <thead><tr><th>Label</th><th>Fingerprint</th><th>Added</th><th>Last used</th><th></th></tr></thead>
+    <tbody>
+      {{range .PushKeys}}
+      <tr>
+        <td>{{.Label}}</td>
+        <td class="mono muted truncate">{{.Fingerprint}}</td>
+        <td class="muted">{{.CreatedAt.Format "2006-01-02"}}</td>
+        <td class="muted">{{if .LastUsedAt}}{{.LastUsedAt.Format "2006-01-02"}}{{else}}—{{end}}</td>
+        <td class="row-actions">
+          <form method="post" action="/settings/push-keys/{{.ID}}/delete" class="inline"><button type="submit" class="linkbtn">remove</button></form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No push keys yet.</p>
+  {{end}}
+  <form method="post" action="/settings/push-keys" class="grid-form env-add">
+    <label class="field"><span>Label</span><input type="text" name="label" placeholder="james-laptop" required></label>
+    <label class="field"><span>Public key</span><input type="text" name="public_key" placeholder="ssh-ed25519 AAAA… you@host" required></label>
+    <button type="submit" class="btn btn-primary">Add key</button>
+  </form>
+</section>
+
+<section class="panel">
+  <h2 class="panel-title">Git-push SSH port</h2>
+  <p class="muted env-note">The address the git-push server listens on. Current: <span class="mono">{{if .SSHAddr}}{{.SSHAddr}}{{else}}not running{{end}}</span>. Remember to open this port on your firewall.</p>
+  <form method="post" action="/settings/ssh" class="grid-form">
+    <label class="field"><span>Listen address</span><input type="text" name="ssh_addr" value="{{.SSHAddr}}" placeholder=":2222" required></label>
+    <button type="submit" class="btn btn-primary">Update port</button>
+  </form>
+</section>
+
+<section class="panel">
   <h2 class="panel-title">Change password</h2>
   <form method="post" action="/settings/password" class="grid-form">
     <label class="field"><span>Current password</span><input type="password" name="current" autocomplete="current-password" required></label>

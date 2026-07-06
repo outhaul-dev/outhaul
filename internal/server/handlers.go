@@ -411,6 +411,10 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 	if s.publicURL != "" {
 		data["WebhookURL"] = strings.TrimRight(s.publicURL, "/") + "/webhooks/app/" + app.WebhookSecret
 	}
+	if app.Source == core.SourcePush {
+		data["PushRemote"] = s.pushRemote(app.Name)
+		data["PushBranch"] = app.Branch
+	}
 	// Volume backups apply to compose stacks and to single-container apps that
 	// have attached a persistent volume; stateless apps omit the panel. A
 	// schedule created while a volume was attached outlives its volume, so keep

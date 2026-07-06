@@ -36,6 +36,7 @@
           <select name="source" id="source-select">
             <option value="public">Public Git URL</option>
             <option value="ssh">Private (SSH deploy key)</option>
+            <option value="push">Push to deploy (git push)</option>
             {{if .GithubConnected}}<option value="github">GitHub App</option>{{end}}
           </select>
         </label>
