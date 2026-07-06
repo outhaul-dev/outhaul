@@ -219,6 +219,9 @@ func (s *Store) DeleteApp(ctx context.Context, id int64) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM domains WHERE app_id = ?`, id); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM volumes WHERE app_id = ?`, id); err != nil {
+		return err
+	}
 	if err := deleteBackupsForTargetTx(ctx, tx, core.BackupTargetApp, id); err != nil {
 		return err
 	}
