@@ -20,6 +20,7 @@ const DefaultTraefikImage = "traefik:v3.7.6"
 type Config struct {
 	DataDir      string // root data dir; holds the SQLite DB and work dirs
 	ListenAddr   string // address the admin UI/API listens on
+	SSHAddr      string // default listen address for the git-push SSH server
 	DockerHost   string // Docker endpoint; empty means "use the SDK's env default"
 	TraefikImage string // image used for the managed Traefik container
 	Network      string // shared Docker network app containers + Traefik join
@@ -43,6 +44,7 @@ func Load(getenv Getenv) Config {
 	return Config{
 		DataDir:      or(getenv("OUTHAUL_DATA_DIR"), "/var/lib/outhaul"),
 		ListenAddr:   or(getenv("OUTHAUL_LISTEN_ADDR"), ":8080"),
+		SSHAddr:      or(getenv("OUTHAUL_SSH_ADDR"), ":2222"),
 		DockerHost:   getenv("OUTHAUL_DOCKER_HOST"), // empty is a valid value: defer to SDK
 		TraefikImage: or(getenv("OUTHAUL_TRAEFIK_IMAGE"), DefaultTraefikImage),
 		Network:      or(getenv("OUTHAUL_NETWORK"), "outhaul"),
@@ -66,6 +68,25 @@ func (c Config) DBPath() string {
 // WorkDir is where a deployment's repo is cloned and built.
 func (c Config) WorkDir() string {
 	return filepath.Join(c.DataDir, "work")
+}
+
+// GitDir is the root holding per-app bare repos for git-push deploys.
+func (c Config) GitDir() string { return filepath.Join(c.DataDir, "git") }
+
+// GitRepoDir is the bare repo path for a push-source app. It does not sanitize
+// app; callers must pass an already-validated app name (see gitrepo.Manager.Path).
+func (c Config) GitRepoDir(app string) string {
+	return filepath.Join(c.GitDir(), app+".git")
+}
+
+// SSHHostKeyPath is the persistent host key for the git-push SSH server.
+func (c Config) SSHHostKeyPath() string {
+	return filepath.Join(c.DataDir, "ssh_host_ed25519_key")
+}
+
+// GitHookSocketPath is the unix socket the post-receive hook relays through.
+func (c Config) GitHookSocketPath() string {
+	return filepath.Join(c.DataDir, "git-hook.sock")
 }
 
 func or(v, fallback string) string {
