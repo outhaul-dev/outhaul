@@ -387,6 +387,16 @@ func (w *Worker) fail(dep core.Deployment, from core.DeployStatus, reason string
 
 // cloneSpec builds the clone spec for an app, resolving credentials by source.
 func (w *Worker) cloneSpec(ctx context.Context, app core.App) (CloneSpec, error) {
+	// Push-source apps build from the bare repo Outhaul hosts locally; the just
+	// pushed tip is on app.Branch. No credentials — it is a local path.
+	if app.Source == core.SourcePush {
+		return CloneSpec{
+			URL:    w.cfg.GitRepoDir(app.Name),
+			Branch: app.Branch,
+			Auth:   Auth{Kind: AuthNone},
+		}, nil
+	}
+
 	spec := CloneSpec{URL: app.RepoURL, Branch: app.Branch}
 	switch app.Source {
 	case core.SourceSSH:
