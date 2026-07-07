@@ -375,7 +375,7 @@ git push outhaul {{.PushBranch}}</pre>
     <tbody>
       {{range .Env}}
       <tr>
-        <td class="mono">{{.Key}}</td>
+        <td class="mono">{{.Key}}{{if ne .Scope "shared"}}{{if ne .Scope ""}} <span class="badge">{{.Scope}}</span>{{end}}{{end}}</td>
         <td class="mono muted">{{if .IsSecret}}••••••{{else}}{{.Value}}{{end}}</td>
         <td>
           <form method="post" action="/apps/{{$.App.ID}}/env/delete" class="inline">
@@ -393,6 +393,13 @@ git push outhaul {{.PushBranch}}</pre>
   <form method="post" action="/apps/{{.App.ID}}/env" class="grid-form env-add">
     <label class="field"><span>Key</span><input type="text" name="key" placeholder="LOG_LEVEL" required></label>
     <label class="field"><span>Value</span><input type="text" name="value" placeholder="info"></label>
+    <label class="field"><span>Scope</span>
+      <select name="scope">
+        <option value="shared" selected>Shared</option>
+        <option value="prod">Production only</option>
+        <option value="preview">Preview only</option>
+      </select>
+    </label>
     <label class="field"><span>Secret</span><input type="checkbox" name="secret"></label>
     <button type="submit" class="btn btn-primary">Add</button>
   </form>

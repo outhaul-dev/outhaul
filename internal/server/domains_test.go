@@ -238,3 +238,24 @@ func TestDomainsPageListsAcrossApps(t *testing.T) {
 		}
 	}
 }
+
+func TestDomainsPageTagsPreviewRows(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	// A normal app with a domain, plus an ephemeral preview child of it.
+	parent, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	preview, _ := e.store.CreateApp(context.Background(), core.App{
+		Name: "web-pr-7", RepoURL: "https://x/y.git", Domain: "pr7.web.test",
+		Ephemeral: true, PRNumber: 7, ParentID: parent.ID,
+	})
+	_ = preview
+
+	page := body(t, e.get(t, "/domains"))
+	if !strings.Contains(page, "PR #7") {
+		t.Errorf("/domains page missing preview tag %q", "PR #7")
+	}
+	// The preview row should link to the parent app, not the child.
+	if !strings.Contains(page, "/apps/"+itoa(parent.ID)) {
+		t.Errorf("/domains preview row should link to parent app /apps/%d", parent.ID)
+	}
+}

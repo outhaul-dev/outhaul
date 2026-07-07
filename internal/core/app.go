@@ -77,6 +77,9 @@ type Domain struct {
 // DomainListing is a Domain plus its app's identity, for the global Domains tab.
 type DomainListing struct {
 	Domain
-	AppName string
-	AppKind string
+	AppName   string
+	AppKind   string
+	Ephemeral bool  // preview (ephemeral child app) route
+	PRNumber  int   // PR number when Ephemeral
+	ParentID  int64 // parent app id when Ephemeral (link target)
 }

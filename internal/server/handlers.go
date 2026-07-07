@@ -743,12 +743,13 @@ type envRow struct {
 	Key      string
 	Value    string
 	IsSecret bool
+	Scope    string
 }
 
 func maskEnv(vars []core.EnvVar) []envRow {
 	rows := make([]envRow, 0, len(vars))
 	for _, v := range vars {
-		row := envRow{Key: v.Key, IsSecret: v.IsSecret}
+		row := envRow{Key: v.Key, IsSecret: v.IsSecret, Scope: v.Scope}
 		if !v.IsSecret {
 			row.Value = v.Value
 		}
@@ -779,7 +780,17 @@ func (s *Server) handleSetEnv(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "PORT is managed by Outhaul and cannot be set.", http.StatusBadRequest)
 		return
 	}
-	if err := s.store.SetEnv(r.Context(), id, key, value, isSecret); err != nil {
+	scope := r.FormValue("scope")
+	switch scope {
+	case "":
+		scope = core.ScopeShared
+	case core.ScopeShared, core.ScopeProd, core.ScopePreview:
+		// valid
+	default:
+		http.Error(w, "Invalid scope.", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.SetEnvScoped(r.Context(), id, key, value, isSecret, scope); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

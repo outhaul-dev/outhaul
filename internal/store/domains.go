@@ -102,7 +102,7 @@ func (s *Store) ListDomains(ctx context.Context, appID int64) ([]core.Domain, er
 // name and kind, for the global Domains tab.
 func (s *Store) ListAllDomains(ctx context.Context) ([]core.DomainListing, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT d.id, d.app_id, d.host, d.service, d.port, d.path, d.internal_path, d.tls, d.created_at, a.name, a.kind
+		`SELECT d.id, d.app_id, d.host, d.service, d.port, d.path, d.internal_path, d.tls, d.created_at, a.name, a.kind, a.ephemeral, a.pr_number, a.parent_id
 		   FROM domains d JOIN apps a ON a.id = d.app_id
 		  ORDER BY a.name, d.host, d.path`)
 	if err != nil {
@@ -114,10 +114,11 @@ func (s *Store) ListAllDomains(ctx context.Context) ([]core.DomainListing, error
 		var (
 			l         core.DomainListing
 			tls       int
+			ephemeral int
 			createdAt string
 		)
 		if err := rows.Scan(&l.ID, &l.AppID, &l.Host, &l.Service, &l.Port, &l.Path, &l.InternalPath,
-			&tls, &createdAt, &l.AppName, &l.AppKind); err != nil {
+			&tls, &createdAt, &l.AppName, &l.AppKind, &ephemeral, &l.PRNumber, &l.ParentID); err != nil {
 			return nil, err
 		}
 		t, err := parseTime(createdAt)
@@ -126,6 +127,7 @@ func (s *Store) ListAllDomains(ctx context.Context) ([]core.DomainListing, error
 		}
 		l.CreatedAt = t
 		l.TLS = tls != 0
+		l.Ephemeral = ephemeral != 0
 		out = append(out, l)
 	}
 	return out, rows.Err()

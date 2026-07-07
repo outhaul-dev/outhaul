@@ -15,7 +15,7 @@
       {{range .Domains}}
       <tr>
         <td><a href="http{{if .TLS}}s{{end}}://{{.Host}}{{.Path}}" target="_blank" rel="noreferrer" class="mono">{{.Host}}{{.Path}}</a></td>
-        <td><a href="/apps/{{.AppID}}" class="rowlink">{{.AppName}}</a></td>
+        <td>{{if .Ephemeral}}<a href="/apps/{{.ParentID}}" class="rowlink">{{.AppName}}</a> <span class="badge">preview · PR #{{.PRNumber}}</span>{{else}}<a href="/apps/{{.AppID}}" class="rowlink">{{.AppName}}</a>{{end}}</td>
         <td class="mono muted">{{if .Service}}{{.Service}}:{{.Port}}{{else}}({{.AppKind}}){{end}}</td>
         <td class="mono muted">{{if .Path}}{{.Path}}{{if .InternalPath}} &rarr; {{.InternalPath}}{{end}}{{else}}/{{end}}</td>
         <td>{{if .TLS}}<span class="badge state-running">TLS</span>{{else}}<span class="muted">http</span>{{end}}</td>
