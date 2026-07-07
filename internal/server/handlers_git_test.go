@@ -174,3 +174,27 @@ func TestAppsListDegradesGracefullyOnRepoListError(t *testing.T) {
 		t.Fatalf("status = %d, want 200 even when repo listing fails", resp.StatusCode)
 	}
 }
+
+func TestUpdateAppKindHandler(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	app, _ := env.store.CreateApp(context.Background(), core.App{
+		Name: "web", RepoURL: "https://github.com/o/r.git", Domain: "web.example.com",
+		Source: core.SourcePublic, Branch: "main", Kind: core.KindNixpacks, WebhookSecret: "w",
+	})
+	form := url.Values{"kind": {"dockerfile"}, "dockerfile_path": {"build/Dockerfile"}}
+	resp := env.postForm(t, "/apps/"+itoa(app.ID)+"/kind", form)
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", resp.StatusCode)
+	}
+	got, _ := env.store.GetApp(context.Background(), app.ID)
+	if got.Kind != core.KindDockerfile || got.DockerfilePath != "build/Dockerfile" {
+		t.Fatalf("kind not applied: %+v", got)
+	}
+
+	// invalid kind is rejected
+	bad := env.postForm(t, "/apps/"+itoa(app.ID)+"/kind", url.Values{"kind": {"bogus"}})
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid kind status = %d, want 400", bad.StatusCode)
+	}
+}

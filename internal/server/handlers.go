@@ -303,6 +303,51 @@ func (s *Server) handleAppSettings(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
+// handleUpdateAppKind changes an app's build strategy (nixpacks/dockerfile/
+// compose). The single-container <-> compose boundary is guarded in the UI by a
+// typed confirm; the server validates the target kind and persists the path the
+// new kind needs. Takes effect on the next deploy.
+func (s *Server) handleUpdateAppKind(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := s.store.GetApp(r.Context(), id); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	kind := strings.TrimSpace(r.FormValue("kind"))
+	switch kind {
+	case core.KindNixpacks, core.KindDockerfile, core.KindCompose:
+	default:
+		http.Error(w, "Choose a build method.", http.StatusBadRequest)
+		return
+	}
+	composePath, dockerfilePath := "", ""
+	if kind == core.KindCompose {
+		p, verr := parseComposePath(r)
+		if verr != "" {
+			http.Error(w, verr, http.StatusBadRequest)
+			return
+		}
+		composePath = p
+	}
+	if kind == core.KindDockerfile {
+		p, verr := parseDockerfilePath(r)
+		if verr != "" {
+			http.Error(w, verr, http.StatusBadRequest)
+			return
+		}
+		dockerfilePath = p
+	}
+	if err := s.store.UpdateAppKind(r.Context(), id, kind, composePath, dockerfilePath); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
 // renderAppsWithError re-renders the apps list with the create form pre-filled
 // and an error message.
 func (s *Server) renderAppsWithError(w http.ResponseWriter, r *http.Request, msg, name, repo, domain string) {
