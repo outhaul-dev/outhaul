@@ -284,6 +284,9 @@ func templateFuncs() template.FuncMap {
 	return template.FuncMap{
 		// stateClass maps a deployment status to its CSS class.
 		"stateClass": func(s core.DeployStatus) string { return "state-" + string(s) },
+		// isStatus reports whether a deployment status equals a plain string —
+		// html/template's eq cannot compare a named DeployStatus to a literal.
+		"isStatus": func(s core.DeployStatus, want string) bool { return string(s) == want },
 		// dbStateClass maps a database status onto the deployment state colors.
 		"dbStateClass": func(s string) string {
 			if s == core.DBCreating {

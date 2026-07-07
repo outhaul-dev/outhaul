@@ -594,6 +594,22 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 			data[k] = v
 		}
 	}
+	// The newest deployment in RUNNING state (terminal success) is the one that
+	// is actually live; older running rows are superseded. deployments is
+	// newest-first, so the first running row wins.
+	var liveID int64
+	for _, d := range deployments {
+		if d.Status == core.StatusRunning {
+			liveID = d.ID
+			break
+		}
+	}
+	data["LiveDeploymentID"] = liveID
+	// GitHub connectivity for the Settings "Source & build" editor (repo dropdown).
+	// Degrades gracefully to no dropdown when no App is connected.
+	for k, v := range s.githubRepoData(r) {
+		data[k] = v
+	}
 	s.render(w, http.StatusOK, "app", data)
 }
 
