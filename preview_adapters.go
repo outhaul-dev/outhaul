@@ -26,8 +26,10 @@ func (p *previewDBProvisioner) Provision(ctx context.Context, d core.Database) (
 		return core.Database{}, err
 	}
 	if err := p.dbm.ProvisionSync(ctx, created); err != nil {
+		_ = p.dbm.Remove(ctx, created) // drop row+data+partial container; safe on partial state
 		return core.Database{}, err
 	}
+	created.Status = core.DBRunning // row is running now; keep the returned struct consistent
 	return created, nil
 }
 
