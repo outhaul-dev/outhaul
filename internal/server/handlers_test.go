@@ -67,3 +67,24 @@ func TestAppDetailShowsSourceEditor(t *testing.T) {
 		t.Fatal("template app must not show the source editor")
 	}
 }
+
+func TestAppDetailHasTabs(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	app, _ := env.store.CreateApp(context.Background(), core.App{
+		Name: "web", RepoURL: "https://example.com/r.git", Domain: "web.example.com",
+		Source: core.SourcePublic, Branch: "main", Kind: core.KindNixpacks, WebhookSecret: "w",
+	})
+	page := body(t, env.get(t, "/apps/"+itoa(app.ID)))
+	for _, tab := range []string{"overview", "deployments", "networking", "resources", "settings"} {
+		if !strings.Contains(page, `data-tab="`+tab+`"`) {
+			t.Fatalf("missing tab panel %q", tab)
+		}
+		if !strings.Contains(page, `href="#`+tab+`"`) {
+			t.Fatalf("missing tab link %q", tab)
+		}
+	}
+	if !strings.Contains(page, "Danger zone") {
+		t.Fatal("danger zone missing")
+	}
+}

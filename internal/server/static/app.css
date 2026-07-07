@@ -405,3 +405,10 @@ dialog.modal::backdrop { background: rgba(0,0,0,0.55); }
 .copybtn { position: absolute; top: 8px; right: 8px; font-size: 11px; line-height: 1; padding: 4px 9px; border-radius: 6px; background: transparent; border: 1px solid var(--border); color: var(--text-secondary); cursor: pointer; }
 .copybtn:hover { border-color: var(--accent); color: var(--text-primary); }
 .copybtn.copied { color: var(--state-running-fg); border-color: var(--state-running-bd); }
+
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin: 4px 0 22px; overflow-x: auto; }
+.tabs a { padding: 9px 14px; font-size: 13px; color: var(--text-secondary); text-decoration: none; border-bottom: 2px solid transparent; white-space: nowrap; }
+.tabs a:hover { color: var(--text-primary); }
+.tabs a.active { color: var(--text-primary); border-bottom-color: var(--accent); }
+.tab[hidden] { display: none; }
+.danger-zone { border-color: var(--danger-bd); }

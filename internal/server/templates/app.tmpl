@@ -9,10 +9,18 @@
     <form method="post" action="/apps/{{.App.ID}}/deploy" class="inline"><button type="submit" class="btn btn-primary">Deploy</button></form>
     <form method="post" action="/apps/{{.App.ID}}/stop" class="inline"><button type="submit" class="btn">Stop</button></form>
     <form method="post" action="/apps/{{.App.ID}}/restart" class="inline"><button type="submit" class="btn">Restart</button></form>
-    <form method="post" action="/apps/{{.App.ID}}/delete" class="inline" onsubmit="return confirm('Delete {{.App.Name}} and all its deployments?');"><button type="submit" class="btn btn-danger">Delete</button></form>
   </div>
 </div>
 
+<nav class="tabs" id="app-tabs">
+  <a href="#overview" data-tab-link="overview">Overview</a>
+  <a href="#deployments" data-tab-link="deployments">Deployments</a>
+  <a href="#networking" data-tab-link="networking">Networking</a>
+  <a href="#resources" data-tab-link="resources">Resources</a>
+  <a href="#settings" data-tab-link="settings">Settings</a>
+</nav>
+
+<section class="tab" data-tab="overview">
 <section class="panel">
   <dl class="meta">
     {{if eq .App.Kind "compose"}}
@@ -29,6 +37,122 @@
   </dl>
 </section>
 
+<section class="panel">
+  <div class="log-head">
+    <h2 class="panel-title">Metrics</h2>
+    <span class="log-status" id="metrics-indicator">connecting…</span>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="stat-label">CPU</div><div class="stat-value" id="metric-cpu">—<span class="unit">%</span></div><div class="stat-sub">100% = one core</div></div>
+    <div class="stat"><div class="stat-label">Memory</div><div class="stat-value" id="metric-mem">—</div><div class="stat-sub" id="metric-mem-sub">usage</div></div>
+    <div class="stat"><div class="stat-label">Net I/O</div><div class="stat-value" id="metric-net">—</div><div class="stat-sub">received · sent, total</div></div>
+    <div class="stat"><div class="stat-label">Uptime</div><div class="stat-value" id="metric-uptime">—</div><div class="stat-sub">since container start</div></div>
+  </div>
+</section>
+
+<script>
+(function () {
+  var indicator = document.getElementById('metrics-indicator');
+  var cpu = document.getElementById('metric-cpu');
+  var mem = document.getElementById('metric-mem');
+  var memSub = document.getElementById('metric-mem-sub');
+  var net = document.getElementById('metric-net');
+  var uptime = document.getElementById('metric-uptime');
+
+  function dashes() {
+    cpu.innerHTML = '—<span class="unit">%</span>';
+    mem.textContent = '—';
+    memSub.textContent = 'usage';
+    net.textContent = '—';
+    uptime.textContent = '—';
+  }
+
+  function poll() {
+    fetch('/apps/{{.App.ID}}/stats', {headers: {'Accept': 'application/json'}})
+      .then(function (r) { if (!r.ok) { throw new Error(r.status); } return r.json(); })
+      .then(function (s) {
+        if (!s.running) { dashes(); indicator.textContent = 'not running'; return; }
+        cpu.innerHTML = '';
+        cpu.appendChild(document.createTextNode(s.cpu));
+        var u = document.createElement('span'); u.className = 'unit'; u.textContent = '%';
+        cpu.appendChild(u);
+        mem.textContent = s.mem;
+        memSub.textContent = s.memSub || 'usage';
+        net.textContent = s.net;
+        uptime.textContent = s.uptime || '—';
+        indicator.textContent = s.containers > 1 ? 'live · ' + s.containers + ' containers' : 'live';
+      })
+      .catch(function () { dashes(); indicator.textContent = 'unavailable'; });
+  }
+
+  poll();
+  setInterval(poll, 5000);
+})();
+</script>
+
+<section class="panel">
+  <div class="log-head">
+    <h2 class="panel-title">Runtime logs</h2>
+    <div class="log-controls">
+      {{if and (eq .App.Kind "compose") .Stack}}
+      <select id="log-service" title="Compose service">
+        {{range .Stack}}<option value="{{.Service}}">{{.Service}}</option>{{end}}
+      </select>
+      {{end}}
+      <select id="log-tail" title="Lines to tail">
+        <option value="100">100 lines</option>
+        <option value="500">500 lines</option>
+        <option value="1000">1000 lines</option>
+        <option value="5000">5000 lines</option>
+      </select>
+      <span class="log-status" id="runtime-indicator">connecting…</span>
+    </div>
+  </div>
+  <pre class="log" id="runtime-log" data-id="{{.App.ID}}"></pre>
+</section>
+
+<script>
+(function () {
+  var el = document.getElementById('runtime-log');
+  var indicator = document.getElementById('runtime-indicator');
+  var svcSel = document.getElementById('log-service');
+  var tailSel = document.getElementById('log-tail');
+  var id = el.getAttribute('data-id');
+  var es = null;
+
+  function open() {
+    if (es) { es.close(); }
+    el.textContent = '';
+    indicator.textContent = 'connecting…';
+    var qs = 'tail=' + tailSel.value;
+    if (svcSel) { qs += '&service=' + encodeURIComponent(svcSel.value); }
+    es = new EventSource('/apps/' + id + '/logs?' + qs);
+    es.onopen = function () { indicator.textContent = 'streaming…'; };
+    es.addEventListener('log', function (e) {
+      var atBottom = (el.scrollTop + el.clientHeight) >= (el.scrollHeight - 4);
+      el.textContent += e.data + '\n';
+      if (atBottom) { el.scrollTop = el.scrollHeight; }
+    });
+    es.addEventListener('err', function (e) {
+      es.close();
+      el.textContent = e.data;
+      indicator.textContent = 'unavailable';
+    });
+    es.addEventListener('done', function () {
+      es.close();
+      indicator.textContent = 'stopped';
+    });
+    es.onerror = function () { indicator.textContent = 'disconnected'; };
+  }
+
+  if (svcSel) { svcSel.addEventListener('change', open); }
+  tailSel.addEventListener('change', open);
+  open();
+})();
+</script>
+</section>
+
+<section class="tab" data-tab="deployments">
 {{if .PushRemote}}
 <section class="panel">
   <h2 class="panel-title">Deploy with git push</h2>
@@ -39,29 +163,67 @@ git push outhaul {{.PushBranch}}</pre>{{template "copybtn" .}}</div>
 </section>
 {{end}}
 
-{{if eq .App.Kind "compose"}}
 <section class="panel">
-  <h2 class="panel-title">Services</h2>
-  {{if .Stack}}
+  <h2 class="panel-title">Deployments</h2>
+  {{if .Deployments}}
   <table class="table">
-    <thead><tr><th>Service</th><th>State</th></tr></thead>
+    <thead>
+      <tr><th>#</th><th>Status</th><th>Created</th><th>Build</th><th></th></tr>
+    </thead>
     <tbody>
-      {{range .Stack}}
+      {{range .Deployments}}
       <tr>
-        <td class="mono">{{.Service}}</td>
-        <td><span class="badge state-{{if eq .State "running"}}running{{else}}stopped{{end}}">{{.State}}</span></td>
+        <td class="mono">{{.ID}}{{if .RollbackOf}} <span class="muted" title="reused the image built by deployment #{{.RollbackOf}}">↩ #{{.RollbackOf}}</span>{{end}}</td>
+        <td>
+          {{if isStatus .Status "running"}}
+            {{if eq .ID $.LiveDeploymentID}}<span class="badge state-running">live</span>
+            {{else}}<span class="badge state-stopped">superseded</span>{{end}}
+          {{else}}
+            <span class="badge {{stateClass .Status}}">{{.Status}}</span>
+          {{end}}
+        </td>
+        <td class="mono muted"><time datetime="{{.CreatedAt.Format "2006-01-02T15:04:05Z07:00"}}" title="{{fmtTime .CreatedAt}}">{{fmtTime .CreatedAt}}</time></td>
+        <td class="mono muted">{{buildDur .}}</td>
+        <td class="row-actions">
+          {{if and .Status.IsTerminal .Image (ne $.App.Kind "compose")}}
+          {{if .ImagePruned}}
+          <span class="muted" title="the built image was removed by image retention; deploy to rebuild from the branch">image pruned</span>
+          {{else}}
+          <form method="post" action="/deployments/{{.ID}}/rollback" class="inline" onsubmit="return confirm('Roll back {{$.App.Name}} to the image built by deployment #{{.ID}}? Current env vars and domain settings will apply.');">
+            <button type="submit" class="btn btn-quiet">Rollback</button>
+          </form>
+          {{end}}
+          {{end}}
+          <a href="/deployments/{{.ID}}" class="rowlink">logs →</a>
+        </td>
       </tr>
       {{end}}
     </tbody>
   </table>
   {{else}}
-  <p class="empty">No stack containers yet. Deploy to bring the stack up.</p>
+  <p class="empty">No deployments yet. Click <strong>Deploy</strong> to build and launch this app.</p>
   {{end}}
+<script>
+(function () {
+  function rel(d) {
+    var s = Math.floor((Date.now() - d.getTime()) / 1000);
+    if (s < 45) return 'just now';
+    var m = Math.floor(s / 60); if (m < 60) return m + 'm ago';
+    var h = Math.floor(m / 60); if (h < 24) return h + 'h ago';
+    var days = Math.floor(h / 24); if (days < 30) return days + 'd ago';
+    var mo = Math.floor(days / 30); if (mo < 12) return mo + 'mo ago';
+    return Math.floor(mo / 12) + 'y ago';
+  }
+  document.querySelectorAll('time[datetime]').forEach(function (el) {
+    var d = new Date(el.getAttribute('datetime'));
+    if (!isNaN(d.getTime())) el.textContent = rel(d);
+  });
+})();
+</script>
+</section>
 </section>
 
-{{template "backups" .}}
-{{end}}
-
+<section class="tab" data-tab="networking">
 <section class="panel">
   <div class="log-head">
     <h2 class="panel-title">Domains</h2>
@@ -96,6 +258,31 @@ git push outhaul {{.PushBranch}}</pre>{{template "copybtn" .}}</div>
 </section>
 
 {{template "domainform" .}}
+</section>
+
+<section class="tab" data-tab="resources">
+{{if eq .App.Kind "compose"}}
+<section class="panel">
+  <h2 class="panel-title">Services</h2>
+  {{if .Stack}}
+  <table class="table">
+    <thead><tr><th>Service</th><th>State</th></tr></thead>
+    <tbody>
+      {{range .Stack}}
+      <tr>
+        <td class="mono">{{.Service}}</td>
+        <td><span class="badge state-{{if eq .State "running"}}running{{else}}stopped{{end}}">{{.State}}</span></td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No stack containers yet. Deploy to bring the stack up.</p>
+  {{end}}
+</section>
+
+{{template "backups" .}}
+{{end}}
 
 {{if ne .App.Kind "compose"}}
 <section class="panel">
@@ -211,121 +398,9 @@ git push outhaul {{.PushBranch}}</pre>{{template "copybtn" .}}</div>
   {{end}}
 </section>
 {{end}}
-
-<section class="panel">
-  <div class="log-head">
-    <h2 class="panel-title">Metrics</h2>
-    <span class="log-status" id="metrics-indicator">connecting…</span>
-  </div>
-  <div class="stats">
-    <div class="stat"><div class="stat-label">CPU</div><div class="stat-value" id="metric-cpu">—<span class="unit">%</span></div><div class="stat-sub">100% = one core</div></div>
-    <div class="stat"><div class="stat-label">Memory</div><div class="stat-value" id="metric-mem">—</div><div class="stat-sub" id="metric-mem-sub">usage</div></div>
-    <div class="stat"><div class="stat-label">Net I/O</div><div class="stat-value" id="metric-net">—</div><div class="stat-sub">received · sent, total</div></div>
-    <div class="stat"><div class="stat-label">Uptime</div><div class="stat-value" id="metric-uptime">—</div><div class="stat-sub">since container start</div></div>
-  </div>
 </section>
 
-<script>
-(function () {
-  var indicator = document.getElementById('metrics-indicator');
-  var cpu = document.getElementById('metric-cpu');
-  var mem = document.getElementById('metric-mem');
-  var memSub = document.getElementById('metric-mem-sub');
-  var net = document.getElementById('metric-net');
-  var uptime = document.getElementById('metric-uptime');
-
-  function dashes() {
-    cpu.innerHTML = '—<span class="unit">%</span>';
-    mem.textContent = '—';
-    memSub.textContent = 'usage';
-    net.textContent = '—';
-    uptime.textContent = '—';
-  }
-
-  function poll() {
-    fetch('/apps/{{.App.ID}}/stats', {headers: {'Accept': 'application/json'}})
-      .then(function (r) { if (!r.ok) { throw new Error(r.status); } return r.json(); })
-      .then(function (s) {
-        if (!s.running) { dashes(); indicator.textContent = 'not running'; return; }
-        cpu.innerHTML = '';
-        cpu.appendChild(document.createTextNode(s.cpu));
-        var u = document.createElement('span'); u.className = 'unit'; u.textContent = '%';
-        cpu.appendChild(u);
-        mem.textContent = s.mem;
-        memSub.textContent = s.memSub || 'usage';
-        net.textContent = s.net;
-        uptime.textContent = s.uptime || '—';
-        indicator.textContent = s.containers > 1 ? 'live · ' + s.containers + ' containers' : 'live';
-      })
-      .catch(function () { dashes(); indicator.textContent = 'unavailable'; });
-  }
-
-  poll();
-  setInterval(poll, 5000);
-})();
-</script>
-
-<section class="panel">
-  <div class="log-head">
-    <h2 class="panel-title">Runtime logs</h2>
-    <div class="log-controls">
-      {{if and (eq .App.Kind "compose") .Stack}}
-      <select id="log-service" title="Compose service">
-        {{range .Stack}}<option value="{{.Service}}">{{.Service}}</option>{{end}}
-      </select>
-      {{end}}
-      <select id="log-tail" title="Lines to tail">
-        <option value="100">100 lines</option>
-        <option value="500">500 lines</option>
-        <option value="1000">1000 lines</option>
-        <option value="5000">5000 lines</option>
-      </select>
-      <span class="log-status" id="runtime-indicator">connecting…</span>
-    </div>
-  </div>
-  <pre class="log" id="runtime-log" data-id="{{.App.ID}}"></pre>
-</section>
-
-<script>
-(function () {
-  var el = document.getElementById('runtime-log');
-  var indicator = document.getElementById('runtime-indicator');
-  var svcSel = document.getElementById('log-service');
-  var tailSel = document.getElementById('log-tail');
-  var id = el.getAttribute('data-id');
-  var es = null;
-
-  function open() {
-    if (es) { es.close(); }
-    el.textContent = '';
-    indicator.textContent = 'connecting…';
-    var qs = 'tail=' + tailSel.value;
-    if (svcSel) { qs += '&service=' + encodeURIComponent(svcSel.value); }
-    es = new EventSource('/apps/' + id + '/logs?' + qs);
-    es.onopen = function () { indicator.textContent = 'streaming…'; };
-    es.addEventListener('log', function (e) {
-      var atBottom = (el.scrollTop + el.clientHeight) >= (el.scrollHeight - 4);
-      el.textContent += e.data + '\n';
-      if (atBottom) { el.scrollTop = el.scrollHeight; }
-    });
-    es.addEventListener('err', function (e) {
-      es.close();
-      el.textContent = e.data;
-      indicator.textContent = 'unavailable';
-    });
-    es.addEventListener('done', function () {
-      es.close();
-      indicator.textContent = 'stopped';
-    });
-    es.onerror = function () { indicator.textContent = 'disconnected'; };
-  }
-
-  if (svcSel) { svcSel.addEventListener('change', open); }
-  tailSel.addEventListener('change', open);
-  open();
-})();
-</script>
-
+<section class="tab" data-tab="settings">
 {{if not .App.TemplateID}}
 <section class="panel">
   <h2 class="panel-title">Deploy settings</h2>
@@ -509,64 +584,30 @@ git push outhaul {{.PushBranch}}</pre>{{template "copybtn" .}}</div>
 })();
 </script>
 
-<section class="panel">
-  <h2 class="panel-title">Deployments</h2>
-  {{if .Deployments}}
-  <table class="table">
-    <thead>
-      <tr><th>#</th><th>Status</th><th>Created</th><th>Build</th><th></th></tr>
-    </thead>
-    <tbody>
-      {{range .Deployments}}
-      <tr>
-        <td class="mono">{{.ID}}{{if .RollbackOf}} <span class="muted" title="reused the image built by deployment #{{.RollbackOf}}">↩ #{{.RollbackOf}}</span>{{end}}</td>
-        <td>
-          {{if isStatus .Status "running"}}
-            {{if eq .ID $.LiveDeploymentID}}<span class="badge state-running">live</span>
-            {{else}}<span class="badge state-stopped">superseded</span>{{end}}
-          {{else}}
-            <span class="badge {{stateClass .Status}}">{{.Status}}</span>
-          {{end}}
-        </td>
-        <td class="mono muted"><time datetime="{{.CreatedAt.Format "2006-01-02T15:04:05Z07:00"}}" title="{{fmtTime .CreatedAt}}">{{fmtTime .CreatedAt}}</time></td>
-        <td class="mono muted">{{buildDur .}}</td>
-        <td class="row-actions">
-          {{if and .Status.IsTerminal .Image (ne $.App.Kind "compose")}}
-          {{if .ImagePruned}}
-          <span class="muted" title="the built image was removed by image retention; deploy to rebuild from the branch">image pruned</span>
-          {{else}}
-          <form method="post" action="/deployments/{{.ID}}/rollback" class="inline" onsubmit="return confirm('Roll back {{$.App.Name}} to the image built by deployment #{{.ID}}? Current env vars and domain settings will apply.');">
-            <button type="submit" class="btn btn-quiet">Rollback</button>
-          </form>
-          {{end}}
-          {{end}}
-          <a href="/deployments/{{.ID}}" class="rowlink">logs →</a>
-        </td>
-      </tr>
-      {{end}}
-    </tbody>
-  </table>
-  {{else}}
-  <p class="empty">No deployments yet. Click <strong>Deploy</strong> to build and launch this app.</p>
-  {{end}}
+<section class="panel danger-zone">
+  <h2 class="panel-title">Danger zone</h2>
+  <p class="muted">Deleting an app removes it and all its deployments, domains, env vars, volumes, and backups. This cannot be undone.</p>
+  <form method="post" action="/apps/{{.App.ID}}/delete" class="inline" onsubmit="return confirm('Delete {{.App.Name}} and all its deployments?');"><button type="submit" class="btn btn-danger">Delete app</button></form>
+</section>
+</section>
+
 <script>
 (function () {
-  function rel(d) {
-    var s = Math.floor((Date.now() - d.getTime()) / 1000);
-    if (s < 45) return 'just now';
-    var m = Math.floor(s / 60); if (m < 60) return m + 'm ago';
-    var h = Math.floor(m / 60); if (h < 24) return h + 'h ago';
-    var days = Math.floor(h / 24); if (days < 30) return days + 'd ago';
-    var mo = Math.floor(days / 30); if (mo < 12) return mo + 'mo ago';
-    return Math.floor(mo / 12) + 'y ago';
+  var bar = document.getElementById('app-tabs');
+  if (!bar) return;
+  var links = Array.prototype.slice.call(bar.querySelectorAll('[data-tab-link]'));
+  var panels = Array.prototype.slice.call(document.querySelectorAll('.tab[data-tab]'));
+  var names = panels.map(function (p) { return p.getAttribute('data-tab'); });
+  function activate(name) {
+    if (names.indexOf(name) === -1) name = names[0];
+    panels.forEach(function (p) { p.hidden = p.getAttribute('data-tab') !== name; });
+    links.forEach(function (a) { a.classList.toggle('active', a.getAttribute('data-tab-link') === name); });
   }
-  document.querySelectorAll('time[datetime]').forEach(function (el) {
-    var d = new Date(el.getAttribute('datetime'));
-    if (!isNaN(d.getTime())) el.textContent = rel(d);
-  });
+  function fromHash() { activate((location.hash || '').replace(/^#/, '')); }
+  window.addEventListener('hashchange', fromHash);
+  fromHash();
 })();
 </script>
-</section>
 
 <script>
 (function () {
