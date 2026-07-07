@@ -36,9 +36,11 @@
   var id = el.getAttribute('data-id');
   var live = el.getAttribute('data-live') === 'true';
 
+  var received = 0;
   var es = new EventSource('/deployments/' + id + '/logs');
 
   es.addEventListener('log', function (e) {
+    received++;
     var atBottom = (el.scrollTop + el.clientHeight) >= (el.scrollHeight - 4);
     el.textContent += e.data + '\n';
     if (atBottom) { el.scrollTop = el.scrollHeight; }
@@ -50,8 +52,16 @@
       // The deployment finished while we were watching; reload to show the
       // final status and reason.
       window.location.reload();
-    } else if (indicator) {
-      indicator.textContent = 'complete';
+      return;
+    }
+    if (indicator) { indicator.textContent = 'complete'; }
+    if (received === 0) {
+      // Build logs live in memory only, so an older deployment (or anything
+      // from before the last restart) replays nothing. Say so rather than
+      // leaving a bare empty box.
+      el.classList.add('log-empty');
+      el.textContent = 'Build logs for this deployment are no longer available. They are kept in memory only and cleared when the service restarts.';
+      if (indicator) { indicator.textContent = 'no logs'; }
     }
   });
 

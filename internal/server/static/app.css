@@ -196,6 +196,7 @@ input[type=checkbox] { accent-color: var(--accent); }
   color: var(--text-secondary); white-space: pre-wrap; word-break: break-word;
   max-height: 520px; min-height: 120px; overflow-y: auto;
 }
+.log.log-empty { color: var(--text-muted); font-style: italic; display: flex; align-items: center; }
 
 /* Auth pages */
 .authcard {
