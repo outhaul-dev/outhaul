@@ -349,6 +349,82 @@ git push outhaul {{.PushBranch}}</pre>{{template "copybtn" .}}</div>
 </section>
 
 <section class="panel">
+  <div class="log-head"><h2 class="panel-title">Source &amp; build {{template "hint" "Change where this app's code comes from and how it is built. Changes take effect on the next deploy."}}</h2></div>
+
+  <form method="post" action="/apps/{{.App.ID}}/source" class="grid-form">
+    <label class="field"><span>Source {{template "hint" "Public Git URL needs no credentials; SSH uses a generated deploy key; Push hosts the repo in Outhaul; GitHub App lets you pick a connected repo."}}</span>
+      <select name="source" id="src-source-select">
+        <option value="public" {{if eq .App.Source "public"}}selected{{end}}>Public Git URL</option>
+        <option value="ssh" {{if eq .App.Source "ssh"}}selected{{end}}>Private (SSH deploy key)</option>
+        <option value="push" {{if eq .App.Source "push"}}selected{{end}}>Push to deploy (git push)</option>
+        {{if .GithubConnected}}<option value="github" {{if eq .App.Source "github"}}selected{{end}}>GitHub App</option>{{end}}
+      </select>
+    </label>
+    {{if .GithubConnected}}
+    <label class="field" data-src="github"><span>GitHub repository</span>
+      <select name="github_repo" id="src-github-repo">
+        {{range .GithubRepos}}<option value="{{.FullName}}" {{if eq .FullName $.App.GithubRepo}}selected{{end}}>{{.FullName}}</option>{{end}}
+      </select>
+    </label>
+    {{end}}
+    <label class="field" data-src="public ssh"><span>Git URL {{template "hint" "The clone URL of your repository. Use an https URL for a public repo or an ssh URL (git@host:owner/repo.git) for SSH."}}</span>
+      <input type="text" name="repo_url" value="{{if ne .App.Source "github"}}{{.App.RepoURL}}{{end}}" placeholder="https://github.com/owner/repo.git">
+    </label>
+    <button type="submit" class="btn">Change source</button>
+  </form>
+  <p class="muted env-note">Switching to SSH issues a new deploy key (shown below after saving) — the previous key stops working. GitHub source needs the GitHub App installed. Changes apply on the next deploy.</p>
+
+  <form method="post" action="/apps/{{.App.ID}}/kind" class="grid-form" onsubmit="return confirmKindChange(this)">
+    <label class="field"><span>Build type {{template "hint" "Nixpacks auto-detects your language; Dockerfile builds from a Dockerfile; Compose runs a multi-service stack."}}</span>
+      <select name="kind" id="src-kind-select" data-current="{{.App.Kind}}">
+        <option value="nixpacks" {{if eq .App.Kind "nixpacks"}}selected{{end}}>Nixpacks build (single service)</option>
+        <option value="dockerfile" {{if eq .App.Kind "dockerfile"}}selected{{end}}>Dockerfile build (single service)</option>
+        <option value="compose" {{if eq .App.Kind "compose"}}selected{{end}}>Docker Compose (multi-service stack)</option>
+      </select>
+    </label>
+    <label class="field" data-kind2="dockerfile"><span>Dockerfile {{template "hint" "Path to the Dockerfile within the repo, relative to its root. Defaults to ./Dockerfile."}}</span><input type="text" name="dockerfile_path" value="{{.App.DockerfilePath}}" placeholder="Dockerfile"></label>
+    <label class="field" data-kind2="compose"><span>Compose file {{template "hint" "Path to the docker-compose file within the repo. Defaults to ./docker-compose.yml."}}</span><input type="text" name="compose_path" value="{{.App.ComposePath}}" placeholder="docker-compose.yml"></label>
+    <button type="submit" class="btn">Change build type</button>
+  </form>
+  <p class="muted env-note">Switching between single-container and Compose changes what applies (volumes/backups vs services) — you'll confirm by typing the app name. Changes apply on the next deploy.</p>
+</section>
+
+<script>
+(function () {
+  var src = document.getElementById('src-source-select');
+  if (src) {
+    var applySrc = function () {
+      document.querySelectorAll('[data-src]').forEach(function (el) {
+        el.hidden = el.getAttribute('data-src').split(' ').indexOf(src.value) === -1;
+      });
+    };
+    src.addEventListener('change', applySrc); applySrc();
+  }
+  var kind = document.getElementById('src-kind-select');
+  if (kind) {
+    var applyKind = function () {
+      document.querySelectorAll('[data-kind2]').forEach(function (el) {
+        el.hidden = el.getAttribute('data-kind2') !== kind.value;
+      });
+    };
+    kind.addEventListener('change', applyKind); applyKind();
+  }
+  window.confirmKindChange = function (form) {
+    var sel = form.querySelector('#src-kind-select');
+    var cur = sel.getAttribute('data-current'), next = sel.value;
+    if (cur === next) return true;
+    var crossing = (cur === 'compose') !== (next === 'compose');
+    if (crossing) {
+      var name = {{.App.Name}};
+      var typed = window.prompt('Switching to/from Compose changes which data applies (volumes/backups vs services). Type the app name (' + name + ') to confirm:');
+      return typed === name;
+    }
+    return window.confirm('Change build type from ' + cur + ' to ' + next + '? Applies on the next deploy.');
+  };
+})();
+</script>
+
+<section class="panel">
   <h2 class="panel-title">Connect this repo</h2>
   {{if .App.RepoURL}}
   <p class="env-note">Clone URL:</p>
@@ -376,8 +452,18 @@ git push outhaul {{.PushBranch}}</pre>{{template "copybtn" .}}</div>
       {{range .Env}}
       <tr>
         <td class="mono">{{.Key}}{{if ne .Scope "shared"}}{{if ne .Scope ""}} <span class="badge">{{.Scope}}</span>{{end}}{{end}}</td>
-        <td class="mono muted">{{if .IsSecret}}••••••{{else}}{{.Value}}{{end}}</td>
-        <td>
+        <td class="mono muted">
+          <span data-env-val>{{if .IsSecret}}••••••{{else}}{{.Value}}{{end}}</span>
+          <form method="post" action="/apps/{{$.App.ID}}/env" class="env-edit" data-env-edit hidden>
+            <input type="hidden" name="key" value="{{.Key}}">
+            <input type="hidden" name="scope" value="{{if .Scope}}{{.Scope}}{{else}}shared{{end}}">
+            {{if .IsSecret}}<input type="hidden" name="secret" value="on"><input type="text" name="value" placeholder="enter new value" required>{{else}}<input type="text" name="value" value="{{.Value}}">{{end}}
+            <button type="submit" class="btn btn-quiet">Save</button>
+            <button type="button" class="linkbtn" data-env-cancel>Cancel</button>
+          </form>
+        </td>
+        <td class="row-actions">
+          <button type="button" class="linkbtn" data-env-editbtn>edit</button>
           <form method="post" action="/apps/{{$.App.ID}}/env/delete" class="inline">
             <input type="hidden" name="key" value="{{.Key}}">
             <button type="submit" class="linkbtn">remove</button>
@@ -405,6 +491,23 @@ git push outhaul {{.PushBranch}}</pre>{{template "copybtn" .}}</div>
   </form>
   <p class="muted env-note">Values may reference the project's shared variables as <span class="mono">{{"${{project.KEY}}"}}</span>, resolved on deploy. Redeploy to apply env changes.</p>
 </section>
+
+<script>
+(function () {
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    if (t.closest && t.closest('[data-env-editbtn]')) {
+      var row = t.closest('tr');
+      row.querySelector('[data-env-val]').hidden = true;
+      row.querySelector('[data-env-edit]').hidden = false;
+    } else if (t.closest && t.closest('[data-env-cancel]')) {
+      var r2 = t.closest('tr');
+      r2.querySelector('[data-env-edit]').hidden = true;
+      r2.querySelector('[data-env-val]').hidden = false;
+    }
+  });
+})();
+</script>
 
 <section class="panel">
   <h2 class="panel-title">Deployments</h2>

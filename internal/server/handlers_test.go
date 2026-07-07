@@ -40,3 +40,30 @@ func TestAppDetailMarksNewestRunningLive(t *testing.T) {
 		t.Fatal("older running deployment should read superseded")
 	}
 }
+
+func TestAppDetailShowsSourceEditor(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	ctx := context.Background()
+	app, _ := env.store.CreateApp(ctx, core.App{
+		Name: "web", RepoURL: "https://example.com/r.git", Domain: "web.example.com",
+		Source: core.SourcePublic, Branch: "main", Kind: core.KindNixpacks, WebhookSecret: "w",
+	})
+	page := body(t, env.get(t, "/apps/"+itoa(app.ID)))
+	if !strings.Contains(page, `action="/apps/`+itoa(app.ID)+`/source"`) {
+		t.Fatal("source editor form missing")
+	}
+	if !strings.Contains(page, `action="/apps/`+itoa(app.ID)+`/kind"`) {
+		t.Fatal("build-type editor form missing")
+	}
+
+	// A template app has no repo, so the editor must be absent.
+	tmpl, _ := env.store.CreateApp(ctx, core.App{
+		Name: "tapp", Source: core.SourceTemplate, TemplateID: "ghost",
+		Kind: core.KindCompose, ComposeRaw: "services: {}", WebhookSecret: "w2",
+	})
+	tpage := body(t, env.get(t, "/apps/"+itoa(tmpl.ID)))
+	if strings.Contains(tpage, `/source"`) {
+		t.Fatal("template app must not show the source editor")
+	}
+}
