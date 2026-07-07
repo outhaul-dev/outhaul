@@ -125,7 +125,7 @@ a:hover { color: var(--link-hover); }
 .field { display: flex; flex-direction: column; gap: 5px; }
 .field > span { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-tertiary); }
 .field > span em { text-transform: none; letter-spacing: 0; color: var(--text-muted); font-style: normal; }
-input[type=text], input[type=password], textarea, select {
+input[type=text], input[type=password], input[type=number], textarea, select {
   background: var(--bg-3); border: 1px solid var(--border-strong);
   border-radius: var(--radius); color: var(--text-primary);
   font: inherit; font-size: 13px; padding: 7px 10px;
