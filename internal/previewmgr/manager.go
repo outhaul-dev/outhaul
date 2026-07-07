@@ -364,6 +364,27 @@ func (m *Manager) teardown(ctx context.Context, parent core.App, pr int, repo st
 	return nil
 }
 
+// DestroyByID tears down a single preview child app by id (manual destroy from
+// the UI). parentID guards that childID really is a preview of that parent.
+func (m *Manager) DestroyByID(ctx context.Context, parentID, childID int64) error {
+	child, err := m.store.GetApp(ctx, childID)
+	if err != nil {
+		return err
+	}
+	if child.ParentID != parentID || !child.Ephemeral {
+		return fmt.Errorf("app %d is not a preview of app %d", childID, parentID)
+	}
+	parent, err := m.store.GetApp(ctx, parentID)
+	if err != nil {
+		return err
+	}
+	cfg, err := m.store.GetPreviewConfig(ctx, parentID)
+	if err != nil {
+		return err
+	}
+	return m.teardown(ctx, parent, child.PRNumber, "", cfg) // repo "" => no PR comment
+}
+
 func (m *Manager) comment(ctx context.Context, cfg core.PreviewConfig, repo string, pr int, body string) {
 	if !cfg.PostPRComment || m.token == nil || repo == "" {
 		return

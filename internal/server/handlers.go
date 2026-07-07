@@ -414,6 +414,39 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 	for _, a := range attachments {
 		attachRows = append(attachRows, attachRow{ID: a.ID, EnvVar: a.EnvVar, DBName: dbName[a.DatabaseID]})
 	}
+	// Preview environments: config + active previews. Only GitHub-connected apps
+	// can host previews; other kinds get a zero config, no rows, and the section
+	// is hidden. The keys are always set so the template never errors on any kind.
+	previewCfg, err := s.store.GetPreviewConfig(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	type previewRow struct {
+		ID     int64 // child app id (for destroy)
+		PR     int
+		Status string
+		URL    string
+	}
+	var previewRows []previewRow
+	if app.Source == core.SourceGithub {
+		kids, err := s.store.ListPreviewsForParent(r.Context(), id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		for _, k := range kids {
+			url := ""
+			if ds, _ := s.store.ListDomains(r.Context(), k.ID); len(ds) > 0 {
+				scheme := "http://"
+				if ds[0].TLS {
+					scheme = "https://"
+				}
+				url = scheme + ds[0].Host
+			}
+			previewRows = append(previewRows, previewRow{ID: k.ID, PR: k.PRNumber, Status: k.PreviewStatus, URL: url})
+		}
+	}
 	data := map[string]any{
 		"Title":         app.Name,
 		"Active":        "apps",
@@ -428,6 +461,10 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 		"ProjDatabases": projDatabases,
 		"ServerIP":      s.serverIP,
 		"TLSAvailable":  s.tlsEnabled,
+
+		"PreviewsAvailable": app.Source == core.SourceGithub,
+		"PreviewConfig":     previewCfg,
+		"Previews":          previewRows,
 	}
 	// Breadcrumb context; tolerate a missing project rather than 500 the page.
 	if p, err := s.store.GetProject(r.Context(), app.ProjectID); err == nil {

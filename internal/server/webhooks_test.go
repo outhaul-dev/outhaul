@@ -26,6 +26,8 @@ func (f *fakePreviews) Handle(_ context.Context, ev webhook.PullRequestEvent) er
 	return nil
 }
 
+func (f *fakePreviews) DestroyByID(_ context.Context, parentID, childID int64) error { return nil }
+
 func TestGithubWebhookRoutesPullRequest(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
