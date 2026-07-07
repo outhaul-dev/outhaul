@@ -65,7 +65,14 @@ func (p *fakeDBProvisioner) Provision(ctx context.Context, d core.Database) (cor
 	return created, nil
 }
 
-func (p *fakeDBProvisioner) Destroy(_ context.Context, _ core.Database) error {
+// Destroy mirrors the real adapter: it removes the store row (in real life the
+// container + data too). teardown/cleanupChild call it only after the app — and
+// thus the attachment rows — are gone, so DeleteDatabase's attachment guard and
+// the FK are satisfied.
+func (p *fakeDBProvisioner) Destroy(ctx context.Context, db core.Database) error {
+	if err := p.st.DeleteDatabase(ctx, db.ID); err != nil {
+		return err
+	}
 	p.destroyed++
 	return nil
 }
@@ -329,6 +336,11 @@ func TestClosedTearsDown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("child missing before close: %v", err)
 	}
+	childAtts, err := h.st.ListAttachments(ctx, child.ID)
+	if err != nil || len(childAtts) != 1 {
+		t.Fatalf("child attachments = %+v (err %v), want 1", childAtts, err)
+	}
+	childDBID := childAtts[0].DatabaseID
 
 	if err := h.mgr.Handle(ctx, prEvent("closed", 42, "feature-x", repo, false)); err != nil {
 		t.Fatalf("Handle closed: %v", err)
@@ -342,6 +354,11 @@ func TestClosedTearsDown(t *testing.T) {
 	}
 	if h.dbprov.destroyed != 1 {
 		t.Errorf("destroyed = %d, want 1", h.dbprov.destroyed)
+	}
+	// FK-safe ordering worked end to end: the preview's DB row is gone (it could
+	// only be deleted after the app's attachment row was dropped).
+	if _, err := h.st.GetDatabase(ctx, childDBID); err == nil {
+		t.Error("preview database row should be deleted after teardown")
 	}
 
 	got := h.gh.comments[repo+"#42"]
@@ -401,8 +418,13 @@ func TestTeardownFailureLeavesAppForRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("child missing before close: %v", err)
 	}
+	childAtts, err := h.st.ListAttachments(ctx, child.ID)
+	if err != nil || len(childAtts) != 1 {
+		t.Fatalf("child attachments = %+v (err %v), want 1", childAtts, err)
+	}
+	childDBID := childAtts[0].DatabaseID
 
-	// Container removal fails: teardown must abort before deleting the app row.
+	// Container removal fails: teardown must abort before deleting any rows.
 	h.docker.fail = true
 	if err := h.mgr.Handle(ctx, prEvent("closed", 42, "feature-x", repo, false)); err != nil {
 		t.Fatalf("Handle closed: %v", err)
@@ -420,14 +442,20 @@ func TestTeardownFailureLeavesAppForRetry(t *testing.T) {
 	if after.PreviewStatus != core.PreviewTeardownFailed {
 		t.Errorf("child status = %q, want %q", after.PreviewStatus, core.PreviewTeardownFailed)
 	}
-	// (c) The attachment (and thus the resource wiring) is still present, so a
-	// retry re-runs teardown against the same resources rather than orphaning.
+	// (c) The gated-failure path deleted nothing: the attachment row, the DB row,
+	// and the DB itself all survive intact for a clean retry.
 	atts, err := h.st.ListAttachments(ctx, child.ID)
 	if err != nil {
 		t.Fatalf("ListAttachments child: %v", err)
 	}
 	if len(atts) != 1 {
 		t.Errorf("child attachments = %d, want 1 (preserved for retry)", len(atts))
+	}
+	if _, err := h.st.GetDatabase(ctx, childDBID); err != nil {
+		t.Errorf("preview database row should survive a gated teardown failure: %v", err)
+	}
+	if h.dbprov.destroyed != 0 {
+		t.Errorf("destroyed = %d, want 0 (nothing deleted on the gated path)", h.dbprov.destroyed)
 	}
 }
 

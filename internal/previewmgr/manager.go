@@ -43,9 +43,9 @@ type Notifier interface{ Notify() }
 
 // DBProvisioner creates and destroys the isolated databases previews use.
 //
-// Destroy removes the preview's database container AND its store row. It must
-// not depend on the attachment still existing or being gone — teardown calls it
-// while the attachment row is still present.
+// Destroy removes the preview's database container, data, and store row.
+// teardown calls it only AFTER the child app (and thus its attachment rows) is
+// deleted, so the row delete is FK-safe.
 type DBProvisioner interface {
 	Provision(ctx context.Context, d core.Database) (core.Database, error)
 	Destroy(ctx context.Context, d core.Database) error
@@ -183,18 +183,24 @@ func (m *Manager) buildPreview(ctx context.Context, parent, child core.App, cfg 
 
 // cleanupChild best-effort destroys a partially-built preview: its provisioned
 // databases (via current attachments) and its app row. Used to roll back a
-// spawn that failed after the child app row was created.
+// spawn that failed after the child app row was created. Like teardown, it
+// captures the DBs while attachments exist, deletes the app row (dropping the
+// attachment rows), then destroys the now-unreferenced DB rows FK-safely.
 func (m *Manager) cleanupChild(ctx context.Context, child core.App) {
 	atts, _ := m.store.ListAttachments(ctx, child.ID)
+	dbs := make([]core.Database, 0, len(atts))
 	for _, a := range atts {
 		if db, err := m.store.GetDatabase(ctx, a.DatabaseID); err == nil {
-			if err := m.dbprov.Destroy(ctx, db); err != nil {
-				log.Printf("previewmgr: rollback destroy db %s: %v", db.Name, err)
-			}
+			dbs = append(dbs, db)
 		}
 	}
 	if err := m.store.DeleteApp(ctx, child.ID); err != nil {
 		log.Printf("previewmgr: rollback delete app %s: %v", child.Name, err)
+	}
+	for _, db := range dbs {
+		if err := m.dbprov.Destroy(ctx, db); err != nil {
+			log.Printf("previewmgr: rollback destroy db %s: %v", db.Name, err)
+		}
 	}
 }
 
@@ -301,20 +307,25 @@ func (m *Manager) redeploy(ctx context.Context, parent core.App, ev webhook.Pull
 	return nil
 }
 
-// teardown removes a preview's containers, databases, domains, and app row. It
-// is idempotent and best-effort per resource: a failure on one resource is
-// logged and the rest still proceed; the app row is deleted last.
+// teardown removes a preview's containers, databases, domains, and app row.
+//
+// Ordering matters: attachments.database_id references databases with no cascade,
+// so a database row can only be deleted once its attachment row is gone. We
+// therefore (1) capture the DBs while attachments still exist, (2) do the
+// failure-prone container teardown behind a gate — on any failure we leave every
+// row intact and mark teardown_failed for a clean retry — and only then (3)
+// DeleteApp (which drops the attachment rows) before destroying the DB rows, so
+// each Destroy is FK-safe.
 func (m *Manager) teardown(ctx context.Context, parent core.App, pr int, repo string, cfg core.PreviewConfig) error {
 	child, err := m.store.GetPreviewByPR(ctx, parent.ID, pr)
 	if err != nil {
 		return nil
 	}
+
 	failed := false
-	if err := m.docker.RemoveApp(ctx, child.Name); err != nil {
-		log.Printf("previewmgr: remove containers for %s: %v", child.Name, err)
-		failed = true
-	}
+	// Capture the databases to destroy while the attachment rows still exist.
 	atts, _ := m.store.ListAttachments(ctx, child.ID)
+	dbs := make([]core.Database, 0, len(atts))
 	for _, a := range atts {
 		db, err := m.store.GetDatabase(ctx, a.DatabaseID)
 		if err != nil {
@@ -322,17 +333,32 @@ func (m *Manager) teardown(ctx context.Context, parent core.App, pr int, repo st
 			failed = true
 			continue
 		}
-		if err := m.dbprov.Destroy(ctx, db); err != nil {
-			log.Printf("previewmgr: destroy db %s: %v", db.Name, err)
-			failed = true
-		}
+		dbs = append(dbs, db)
 	}
+
+	if err := m.docker.RemoveApp(ctx, child.Name); err != nil {
+		log.Printf("previewmgr: remove containers for %s: %v", child.Name, err)
+		failed = true
+	}
+
+	// Gated phase: if anything failed, leave the app row, attachment rows, and
+	// DB rows all intact so a retry re-runs from a clean state.
 	if failed {
 		_ = m.store.SetPreviewStatus(ctx, child.ID, core.PreviewTeardownFailed)
 		return fmt.Errorf("teardown of %s had failures; left for retry", child.Name)
 	}
+
+	// FK-safe row deletion: DeleteApp removes the attachment rows first, then the
+	// now-unreferenced DB rows can be destroyed.
 	if err := m.store.DeleteApp(ctx, child.ID); err != nil {
 		return err
+	}
+	for _, db := range dbs {
+		if err := m.dbprov.Destroy(ctx, db); err != nil {
+			// The app is already gone; a leftover DB container is a rare, logged
+			// edge and must not fail the whole teardown.
+			log.Printf("previewmgr: destroy db %s after app delete: %v", db.Name, err)
+		}
 	}
 	m.comment(ctx, cfg, repo, pr, "Preview environment destroyed.")
 	return nil
