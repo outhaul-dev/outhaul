@@ -81,6 +81,14 @@ func (m *Manager) Provision(d core.Database) {
 	}()
 }
 
+// ProvisionSync provisions the database synchronously (pull, create, start, set
+// status), returning any error. Unlike Provision it blocks and reports failure
+// to the caller instead of only recording it on the row. Used where the caller
+// must know the database is running before proceeding (e.g. preview spin-up).
+func (m *Manager) ProvisionSync(ctx context.Context, d core.Database) error {
+	return m.provision(ctx, d)
+}
+
 func (m *Manager) provision(ctx context.Context, d core.Database) error {
 	if err := m.store.SetDatabaseStatus(ctx, d.ID, core.DBCreating, ""); err != nil {
 		return err

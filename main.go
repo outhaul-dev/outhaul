@@ -27,6 +27,7 @@ import (
 	"github.com/james-smart/outhaul/internal/gitrepo"
 	"github.com/james-smart/outhaul/internal/gitssh"
 	"github.com/james-smart/outhaul/internal/logstream"
+	"github.com/james-smart/outhaul/internal/previewmgr"
 	"github.com/james-smart/outhaul/internal/prune"
 	"github.com/james-smart/outhaul/internal/secret"
 	"github.com/james-smart/outhaul/internal/server"
@@ -161,9 +162,32 @@ func serve() error {
 	repos := gitrepo.New(cfg.GitDir(), self, cfg.GitHookSocketPath())
 	sshSrv := startGitPush(workerCtx, cfg, st, worker, broker, serverIP, repos, self)
 
+	// Preview environments: per-PR ephemeral child apps. The token source mints
+	// an installation token (via the App JWT) so the manager can post PR comments.
+	tokenSource := func(ctx context.Context) (string, bool, error) {
+		ga, ok, err := st.GithubApp(ctx)
+		if err != nil {
+			return "", false, err
+		}
+		if !ok {
+			return "", false, nil
+		}
+		jwt, err := github.AppJWT(ga.PrivateKey, ga.AppID, time.Now())
+		if err != nil {
+			return "", false, err
+		}
+		tok, err := ghClient.InstallationToken(ctx, jwt, ga.InstallationID)
+		return tok, err == nil, err
+	}
+	previews := previewmgr.New(st, worker,
+		&previewDBProvisioner{st: st, dbm: dbm},
+		&previewDocker{st: st, runtime: dc, compose: compose.NewDocker()},
+		ghClient, tokenSource, serverIP)
+	go previews.Run(workerCtx)
+
 	setupToken := server.NewToken()
 	srv, err := server.New(st, worker, dc, compose.NewDocker(), dbm, backups, broker, ghClient,
-		nil, // previews: wired in next step
+		previews,
 		cfg.PublicURL, serverIP, cfg.TLSEnabled(), setupToken)
 	if err != nil {
 		stopWorker()

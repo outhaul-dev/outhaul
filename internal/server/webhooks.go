@@ -14,7 +14,9 @@ import (
 const maxWebhookBody = 1 << 20 // 1 MiB
 
 // handleGithubWebhook verifies the GitHub App webhook and deploys all matching
-// apps. Non-push events and non-matching pushes are 200 no-ops.
+// apps. push events deploy matching apps; pull_request events drive preview
+// environments (when a preview handler is wired). Other events and non-matching
+// pushes are 200 no-ops.
 func (s *Server) handleGithubWebhook(w http.ResponseWriter, r *http.Request) {
 	body, ok := readBody(w, r)
 	if !ok {
