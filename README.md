@@ -1,50 +1,58 @@
 # Outhaul
 
-A single-binary, self-hosted PaaS. Point it at a fresh VPS, push a public Git
-repo, and it clones, builds (Nixpacks), and runs your app behind Traefik on a
-domain you choose — no Node, no Postgres, one ~22 MB Go binary and a SQLite file.
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
+[![Go](https://img.shields.io/github/go-mod/go-version/outhaul-dev/outhaul?logo=go&logoColor=white)](go.mod)
+[![Self-hosted PaaS](https://img.shields.io/badge/self--hosted-PaaS-0b7285.svg)](#features)
 
-Outhaul is a deliberately minimal alternative to Dokploy/Coolify.
+**A single-binary, self-hosted PaaS.** Point it at a fresh VPS, push a Git repo,
+and Outhaul clones it, builds it (Nixpacks), and runs it behind Traefik on a
+domain you choose — with automatic HTTPS, health-gated deploys, and one-click
+rollback.
 
-> **Status: Milestone 3 (git automation).** The thinnest end-to-end path
-> works: log in, create an app, click Deploy, watch the build stream live, and
-> reach the app on its domain. M2 adds automatic HTTPS (Let's Encrypt), env
-> vars & secrets (encrypted at rest), health-gated deploys that never promote a
-> broken build, and app lifecycle (stop/restart/delete). M3 adds private repos
-> (via a GitHub App + per-app SSH deploy keys) and auto-deploy on push (via
-> webhooks), with a per-app branch and auto-deploy toggle. Apps are grouped
-> into Dokploy-style **projects** (workspaces for a product or client), which
-> also hold **shared environment variables** that apps reference as
-> `${{project.KEY}}`. Repos
-> with a `docker-compose.yml` deploy as **compose stacks** (multi-service,
-> with any number of domains routed to the stack's services), repos that
-> carry their own **Dockerfile** build with it instead of Nixpacks (same
-> blue-green pipeline), and **watch
-> paths** scope auto-deploy to pushes that change matching files. A built-in
-> **template gallery** (Uptime Kuma, Grafana, Umami, n8n, Vaultwarden,
-> PocketBase, Ghost, MinIO) deploys popular open-source apps as compose
-> stacks in one click, with generated credentials and zero-DNS `sslip.io`
-> domains — all editable afterwards like any compose app. The app page
-> live-tails **runtime container logs** (per service for compose stacks) and
-> shows **live metrics** (CPU, memory, network, and uptime, aggregated across
-> a compose stack). Any past deployment with a built image can be **rolled
-> back** to in one click — no rebuild, same health-gated cutover. Projects can
-> hold **managed databases** (PostgreSQL, MySQL, Redis): one click provisions
-> a container with generated credentials and persistent data, reachable by
-> apps over the internal network (and optionally on a published host port).
-> **Scheduled backups** ship database dumps and compose stacks' named volumes
-> to any S3-compatible bucket (AWS, MinIO, R2, B2, …) on cron schedules with
-> retention, run history, and one-click manual runs — and any archive can be
-> **restored** from the same page: dumps stream back into the running
-> database with the engine's own tools, volume archives are unpacked into
-> the stack's volume with a stop/restore/restart cycle. **Disk cleanup** keeps a
-> long-running host healthy: the newest builds per app stay on disk for
-> rollback (`OUTHAUL_IMAGE_KEEP`, default 5) and a nightly sweep reclaims
-> older images, dangling layers, and stale build cache. See
-> [ARCHITECTURE.md](ARCHITECTURE.md) for the design and what is intentionally
-> not built yet (multiple users, metrics history/alerts, multi-server).
+No Node, no Postgres, no control-plane sprawl: **one ~22 MB Go binary and a
+SQLite file.** Outhaul is a deliberately minimal alternative to Dokploy and
+Coolify — the same core workflow, a fraction of the moving parts.
 
-## Running
+```sh
+go build -o outhaul . && ./outhaul serve
+# → open the one-time setup URL it prints, create the admin account, deploy.
+```
+
+## Features
+
+### Deploy straight from Git
+- **Nixpacks builds** — push a repo and Outhaul detects the stack and builds it; no Dockerfile required.
+- **Dockerfile builds** — repos that carry their own `Dockerfile` build with it, through the same pipeline.
+- **Compose stacks** — a `docker-compose.yml` deploys as a multi-service stack, with any number of domains routed to its services.
+- **Auto-deploy on push** — GitHub webhooks redeploy on push, scoped by a per-app branch and optional **watch paths** so only relevant changes trigger a build.
+- **Private repos** — a GitHub App plus per-app SSH deploy keys.
+
+### Deploys that don't break production
+- **Health-gated blue-green cutover** — a new release only takes traffic once it passes health checks; a broken build is never promoted.
+- **Automatic HTTPS** — Let's Encrypt certificates issued and renewed for every domain you assign.
+- **One-click rollback** — return to any past deployment that still has its image — no rebuild, same health-gated cutover.
+
+### Organize your apps
+- **Projects** — Dokploy-style workspaces that group the apps for a product or client.
+- **Shared environment variables** — project-level values apps reference as `${{project.KEY}}`.
+- **Secrets encrypted at rest** — env vars and generated credentials are sealed on disk.
+- **App lifecycle** — stop, restart, and delete from the UI.
+
+### Batteries included
+- **Managed databases** — one click provisions PostgreSQL, MySQL, or Redis with generated credentials and persistent storage, reachable over the internal network (and optionally on a published host port).
+- **Template gallery** — deploy Uptime Kuma, Grafana, Umami, n8n, Vaultwarden, PocketBase, Ghost, or MinIO in one click, with generated credentials and zero-DNS `sslip.io` domains — fully editable afterward like any compose app.
+- **Scheduled backups & restore** — ship database dumps and compose volumes to any S3-compatible bucket (AWS, MinIO, R2, B2, …) on cron schedules, with retention and run history; restore any archive from the same page.
+
+### See what's happening
+- **Live runtime logs** — tail container logs in the browser, per service for compose stacks.
+- **Live metrics** — CPU, memory, network, and uptime, aggregated across a stack.
+- **Automatic disk cleanup** — keeps the newest images per app for rollback (`OUTHAUL_IMAGE_KEEP`) while a nightly sweep reclaims old images, dangling layers, and stale build cache.
+
+> See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the design and what's
+> intentionally out of scope for now (multiple users, metrics history/alerts,
+> multi-server).
+
+## Running locally
 
 Requirements on the host: a reachable **Docker** daemon, **git**, and
 **[nixpacks](https://nixpacks.com)** on `PATH`. Dockerfile apps additionally
