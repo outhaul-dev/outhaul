@@ -11,7 +11,67 @@ import (
 	"testing"
 
 	"github.com/james-smart/outhaul/internal/core"
+	"github.com/james-smart/outhaul/internal/webhook"
 )
+
+// fakePreviews records the last pull_request event routed to it.
+type fakePreviews struct {
+	last  webhook.PullRequestEvent
+	calls int
+}
+
+func (f *fakePreviews) Handle(_ context.Context, ev webhook.PullRequestEvent) error {
+	f.calls++
+	f.last = ev
+	return nil
+}
+
+func TestGithubWebhookRoutesPullRequest(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	env.store.SetGithubApp(ctx, core.GithubApp{
+		AppID: 1, Slug: "s", PrivateKey: "p", WebhookSecret: "ghwhs", ClientID: "c", ClientSecret: "cs",
+	})
+	fake := &fakePreviews{}
+	env.srv.previews = fake
+
+	body := `{"action":"opened","number":42,"pull_request":{"head":{"ref":"feature-x","sha":"abc123","repo":{"full_name":"me/app"}},"base":{"repo":{"full_name":"me/app"}}}}`
+	req := httptest.NewRequest("POST", "/webhooks/github", strings.NewReader(body))
+	req.Header.Set("X-Hub-Signature-256", sign("ghwhs", body))
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	rec := httptest.NewRecorder()
+	env.srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+	if fake.calls != 1 {
+		t.Fatalf("calls = %d, want 1", fake.calls)
+	}
+	if fake.last.Action != "opened" || fake.last.Number != 42 || fake.last.BaseRepoFullName != "me/app" {
+		t.Errorf("last event = %+v, want opened/42/me/app", fake.last)
+	}
+}
+
+func TestGithubWebhookPullRequestNilPreviewsIsNoop(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	env.store.SetGithubApp(ctx, core.GithubApp{
+		AppID: 1, Slug: "s", PrivateKey: "p", WebhookSecret: "ghwhs", ClientID: "c", ClientSecret: "cs",
+	})
+	// env.srv.previews is nil (harness default).
+
+	body := `{"action":"opened","number":42,"pull_request":{"head":{"ref":"feature-x","sha":"abc123","repo":{"full_name":"me/app"}},"base":{"repo":{"full_name":"me/app"}}}}`
+	req := httptest.NewRequest("POST", "/webhooks/github", strings.NewReader(body))
+	req.Header.Set("X-Hub-Signature-256", sign("ghwhs", body))
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	rec := httptest.NewRecorder()
+	env.srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 no-op", rec.Code)
+	}
+}
 
 func sign(secret, body string) string {
 	m := hmac.New(sha256.New, []byte(secret))

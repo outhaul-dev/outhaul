@@ -162,7 +162,9 @@ func serve() error {
 	sshSrv := startGitPush(workerCtx, cfg, st, worker, broker, serverIP, repos, self)
 
 	setupToken := server.NewToken()
-	srv, err := server.New(st, worker, dc, compose.NewDocker(), dbm, backups, broker, ghClient, cfg.PublicURL, serverIP, cfg.TLSEnabled(), setupToken)
+	srv, err := server.New(st, worker, dc, compose.NewDocker(), dbm, backups, broker, ghClient,
+		nil, // previews: wired in next step
+		cfg.PublicURL, serverIP, cfg.TLSEnabled(), setupToken)
 	if err != nil {
 		stopWorker()
 		return fmt.Errorf("build server: %w", err)

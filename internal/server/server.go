@@ -28,7 +28,14 @@ import (
 	"github.com/james-smart/outhaul/internal/hostmetrics"
 	"github.com/james-smart/outhaul/internal/logstream"
 	"github.com/james-smart/outhaul/internal/store"
+	"github.com/james-smart/outhaul/internal/webhook"
 )
+
+// PreviewHandler routes a parsed pull_request event to the preview manager.
+// *previewmgr.Manager satisfies it. Nil when previews aren't wired.
+type PreviewHandler interface {
+	Handle(ctx context.Context, ev webhook.PullRequestEvent) error
+}
 
 // Deployer is the slice of the deploy worker the server needs.
 type Deployer interface {
@@ -79,6 +86,7 @@ type Server struct {
 	backups   Backups
 	broker    *logstream.Broker
 	gh        github.Client
+	previews  PreviewHandler // routes pull_request webhooks to the preview manager; nil disables previews
 	metrics   metricsSampler // host/self resource sampler for the Metrics page
 
 	pages      map[string]*template.Template
@@ -99,7 +107,7 @@ type Server struct {
 // first-boot admin-creation flow (printed by the caller as a one-time URL).
 // publicURL is Outhaul's externally reachable base URL, used to build the
 // GitHub App manifest's callback and webhook URLs.
-func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databases, bk Backups, br *logstream.Broker, gh github.Client, publicURL, serverIP string, tlsEnabled bool, setupToken string) (*Server, error) {
+func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databases, bk Backups, br *logstream.Broker, gh github.Client, previews PreviewHandler, publicURL, serverIP string, tlsEnabled bool, setupToken string) (*Server, error) {
 	s := &Server{
 		store:       st,
 		deployer:    d,
@@ -109,6 +117,7 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 		backups:     bk,
 		broker:      br,
 		gh:          gh,
+		previews:    previews,
 		metrics:     hostmetrics.NewSampler("/"),
 		publicURL:   publicURL,
 		serverIP:    serverIP,

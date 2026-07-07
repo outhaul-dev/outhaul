@@ -227,7 +227,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	bk := &fakeBackups{}
 	br := logstream.New()
 	gh := &github.Fake{}
-	srv, err := New(st, dep, rt, cp, dbm, bk, br, gh, "https://slip.example.com", "203.0.113.7", false, "SETUPTOKEN")
+	srv, err := New(st, dep, rt, cp, dbm, bk, br, gh, nil, "https://slip.example.com", "203.0.113.7", false, "SETUPTOKEN")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

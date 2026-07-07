@@ -29,24 +29,42 @@ func (s *Server) handleGithubWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad signature", http.StatusUnauthorized)
 		return
 	}
-	if r.Header.Get("X-GitHub-Event") != "push" {
-		w.WriteHeader(http.StatusOK) // ignore non-push events
+	switch r.Header.Get("X-GitHub-Event") {
+	case "push":
+		ev, err := webhook.ParsePush(body)
+		if err != nil {
+			http.Error(w, "bad payload", http.StatusBadRequest)
+			return
+		}
+		apps, err := s.store.AppsByGithubRepo(r.Context(), ev.RepoFullName)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		for _, app := range apps {
+			s.maybeDeploy(r.Context(), app, ev)
+		}
+		w.WriteHeader(http.StatusOK)
+		return
+	case "pull_request":
+		if s.previews == nil {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		ev, err := webhook.ParsePullRequest(body)
+		if err != nil {
+			http.Error(w, "bad payload", http.StatusBadRequest)
+			return
+		}
+		if err := s.previews.Handle(r.Context(), ev); err != nil {
+			log.Printf("webhook: preview handling: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+		return
+	default:
+		w.WriteHeader(http.StatusOK) // ignore other events
 		return
 	}
-	ev, err := webhook.ParsePush(body)
-	if err != nil {
-		http.Error(w, "bad payload", http.StatusBadRequest)
-		return
-	}
-	apps, err := s.store.AppsByGithubRepo(r.Context(), ev.RepoFullName)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	for _, app := range apps {
-		s.maybeDeploy(r.Context(), app, ev)
-	}
-	w.WriteHeader(http.StatusOK)
 }
 
 // handleAppWebhook verifies a per-app generic webhook and deploys if the branch
