@@ -128,7 +128,7 @@ input[type=text], input[type=password], textarea, select {
   border-radius: var(--radius); color: var(--text-primary);
   font: inherit; font-size: 13px; padding: 7px 10px;
 }
-input[type=text], input[type=password], textarea, .field select { width: 100%; }
+input[type=text], input[type=password], input[type=number], textarea, .field select { width: 100%; }
 textarea { font-family: var(--font-mono); font-size: 12px; resize: vertical; }
 input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent-dim, rgba(224,138,60,0.35)); }
 input[type=checkbox] { accent-color: var(--accent); }

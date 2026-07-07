@@ -176,15 +176,15 @@ git push outhaul {{.PushBranch}}</pre>{{template "copybtn" .}}</div>
 
 {{if .PreviewsAvailable}}
 <section class="panel">
-  <h2 class="panel-title">Preview environments</h2>
+  <h2 class="panel-title">Preview environments {{template "hint" "Give each open pull request its own throwaway copy of this app — a fresh isolated deploy (with its own copies of any attached databases), torn down automatically when the PR closes or goes idle."}}</h2>
   <p class="muted">Spin up an ephemeral copy of this app for each open pull request, torn down when the PR closes.</p>
   <form method="post" action="/apps/{{.App.ID}}/previews" class="grid-form">
-    <label class="field"><span>Enabled</span><input type="checkbox" name="enabled" {{if .PreviewConfig.Enabled}}checked{{end}}></label>
-    <label class="field"><span>Base domain</span><input type="text" name="base_domain" value="{{.PreviewConfig.BaseDomain}}" placeholder="preview.example.com"></label>
-    <label class="field"><span>Idle TTL (days)</span><input type="number" name="idle_ttl_days" min="1" value="{{.PreviewConfig.IdleTTLDays}}"></label>
-    <label class="field"><span>Max concurrent</span><input type="number" name="max_concurrent" min="1" value="{{.PreviewConfig.MaxConcurrent}}"></label>
-    <label class="field"><span>Post PR comment</span><input type="checkbox" name="post_pr_comment" {{if .PreviewConfig.PostPRComment}}checked{{end}}></label>
-    <label class="field"><span>Allow fork PRs</span><input type="checkbox" name="allow_fork_prs" {{if .PreviewConfig.AllowForkPRs}}checked{{end}}></label>
+    <label class="field-check"><input type="checkbox" name="enabled" {{if .PreviewConfig.Enabled}}checked{{end}}> <span>Enabled {{template "hint" "Turn preview environments on for this app. When off, pull requests are ignored."}}</span></label>
+    <label class="field"><span>Base domain {{template "hint" "Preview hostnames are built under this domain (e.g. pr-42.preview.example.com). Leave blank to use generated sslip.io hostnames that need no DNS."}}</span><input type="text" name="base_domain" value="{{.PreviewConfig.BaseDomain}}" placeholder="preview.example.com"></label>
+    <label class="field"><span>Idle TTL (days) {{template "hint" "How many days a preview can sit with no new deploy before it is automatically torn down."}}</span><input type="number" name="idle_ttl_days" min="1" value="{{.PreviewConfig.IdleTTLDays}}"></label>
+    <label class="field"><span>Max concurrent {{template "hint" "The most previews allowed live at once for this app. Additional pull requests wait until a slot frees up."}}</span><input type="number" name="max_concurrent" min="1" value="{{.PreviewConfig.MaxConcurrent}}"></label>
+    <label class="field-check"><input type="checkbox" name="post_pr_comment" {{if .PreviewConfig.PostPRComment}}checked{{end}}> <span>Post PR comment {{template "hint" "Post and keep-updated a status comment on the pull request with the preview URL and build state."}}</span></label>
+    <label class="field-check"><input type="checkbox" name="allow_fork_prs" {{if .PreviewConfig.AllowForkPRs}}checked{{end}}> <span>Allow fork PRs {{template "hint" "Also build previews for pull requests opened from forks. Off by default: fork code would run with this app's secrets."}}</span></label>
     <button type="submit" class="btn btn-primary">Save</button>
   </form>
   <p class="muted env-note">Leave the base domain blank to use generated sslip.io hostnames.</p>
