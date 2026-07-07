@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -86,5 +87,40 @@ func TestAppDetailHasTabs(t *testing.T) {
 	}
 	if !strings.Contains(page, "Danger zone") {
 		t.Fatal("danger zone missing")
+	}
+}
+
+func TestAppDetailRendersAllKinds(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	ctx := context.Background()
+	cases := []core.App{
+		{Name: "nix", RepoURL: "https://example.com/r.git", Domain: "nix.example.com", Source: core.SourcePublic, Branch: "main", Kind: core.KindNixpacks, WebhookSecret: "a"},
+		{Name: "dock", RepoURL: "https://example.com/r.git", Domain: "dock.example.com", Source: core.SourcePublic, Branch: "main", Kind: core.KindDockerfile, DockerfilePath: "Dockerfile", WebhookSecret: "b"},
+		{Name: "comp", Source: core.SourcePublic, RepoURL: "https://example.com/r.git", Branch: "main", Kind: core.KindCompose, ComposePath: "docker-compose.yml", WebhookSecret: "c"},
+		{Name: "tmpl", Source: core.SourceTemplate, TemplateID: "ghost", Kind: core.KindCompose, ComposeRaw: "services: {}", WebhookSecret: "d"},
+		{Name: "pushapp", Source: core.SourcePush, Branch: "main", Kind: core.KindNixpacks, Domain: "push.example.com", WebhookSecret: "e"},
+	}
+	for _, a := range cases {
+		app, err := env.store.CreateApp(ctx, a)
+		if err != nil {
+			t.Fatalf("create %s: %v", a.Name, err)
+		}
+		resp := env.get(t, "/apps/"+itoa(app.ID))
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: status = %d, want 200", a.Name, resp.StatusCode)
+		}
+		page := body(t, resp)
+		if !strings.Contains(page, `data-tab="overview"`) {
+			t.Fatalf("%s: tabs missing", a.Name)
+		}
+		// Source editor is present for repo apps, absent for template apps.
+		hasSourceEditor := strings.Contains(page, `/source"`)
+		if a.Source == core.SourceTemplate && hasSourceEditor {
+			t.Fatalf("%s: template app must not show source editor", a.Name)
+		}
+		if a.Source != core.SourceTemplate && !hasSourceEditor {
+			t.Fatalf("%s: repo app must show source editor", a.Name)
+		}
 	}
 }
