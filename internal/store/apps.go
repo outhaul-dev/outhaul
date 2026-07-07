@@ -202,6 +202,35 @@ func (s *Store) UpdateAppDockerfilePath(ctx context.Context, id int64, dockerfil
 	return err
 }
 
+// UpdateAppSource re-points where an app's code comes from: its source kind and
+// the fields that source needs. All source-specific columns are overwritten to
+// the passed values — an empty repoURL/githubRepo/sshPublicKey clears that
+// column. The SSH private key is sealed like on create (empty stays empty), so
+// switching away from SSH clears it and switching to SSH stores the freshly
+// generated key. The change takes effect on the app's next deploy.
+func (s *Store) UpdateAppSource(ctx context.Context, id int64, source, repoURL, githubRepo, sshPublicKey, sshPrivateKey string) error {
+	enc, err := s.sealMaybe(sshPrivateKey)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx,
+		`UPDATE apps SET source = ?, repo_url = ?, github_repo = ?, ssh_public_key = ?, ssh_private_key = ? WHERE id = ?`,
+		source, repoURL, githubRepo, sshPublicKey, enc, id)
+	return err
+}
+
+// UpdateAppKind changes an app's build strategy and the path the new strategy
+// needs (compose file for compose, Dockerfile for dockerfile; both cleared for
+// nixpacks). Existing volumes/services/domain rows are left untouched — a kind
+// that no longer applies to them simply stops reading them. Takes effect on the
+// next deploy.
+func (s *Store) UpdateAppKind(ctx context.Context, id int64, kind, composePath, dockerfilePath string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE apps SET kind = ?, compose_path = ?, dockerfile_path = ? WHERE id = ?`,
+		kind, composePath, dockerfilePath, id)
+	return err
+}
+
 // DeleteApp removes an app and its deployments, env vars, and backups.
 func (s *Store) DeleteApp(ctx context.Context, id int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
