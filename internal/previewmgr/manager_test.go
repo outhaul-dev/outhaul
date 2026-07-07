@@ -536,6 +536,139 @@ func TestSpawnSuppressesCommentWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestOnDeployFinishedPostsReadyComment(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	repo := "acme/web"
+	parent := h.seedGithubApp(t, "web", repo, nil)
+
+	if err := h.mgr.Handle(ctx, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
+		t.Fatalf("Handle opened: %v", err)
+	}
+	child, err := h.st.GetPreviewByPR(ctx, parent.ID, 42)
+	if err != nil {
+		t.Fatalf("GetPreviewByPR: %v", err)
+	}
+
+	h.mgr.OnDeployFinished(ctx, child, true)
+
+	after, err := h.st.GetPreviewByPR(ctx, parent.ID, 42)
+	if err != nil {
+		t.Fatalf("GetPreviewByPR after: %v", err)
+	}
+	if after.PreviewStatus != core.PreviewReady {
+		t.Errorf("child status = %q, want %q", after.PreviewStatus, core.PreviewReady)
+	}
+
+	got := h.gh.comments[repo+"#42"]
+	if len(got) == 0 {
+		t.Fatal("expected a ready comment for the parent repo#PR")
+	}
+	last := got[len(got)-1]
+	if !strings.Contains(last, "Preview ready") {
+		t.Errorf("last comment = %q, want a \"Preview ready\" notice", last)
+	}
+	if !strings.Contains(last, "web-pr-42.1.2.3.4.sslip.io") {
+		t.Errorf("ready comment = %q, want the preview URL", last)
+	}
+}
+
+func TestOnDeployFinishedFailedComment(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	repo := "acme/web"
+	parent := h.seedGithubApp(t, "web", repo, nil)
+
+	if err := h.mgr.Handle(ctx, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
+		t.Fatalf("Handle opened: %v", err)
+	}
+	child, err := h.st.GetPreviewByPR(ctx, parent.ID, 42)
+	if err != nil {
+		t.Fatalf("GetPreviewByPR: %v", err)
+	}
+
+	h.mgr.OnDeployFinished(ctx, child, false)
+
+	after, err := h.st.GetPreviewByPR(ctx, parent.ID, 42)
+	if err != nil {
+		t.Fatalf("GetPreviewByPR after: %v", err)
+	}
+	if after.PreviewStatus != core.PreviewFailed {
+		t.Errorf("child status = %q, want %q", after.PreviewStatus, core.PreviewFailed)
+	}
+
+	got := h.gh.comments[repo+"#42"]
+	if len(got) == 0 {
+		t.Fatal("expected a failed comment for the parent repo#PR")
+	}
+	if last := got[len(got)-1]; !strings.Contains(last, "Preview build failed") {
+		t.Errorf("last comment = %q, want a \"Preview build failed\" notice", last)
+	}
+}
+
+func TestOnDeployFinishedIgnoresNonPreview(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	repo := "acme/web"
+	parent := h.seedGithubApp(t, "web", repo, nil) // non-ephemeral
+
+	h.mgr.OnDeployFinished(ctx, parent, true)
+
+	if len(h.gh.comments) != 0 {
+		t.Errorf("expected no comments for a non-preview app, got %v", h.gh.comments)
+	}
+	after, err := h.st.GetApp(ctx, parent.ID)
+	if err != nil {
+		t.Fatalf("GetApp: %v", err)
+	}
+	if after.PreviewStatus != "" {
+		t.Errorf("non-preview app status = %q, want unchanged (empty)", after.PreviewStatus)
+	}
+}
+
+func TestDestroyByIDRejectsNonPreview(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	repo := "acme/web"
+	parent := h.seedGithubApp(t, "web", repo, nil)
+	other := h.seedGithubApp(t, "api", "acme/api", nil)
+
+	if err := h.mgr.Handle(ctx, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
+		t.Fatalf("Handle opened: %v", err)
+	}
+	child, err := h.st.GetPreviewByPR(ctx, parent.ID, 42)
+	if err != nil {
+		t.Fatalf("GetPreviewByPR: %v", err)
+	}
+
+	// (a) Target is a normal (non-ephemeral) app: reject and delete nothing.
+	if err := h.mgr.DestroyByID(ctx, parent.ID, parent.ID); err == nil {
+		t.Error("DestroyByID on a non-preview app should error")
+	}
+	if _, err := h.st.GetApp(ctx, parent.ID); err != nil {
+		t.Errorf("parent app should still exist after a rejected destroy: %v", err)
+	}
+
+	// (b) Right app kind but wrong parent: still reject, delete nothing.
+	if err := h.mgr.DestroyByID(ctx, other.ID, child.ID); err == nil {
+		t.Error("DestroyByID with a mismatched parent should error")
+	}
+	if _, err := h.st.GetPreviewByPR(ctx, parent.ID, 42); err != nil {
+		t.Errorf("child should survive a mismatched-parent destroy: %v", err)
+	}
+
+	// (c) The real preview under its real parent tears down: child gone.
+	if err := h.mgr.DestroyByID(ctx, parent.ID, child.ID); err != nil {
+		t.Fatalf("DestroyByID on a real preview: %v", err)
+	}
+	if _, err := h.st.GetPreviewByPR(ctx, parent.ID, 42); err == nil {
+		t.Error("child should be gone after DestroyByID")
+	}
+	if !h.docker.removed[child.Name] {
+		t.Errorf("docker.RemoveApp not called for %q", child.Name)
+	}
+}
+
 // --- small helpers ---------------------------------------------------------
 
 func hasEnv(vars []core.EnvVar, key, val string) bool {

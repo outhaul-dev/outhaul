@@ -130,10 +130,8 @@ func serve() error {
 
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	workerDone := make(chan struct{})
-	go func() {
-		worker.Run(workerCtx)
-		close(workerDone)
-	}()
+	// worker.Run is launched below, after the preview manager is wired in as the
+	// after-deploy hook (SetDeployHook must be called before Run).
 
 	// Database manager (databases-as-a-service).
 	dbm := dbaas.NewManager(st, dc, cfg.Network, cfg.DatabasesDir())
@@ -183,6 +181,11 @@ func serve() error {
 		&previewDBProvisioner{st: st, dbm: dbm},
 		&previewDocker{st: st, runtime: dc, compose: compose.NewDocker()},
 		ghClient, tokenSource, serverIP)
+	worker.SetDeployHook(previews.OnDeployFinished) // update a preview's PR comment + status on deploy completion
+	go func() {
+		worker.Run(workerCtx)
+		close(workerDone)
+	}()
 	go previews.Run(workerCtx)
 
 	setupToken := server.NewToken()

@@ -36,6 +36,11 @@ type AppPruner interface {
 	PruneApp(ctx context.Context, app core.App, out io.Writer) error
 }
 
+// DeployHook is called after a deployment reaches a terminal state, with the
+// app and whether it succeeded. Optional; nil disables it. Used by the preview
+// manager to update a preview's PR comment + status.
+type DeployHook func(ctx context.Context, app core.App, success bool)
+
 // Builders holds one build strategy per single-container app kind; the
 // pipeline picks by app.Kind (compose stacks build via docker compose, not a
 // Builder).
@@ -56,7 +61,8 @@ type Worker struct {
 	cfg      config.Config
 
 	healthCheck HealthChecker
-	pruner      AppPruner // nil disables after-deploy image pruning
+	pruner      AppPruner  // nil disables after-deploy image pruning
+	deployHook  DeployHook // nil disables the after-deploy preview hook
 
 	notify chan struct{}
 	sem    chan struct{}
@@ -88,6 +94,9 @@ func NewWorker(st *store.Store, dc docker.Client, b Builders, cp compose.Runner,
 
 // SetPruner installs the after-deploy image-retention hook. Call before Run.
 func (w *Worker) SetPruner(p AppPruner) { w.pruner = p }
+
+// SetDeployHook installs the after-deploy hook. Call before Run.
+func (w *Worker) SetDeployHook(h DeployHook) { w.deployHook = h }
 
 // Notify wakes the dispatcher to look for claimable work. Non-blocking.
 func (w *Worker) Notify() {
@@ -169,9 +178,44 @@ func (w *Worker) dispatch(ctx context.Context) {
 			defer cancel()
 
 			w.runPipeline(pctx, d)
-			w.Notify() // the app is now free; re-check for queued work
+			w.notifyDeployHook(d.ID) // update a preview's PR comment + status
+			w.Notify()               // the app is now free; re-check for queued work
 		}(*dep)
 	}
+}
+
+// notifyDeployHook fires the after-deploy hook once a pipeline run has settled,
+// keyed off the deployment's PERSISTED terminal status (the source of truth):
+// running => success, failed => failure. Cancelled/superseded (or any
+// non-terminal) status is skipped so a cancelled preview deploy never clobbers a
+// good "ready" comment, and a deploy whose app was deleted mid-flight fires
+// nothing. Uses context.Background() because the pipeline ctx may already be
+// cancelled (graceful shutdown) — a failed/cancelled-by-shutdown deploy must
+// still be able to post its comment.
+func (w *Worker) notifyDeployHook(depID int64) {
+	if w.deployHook == nil {
+		return
+	}
+	ctx := context.Background()
+	dep, err := w.store.GetDeployment(ctx, depID)
+	if err != nil {
+		log.Printf("deploy: deploy hook load deployment %d: %v", depID, err)
+		return
+	}
+	var success bool
+	switch dep.Status {
+	case core.StatusRunning:
+		success = true
+	case core.StatusFailed:
+		success = false
+	default:
+		return // cancelled / superseded / non-terminal: leave any existing state
+	}
+	app, err := w.store.GetApp(ctx, dep.AppID)
+	if err != nil {
+		return // app deleted mid-deploy: nothing to update
+	}
+	w.deployHook(ctx, app, success)
 }
 
 // Cancel cancels a deployment if its status allows it (queued or building):

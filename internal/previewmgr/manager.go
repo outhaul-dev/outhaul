@@ -385,6 +385,48 @@ func (m *Manager) DestroyByID(ctx context.Context, parentID, childID int64) erro
 	return m.teardown(ctx, parent, child.PRNumber, "", cfg) // repo "" => no PR comment
 }
 
+// OnDeployFinished updates a preview's PR comment and status after its
+// deployment finishes. A no-op for non-preview apps. Safe to pass to
+// deploy.Worker.SetDeployHook.
+func (m *Manager) OnDeployFinished(ctx context.Context, app core.App, success bool) {
+	if !app.Ephemeral {
+		return
+	}
+	status := core.PreviewReady
+	if !success {
+		status = core.PreviewFailed
+	}
+	if err := m.store.SetPreviewStatus(ctx, app.ID, status); err != nil {
+		log.Printf("previewmgr: set preview status for %s: %v", app.Name, err)
+	}
+	parent, err := m.store.GetApp(ctx, app.ParentID)
+	if err != nil {
+		log.Printf("previewmgr: OnDeployFinished load parent %d: %v", app.ParentID, err)
+		return
+	}
+	cfg, err := m.store.GetPreviewConfig(ctx, parent.ID)
+	if err != nil {
+		return
+	}
+	var body string
+	if success {
+		var urls []string
+		if ds, _ := m.store.ListDomains(ctx, app.ID); len(ds) > 0 {
+			for _, d := range ds {
+				scheme := "http://"
+				if d.TLS {
+					scheme = "https://"
+				}
+				urls = append(urls, scheme+d.Host)
+			}
+		}
+		body = ReadyComment(urls, app.Branch)
+	} else {
+		body = FailedComment(app.Branch)
+	}
+	m.comment(ctx, cfg, parent.GithubRepo, app.PRNumber, body)
+}
+
 func (m *Manager) comment(ctx context.Context, cfg core.PreviewConfig, repo string, pr int, body string) {
 	if !cfg.PostPRComment || m.token == nil || repo == "" {
 		return
