@@ -34,6 +34,9 @@
     <div><dt>Repository</dt><dd class="mono">{{.App.RepoURL}}</dd></div>
     {{if eq .App.Kind "compose"}}<div><dt>Compose file</dt><dd class="mono">{{.App.ComposePath}}</dd></div>{{end}}
     {{end}}
+    <div><dt>Build type</dt><dd class="mono">{{.App.Kind}}</dd></div>
+    {{if not .App.TemplateID}}<div><dt>Branch</dt><dd class="mono">{{.App.Branch}}</dd></div>{{end}}
+    {{if .Deployments}}<div><dt>Last deployed</dt><dd class="mono muted">{{with index .Deployments 0}}<time datetime="{{.CreatedAt.Format "2006-01-02T15:04:05Z07:00"}}" title="{{fmtTime .CreatedAt}}">{{fmtTime .CreatedAt}}</time>{{end}}</dd></div>{{end}}
   </dl>
 </section>
 
@@ -405,7 +408,6 @@ git push outhaul {{.PushBranch}}</pre>{{template "copybtn" .}}</div>
 <section class="panel">
   <h2 class="panel-title">Deploy settings</h2>
   <form method="post" action="/apps/{{.App.ID}}/settings" class="grid-form">
-    <label class="field"><span>Source</span><input type="text" value="{{.App.Source}}" disabled></label>
     <label class="field"><span>Branch {{template "hint" "The Git branch to deploy. Changing this affects the next deploy."}}</span><input type="text" name="branch" value="{{.App.Branch}}"></label>
     {{if eq .App.Kind "compose"}}
     <label class="field"><span>Compose file {{template "hint" "Path to the docker-compose file within the repo. Defaults to ./docker-compose.yml."}}</span><input type="text" name="compose_path" value="{{.App.ComposePath}}"></label>
