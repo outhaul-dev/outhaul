@@ -131,3 +131,12 @@ go test -race ./...    # with the race detector
 The codebase is a single Go module. `internal/core` is pure domain logic (the
 deployment state machine); Docker, the builder, and git cloning sit behind
 interfaces with fakes, so the test suite never touches a real daemon.
+
+## License
+
+Outhaul is free software licensed under the [GNU Affero General Public License
+v3.0](LICENSE). You may use, modify, and self-host it freely; if you run a
+modified version as a network service, you must offer your users the
+corresponding source.
+
+Copyright (C) 2026 the Outhaul authors.
