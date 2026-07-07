@@ -33,8 +33,8 @@
 <section class="panel">
   <h2 class="panel-title">Deploy with git push</h2>
   <p class="muted">Add this remote once, then push to deploy — the build streams into your terminal.</p>
-  <pre class="mono">git remote add outhaul {{.PushRemote}}
-git push outhaul {{.PushBranch}}</pre>
+  <div class="copywrap"><pre class="mono">git remote add outhaul {{.PushRemote}}
+git push outhaul {{.PushBranch}}</pre>{{template "copybtn" .}}</div>
   <p class="muted env-note">Your push key must be registered under <a href="/settings">Settings → Push keys</a>, and the SSH port must be reachable from your machine.</p>
 </section>
 {{end}}
@@ -352,17 +352,17 @@ git push outhaul {{.PushBranch}}</pre>
   <h2 class="panel-title">Connect this repo</h2>
   {{if .App.RepoURL}}
   <p class="env-note">Clone URL:</p>
-  <div class="cmd"><code>{{.App.RepoURL}}</code></div>
+  <div class="copywrap"><div class="cmd"><code>{{.App.RepoURL}}</code></div>{{template "copybtn" .}}</div>
   {{end}}
   {{if .App.SSHPublicKey}}
   <p class="env-note">Add this as a deploy key on the repository (read access):</p>
-  <div class="cmd"><code>{{.App.SSHPublicKey}}</code></div>
+  <div class="copywrap"><div class="cmd"><code>{{.App.SSHPublicKey}}</code></div>{{template "copybtn" .}}</div>
   {{end}}
   {{if eq .App.Source "github"}}
   <p class="env-note">Auto-deploy is handled by the connected GitHub App — pushes to <span class="mono">{{.App.Branch}}</span> deploy automatically when auto-deploy is enabled. No webhook setup needed.</p>
   {{else if .WebhookURL}}
   <p class="env-note">Point a push webhook here to auto-deploy:</p>
-  <div class="cmd"><code>{{.WebhookURL}}</code></div>
+  <div class="copywrap"><div class="cmd"><code>{{.WebhookURL}}</code></div>{{template "copybtn" .}}</div>
   {{end}}
 </section>
 {{end}}
@@ -464,4 +464,23 @@ git push outhaul {{.PushBranch}}</pre>
 })();
 </script>
 </section>
+
+<script>
+(function () {
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest && e.target.closest('.copybtn');
+    if (!btn) return;
+    var wrap = btn.closest('.copywrap');
+    var src = wrap && wrap.querySelector('code, pre');
+    var text = src ? src.textContent : '';
+    if (!navigator.clipboard || !text) return;
+    navigator.clipboard.writeText(text).then(function () {
+      var old = btn.textContent;
+      btn.textContent = 'copied';
+      btn.classList.add('copied');
+      setTimeout(function () { btn.textContent = old; btn.classList.remove('copied'); }, 1200);
+    });
+  });
+})();
+</script>
 {{end}}

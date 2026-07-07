@@ -397,3 +397,9 @@ dialog.modal::backdrop { background: rgba(0,0,0,0.55); }
   font-size: 12px; line-height: 1.45; text-align: left; letter-spacing: 0;
   box-shadow: 0 6px 20px rgba(0,0,0,0.4); z-index: 1000; white-space: normal;
 }
+
+.copywrap { position: relative; }
+.copywrap .cmd, .copywrap pre { padding-right: 64px; }
+.copybtn { position: absolute; top: 8px; right: 8px; font-size: 11px; line-height: 1; padding: 4px 9px; border-radius: 6px; background: transparent; border: 1px solid var(--border); color: var(--text-secondary); cursor: pointer; }
+.copybtn:hover { border-color: var(--accent); color: var(--text-primary); }
+.copybtn.copied { color: var(--state-running-fg); border-color: var(--state-running-bd); }
