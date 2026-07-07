@@ -357,7 +357,7 @@ git push outhaul {{.PushBranch}}</pre>{{template "copybtn" .}}</div>
         <option value="public" {{if eq .App.Source "public"}}selected{{end}}>Public Git URL</option>
         <option value="ssh" {{if eq .App.Source "ssh"}}selected{{end}}>Private (SSH deploy key)</option>
         <option value="push" {{if eq .App.Source "push"}}selected{{end}}>Push to deploy (git push)</option>
-        {{if .GithubConnected}}<option value="github" {{if eq .App.Source "github"}}selected{{end}}>GitHub App</option>{{end}}
+        {{if or .GithubConnected (eq .App.Source "github")}}<option value="github" {{if eq .App.Source "github"}}selected{{end}}>GitHub App{{if not .GithubConnected}} (reconnect required){{end}}</option>{{end}}
       </select>
     </label>
     {{if .GithubConnected}}
