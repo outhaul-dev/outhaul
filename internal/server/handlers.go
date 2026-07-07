@@ -15,10 +15,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/compose"
-	"github.com/james-smart/outhaul/internal/core"
-	"github.com/james-smart/outhaul/internal/github"
-	"github.com/james-smart/outhaul/internal/sshkey"
+	"github.com/outhaul-dev/outhaul/internal/compose"
+	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/github"
+	"github.com/outhaul-dev/outhaul/internal/sshkey"
 )
 
 // appContainerPrefix is prepended to an app's name to get its container name.

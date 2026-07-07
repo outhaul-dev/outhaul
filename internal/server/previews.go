@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 // handleSavePreviewConfig upserts an app's preview config from the app page.

@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/james-smart/outhaul/internal/compose"
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/compose"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 // runComposePipeline drives a compose-kind deployment: clone (or, for

@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/core"
-	"github.com/james-smart/outhaul/internal/gitrepo"
-	"github.com/james-smart/outhaul/internal/sshkey"
-	"github.com/james-smart/outhaul/internal/store"
+	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/gitrepo"
+	"github.com/outhaul-dev/outhaul/internal/sshkey"
+	"github.com/outhaul-dev/outhaul/internal/store"
 	"golang.org/x/crypto/ssh"
 )
 

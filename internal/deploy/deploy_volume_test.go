@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/james-smart/outhaul/internal/core"
-	"github.com/james-smart/outhaul/internal/docker"
+	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/docker"
 )
 
 // A volume app mounts its volume on the canonical container, creates the

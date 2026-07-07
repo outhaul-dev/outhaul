@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 func newTestStore(t *testing.T) *Store {

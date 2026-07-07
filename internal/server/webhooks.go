@@ -6,8 +6,8 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/james-smart/outhaul/internal/core"
-	"github.com/james-smart/outhaul/internal/webhook"
+	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/webhook"
 )
 
 // maxWebhookBody caps how much of a webhook body we read.

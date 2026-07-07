@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/james-smart/outhaul/internal/github"
+	"github.com/outhaul-dev/outhaul/internal/github"
 )
 
 func TestGithubCallbackStoresApp(t *testing.T) {

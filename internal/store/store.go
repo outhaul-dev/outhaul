@@ -10,7 +10,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/secret"
+	"github.com/outhaul-dev/outhaul/internal/secret"
 	_ "modernc.org/sqlite"
 )
 

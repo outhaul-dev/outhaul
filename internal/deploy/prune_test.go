@@ -6,7 +6,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 // recordingPruner captures PruneApp invocations and can write to the deploy log.

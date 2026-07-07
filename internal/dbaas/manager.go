@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/core"
-	"github.com/james-smart/outhaul/internal/docker"
-	"github.com/james-smart/outhaul/internal/store"
+	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/docker"
+	"github.com/outhaul-dev/outhaul/internal/store"
 )
 
 // containerPrefix names database containers, disjoint from the app

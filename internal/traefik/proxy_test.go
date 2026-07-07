@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/james-smart/outhaul/internal/docker"
+	"github.com/outhaul-dev/outhaul/internal/docker"
 )
 
 func testProxyConfig() ProxyConfig {

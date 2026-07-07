@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/blobstore"
-	"github.com/james-smart/outhaul/internal/core"
-	"github.com/james-smart/outhaul/internal/docker"
-	"github.com/james-smart/outhaul/internal/secret"
-	"github.com/james-smart/outhaul/internal/store"
+	"github.com/outhaul-dev/outhaul/internal/blobstore"
+	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/docker"
+	"github.com/outhaul-dev/outhaul/internal/secret"
+	"github.com/outhaul-dev/outhaul/internal/store"
 )
 
 // fakeBlob is an in-memory blobstore.Client.

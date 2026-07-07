@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 // HasUser reports whether an admin user exists (drives the first-boot flow).

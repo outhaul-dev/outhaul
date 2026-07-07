@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 const deploymentCols = `id, app_id, status, reason, image, rollback_of, image_pruned, created_at, started_at, finished_at`

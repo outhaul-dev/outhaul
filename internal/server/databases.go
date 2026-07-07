@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/james-smart/outhaul/internal/core"
-	"github.com/james-smart/outhaul/internal/dbaas"
+	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/dbaas"
 )
 
 // databasePath is the detail page for a database.

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 // ErrDestinationInUse is returned by DeleteDestination while backups still

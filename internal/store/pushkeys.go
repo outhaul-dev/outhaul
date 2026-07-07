@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 const pushKeyCols = `id, label, fingerprint, public_key, created_at, last_used_at`

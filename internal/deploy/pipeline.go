@@ -8,12 +8,12 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/builder"
-	"github.com/james-smart/outhaul/internal/core"
-	"github.com/james-smart/outhaul/internal/dbaas"
-	"github.com/james-smart/outhaul/internal/docker"
-	"github.com/james-smart/outhaul/internal/github"
-	"github.com/james-smart/outhaul/internal/traefik"
+	"github.com/outhaul-dev/outhaul/internal/builder"
+	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/dbaas"
+	"github.com/outhaul-dev/outhaul/internal/docker"
+	"github.com/outhaul-dev/outhaul/internal/github"
+	"github.com/outhaul-dev/outhaul/internal/traefik"
 )
 
 // AppPort is the internal port Outhaul asks apps to listen on (via $PORT) and

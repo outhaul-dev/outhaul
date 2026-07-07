@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/james-smart/outhaul/internal/catalog"
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/catalog"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 // handleTemplatesList renders the one-click template gallery.

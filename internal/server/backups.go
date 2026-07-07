@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/core"
-	"github.com/james-smart/outhaul/internal/cron"
-	"github.com/james-smart/outhaul/internal/store"
+	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/cron"
+	"github.com/outhaul-dev/outhaul/internal/store"
 )
 
 // prefixRe restricts backup key prefixes to characters that stay sane in

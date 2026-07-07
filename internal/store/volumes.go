@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 const volumeCols = `id, app_id, name, mount_path, created_at`

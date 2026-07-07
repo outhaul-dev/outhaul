@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/james-smart/outhaul/internal/docker"
-	"github.com/james-smart/outhaul/internal/hostmetrics"
+	"github.com/outhaul-dev/outhaul/internal/docker"
+	"github.com/outhaul-dev/outhaul/internal/hostmetrics"
 )
 
 // stubSampler returns fixed host/self values so the endpoint test is

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 // seedFinishedDeploy walks a deployment through the real state machine to

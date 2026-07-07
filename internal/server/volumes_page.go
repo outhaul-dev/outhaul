@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/james-smart/outhaul/internal/compose"
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/compose"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 const composeProjectLabel = "com.docker.compose.project"

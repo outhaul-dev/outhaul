@@ -3,7 +3,7 @@ package server
 import (
 	"net"
 
-	"github.com/james-smart/outhaul/internal/gitrepo"
+	"github.com/outhaul-dev/outhaul/internal/gitrepo"
 )
 
 // SSHControl is the subset of the git-push SSH server the Settings page needs to

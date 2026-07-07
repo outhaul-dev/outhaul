@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/docker"
+	"github.com/outhaul-dev/outhaul/internal/docker"
 )
 
 // DefaultDockerSocket is the host path to the Docker socket that Traefik's

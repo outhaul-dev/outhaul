@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/james-smart/outhaul/internal/core"
-	"github.com/james-smart/outhaul/internal/store"
+	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/store"
 )
 
 // projectRow is a project plus the derived stats its card shows.

@@ -5,11 +5,11 @@ import (
 	"io"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/compose"
-	"github.com/james-smart/outhaul/internal/core"
-	"github.com/james-smart/outhaul/internal/dbaas"
-	"github.com/james-smart/outhaul/internal/docker"
-	"github.com/james-smart/outhaul/internal/store"
+	"github.com/outhaul-dev/outhaul/internal/compose"
+	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/dbaas"
+	"github.com/outhaul-dev/outhaul/internal/docker"
+	"github.com/outhaul-dev/outhaul/internal/store"
 )
 
 // previewDBProvisioner provisions/destroys isolated preview databases.

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 // Dockerfile apps run the exact same single-container pipeline as nixpacks

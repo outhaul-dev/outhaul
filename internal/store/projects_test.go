@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 func TestDefaultProjectExistsAfterMigration(t *testing.T) {

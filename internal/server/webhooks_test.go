@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/james-smart/outhaul/internal/core"
-	"github.com/james-smart/outhaul/internal/webhook"
+	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/webhook"
 )
 
 // fakePreviews records the last pull_request event routed to it.

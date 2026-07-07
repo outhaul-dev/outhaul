@@ -68,7 +68,7 @@ below, which sets up a dedicated user and a systemd unit.
 Don't run Outhaul as root. From a checkout on the server:
 
 ```sh
-git clone https://github.com/James-Smart/outhaul && cd outhaul
+git clone https://github.com/outhaul-dev/outhaul && cd outhaul
 sudo deploy/install.sh
 ```
 

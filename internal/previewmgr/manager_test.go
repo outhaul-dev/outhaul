@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/james-smart/outhaul/internal/core"
-	"github.com/james-smart/outhaul/internal/secret"
-	"github.com/james-smart/outhaul/internal/store"
-	"github.com/james-smart/outhaul/internal/webhook"
+	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/secret"
+	"github.com/outhaul-dev/outhaul/internal/store"
+	"github.com/outhaul-dev/outhaul/internal/webhook"
 )
 
 // --- fakes -----------------------------------------------------------------

@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/compose"
-	"github.com/james-smart/outhaul/internal/core"
-	"github.com/james-smart/outhaul/internal/docker"
+	"github.com/outhaul-dev/outhaul/internal/compose"
+	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/docker"
 )
 
 // appStatsResponse is the live-metrics snapshot the app page polls. Values are

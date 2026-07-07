@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 const databaseCols = `id, project_id, name, engine, image, username, password, db_name, ext_port, status, reason, created_at`

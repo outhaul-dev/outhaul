@@ -3,7 +3,7 @@ package traefik
 import (
 	"testing"
 
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 func router(app string, id int64) string { return RouterName(app, id) }

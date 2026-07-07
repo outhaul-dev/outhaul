@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 // GetPreviewConfig returns an app's preview config, or the disabled default

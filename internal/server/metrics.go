@@ -8,7 +8,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/james-smart/outhaul/internal/hostmetrics"
+	"github.com/outhaul-dev/outhaul/internal/hostmetrics"
 )
 
 // metricsSampler is the host/self sampling surface the Metrics page needs. The

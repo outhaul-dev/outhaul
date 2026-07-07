@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/james-smart/outhaul/internal/compose"
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/compose"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 // composeApp creates a compose-kind app whose fake clone contains a compose

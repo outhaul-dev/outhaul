@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/james-smart/outhaul/internal/core"
-	"github.com/james-smart/outhaul/internal/traefik"
+	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/traefik"
 )
 
 // OverrideFile is the name of the generated override, written next to the

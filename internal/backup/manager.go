@@ -17,13 +17,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/blobstore"
-	"github.com/james-smart/outhaul/internal/compose"
-	"github.com/james-smart/outhaul/internal/core"
-	"github.com/james-smart/outhaul/internal/cron"
-	"github.com/james-smart/outhaul/internal/dbaas"
-	"github.com/james-smart/outhaul/internal/docker"
-	"github.com/james-smart/outhaul/internal/store"
+	"github.com/outhaul-dev/outhaul/internal/blobstore"
+	"github.com/outhaul-dev/outhaul/internal/compose"
+	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/cron"
+	"github.com/outhaul-dev/outhaul/internal/dbaas"
+	"github.com/outhaul-dev/outhaul/internal/docker"
+	"github.com/outhaul-dev/outhaul/internal/store"
 )
 
 // helperImage tars volumes; busybox ships tar+gzip in ~2 MB.

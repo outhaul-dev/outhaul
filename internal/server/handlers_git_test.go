@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/james-smart/outhaul/internal/core"
-	"github.com/james-smart/outhaul/internal/github"
+	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/github"
 )
 
 // testRSAKeyPEM generates a throwaway RSA private key PEM for constructing a

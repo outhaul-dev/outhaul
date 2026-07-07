@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/james-smart/outhaul/internal/sshkey"
+	"github.com/outhaul-dev/outhaul/internal/sshkey"
 	"golang.org/x/crypto/ssh"
 )
 

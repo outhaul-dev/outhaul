@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/core"
-	"github.com/james-smart/outhaul/internal/gitrepo"
-	"github.com/james-smart/outhaul/internal/logstream"
-	"github.com/james-smart/outhaul/internal/store"
+	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/gitrepo"
+	"github.com/outhaul-dev/outhaul/internal/logstream"
+	"github.com/outhaul-dev/outhaul/internal/store"
 )
 
 func TestRequestRoundTrip(t *testing.T) {

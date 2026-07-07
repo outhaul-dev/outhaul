@@ -9,7 +9,7 @@
 
 [Unit]
 Description=Outhaul — single-binary self-hosted PaaS
-Documentation=https://github.com/James-Smart/outhaul
+Documentation=https://github.com/outhaul-dev/outhaul
 Wants=network-online.target docker.service
 After=network-online.target docker.service
 

@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/blobstore"
-	"github.com/james-smart/outhaul/internal/compose"
-	"github.com/james-smart/outhaul/internal/core"
-	"github.com/james-smart/outhaul/internal/dbaas"
-	"github.com/james-smart/outhaul/internal/docker"
+	"github.com/outhaul-dev/outhaul/internal/blobstore"
+	"github.com/outhaul-dev/outhaul/internal/compose"
+	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/dbaas"
+	"github.com/outhaul-dev/outhaul/internal/docker"
 )
 
 // stopTimeout bounds each container stop while a volume is restored.

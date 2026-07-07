@@ -426,7 +426,7 @@ shows its `ssh://git@<server>:<port>/<app>` remote and the `git remote add` /
 
 ## Package layout
 
-Single module `github.com/james-smart/outhaul`.
+Single module `github.com/outhaul-dev/outhaul`.
 `main.go` at the root; everything else under `internal/` so nothing is importable
 by third parties. Dependencies point inward: `core` depends on nothing; `server`
 and `deploy` wire the rest together.

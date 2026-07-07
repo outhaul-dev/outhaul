@@ -11,9 +11,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/core"
-	"github.com/james-smart/outhaul/internal/dbaas"
-	"github.com/james-smart/outhaul/internal/webhook"
+	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/dbaas"
+	"github.com/outhaul-dev/outhaul/internal/webhook"
 )
 
 // Store is the slice of *store.Store the manager needs.

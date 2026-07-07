@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"sort"
 
-	"github.com/james-smart/outhaul/internal/compose"
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/compose"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 // handleLogsSSE streams a deployment's build/deploy log to the browser as

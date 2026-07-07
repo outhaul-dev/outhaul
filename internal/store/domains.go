@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 // primaryDomainPort is the port single-container (nixpacks/dockerfile) apps

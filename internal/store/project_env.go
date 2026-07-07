@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 // SetProjectEnv upserts a shared env var for a project, encrypting the value

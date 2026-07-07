@@ -12,15 +12,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/builder"
-	"github.com/james-smart/outhaul/internal/compose"
-	"github.com/james-smart/outhaul/internal/config"
-	"github.com/james-smart/outhaul/internal/core"
-	"github.com/james-smart/outhaul/internal/docker"
-	"github.com/james-smart/outhaul/internal/github"
-	"github.com/james-smart/outhaul/internal/logstream"
-	"github.com/james-smart/outhaul/internal/secret"
-	"github.com/james-smart/outhaul/internal/store"
+	"github.com/outhaul-dev/outhaul/internal/builder"
+	"github.com/outhaul-dev/outhaul/internal/compose"
+	"github.com/outhaul-dev/outhaul/internal/config"
+	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/docker"
+	"github.com/outhaul-dev/outhaul/internal/github"
+	"github.com/outhaul-dev/outhaul/internal/logstream"
+	"github.com/outhaul-dev/outhaul/internal/secret"
+	"github.com/outhaul-dev/outhaul/internal/store"
 )
 
 // --- test doubles ---

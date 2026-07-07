@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 // TestSigV4TestVector checks the signer against the worked example in AWS's

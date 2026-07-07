@@ -19,16 +19,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/james-smart/outhaul/internal/blobstore"
-	"github.com/james-smart/outhaul/internal/compose"
-	"github.com/james-smart/outhaul/internal/core"
-	"github.com/james-smart/outhaul/internal/docker"
-	"github.com/james-smart/outhaul/internal/github"
-	"github.com/james-smart/outhaul/internal/gitrepo"
-	"github.com/james-smart/outhaul/internal/hostmetrics"
-	"github.com/james-smart/outhaul/internal/logstream"
-	"github.com/james-smart/outhaul/internal/store"
-	"github.com/james-smart/outhaul/internal/webhook"
+	"github.com/outhaul-dev/outhaul/internal/blobstore"
+	"github.com/outhaul-dev/outhaul/internal/compose"
+	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/docker"
+	"github.com/outhaul-dev/outhaul/internal/github"
+	"github.com/outhaul-dev/outhaul/internal/gitrepo"
+	"github.com/outhaul-dev/outhaul/internal/hostmetrics"
+	"github.com/outhaul-dev/outhaul/internal/logstream"
+	"github.com/outhaul-dev/outhaul/internal/store"
+	"github.com/outhaul-dev/outhaul/internal/webhook"
 )
 
 // PreviewHandler routes a parsed pull_request event to the preview manager.

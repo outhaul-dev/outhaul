@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 func TestProjectsListRequiresAuth(t *testing.T) {

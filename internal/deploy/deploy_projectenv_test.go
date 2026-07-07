@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/james-smart/outhaul/internal/compose"
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/compose"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 // TestPipelineResolvesProjectEnv: an app var referencing ${{project.KEY}} gets

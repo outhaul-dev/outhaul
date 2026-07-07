@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 func mustDatabase(t *testing.T, s *Store, name string) core.Database {

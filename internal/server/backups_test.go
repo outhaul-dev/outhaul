@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/james-smart/outhaul/internal/blobstore"
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/blobstore"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 func seedDestination(t *testing.T, e *testEnv, name string) core.Destination {

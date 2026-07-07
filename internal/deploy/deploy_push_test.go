@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/james-smart/outhaul/internal/config"
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/config"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 func TestCloneSpecForPushApp(t *testing.T) {

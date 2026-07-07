@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/core"
 	"golang.org/x/crypto/ssh"
 )
 

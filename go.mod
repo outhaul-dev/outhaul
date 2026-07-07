@@ -1,4 +1,4 @@
-module github.com/james-smart/outhaul
+module github.com/outhaul-dev/outhaul
 
 go 1.26.4
 

@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/james-smart/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 // AppLabels builds the full Docker-provider label set for a single-container
