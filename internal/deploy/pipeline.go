@@ -137,6 +137,12 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 	if _, err := w.store.SetStatus(context.Background(), dep.ID, core.StatusDeploying, core.StatusRunning, ""); err != nil {
 		logf(out, "WARNING: could not record running status: %v", err)
 	}
+	// This attempt now holds the traffic; retire the rows of the deploys it
+	// replaced so they stop reading as "running". Bookkeeping only — never fail
+	// a shipped deploy over it.
+	if _, err := w.store.SupersedeOthers(context.Background(), app.ID, dep.ID); err != nil {
+		logf(out, "WARNING: could not retire superseded deployments: %v", err)
+	}
 
 	// Retention: trim this app's old images now that a new one shipped. A
 	// failure never fails the deploy — the daily sweep retries.

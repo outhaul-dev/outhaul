@@ -172,6 +172,7 @@ input[type=checkbox] { accent-color: var(--accent); }
 .state-stopped   { color: var(--state-stopped-fg);   background: var(--state-stopped-bg);   border-color: var(--state-stopped-bd); }
 .state-failed    { color: var(--state-failed-fg);    background: var(--state-failed-bg);    border-color: var(--state-failed-bd); }
 .state-queued    { color: var(--state-queued-fg);    background: var(--state-queued-bg);    border-color: var(--state-queued-bd); }
+.state-superseded { color: var(--state-stopped-fg);  background: var(--state-stopped-bg);   border-color: var(--state-stopped-bd); }
 .state-cancelled { color: var(--state-cancelled-fg); background: var(--state-cancelled-bg); border-color: var(--state-cancelled-bd); }
 
 /* Alerts */

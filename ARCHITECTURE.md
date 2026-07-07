@@ -575,8 +575,10 @@ the job queue. Status is the single source of truth for where an attempt is.
 | `running`    | terminal | Container started and healthy. This attempt is the live one.   |
 | `failed`     | terminal | Clone/build/start error, or crash-recovery on restart.         |
 | `cancelled`  | terminal | Operator cancelled before the container went live.             |
+| `superseded` | terminal | Was `running`, then a newer deploy took its place (container already removed at cutover). |
 
-"active" = a worker may be operating on it. "terminal" = no further transitions.
+"active" = a worker may be operating on it. "terminal" = settled; the one
+exception is `running --> superseded`, when a newer deploy retires it.
 
 ### Transitions
 
@@ -594,9 +596,11 @@ stateDiagram-v2
     deploying --> running    : container up + healthy
     deploying --> failed     : container failed to start
 
-    running   --> [*]
-    failed    --> [*]
-    cancelled --> [*]
+    running    --> superseded : a newer deploy takes over
+    running    --> [*]
+    superseded --> [*]
+    failed     --> [*]
+    cancelled  --> [*]
 ```
 
 ASCII fallback (same truth as the diagram):
@@ -604,8 +608,8 @@ ASCII fallback (same truth as the diagram):
 ```
                  +------------ cancel -----------+------------ cancel ----------+
                  v                                |                             |
-   Deploy --> queued --claim--> building --built--> deploying --healthy--> running (terminal)
-                 |                  |                    |
+   Deploy --> queued --claim--> building --built--> deploying --healthy--> running --newer deploy--> superseded
+                 |                  |                    |                  (terminal)              (terminal)
               cancel             err|                 err|
                  |                  v                    v
                  +--------------> failed <---------------+ (terminal)
@@ -615,14 +619,15 @@ ASCII fallback (same truth as the diagram):
 
 ### Legal-transition table (drives `core.statemachine_test.go`)
 
-| From \ To    | queued | building | deploying | running | failed | cancelled |
-|--------------|:------:|:--------:|:---------:|:-------:|:------:|:---------:|
-| **queued**   |   –    |    ✓     |     ✗     |    ✗    |   ✗    |     ✓     |
-| **building** |   ✗    |    –     |     ✓     |    ✗    |   ✓    |     ✓     |
-| **deploying**|   ✗    |    ✗     |     –     |    ✓    |   ✓    |     ✗     |
-| **running**  |   ✗    |    ✗     |     ✗     |    –    |   ✗    |     ✗     |
-| **failed**   |   ✗    |    ✗     |     ✗     |    ✗    |   –    |     ✗     |
-| **cancelled**|   ✗    |    ✗     |     ✗     |    ✗    |   ✗    |     –     |
+| From \ To     | queued | building | deploying | running | failed | cancelled | superseded |
+|---------------|:------:|:--------:|:---------:|:-------:|:------:|:---------:|:----------:|
+| **queued**    |   –    |    ✓     |     ✗     |    ✗    |   ✗    |     ✓     |     ✗      |
+| **building**  |   ✗    |    –     |     ✓     |    ✗    |   ✓    |     ✓     |     ✗      |
+| **deploying** |   ✗    |    ✗     |     –     |    ✓    |   ✓    |     ✗     |     ✗      |
+| **running**   |   ✗    |    ✗     |     ✗     |    –    |   ✗    |     ✗     |     ✓      |
+| **failed**    |   ✗    |    ✗     |     ✗     |    ✗    |   –    |     ✗     |     ✗      |
+| **cancelled** |   ✗    |    ✗     |     ✗     |    ✗    |   ✗    |     –     |     ✗      |
+| **superseded**|   ✗    |    ✗     |     ✗     |    ✗    |   ✗    |     ✗     |     –      |
 
 ### Design decisions (my latitude, not locked — push back if you disagree)
 

@@ -6,23 +6,27 @@ package core
 type DeployStatus string
 
 const (
-	StatusQueued    DeployStatus = "queued"
-	StatusBuilding  DeployStatus = "building"
-	StatusDeploying DeployStatus = "deploying"
-	StatusRunning   DeployStatus = "running"
-	StatusFailed    DeployStatus = "failed"
-	StatusCancelled DeployStatus = "cancelled"
+	StatusQueued     DeployStatus = "queued"
+	StatusBuilding   DeployStatus = "building"
+	StatusDeploying  DeployStatus = "deploying"
+	StatusRunning    DeployStatus = "running"
+	StatusFailed     DeployStatus = "failed"
+	StatusCancelled  DeployStatus = "cancelled"
+	StatusSuperseded DeployStatus = "superseded"
 )
 
 // transitions is the legal-transition matrix. A pair absent from this map is
 // illegal, which makes self-transitions and unknown statuses reject by default.
+// running -> superseded is the one terminal-to-terminal edge: a running row is
+// retired when a newer deploy takes its place (its container is already gone).
 var transitions = map[DeployStatus]map[DeployStatus]bool{
-	StatusQueued:    {StatusBuilding: true, StatusCancelled: true},
-	StatusBuilding:  {StatusDeploying: true, StatusFailed: true, StatusCancelled: true},
-	StatusDeploying: {StatusRunning: true, StatusFailed: true},
-	StatusRunning:   {},
-	StatusFailed:    {},
-	StatusCancelled: {},
+	StatusQueued:     {StatusBuilding: true, StatusCancelled: true},
+	StatusBuilding:   {StatusDeploying: true, StatusFailed: true, StatusCancelled: true},
+	StatusDeploying:  {StatusRunning: true, StatusFailed: true},
+	StatusRunning:    {StatusSuperseded: true},
+	StatusFailed:     {},
+	StatusCancelled:  {},
+	StatusSuperseded: {},
 }
 
 // CanTransition reports whether moving a deployment from -> to is legal.
@@ -30,11 +34,12 @@ func CanTransition(from, to DeployStatus) bool {
 	return transitions[from][to]
 }
 
-// IsTerminal reports whether the status is an end state with no further
-// transitions (running, failed, cancelled).
+// IsTerminal reports whether the status is a settled end state (running,
+// failed, cancelled, superseded). running is terminal for lifecycle purposes
+// even though it may later be retired to superseded by a newer deploy.
 func (s DeployStatus) IsTerminal() bool {
 	switch s {
-	case StatusRunning, StatusFailed, StatusCancelled:
+	case StatusRunning, StatusFailed, StatusCancelled, StatusSuperseded:
 		return true
 	default:
 		return false

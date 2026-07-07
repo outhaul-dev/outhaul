@@ -174,6 +174,31 @@ func TestPipelineHappyPath(t *testing.T) {
 	}
 }
 
+func TestPipelineSupersedesPriorRunningDeploy(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	app := h.app(t, "web")
+
+	// First deploy ships and holds traffic.
+	first := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(ctx, first)
+	if got := h.status(t, first.ID); got.Status != core.StatusRunning {
+		t.Fatalf("first status = %q, want running", got.Status)
+	}
+
+	// Second deploy takes over; the first must be retired to superseded so it no
+	// longer reads as "running" across the UI.
+	second := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(ctx, second)
+
+	if got := h.status(t, first.ID); got.Status != core.StatusSuperseded {
+		t.Errorf("first status = %q, want superseded", got.Status)
+	}
+	if got := h.status(t, second.ID); got.Status != core.StatusRunning {
+		t.Errorf("second status = %q, want running", got.Status)
+	}
+}
+
 func TestPipelineCloneFailureMarksFailed(t *testing.T) {
 	h := newHarness(t)
 	h.cloner.err = errors.New("host unreachable")

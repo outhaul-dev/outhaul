@@ -172,6 +172,22 @@ func (s *Store) SetStatus(ctx context.Context, id int64, from, to core.DeploySta
 	return n == 1, err
 }
 
+// SupersedeOthers retires every other running deployment of an app once keepID
+// has taken traffic: the blue-green cutover removes the old containers but not
+// their rows, so without this they linger as "running" forever. Only rows in
+// the running state are touched (running -> superseded is the sole legal edge);
+// finished_at is left as first recorded. Returns the number retired.
+func (s *Store) SupersedeOthers(ctx context.Context, appID, keepID int64) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE deployments SET status = ?
+		 WHERE app_id = ? AND id <> ? AND status = ?`,
+		core.StatusSuperseded, appID, keepID, core.StatusRunning)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // SetImage records the built image tag for a deployment.
 func (s *Store) SetImage(ctx context.Context, id int64, image string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE deployments SET image = ? WHERE id = ?`, image, id)

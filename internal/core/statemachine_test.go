@@ -7,17 +7,18 @@ func TestCanTransition(t *testing.T) {
 	// pair of distinct statuses is enumerated so an accidental extra edge
 	// (or a missing one) fails a test rather than slipping through.
 	legal := map[DeployStatus]map[DeployStatus]bool{
-		StatusQueued:    {StatusBuilding: true, StatusCancelled: true},
-		StatusBuilding:  {StatusDeploying: true, StatusFailed: true, StatusCancelled: true},
-		StatusDeploying: {StatusRunning: true, StatusFailed: true},
-		StatusRunning:   {},
-		StatusFailed:    {},
-		StatusCancelled: {},
+		StatusQueued:     {StatusBuilding: true, StatusCancelled: true},
+		StatusBuilding:   {StatusDeploying: true, StatusFailed: true, StatusCancelled: true},
+		StatusDeploying:  {StatusRunning: true, StatusFailed: true},
+		StatusRunning:    {StatusSuperseded: true},
+		StatusFailed:     {},
+		StatusCancelled:  {},
+		StatusSuperseded: {},
 	}
 
 	all := []DeployStatus{
 		StatusQueued, StatusBuilding, StatusDeploying,
-		StatusRunning, StatusFailed, StatusCancelled,
+		StatusRunning, StatusFailed, StatusCancelled, StatusSuperseded,
 	}
 
 	for _, from := range all {
@@ -34,7 +35,7 @@ func TestCanTransition(t *testing.T) {
 func TestCanTransitionRejectsSelfTransitions(t *testing.T) {
 	all := []DeployStatus{
 		StatusQueued, StatusBuilding, StatusDeploying,
-		StatusRunning, StatusFailed, StatusCancelled,
+		StatusRunning, StatusFailed, StatusCancelled, StatusSuperseded,
 	}
 	for _, s := range all {
 		if CanTransition(s, s) {
@@ -63,6 +64,7 @@ func TestIsTerminal(t *testing.T) {
 		{StatusRunning, true},
 		{StatusFailed, true},
 		{StatusCancelled, true},
+		{StatusSuperseded, true},
 	}
 	for _, tt := range tests {
 		if got := tt.status.IsTerminal(); got != tt.want {
@@ -85,6 +87,7 @@ func TestIsActive(t *testing.T) {
 		{StatusRunning, false},
 		{StatusFailed, false},
 		{StatusCancelled, false},
+		{StatusSuperseded, false},
 	}
 	for _, tt := range tests {
 		if got := tt.status.IsActive(); got != tt.want {
@@ -105,6 +108,7 @@ func TestCanCancel(t *testing.T) {
 		{StatusRunning, false},
 		{StatusFailed, false},
 		{StatusCancelled, false},
+		{StatusSuperseded, false},
 	}
 	for _, tt := range tests {
 		if got := tt.status.CanCancel(); got != tt.want {

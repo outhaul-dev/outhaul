@@ -181,6 +181,111 @@ func TestSetStatusTerminalSetsFinishedAndReason(t *testing.T) {
 	}
 }
 
+// runToRunning drives a fresh deployment through the whole lifecycle to the
+// running state so tests can build up a history of shipped deploys.
+func runToRunning(t *testing.T, s *Store, appID int64) core.Deployment {
+	t.Helper()
+	ctx := context.Background()
+	d, err := s.CreateDeployment(ctx, appID)
+	if err != nil {
+		t.Fatalf("CreateDeployment: %v", err)
+	}
+	s.ClaimDeployment(ctx, d.ID) // -> building
+	if ok, err := s.SetStatus(ctx, d.ID, core.StatusBuilding, core.StatusDeploying, ""); err != nil || !ok {
+		t.Fatalf("-> deploying: ok=%v err=%v", ok, err)
+	}
+	if ok, err := s.SetStatus(ctx, d.ID, core.StatusDeploying, core.StatusRunning, ""); err != nil || !ok {
+		t.Fatalf("-> running: ok=%v err=%v", ok, err)
+	}
+	return d
+}
+
+func TestSupersedeOthersRetiresOldRunningRows(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	web := mustApp(t, s, "web")
+	api := mustApp(t, s, "api")
+
+	// web ships three times; without supersession all three read "running".
+	d1 := runToRunning(t, s, web.ID)
+	d2 := runToRunning(t, s, web.ID)
+	d3 := runToRunning(t, s, web.ID)
+	// A different app's running deploy must be left untouched.
+	other := runToRunning(t, s, api.ID)
+
+	n, err := s.SupersedeOthers(ctx, web.ID, d3.ID)
+	if err != nil {
+		t.Fatalf("SupersedeOthers: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("retired %d rows, want 2 (d1, d2)", n)
+	}
+
+	assertStatus := func(id int64, want core.DeployStatus) {
+		got, _ := s.GetDeployment(ctx, id)
+		if got.Status != want {
+			t.Errorf("deployment %d status = %q, want %q", id, got.Status, want)
+		}
+	}
+	assertStatus(d1.ID, core.StatusSuperseded)
+	assertStatus(d2.ID, core.StatusSuperseded)
+	assertStatus(d3.ID, core.StatusRunning)   // the one holding traffic
+	assertStatus(other.ID, core.StatusRunning) // untouched: different app
+
+	// Idempotent: a second call with the same live row retires nothing more.
+	n, err = s.SupersedeOthers(ctx, web.ID, d3.ID)
+	if err != nil || n != 0 {
+		t.Fatalf("second SupersedeOthers: n=%d err=%v, want 0/nil", n, err)
+	}
+}
+
+func TestSupersedeBackfillMigrationSQL(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	web := mustApp(t, s, "web")
+	api := mustApp(t, s, "api")
+
+	// Recreate the pre-migration state: several running rows per app, because
+	// old cutovers never retired the ones they replaced.
+	runToRunning(t, s, web.ID)
+	runToRunning(t, s, web.ID)
+	webLive := runToRunning(t, s, web.ID)
+	apiLive := runToRunning(t, s, api.ID)
+
+	// Run the exact SQL the 0021 migration ships (it runs against an empty DB
+	// during Open, so its backfill logic is otherwise unexercised).
+	body, err := migrationsFS.ReadFile("migrations/0021_supersede.sql")
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, string(body)); err != nil {
+		t.Fatalf("apply backfill: %v", err)
+	}
+
+	var running int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM deployments WHERE status = ?`, core.StatusRunning).Scan(&running); err != nil {
+		t.Fatalf("count running: %v", err)
+	}
+	if running != 2 {
+		t.Errorf("running rows after backfill = %d, want 2 (one live per app)", running)
+	}
+	if got := mustStatus(t, s, webLive.ID); got != core.StatusRunning {
+		t.Errorf("web newest = %q, want running", got)
+	}
+	if got := mustStatus(t, s, apiLive.ID); got != core.StatusRunning {
+		t.Errorf("api newest = %q, want running", got)
+	}
+}
+
+func mustStatus(t *testing.T, s *Store, id int64) core.DeployStatus {
+	t.Helper()
+	d, err := s.GetDeployment(context.Background(), id)
+	if err != nil {
+		t.Fatalf("GetDeployment: %v", err)
+	}
+	return d.Status
+}
+
 func TestNextClaimableSerializesPerApp(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

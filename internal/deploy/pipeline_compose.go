@@ -106,6 +106,10 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 	if _, err := w.store.SetStatus(context.Background(), dep.ID, core.StatusDeploying, core.StatusRunning, ""); err != nil {
 		logf(out, "WARNING: could not record running status: %v", err)
 	}
+	// Retire the rows of the deploys this stack replaced (bookkeeping only).
+	if _, err := w.store.SupersedeOthers(context.Background(), app.ID, dep.ID); err != nil {
+		logf(out, "WARNING: could not retire superseded deployments: %v", err)
+	}
 	if len(domains) > 0 {
 		hosts := make([]string, len(domains))
 		for i, d := range domains {
