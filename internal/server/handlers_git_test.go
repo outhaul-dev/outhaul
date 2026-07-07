@@ -152,6 +152,36 @@ func TestAppsListShowsGithubReposWhenConnected(t *testing.T) {
 	}
 }
 
+// TestGithubReposAreCachedAcrossRenders verifies the repo list is fetched once
+// and reused on subsequent page renders, rather than paying two api.github.com
+// round-trips every time an app/create/project page is opened.
+func TestGithubReposAreCachedAcrossRenders(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	ctx := context.Background()
+	if err := env.store.SetGithubApp(ctx, core.GithubApp{
+		AppID: 1, Slug: "s", PrivateKey: testRSAKeyPEM(t), WebhookSecret: "w", ClientID: "c", ClientSecret: "cs",
+	}); err != nil {
+		t.Fatalf("SetGithubApp: %v", err)
+	}
+	if err := env.store.SetInstallationID(ctx, 42); err != nil {
+		t.Fatalf("SetInstallationID: %v", err)
+	}
+	env.gh.Token = "tok"
+	env.gh.Repos = []github.Repo{{FullName: "o/r"}}
+
+	for i := 0; i < 3; i++ {
+		resp := env.get(t, "/apps")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("render %d: status = %d, want 200", i, resp.StatusCode)
+		}
+		body(t, resp)
+	}
+	if env.gh.ReposCalls != 1 {
+		t.Errorf("ListRepos called %d times across 3 renders, want 1 (cached)", env.gh.ReposCalls)
+	}
+}
+
 // TestAppsListDegradesGracefullyOnRepoListError verifies a GitHub API failure
 // while listing repos does not break the apps page — it should just render
 // without a repo dropdown.

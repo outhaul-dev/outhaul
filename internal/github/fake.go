@@ -20,6 +20,8 @@ type Fake struct {
 	LastInstallationID int64
 	LastToken          string
 
+	ReposCalls int // number of ListRepos invocations, for cache tests
+
 	Comments map[string]string
 }
 
@@ -36,6 +38,7 @@ func (f *Fake) InstallationToken(ctx context.Context, appJWT string, installatio
 
 func (f *Fake) ListRepos(ctx context.Context, token string) ([]Repo, error) {
 	f.LastToken = token
+	f.ReposCalls++
 	return f.Repos, f.ReposErr
 }
 

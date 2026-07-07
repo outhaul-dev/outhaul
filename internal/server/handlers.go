@@ -109,11 +109,48 @@ func (s *Server) appRows(ctx context.Context, apps []core.App, projectNames map[
 	return rows, nil
 }
 
+// ghRepoCache memoizes the installation's repo list. Fetching it costs two
+// sequential api.github.com round-trips (token exchange + list), and every
+// app/create/project page render calls githubRepoData purely to fill a repo
+// dropdown — without this, each page open paid that latency (and blocked on
+// GitHub being reachable). Keyed by installation so a reconnect refetches.
+type ghRepoCache struct {
+	installationID int64
+	repos          []github.Repo
+	fetchedAt      time.Time
+}
+
+// ghRepoTTL is how long a fetched repo list is served before refetching. Short
+// enough that a newly-created repo shows up promptly; long enough that rapid
+// navigation doesn't hammer the API.
+const ghRepoTTL = 60 * time.Second
+
+// cachedRepos returns the memoized repo list for an installation and whether it
+// is still fresh. Stale-but-present entries are returned too (fresh=false) so
+// callers can fall back to them when a refetch fails.
+func (s *Server) cachedRepos(installationID int64) (repos []github.Repo, fresh bool) {
+	s.ghReposMu.Lock()
+	defer s.ghReposMu.Unlock()
+	c := s.ghRepos
+	if c == nil || c.installationID != installationID {
+		return nil, false
+	}
+	return c.repos, time.Since(c.fetchedAt) < ghRepoTTL
+}
+
+func (s *Server) storeRepos(installationID int64, repos []github.Repo) {
+	s.ghReposMu.Lock()
+	s.ghRepos = &ghRepoCache{installationID: installationID, repos: repos, fetchedAt: time.Now()}
+	s.ghReposMu.Unlock()
+}
+
 // githubRepoData returns template data describing GitHub App connectivity for
 // the create-app form: "GithubConnected" (bool) when an App is connected and
-// installed, and "GithubRepos" ([]github.Repo) when the repo list could be
-// fetched. Any failure along the way (missing key, token exchange, API error)
-// degrades gracefully to no repo dropdown rather than failing the page.
+// installed, and "GithubRepos" ([]github.Repo) when the repo list is available.
+// The repo list is cached (see ghRepoCache) so it is not re-fetched on every
+// render. Any failure along the way (missing key, token exchange, API error)
+// degrades gracefully — falling back to a stale cached list if there is one,
+// otherwise to no repo dropdown — rather than failing the page.
 func (s *Server) githubRepoData(r *http.Request) map[string]any {
 	data := map[string]any{}
 	ga, ok, err := s.store.GithubApp(r.Context())
@@ -121,18 +158,32 @@ func (s *Server) githubRepoData(r *http.Request) map[string]any {
 		return data
 	}
 	data["GithubConnected"] = true
+
+	cached, fresh := s.cachedRepos(ga.InstallationID)
+	if fresh {
+		data["GithubRepos"] = cached
+		return data
+	}
+	// stale serves as the fallback if any step of the refetch fails.
+	stale := func() map[string]any {
+		if cached != nil {
+			data["GithubRepos"] = cached
+		}
+		return data
+	}
 	jwt, err := github.AppJWT(ga.PrivateKey, ga.AppID, time.Now())
 	if err != nil {
-		return data
+		return stale()
 	}
 	tok, err := s.gh.InstallationToken(r.Context(), jwt, ga.InstallationID)
 	if err != nil {
-		return data
+		return stale()
 	}
 	repos, err := s.gh.ListRepos(r.Context(), tok)
 	if err != nil {
-		return data
+		return stale()
 	}
+	s.storeRepos(ga.InstallationID, repos)
 	data["GithubRepos"] = repos
 	return data
 }
