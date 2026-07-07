@@ -348,6 +348,58 @@ func (s *Server) handleUpdateAppKind(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
+// handleUpdateAppSource re-points an app at a different source (public/ssh/
+// github/push), re-running the same wiring the create form uses: github resolves
+// owner/name to an https clone URL, ssh regenerates a deploy keypair, push clears
+// the repo URL. Template apps have no repo and are rejected. Takes effect on the
+// next deploy.
+func (s *Server) handleUpdateAppSource(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	app, err := s.store.GetApp(r.Context(), id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if app.TemplateID != "" {
+		http.Error(w, "Template apps have no source to change.", http.StatusBadRequest)
+		return
+	}
+	source := strings.TrimSpace(r.FormValue("source"))
+	repo := strings.TrimSpace(r.FormValue("repo_url"))
+	githubRepo := strings.TrimSpace(r.FormValue("github_repo"))
+	if source == core.SourceGithub {
+		repo = "https://github.com/" + githubRepo + ".git"
+	}
+	if source == core.SourcePush {
+		repo = ""
+	}
+	// Validate with the same rules as create: keep the app's existing name/
+	// domain/kind (already valid) and swap in the new source fields.
+	check := app
+	check.Source, check.RepoURL, check.GithubRepo = source, repo, githubRepo
+	if verr := validateApp(check); verr != "" {
+		http.Error(w, verr, http.StatusBadRequest)
+		return
+	}
+	var pub, priv string
+	if source == core.SourceSSH {
+		priv, pub, err = sshkey.Generate()
+		if err != nil {
+			http.Error(w, "Could not generate SSH key: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if err := s.store.UpdateAppSource(r.Context(), id, source, repo, githubRepo, pub, priv); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
 // renderAppsWithError re-renders the apps list with the create form pre-filled
 // and an error message.
 func (s *Server) renderAppsWithError(w http.ResponseWriter, r *http.Request, msg, name, repo, domain string) {

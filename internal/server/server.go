@@ -199,6 +199,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /apps/{id}/deploy", s.requireAuth(s.handleDeploy))
 	mux.HandleFunc("POST /apps/{id}/settings", s.requireAuth(s.handleAppSettings))
 	mux.HandleFunc("POST /apps/{id}/kind", s.requireAuth(s.handleUpdateAppKind))
+	mux.HandleFunc("POST /apps/{id}/source", s.requireAuth(s.handleUpdateAppSource))
 	mux.HandleFunc("POST /apps/{id}/domains", s.requireAuth(s.handleAddDomain))
 	mux.HandleFunc("POST /apps/{id}/domains/{domainID}", s.requireAuth(s.handleUpdateDomain))
 	mux.HandleFunc("POST /apps/{id}/domains/{domainID}/delete", s.requireAuth(s.handleDeleteDomain))

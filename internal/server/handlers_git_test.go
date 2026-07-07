@@ -198,3 +198,42 @@ func TestUpdateAppKindHandler(t *testing.T) {
 		t.Fatalf("invalid kind status = %d, want 400", bad.StatusCode)
 	}
 }
+
+func TestUpdateAppSourceHandler(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	app, _ := env.store.CreateApp(context.Background(), core.App{
+		Name: "web", RepoURL: "https://example.com/r.git", Domain: "web.example.com",
+		Source: core.SourcePublic, Branch: "main", Kind: core.KindNixpacks, WebhookSecret: "w",
+	})
+
+	// public -> ssh regenerates a deploy key
+	resp := env.postForm(t, "/apps/"+itoa(app.ID)+"/source", url.Values{
+		"source": {"ssh"}, "repo_url": {"git@github.com:o/r.git"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("ssh switch status = %d, want 303", resp.StatusCode)
+	}
+	got, _ := env.store.GetApp(context.Background(), app.ID)
+	if got.Source != core.SourceSSH || got.SSHPublicKey == "" {
+		t.Fatalf("ssh source not applied: %+v", got)
+	}
+
+	// switch to push clears the repo URL
+	resp = env.postForm(t, "/apps/"+itoa(app.ID)+"/source", url.Values{"source": {"push"}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("push switch status = %d, want 303", resp.StatusCode)
+	}
+	got, _ = env.store.GetApp(context.Background(), app.ID)
+	if got.Source != core.SourcePush || got.RepoURL != "" || got.SSHPublicKey != "" {
+		t.Fatalf("push source not applied: %+v", got)
+	}
+
+	// invalid public URL is rejected
+	bad := env.postForm(t, "/apps/"+itoa(app.ID)+"/source", url.Values{
+		"source": {"public"}, "repo_url": {"not-a-url"},
+	})
+	if bad.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad public url status = %d, want 400", bad.StatusCode)
+	}
+}
