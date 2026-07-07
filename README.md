@@ -13,6 +13,15 @@ No Node, no Postgres, no control-plane sprawl: **one ~22 MB Go binary and a
 SQLite file.** Outhaul is a deliberately minimal alternative to Dokploy and
 Coolify — the same core workflow, a fraction of the moving parts.
 
+> [!WARNING]
+> **Outhaul is alpha, pre-release software — not ready for production.**
+> Expect breaking changes, missing features, and rough edges, with no upgrade or
+> data-migration guarantees between versions. Only run it on a disposable
+> **test server you can afford to wipe** — never a production host or a machine
+> holding anything you care about. Outhaul also needs Docker-socket access
+> (which is root-equivalent), so treat any box you install it on as fully
+> entrusted to it.
+
 ```sh
 go build -o outhaul . && ./outhaul serve
 # → open the one-time setup URL it prints, create the admin account, deploy.
@@ -72,6 +81,11 @@ That's fine for kicking the tires; for a server install use the installer
 below, which sets up a dedicated user and a systemd unit.
 
 ## Deploying to a server
+
+> [!NOTE]
+> "Server" here means a **disposable test server**, not production — see the
+> warning at the top. The installer sets up a long-running systemd service, so
+> only point it at a box you're happy to wipe.
 
 Don't run Outhaul as root. From a checkout on the server:
 
