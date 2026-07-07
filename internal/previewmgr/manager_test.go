@@ -275,6 +275,47 @@ func TestSpawnCreatesChildAppDomainsAndDeploys(t *testing.T) {
 	}
 }
 
+func TestSpawnDedupesWholeHostDomains(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	repo := "acme/web"
+	parent := h.seedGithubApp(t, "web", repo, nil)
+	// A single-container app commonly has its auto sslip domain plus an added
+	// custom domain: two whole-host rows (Service "" / Path ""). Both derive the
+	// SAME preview host, so mintDomains must collapse them to one row instead of
+	// hitting UNIQUE(app_id, host, path) and rolling the whole spawn back.
+	if _, err := h.st.AddDomain(ctx, core.Domain{
+		AppID: parent.ID, Host: "custom.example", Port: 8080, TLS: true,
+	}); err != nil {
+		t.Fatalf("AddDomain custom: %v", err)
+	}
+	parentDoms, _ := h.st.ListDomains(ctx, parent.ID)
+	if len(parentDoms) != 2 {
+		t.Fatalf("parent domains = %d, want 2 (setup)", len(parentDoms))
+	}
+
+	if err := h.mgr.Handle(ctx, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	// The preview spawned (not rolled back).
+	child, err := h.st.GetPreviewByPR(ctx, parent.ID, 42)
+	if err != nil {
+		t.Fatalf("preview should have spawned despite duplicate derived hosts: %v", err)
+	}
+	// Exactly one deduped domain row.
+	childDoms, err := h.st.ListDomains(ctx, child.ID)
+	if err != nil {
+		t.Fatalf("ListDomains child: %v", err)
+	}
+	if len(childDoms) != 1 {
+		t.Fatalf("child domains = %d, want 1 (deduped)", len(childDoms))
+	}
+	if want := "web-pr-42.1.2.3.4.sslip.io"; childDoms[0].Host != want {
+		t.Errorf("child domain host = %q, want %q", childDoms[0].Host, want)
+	}
+}
+
 func TestSpawnForkPRGated(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
@@ -666,6 +707,11 @@ func TestDestroyByIDRejectsNonPreview(t *testing.T) {
 	}
 	if !h.docker.removed[child.Name] {
 		t.Errorf("docker.RemoveApp not called for %q", child.Name)
+	}
+	// A manual destroy posts the "destroyed" comment via the parent's repo (not "").
+	got := h.gh.comments[repo+"#42"]
+	if len(got) == 0 || got[len(got)-1] != "Preview environment destroyed." {
+		t.Errorf("DestroyByID comment = %v, want a \"Preview environment destroyed.\" notice", got)
 	}
 }
 

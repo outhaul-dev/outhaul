@@ -43,7 +43,7 @@ func (m *Manager) SweepTick(ctx context.Context, now time.Time) {
 			if err != nil {
 				continue
 			}
-			if err := m.teardown(ctx, parent, p.PRNumber, "", cfg); err != nil {
+			if err := m.teardown(ctx, parent, p.PRNumber, parent.GithubRepo, cfg); err != nil {
 				log.Printf("previewmgr: sweep teardown %s: %v", p.Name, err)
 			}
 		}

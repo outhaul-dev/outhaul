@@ -154,8 +154,10 @@ func (m *Manager) spawn(ctx context.Context, parent core.App, cfg core.PreviewCo
 		return err
 	}
 
-	m.notifier.Notify()
+	// Comment before notifying so a very fast deploy can't finish (and post the
+	// ready comment) before the building comment call runs.
 	m.comment(ctx, cfg, ev.BaseRepoFullName, ev.Number, buildingComment(ev.HeadSHA))
+	m.notifier.Notify()
 	return nil
 }
 
@@ -276,13 +278,25 @@ func (m *Manager) provisionDatabases(ctx context.Context, parent, child core.App
 // mintDomains creates a preview domain row per routed parent domain (compose:
 // one per service; single-container: the primary row). Internal-only services
 // keep no row.
+//
+// The preview host derives only from appName+pr+service (not the parent host),
+// so two parent rows that differ only by host — e.g. a single-container app's
+// auto sslip domain plus an added custom domain, both whole-host with the same
+// empty service — collapse to the same preview (host, path). We dedupe on that
+// derived key so the second AddDomain doesn't hit UNIQUE(app_id, host, path).
 func (m *Manager) mintDomains(ctx context.Context, parent, child core.App, cfg core.PreviewConfig, pr int) error {
 	parentDomains, err := m.store.ListDomains(ctx, parent.ID)
 	if err != nil {
 		return err
 	}
+	seen := map[string]bool{}
 	for _, d := range parentDomains {
 		host := core.PreviewHost(cfg, parent.Name, pr, d.Service, m.serverIP)
+		key := host + "\x00" + d.Path
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		if _, err := m.store.AddDomain(ctx, core.Domain{
 			AppID: child.ID, Host: host, Service: d.Service, Port: d.Port,
 			Path: d.Path, InternalPath: d.InternalPath, TLS: d.TLS,
@@ -382,7 +396,7 @@ func (m *Manager) DestroyByID(ctx context.Context, parentID, childID int64) erro
 	if err != nil {
 		return err
 	}
-	return m.teardown(ctx, parent, child.PRNumber, "", cfg) // repo "" => no PR comment
+	return m.teardown(ctx, parent, child.PRNumber, parent.GithubRepo, cfg)
 }
 
 // OnDeployFinished updates a preview's PR comment and status after its
@@ -420,9 +434,9 @@ func (m *Manager) OnDeployFinished(ctx context.Context, app core.App, success bo
 				urls = append(urls, scheme+d.Host)
 			}
 		}
-		body = ReadyComment(urls, app.Branch)
+		body = ReadyComment(urls, "") // no commit SHA available on core.App
 	} else {
-		body = FailedComment(app.Branch)
+		body = FailedComment("")
 	}
 	m.comment(ctx, cfg, parent.GithubRepo, app.PRNumber, body)
 }

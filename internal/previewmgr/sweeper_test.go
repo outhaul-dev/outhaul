@@ -27,6 +27,11 @@ func TestSweeperReapsStalePreview(t *testing.T) {
 	if !h.docker.removed[child.Name] {
 		t.Errorf("docker.RemoveApp not called for %q during sweep", child.Name)
 	}
+	// An idle-reaped preview posts the "destroyed" comment via the parent's repo.
+	got := h.gh.comments["acme/web#42"]
+	if len(got) == 0 || got[len(got)-1] != "Preview environment destroyed." {
+		t.Errorf("sweep comment = %v, want a \"Preview environment destroyed.\" notice", got)
+	}
 }
 
 func TestSweeperKeepsFreshPreview(t *testing.T) {
