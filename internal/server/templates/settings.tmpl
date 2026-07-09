@@ -103,7 +103,7 @@
       <p class="muted env-note">Expose apps without a public IP or port-forwarding. Create a tunnel in the Cloudflare Zero&nbsp;Trust dashboard, copy its connector token, and paste it here. Then point each public hostname at <code>http://outhaul-traefik:80</code>. Enabling the tunnel takes over ingress from Let's Encrypt (Cloudflare terminates HTTPS).</p>
       <form method="post" action="/settings/tunnel/enable" class="grid-form">
         <label class="field"><span>Connector token</span><input type="password" name="token" placeholder="eyJhIjoi…" autocomplete="off" required></label>
-        <button type="submit" class="btn">Enable tunnel</button>
+        <button type="submit" class="btn btn-primary">Enable tunnel</button>
       </form>
     {{end}}
   {{else}}
