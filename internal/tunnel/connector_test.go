@@ -2,6 +2,7 @@ package tunnel
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -104,6 +105,51 @@ func TestEnsureConnectorRecreatesOnTokenChange(t *testing.T) {
 	after, _ := f.FindContainer(ctx, ContainerName)
 	if after == nil || after.ID == before.ID {
 		t.Error("rotating the token must recreate the connector")
+	}
+}
+
+func TestEnsureConnectorStartsStoppedContainer(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+	cc := testConfig()
+
+	// A connector container exists but is not running (e.g. after a host
+	// reboot where restart policy did not fire). Build it from the same spec
+	// EnsureConnector would produce so the config hash matches and it is
+	// adopted rather than recreated.
+	id, _ := f.CreateContainer(ctx, connectorSpec(cc))
+	f.StopContainer(ctx, id, 0)
+
+	if err := EnsureConnector(ctx, f, cc, nil); err != nil {
+		t.Fatalf("EnsureConnector: %v", err)
+	}
+	c, _ := f.FindContainer(ctx, ContainerName)
+	if c == nil || c.ID != id {
+		t.Fatalf("expected existing connector %q to be adopted, got %+v", id, c)
+	}
+	if !c.Running() {
+		t.Errorf("existing connector container should be started, state=%q", c.State)
+	}
+}
+
+func TestEnsureConnectorKeepsOldContainerWhenPullFails(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+	if err := EnsureConnector(ctx, f, testConfig(), nil); err != nil {
+		t.Fatalf("EnsureConnector: %v", err)
+	}
+	before, _ := f.FindContainer(ctx, ContainerName)
+
+	// Token rotates (forces recreate path) but the image pull now fails.
+	f.FailPull = func(string) error { return errors.New("registry down") }
+	cc := testConfig()
+	cc.Token = "tok-rotated"
+	if err := EnsureConnector(ctx, f, cc, nil); err == nil {
+		t.Fatal("expected EnsureConnector to fail when the pull fails")
+	}
+	after, _ := f.FindContainer(ctx, ContainerName)
+	if after == nil || after.ID != before.ID {
+		t.Error("old connector container must survive a failed pull (no teardown before pull)")
 	}
 }
 

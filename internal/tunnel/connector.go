@@ -65,7 +65,10 @@ func EnsureConnector(ctx context.Context, dc docker.Client, cc ConnectorConfig, 
 	if err != nil {
 		return fmt.Errorf("create cloudflared: %w", err)
 	}
-	return dc.StartContainer(ctx, id)
+	if err := dc.StartContainer(ctx, id); err != nil {
+		return fmt.Errorf("start cloudflared: %w", err)
+	}
+	return nil
 }
 
 // RemoveConnector stops and removes the connector. It is idempotent (a no-op
