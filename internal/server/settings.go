@@ -47,6 +47,10 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, status i
 	if errMsg != "" {
 		data["Error"] = errMsg
 	}
+	data["TunnelAvailable"] = s.tunnel != nil
+	if on, err := s.store.TunnelEnabled(r.Context()); err == nil {
+		data["TunnelEnabled"] = on
+	}
 	s.render(w, status, "settings", data)
 }
 
