@@ -40,7 +40,7 @@ func (s *Server) handleEnableTunnel(w http.ResponseWriter, r *http.Request) {
 // Traefik to its Let's Encrypt posture.
 func (s *Server) handleDisableTunnel(w http.ResponseWriter, r *http.Request) {
 	if s.tunnel == nil {
-		http.Redirect(w, r, "/settings", http.StatusSeeOther)
+		s.renderSettings(w, r, http.StatusServiceUnavailable, "Tunnel management is unavailable (is Docker running?).")
 		return
 	}
 	if err := s.tunnel.Disable(r.Context()); err != nil {
