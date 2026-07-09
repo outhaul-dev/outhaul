@@ -56,13 +56,19 @@ type ProxyConfig struct {
 	AdminHost  string // hostname the admin UI is served under (from PublicURL)
 	AdminPort  string // host port the admin UI listens on, e.g. "8080"
 	DynamicDir string // host dir bind-mounted as Traefik's file provider
+
+	// TunnelMode makes the tunnel the server-wide ingress: Traefik serves plain
+	// HTTP on :80 for cloudflared to reach over the Docker network, publishes no
+	// host ports, and runs no ACME/redirect (Cloudflare terminates TLS at its
+	// edge). The admin route, if any, is published over plain HTTP.
+	TunnelMode bool
 }
 
 // adminRoutingEnabled reports whether the admin UI should be published over
 // HTTPS through Traefik. It needs TLS (for the cert), a hostname, and a dir
 // to write the dynamic config into.
 func (pc ProxyConfig) adminRoutingEnabled() bool {
-	return pc.TLSEnabled && pc.AdminHost != "" && pc.DynamicDir != ""
+	return (pc.TLSEnabled || pc.TunnelMode) && pc.AdminHost != "" && pc.DynamicDir != ""
 }
 
 // EnsureProxy makes the Traefik proxy present and running: it creates the shared
@@ -129,7 +135,11 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 		"--providers.docker.exposedbydefault=false",
 		"--entrypoints.web.address=:80",
 	}
-	ports := []docker.PortMapping{{HostPort: pc.HTTPPort, ContainerPort: "80", Proto: "tcp"}}
+	var ports []docker.PortMapping
+	if !pc.TunnelMode {
+		// In tunnel mode the only way in is the tunnel, so publish nothing.
+		ports = []docker.PortMapping{{HostPort: pc.HTTPPort, ContainerPort: "80", Proto: "tcp"}}
+	}
 	mounts := []docker.Mount{{Source: pc.DockerSocket, Target: "/var/run/docker.sock", ReadOnly: true}}
 
 	apiVersion := pc.DockerAPIVersion
@@ -150,7 +160,7 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 		extraHosts = append(extraHosts, "host.docker.internal:host-gateway")
 	}
 
-	if pc.TLSEnabled {
+	if pc.TLSEnabled && !pc.TunnelMode {
 		cmd = append(cmd,
 			"--entrypoints.websecure.address=:443",
 			"--entrypoints.web.http.redirections.entrypoint.to=websecure",
@@ -170,7 +180,7 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 	labels := map[string]string{
 		"outhaul.managed":     "true",
 		"outhaul.role":        "proxy",
-		"outhaul.config-hash": hashConfig(pc.Image, cmd, ports, mounts, env, extraHosts),
+		"outhaul.config-hash": hashConfig(pc.Image, cmd, ports, mounts, env, extraHosts, pc.TunnelMode),
 	}
 	return docker.ContainerSpec{
 		Name:          pc.ContainerName,
@@ -191,10 +201,11 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 // recreate when it changes (image, cmd, ports, mounts, env, extra hosts). Add
 // new fields here. The admin router's host/port live in the file-provider
 // config instead, which Traefik hot-reloads — so they need not be hashed.
-func hashConfig(image string, cmd []string, ports []docker.PortMapping, mounts []docker.Mount, env, extraHosts []string) string {
+func hashConfig(image string, cmd []string, ports []docker.PortMapping, mounts []docker.Mount, env, extraHosts []string, tunnelMode bool) string {
 	var sb strings.Builder
 	sb.WriteString(image)
 	sb.WriteByte('\n')
+	fmt.Fprintf(&sb, "tunnel=%v\n", tunnelMode)
 	sb.WriteString(strings.Join(cmd, " "))
 	for _, p := range ports {
 		fmt.Fprintf(&sb, "|%s:%s/%s", p.HostPort, p.ContainerPort, p.Proto)
@@ -233,26 +244,30 @@ func writeAdminDynamicConfig(pc ProxyConfig) error {
 	if port == "" {
 		port = "8080"
 	}
-	return os.WriteFile(path, []byte(adminDynamicConfig(pc.AdminHost, port)), 0o644)
+	return os.WriteFile(path, []byte(adminDynamicConfig(pc.AdminHost, port, pc.TunnelMode)), 0o644)
 }
 
-// adminDynamicConfig renders the file-provider YAML that routes host over
-// HTTPS (with an on-demand Let's Encrypt cert) to the admin UI on the host.
-func adminDynamicConfig(host, port string) string {
-	return fmt.Sprintf(`# Managed by Outhaul — routes the admin UI over HTTPS. Do not edit by hand.
+// adminDynamicConfig renders the file-provider YAML that routes host to the
+// admin UI on the host. In tunnel mode Cloudflare terminates TLS, so the router
+// sits on the plain-HTTP web entrypoint; otherwise it uses websecure with an
+// on-demand Let's Encrypt cert.
+func adminDynamicConfig(host, port string, tunnelMode bool) string {
+	entrypoint, tlsBlock := "websecure", "\n      tls:\n        certResolver: le"
+	if tunnelMode {
+		entrypoint, tlsBlock = "web", ""
+	}
+	return fmt.Sprintf(`# Managed by Outhaul — routes the admin UI. Do not edit by hand.
 http:
   routers:
     outhaul-admin:
       rule: "Host(`+"`%s`"+`)"
       entryPoints:
-        - websecure
-      service: outhaul-admin
-      tls:
-        certResolver: le
+        - %s
+      service: outhaul-admin%s
   services:
     outhaul-admin:
       loadBalancer:
         servers:
           - url: "http://host.docker.internal:%s"
-`, host, port)
+`, host, entrypoint, tlsBlock, port)
 }

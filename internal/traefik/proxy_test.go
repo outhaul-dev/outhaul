@@ -359,6 +359,66 @@ func TestWriteAdminDynamicConfigRemovesStaleFile(t *testing.T) {
 	}
 }
 
+func tunnelProxyConfig(t *testing.T) ProxyConfig {
+	return ProxyConfig{
+		ContainerName: "outhaul-traefik",
+		Image:         "traefik:v3.3",
+		Network:       "outhaul",
+		HTTPPort:      "80",
+		TunnelMode:    true,
+		AdminHost:     "outhaul.example.com",
+		AdminPort:     "8080",
+		DynamicDir:    t.TempDir(),
+	}
+}
+
+func TestEnsureProxyTunnelModeNoPortsNoTLS(t *testing.T) {
+	ctx := context.Background()
+	rec := &recordingFake{Fake: docker.NewFake()}
+	if err := EnsureProxy(ctx, rec, tunnelProxyConfig(t), nil); err != nil {
+		t.Fatalf("EnsureProxy: %v", err)
+	}
+	if len(rec.created.Ports) != 0 {
+		t.Errorf("tunnel mode must publish no host ports, got %v", rec.created.Ports)
+	}
+	joined := strings.Join(rec.created.Cmd, " ")
+	for _, forbidden := range []string{":443", "acme", "redirections"} {
+		if strings.Contains(joined, forbidden) {
+			t.Errorf("tunnel-mode cmd must not contain %q: %v", forbidden, rec.created.Cmd)
+		}
+	}
+	// The internal :80 web entrypoint is still needed (cloudflared reaches it).
+	if !strings.Contains(joined, "--entrypoints.web.address=:80") {
+		t.Errorf("web entrypoint missing: %v", rec.created.Cmd)
+	}
+}
+
+func TestEnsureProxyTunnelModeAdminRouteNoTLS(t *testing.T) {
+	ctx := context.Background()
+	rec := &recordingFake{Fake: docker.NewFake()}
+	pc := tunnelProxyConfig(t)
+	if err := EnsureProxy(ctx, rec, pc, nil); err != nil {
+		t.Fatalf("EnsureProxy: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(pc.DynamicDir, adminDynamicFile))
+	if err != nil {
+		t.Fatalf("read dynamic config: %v", err)
+	}
+	body := string(data)
+	if !strings.Contains(body, "Host(`outhaul.example.com`)") {
+		t.Errorf("admin host rule missing:\n%s", body)
+	}
+	if strings.Contains(body, "certResolver") || strings.Contains(body, "websecure") {
+		t.Errorf("tunnel-mode admin route must be plain HTTP (no TLS):\n%s", body)
+	}
+	if !strings.Contains(body, "- web") {
+		t.Errorf("admin router should use the web entrypoint:\n%s", body)
+	}
+	if !strings.Contains(body, "http://host.docker.internal:8080") {
+		t.Errorf("admin backend url missing:\n%s", body)
+	}
+}
+
 // hasEnv reports whether want is present in the slice (used for Env/ExtraHosts).
 func hasEnv(items []string, want string) bool {
 	for _, s := range items {
