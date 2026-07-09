@@ -64,9 +64,11 @@ type ProxyConfig struct {
 	TunnelMode bool
 }
 
-// adminRoutingEnabled reports whether the admin UI should be published over
-// HTTPS through Traefik. It needs TLS (for the cert), a hostname, and a dir
-// to write the dynamic config into.
+// adminRoutingEnabled reports whether the admin UI should be published
+// through Traefik: over HTTPS (websecure + Let's Encrypt cert) when TLS is
+// enabled, or over plain HTTP (web entrypoint) in tunnel mode where
+// Cloudflare terminates TLS. Either way it needs an admin host and a dir to
+// write the dynamic config into.
 func (pc ProxyConfig) adminRoutingEnabled() bool {
 	return (pc.TLSEnabled || pc.TunnelMode) && pc.AdminHost != "" && pc.DynamicDir != ""
 }
