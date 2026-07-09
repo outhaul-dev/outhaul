@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -240,6 +241,11 @@ type infraController struct {
 	dc  docker.Client
 	st  *store.Store
 	cfg config.Config
+
+	// mu serializes reconcile so concurrent Enable/Disable calls (from HTTP
+	// handlers) can't race and leave Traefik/cloudflared in a state that
+	// doesn't match the last-persisted tunnel token.
+	mu sync.Mutex
 }
 
 // ensureInfra brings up the shared network, Traefik, and (if the tunnel is
@@ -267,6 +273,9 @@ func ensureInfra(dc docker.Client, cfg config.Config, st *store.Store) *infraCon
 // state: tunnel on -> plain-HTTP Traefik + running connector; tunnel off ->
 // ACME/ports Traefik + no connector.
 func (ic *infraController) reconcile(ctx context.Context) error {
+	ic.mu.Lock()
+	defer ic.mu.Unlock()
+
 	token, tunnelOn, err := ic.st.CloudflareToken(ctx)
 	if err != nil {
 		return fmt.Errorf("read tunnel token: %w", err)
@@ -333,7 +342,11 @@ func (ic *infraController) Enable(ctx context.Context, token string) error {
 	if err := ic.st.SetCloudflareToken(ctx, token); err != nil {
 		return err
 	}
-	return ic.reconcile(ctx)
+	if err := ic.reconcile(ctx); err != nil {
+		return err
+	}
+	ic.logStatus(ctx)
+	return nil
 }
 
 // Disable clears the token and returns Traefik to its ACME/ports posture.
@@ -341,7 +354,11 @@ func (ic *infraController) Disable(ctx context.Context) error {
 	if err := ic.st.ClearCloudflareToken(ctx); err != nil {
 		return err
 	}
-	return ic.reconcile(ctx)
+	if err := ic.reconcile(ctx); err != nil {
+		return err
+	}
+	ic.logStatus(ctx)
+	return nil
 }
 
 // shutdown performs graceful shutdown: stop the worker first so in-flight
