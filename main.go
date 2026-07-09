@@ -33,6 +33,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/server"
 	"github.com/outhaul-dev/outhaul/internal/store"
 	"github.com/outhaul-dev/outhaul/internal/traefik"
+	"github.com/outhaul-dev/outhaul/internal/tunnel"
 )
 
 func main() {
@@ -114,7 +115,7 @@ func serve() error {
 	}
 	defer dc.Close()
 
-	ensureInfra(dc, cfg)
+	infra := ensureInfra(dc, cfg, st)
 
 	ghClient := github.New()
 
@@ -200,6 +201,7 @@ func serve() error {
 	if sshSrv != nil {
 		srv.SetSSHControl(sshSrv)
 	}
+	srv.SetTunnelControl(infra)
 	printSetupHint(srv, cfg, setupToken)
 
 	httpServer := &http.Server{
@@ -231,43 +233,115 @@ func serve() error {
 	return shutdown(httpServer, stopWorker, workerDone)
 }
 
-// ensureInfra brings up the shared network and the Traefik proxy. Failures are
-// logged, not fatal, so the admin UI still starts (e.g. when Docker is down).
-func ensureInfra(dc docker.Client, cfg config.Config) {
+// infraController reconciles the managed Traefik proxy and cloudflared connector
+// against the stored Cloudflare Tunnel state. It runs at boot and on live
+// settings changes, and satisfies server.TunnelControl.
+type infraController struct {
+	dc  docker.Client
+	st  *store.Store
+	cfg config.Config
+}
+
+// ensureInfra brings up the shared network, Traefik, and (if the tunnel is
+// enabled) the cloudflared connector. Failures are logged, not fatal, so the
+// admin UI still starts (e.g. when Docker is down). It returns a controller the
+// server uses to toggle the tunnel at runtime.
+func ensureInfra(dc docker.Client, cfg config.Config, st *store.Store) *infraController {
+	ic := &infraController{dc: dc, st: st, cfg: cfg}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	if err := dc.Ping(ctx); err != nil {
 		log.Printf("WARNING: Docker not reachable (%v); deploys will fail until it is available", err)
-		return
+		return ic
 	}
-	pc := traefik.ProxyConfig{
-		ContainerName:    "outhaul-traefik",
-		Image:            cfg.TraefikImage,
-		Network:          cfg.Network,
-		HTTPPort:         "80",
-		TLSEnabled:       cfg.TLSEnabled(),
-		ACMEEmail:        cfg.ACMEEmail,
-		ACMEStaging:      cfg.ACMEStaging,
-		HTTPSPort:        cfg.HTTPSPort,
-		ACMEStorageDir:   cfg.AcmeDir(),
-		DockerAPIVersion: dc.ServerAPIVersion(ctx),
-		AdminHost:        cfg.AdminHost(),
-		AdminPort:        cfg.AdminPort(),
-		DynamicDir:       cfg.DynamicDir(),
+	if err := ic.reconcile(ctx); err != nil {
+		log.Printf("WARNING: could not ensure infrastructure: %v", err)
+		return ic
 	}
-	if err := traefik.EnsureProxy(ctx, dc, pc, os.Stdout); err != nil {
-		log.Printf("WARNING: could not ensure Traefik proxy: %v", err)
-		return
+	ic.logStatus(ctx)
+	return ic
+}
+
+// reconcile makes Traefik's posture and the connector match the stored tunnel
+// state: tunnel on -> plain-HTTP Traefik + running connector; tunnel off ->
+// ACME/ports Traefik + no connector.
+func (ic *infraController) reconcile(ctx context.Context) error {
+	token, tunnelOn, err := ic.st.CloudflareToken(ctx)
+	if err != nil {
+		return fmt.Errorf("read tunnel token: %w", err)
 	}
-	if cfg.TLSEnabled() {
-		log.Printf("Traefik proxy ready on :80 and :%s (TLS via Let's Encrypt) on network %q", cfg.HTTPSPort, cfg.Network)
-		if cfg.AdminHost() != "" {
-			log.Printf("admin UI published over HTTPS at https://%s (Traefik will obtain a cert on first request)", cfg.AdminHost())
+	if err := traefik.EnsureProxy(ctx, ic.dc, ic.proxyConfig(ctx, tunnelOn), os.Stdout); err != nil {
+		return fmt.Errorf("ensure traefik: %w", err)
+	}
+	if tunnelOn {
+		cc := tunnel.ConnectorConfig{Image: ic.cfg.CloudflaredImage, Network: ic.cfg.Network, Token: token}
+		if err := tunnel.EnsureConnector(ctx, ic.dc, cc, os.Stdout); err != nil {
+			return fmt.Errorf("ensure connector: %w", err)
 		}
 	} else {
-		log.Printf("Traefik proxy ready on :80 (network %q; set OUTHAUL_ACME_EMAIL to enable HTTPS)", cfg.Network)
+		if err := tunnel.RemoveConnector(ctx, ic.dc); err != nil {
+			return fmt.Errorf("remove connector: %w", err)
+		}
 	}
+	return nil
+}
+
+// proxyConfig builds the Traefik config for the current ingress posture. Tunnel
+// mode forces plain HTTP (Cloudflare does TLS); otherwise ACME/ports apply.
+func (ic *infraController) proxyConfig(ctx context.Context, tunnelOn bool) traefik.ProxyConfig {
+	pc := traefik.ProxyConfig{
+		ContainerName:    "outhaul-traefik",
+		Image:            ic.cfg.TraefikImage,
+		Network:          ic.cfg.Network,
+		HTTPPort:         "80",
+		DockerAPIVersion: ic.dc.ServerAPIVersion(ctx),
+		AdminHost:        ic.cfg.AdminHost(),
+		AdminPort:        ic.cfg.AdminPort(),
+		DynamicDir:       ic.cfg.DynamicDir(),
+	}
+	if tunnelOn {
+		pc.TunnelMode = true
+		return pc
+	}
+	pc.TLSEnabled = ic.cfg.TLSEnabled()
+	pc.ACMEEmail = ic.cfg.ACMEEmail
+	pc.ACMEStaging = ic.cfg.ACMEStaging
+	pc.HTTPSPort = ic.cfg.HTTPSPort
+	pc.ACMEStorageDir = ic.cfg.AcmeDir()
+	return pc
+}
+
+// logStatus prints a one-line summary of the current ingress posture.
+func (ic *infraController) logStatus(ctx context.Context) {
+	if on, _ := ic.st.TunnelEnabled(ctx); on {
+		log.Printf("Cloudflare Tunnel is the ingress: Traefik serves plain HTTP behind cloudflared on network %q (point Cloudflare hostnames at http://outhaul-traefik:80)", ic.cfg.Network)
+		return
+	}
+	if ic.cfg.TLSEnabled() {
+		log.Printf("Traefik proxy ready on :80 and :%s (TLS via Let's Encrypt) on network %q", ic.cfg.HTTPSPort, ic.cfg.Network)
+		if ic.cfg.AdminHost() != "" {
+			log.Printf("admin UI published over HTTPS at https://%s (Traefik will obtain a cert on first request)", ic.cfg.AdminHost())
+		}
+		return
+	}
+	log.Printf("Traefik proxy ready on :80 (network %q; set OUTHAUL_ACME_EMAIL to enable HTTPS)", ic.cfg.Network)
+}
+
+// Enable persists the connector token and brings the tunnel up live.
+func (ic *infraController) Enable(ctx context.Context, token string) error {
+	if err := ic.st.SetCloudflareToken(ctx, token); err != nil {
+		return err
+	}
+	return ic.reconcile(ctx)
+}
+
+// Disable clears the token and returns Traefik to its ACME/ports posture.
+func (ic *infraController) Disable(ctx context.Context) error {
+	if err := ic.st.ClearCloudflareToken(ctx); err != nil {
+		return err
+	}
+	return ic.reconcile(ctx)
 }
 
 // shutdown performs graceful shutdown: stop the worker first so in-flight

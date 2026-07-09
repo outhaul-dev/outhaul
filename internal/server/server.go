@@ -99,6 +99,7 @@ type Server struct {
 
 	repos      *gitrepo.Manager // push-app bare repos; nil disables push-repo cleanup
 	sshControl SSHControl       // git-push SSH server; nil disables the port setting
+	tunnel     TunnelControl    // Cloudflare Tunnel management; nil disables the tunnel card
 
 	stateMu     sync.Mutex
 	stateTokens map[string]time.Time // CSRF states for the GitHub App manifest flow
