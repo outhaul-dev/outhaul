@@ -1,6 +1,9 @@
 package store
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // cloudflareTokenKey is the settings row holding the sealed Cloudflare Tunnel
 // connector token. Its presence means the tunnel is enabled.
@@ -13,15 +16,21 @@ func (s *Store) CloudflareToken(ctx context.Context) (token string, ok bool, err
 	if err != nil || !ok {
 		return "", ok, err
 	}
+	if s.box == nil {
+		return "", false, fmt.Errorf("store: no secret box configured; cannot read cloudflare token")
+	}
 	plain, err := s.box.Open(enc)
 	if err != nil {
-		return "", false, err
+		return "", false, fmt.Errorf("decrypt cloudflare token: %w", err)
 	}
 	return string(plain), true, nil
 }
 
 // SetCloudflareToken seals and stores the connector token (enabling the tunnel).
 func (s *Store) SetCloudflareToken(ctx context.Context, token string) error {
+	if s.box == nil {
+		return fmt.Errorf("store: no secret box configured; cannot store cloudflare token")
+	}
 	enc, err := s.box.Seal([]byte(token))
 	if err != nil {
 		return err

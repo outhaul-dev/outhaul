@@ -39,4 +39,7 @@ func TestCloudflareTokenRoundTrip(t *testing.T) {
 	if _, ok, _ := st.CloudflareToken(ctx); ok {
 		t.Fatal("token should be gone after clear")
 	}
+	if on, err := st.TunnelEnabled(ctx); err != nil || on {
+		t.Fatalf("expected tunnel disabled after clear, got on=%v err=%v", on, err)
+	}
 }
