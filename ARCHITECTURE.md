@@ -73,7 +73,9 @@ posture: no `:443`, no ACME, no redirect, and no published host ports. Public
 traffic arrives over the outbound tunnel and Cloudflare terminates TLS at its
 edge; every Cloudflare public hostname points at `http://outhaul-traefik:80`,
 which Traefik routes by Host header as usual. The tunnel takes precedence over
-`OUTHAUL_ACME_EMAIL` when both are set.
+`OUTHAUL_ACME_EMAIL` when both are set. Apps deployed while the tunnel was the
+ingress are labelled HTTP-only (no Let's Encrypt cert), so after disabling the
+tunnel they should be redeployed to regain HTTPS routing.
 
 ### Milestone 3 (done)
 

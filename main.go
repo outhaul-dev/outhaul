@@ -280,18 +280,26 @@ func (ic *infraController) reconcile(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read tunnel token: %w", err)
 	}
-	if err := traefik.EnsureProxy(ctx, ic.dc, ic.proxyConfig(ctx, tunnelOn), os.Stdout); err != nil {
-		return fmt.Errorf("ensure traefik: %w", err)
-	}
 	if tunnelOn {
+		// Bring the tunnel up before flipping Traefik to its portless posture,
+		// so the current Traefik keeps serving until the connector is live.
+		// cloudflared reaches Traefik's :80 web entrypoint in either posture.
 		cc := tunnel.ConnectorConfig{Image: ic.cfg.CloudflaredImage, Network: ic.cfg.Network, Token: token}
 		if err := tunnel.EnsureConnector(ctx, ic.dc, cc, os.Stdout); err != nil {
 			return fmt.Errorf("ensure connector: %w", err)
 		}
-	} else {
-		if err := tunnel.RemoveConnector(ctx, ic.dc); err != nil {
-			return fmt.Errorf("remove connector: %w", err)
+		if err := traefik.EnsureProxy(ctx, ic.dc, ic.proxyConfig(ctx, true), os.Stdout); err != nil {
+			return fmt.Errorf("ensure traefik: %w", err)
 		}
+		return nil
+	}
+	// Disabling: restore the ACME/ports Traefik before removing the connector,
+	// so ingress is back before the tunnel goes away.
+	if err := traefik.EnsureProxy(ctx, ic.dc, ic.proxyConfig(ctx, false), os.Stdout); err != nil {
+		return fmt.Errorf("ensure traefik: %w", err)
+	}
+	if err := tunnel.RemoveConnector(ctx, ic.dc); err != nil {
+		return fmt.Errorf("remove connector: %w", err)
 	}
 	return nil
 }
@@ -337,8 +345,14 @@ func (ic *infraController) logStatus(ctx context.Context) {
 	log.Printf("Traefik proxy ready on :80 (network %q; set OUTHAUL_ACME_EMAIL to enable HTTPS)", ic.cfg.Network)
 }
 
-// Enable persists the connector token and brings the tunnel up live.
-func (ic *infraController) Enable(ctx context.Context, token string) error {
+// Enable persists the connector token and brings the tunnel up live. The
+// reconcile is run on a detached context, not the caller's request context:
+// it recreates Traefik, which can drop the very connection driving the request
+// (when the admin UI is proxied through Traefik). A cancelled reconcile could
+// strand the server with no ingress, so it must run to completion.
+func (ic *infraController) Enable(_ context.Context, token string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
 	if err := ic.st.SetCloudflareToken(ctx, token); err != nil {
 		return err
 	}
@@ -349,8 +363,12 @@ func (ic *infraController) Enable(ctx context.Context, token string) error {
 	return nil
 }
 
-// Disable clears the token and returns Traefik to its ACME/ports posture.
-func (ic *infraController) Disable(ctx context.Context) error {
+// Disable clears the token and returns Traefik to its ACME/ports posture. As
+// with Enable, this runs on a detached context (see Enable) so the reconcile
+// that recreates Traefik isn't cancelled by the request that triggered it.
+func (ic *infraController) Disable(_ context.Context) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
 	if err := ic.st.ClearCloudflareToken(ctx); err != nil {
 		return err
 	}
