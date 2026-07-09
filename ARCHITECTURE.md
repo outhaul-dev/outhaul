@@ -66,6 +66,15 @@ HTTPS is Traefik + Let's Encrypt HTTP-01, enabled by setting
 `OUTHAUL_ACME_EMAIL`, with a config-hash drift check that recreates the
 Traefik container when its desired config changes.
 
+**Cloudflare Tunnel (optional ingress).** When a connector token is set
+(Settings → Cloudflare Tunnel, stored sealed in `settings`), Outhaul runs a
+`cloudflared` container on the shared network and flips Traefik to a plain-HTTP
+posture: no `:443`, no ACME, no redirect, and no published host ports. Public
+traffic arrives over the outbound tunnel and Cloudflare terminates TLS at its
+edge; every Cloudflare public hostname points at `http://outhaul-traefik:80`,
+which Traefik routes by Host header as usual. The tunnel takes precedence over
+`OUTHAUL_ACME_EMAIL` when both are set.
+
 ### Milestone 3 (done)
 
 Private repos and auto-deploy on push — listed above as deferred — are now
