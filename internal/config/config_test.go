@@ -172,6 +172,22 @@ func TestAdminHostAndPort(t *testing.T) {
 	}
 }
 
+func TestCloudflaredImageDefaultAndOverride(t *testing.T) {
+	def := Load(func(string) string { return "" })
+	if def.CloudflaredImage != DefaultCloudflaredImage {
+		t.Errorf("default CloudflaredImage = %q, want %q", def.CloudflaredImage, DefaultCloudflaredImage)
+	}
+	over := Load(func(k string) string {
+		if k == "OUTHAUL_CLOUDFLARED_IMAGE" {
+			return "cloudflare/cloudflared:pinned"
+		}
+		return ""
+	})
+	if over.CloudflaredImage != "cloudflare/cloudflared:pinned" {
+		t.Errorf("override CloudflaredImage = %q", over.CloudflaredImage)
+	}
+}
+
 // A leaked inline comment in /etc/outhaul.env (systemd keeps it as part of the
 // value) must not corrupt the ACME email — otherwise TLS silently never issues.
 func TestACMEEmailStripsInlineComment(t *testing.T) {
