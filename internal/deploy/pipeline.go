@@ -351,7 +351,7 @@ func (w *Worker) createContainer(ctx context.Context, app core.App, image, name 
 		if err != nil {
 			return "", fmt.Errorf("load domains: %w", err)
 		}
-		labels = traefik.AppLabels(app, domains, AppPort, w.cfg.TLSEnabled())
+		labels = traefik.AppLabels(app, domains, AppPort, w.effectiveTLS(ctx))
 	} else {
 		labels = map[string]string{
 			"traefik.enable":  "false",

@@ -92,6 +92,23 @@ func NewWorker(st *store.Store, dc docker.Client, b Builders, cp compose.Runner,
 	}
 }
 
+// effectiveTLS reports whether apps should be labelled for HTTPS at deploy time.
+// A Cloudflare Tunnel terminates TLS at Cloudflare's edge and Traefik serves
+// plain HTTP behind it, so an enabled tunnel forces this false even when ACME is
+// configured. On a read error we fall back to the ACME setting (the common,
+// tunnel-off case).
+func (w *Worker) effectiveTLS(ctx context.Context) bool {
+	if !w.cfg.TLSEnabled() {
+		return false
+	}
+	on, err := w.store.TunnelEnabled(ctx)
+	if err != nil {
+		log.Printf("WARNING: could not read tunnel setting, assuming tunnel off: %v", err)
+		return true
+	}
+	return !on
+}
+
 // SetPruner installs the after-deploy image-retention hook. Call before Run.
 func (w *Worker) SetPruner(p AppPruner) { w.pruner = p }
 
