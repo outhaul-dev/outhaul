@@ -18,6 +18,10 @@ docker exec -i "$cid" sh -c '
   printf "3\n\nn\nn\n" | sh /src/deploy/bootstrap.sh --from-checkout /src
 ' | tee /tmp/outhaul-install.out
 
+# 0) sanity: the installer must have produced output — otherwise the escape
+# check below would false-pass on an empty file.
+[ -s /tmp/outhaul-install.out ] || { echo "FAIL: installer produced no output"; exit 1; }
+
 # 1) escape-soup check: piped output must not contain raw ESC sequences.
 if grep -q "$(printf "\033")\[" /tmp/outhaul-install.out; then
 	echo "FAIL: escape sequences leaked into piped output"; exit 1
