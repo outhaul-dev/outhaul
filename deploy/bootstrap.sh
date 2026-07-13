@@ -460,6 +460,31 @@ wait_healthy() { # url
 	spinner_stop 1; return 1
 }
 
+# Final boxed summary + confetti. Args passed as positional data.
+completion_screen() { # mode url ports setup_url healthy(0/1)
+	mode=$1; url=$2; ports=$3; setup=$4; healthy=$5
+	printf '\n'; hr
+	_c '1;32'; printf '  Outhaul is installed\n'; _c 0
+	[ "$healthy" = 0 ] && step_ok "admin UI reachable" || step_fail "admin UI did not answer yet (check: journalctl -u outhaul)"
+	[ -n "$ports" ] && note "firewall: $ports open"
+	case "$mode" in
+		a) note "HTTPS: Let's Encrypt configured for $url";;
+		b) _c '1;33'; printf '  → Finish Cloudflare Tunnel: log in, then paste your connector token in Settings → Tunnel\n'; _c 0;;
+		c) note "admin UI on :8080 — set OUTHAUL_PUBLIC_URL + OUTHAUL_ACME_EMAIL later for HTTPS";;
+	esac
+	if [ -n "$setup" ]; then
+		printf '\n  Open this one-time setup URL to create your admin account:\n'
+		_c '1;36'; printf '    %s\n' "$setup"; _c 0
+	else
+		note "find the setup URL with: journalctl -u outhaul | grep -i setup"
+	fi
+	# Confetti flourish (skipped in plain mode).
+	if [ "${COLOR:-0}" -ge 1 ] && [ "${UNICODE:-0}" = 1 ]; then
+		printf '\n  '; for s in '✦' '✧' '·' '✦' '✧' '·' '✦' '✧'; do printf '%s ' "$s"; done; printf '\n'
+	fi
+	hr
+}
+
 main() {
 	printf 'outhaul installer\n'
 }
