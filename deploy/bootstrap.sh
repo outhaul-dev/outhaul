@@ -90,6 +90,45 @@ ask_value() { # prompt default
 	printf '%s\n' "$_a"
 }
 
+# ------------------------------------------------------------------- ui --
+
+# Sets COLOR, UNICODE, WIDTH globals. Call once at startup.
+init_ui() {
+	COLOR=$(detect_color_level)
+	case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) UNICODE=1;; *) UNICODE=0;; esac
+	[ "$COLOR" = 0 ] && UNICODE=0
+	WIDTH=$(tput cols 2>/dev/null || echo 80)
+	[ -n "$WIDTH" ] || WIDTH=80
+}
+
+# Apply an RGB (truecolor) / bold-magenta (16+) / plain color to text.
+paint() { # r g b text...
+	_r=$1; _g=$2; _b=$3; shift 3
+	if [ "${COLOR:-0}" -ge 3 ]; then printf '\033[38;2;%d;%d;%dm%s\033[0m' "$_r" "$_g" "$_b" "$*"
+	elif [ "${COLOR:-0}" -ge 1 ]; then printf '\033[1;35m%s\033[0m' "$*"
+	else printf '%s' "$*"; fi
+}
+
+_c() { # color-code-or-plain: emit ANSI SGR $1 only when COLOR>=1
+	[ "${COLOR:-0}" -ge 1 ] && printf '\033[%sm' "$1" || true
+}
+
+hr() {
+	[ "${UNICODE:-0}" = 1 ] && ch='─' || ch='-'
+	i=0; line=''
+	while [ "$i" -lt "$((WIDTH<80?WIDTH:60))" ]; do line="$line$ch"; i=$((i+1)); done
+	_c 90; printf '%s' "$line"; _c 0; printf '\n'
+}
+
+step_ok()   { [ "${UNICODE:-0}" = 1 ] && m='✔' || m='+'; _c '1;32'; printf '  %s ' "$m"; _c 0; printf '%s\n' "$1"; }
+step_fail() { [ "${UNICODE:-0}" = 1 ] && m='✖' || m='x'; _c '1;31'; printf '  %s ' "$m"; _c 0; printf '%s\n' "$1"; }
+note()      { _c 90; printf '    %s\n' "$1"; _c 0; }
+
+# Raw log mirror (Task 20 wires LOGFILE); safe if unset.
+log_line() { [ -n "${LOGFILE:-}" ] && printf '%s\n' "$*" >> "$LOGFILE" 2>/dev/null || true; }
+
+die() { _c '1;31'; printf 'error: ' >&2; _c 0; printf '%s\n' "$1" >&2; log_line "ERROR: $1"; exit 1; }
+
 main() {
 	printf 'outhaul installer\n'
 }
