@@ -17,6 +17,24 @@ go_version_from_gomod() {
 	printf '%s\n' "$v"
 }
 
+# Pure: decide color level from explicit inputs (testable).
+# 0=plain 1=16-color 2=256-color 3=truecolor
+_color_level() { # no_color is_tty colorterm tput_colors
+	[ -n "$1" ] && { echo 0; return; }
+	[ "$2" != 1 ] && { echo 0; return; }
+	case "$3" in *truecolor*|*24bit*) echo 3; return;; esac
+	if [ "${4:-0}" -ge 256 ]; then echo 2
+	elif [ "${4:-0}" -ge 8 ]; then echo 1
+	else echo 0; fi
+}
+
+# Gathers the real environment and calls _color_level.
+detect_color_level() {
+	tc=$(tput colors 2>/dev/null || echo 0)
+	if [ -t 1 ]; then tty=1; else tty=0; fi
+	_color_level "${NO_COLOR:-}" "$tty" "${COLORTERM:-}" "$tc"
+}
+
 main() {
 	printf 'outhaul installer\n'
 }
