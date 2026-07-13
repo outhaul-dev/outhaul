@@ -7,7 +7,15 @@ set -eu
 OUTHAUL_REPO="${OUTHAUL_REPO:-https://github.com/outhaul-dev/outhaul.git}"
 
 # ------------------------------------------------------------------ helpers --
-# (functions added by later tasks live above main)
+
+# Prints the concrete Go version to download (e.g. 1.26.4). Prefers the
+# `toolchain goX.Y.Z` directive; falls back to the `go X.Y[.Z]` directive.
+go_version_from_gomod() {
+	f=${1:-go.mod}
+	v=$(awk '/^toolchain[ \t]+go[0-9]/ { sub(/^go/,"",$2); print $2; exit }' "$f")
+	[ -n "$v" ] || v=$(awk '/^go[ \t]+[0-9]/ { print $2; exit }' "$f")
+	printf '%s\n' "$v"
+}
 
 main() {
 	printf 'outhaul installer\n'
