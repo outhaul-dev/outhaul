@@ -435,6 +435,31 @@ install_service() {
 	step_ok "outhaul service started"
 }
 
+# Local admin URL to probe. Accepts OUTHAUL_LISTEN_ADDR-style ":8080".
+admin_health_url() { # listen_addr
+	addr=${1:-:8080}; [ -n "$addr" ] || addr=:8080
+	port=${addr##*:}
+	printf 'http://127.0.0.1:%s/\n' "$port"
+}
+
+# Extracts the one-time setup URL from a stream of journald lines.
+# Matches the binary's "open: http://HOST:PORT/setup?token=TOKEN" hint.
+extract_setup_url() {
+	grep -oE 'https?://[^ ]+/setup\?token=[A-Za-z0-9_-]+' | head -1
+}
+
+# Polls the admin endpoint up to ~30s. Returns 0 when it answers with ANY
+# HTTP response (no -f: a pre-setup redirect/403 still means "reachable").
+wait_healthy() { # url
+	url=$1; i=0
+	spinner_start "waiting for outhaul to answer"
+	while [ "$i" -lt 30 ]; do
+		if curl -sS --max-time 2 -o /dev/null "$url" 2>/dev/null; then spinner_stop 0; return 0; fi
+		sleep 1; i=$((i+1))
+	done
+	spinner_stop 1; return 1
+}
+
 main() {
 	printf 'outhaul installer\n'
 }
