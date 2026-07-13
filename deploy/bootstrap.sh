@@ -223,8 +223,10 @@ preflight() {
 ensure_docker() {
 	if command -v docker >/dev/null 2>&1; then step_ok "Docker present"; else
 		spinner_start "installing Docker (get.docker.com)"
-		curl -fsSL https://get.docker.com | sh >>"${LOGFILE:-/dev/null}" 2>&1
-		spinner_stop $?
+		# set +e so a failed install still reaches spinner_stop + die (see build_binary note).
+		set +e; curl -fsSL https://get.docker.com | sh >>"${LOGFILE:-/dev/null}" 2>&1; rc=$?; set -e
+		spinner_stop "$rc"
+		[ "$rc" -eq 0 ] || die "Docker install failed — see ${LOGFILE:-the install log}"
 	fi
 	systemctl enable --now docker >/dev/null 2>&1 || true
 	docker compose version >/dev/null 2>&1 || die "docker compose v2 plugin missing (install docker-compose-plugin)"
@@ -234,16 +236,19 @@ ensure_docker() {
 ensure_git() {
 	if command -v git >/dev/null 2>&1; then step_ok "git present"; return; fi
 	spinner_start "installing git"
-	{ apt-get update -qq && apt-get install -y -qq git; } >>"${LOGFILE:-/dev/null}" 2>&1
-	spinner_stop $?
+	set +e; { apt-get update -qq && apt-get install -y -qq git; } >>"${LOGFILE:-/dev/null}" 2>&1; rc=$?; set -e
+	spinner_stop "$rc"
+	[ "$rc" -eq 0 ] || die "git install failed — see ${LOGFILE:-the install log}"
 }
 
 # Optional — caller gates on ask_yes_no.
 ensure_nixpacks() {
 	if command -v nixpacks >/dev/null 2>&1; then step_ok "nixpacks present"; return; fi
 	spinner_start "installing nixpacks"
-	curl -fsSL https://nixpacks.com/install.sh | bash >>"${LOGFILE:-/dev/null}" 2>&1
-	spinner_stop $?
+	set +e; curl -fsSL https://nixpacks.com/install.sh | bash >>"${LOGFILE:-/dev/null}" 2>&1; rc=$?; set -e
+	spinner_stop "$rc"
+	# Optional: a failure is not fatal — Dockerfile/compose apps still deploy.
+	[ "$rc" -eq 0 ] || note "nixpacks install failed — you can retry later; Dockerfile/compose apps work without it"
 }
 
 # Maps uname -m to the go.dev download arch token.
@@ -268,11 +273,14 @@ install_go_toolchain() { # version
 	tarball="go${ver}.linux-${a}.tar.gz"
 	url="https://go.dev/dl/${tarball}"
 	spinner_start "downloading Go $ver ($a)"
+	set +e
 	{
 		curl -fsSL "$url" -o "$GOROOT_TMP/$tarball" &&
 		curl -fsSL "$url.sha256" -o "$GOROOT_TMP/$tarball.sha256"
 	} >>"${LOGFILE:-/dev/null}" 2>&1
-	rc=$?; spinner_stop $rc; [ $rc -eq 0 ] || die "could not download Go $ver from $url"
+	rc=$?
+	set -e
+	spinner_stop "$rc"; [ "$rc" -eq 0 ] || die "could not download Go $ver from $url"
 	sum=$(cat "$GOROOT_TMP/$tarball.sha256")
 	echo "$sum  $GOROOT_TMP/$tarball" | sha256sum -c - >>"${LOGFILE:-/dev/null}" 2>&1 \
 		|| die "Go toolchain checksum mismatch — refusing to build"
@@ -292,12 +300,18 @@ maybe_add_swap() { # mem_kb swap_kb
 	ask_yes_no "  Create a temporary 2 GB swapfile for the build?" y || return 0
 	[ -e "$BUILD_SWAP" ] && return 0
 	spinner_start "creating build swapfile"
+	# Mark now so cleanup removes the file even if swapon fails partway through.
+	SWAP_ADDED=1
+	set +e
 	{
 		fallocate -l 2G "$BUILD_SWAP" 2>/dev/null || dd if=/dev/zero of="$BUILD_SWAP" bs=1M count=2048
 		chmod 600 "$BUILD_SWAP" && mkswap "$BUILD_SWAP" && swapon "$BUILD_SWAP"
 	} >>"${LOGFILE:-/dev/null}" 2>&1
-	spinner_stop $?
-	SWAP_ADDED=1
+	rc=$?
+	set -e
+	spinner_stop "$rc"
+	# Not fatal: continue even if swap couldn't be enabled (the build may just be tight).
+	[ "$rc" -eq 0 ] || note "could not enable build swap — continuing without it"
 }
 
 # Removes only the swapfile we created.
@@ -318,18 +332,23 @@ fetch_source() {
 	fi
 	SRC_DIR=$(mktemp -d)
 	spinner_start "cloning outhaul"
-	git clone --depth 1 "$OUTHAUL_REPO" "$SRC_DIR" >>"${LOGFILE:-/dev/null}" 2>&1
-	spinner_stop $?
+	set +e; git clone --depth 1 "$OUTHAUL_REPO" "$SRC_DIR" >>"${LOGFILE:-/dev/null}" 2>&1; rc=$?; set -e
+	spinner_stop "$rc"
+	[ "$rc" -eq 0 ] || die "could not clone $OUTHAUL_REPO — see ${LOGFILE:-the install log}"
 }
 
 # Builds ./outhaul in SRC_DIR. Streams go build output to the log; shows a
 # spinner (progress bar is best-effort since `go build` has no clean %).
 build_binary() {
-	( cd "$SRC_DIR" || die "source dir vanished"
-	  spinner_start "building outhaul (this can take a few minutes)"
-	  GOFLAGS=-buildvcs=false go build -o outhaul . >>"${LOGFILE:-/dev/null}" 2>&1
-	  spinner_stop $? )
-	[ -x "$SRC_DIR/outhaul" ] || die "build failed — see ${LOGFILE:-the install log}"
+	# spinner_start runs in THIS shell (not the subshell) so cleanup can see SPIN_PID,
+	# and set +e keeps a failed build from aborting before spinner_stop + die.
+	spinner_start "building outhaul (this can take a few minutes)"
+	set +e
+	( cd "$SRC_DIR" && GOFLAGS=-buildvcs=false go build -o outhaul . ) >>"${LOGFILE:-/dev/null}" 2>&1
+	rc=$?
+	set -e
+	spinner_stop "$rc"
+	{ [ "$rc" -eq 0 ] && [ -x "$SRC_DIR/outhaul" ]; } || die "build failed — see ${LOGFILE:-the install log}"
 	step_ok "binary built"
 }
 
@@ -386,11 +405,13 @@ acme_preflight() { # domain
 # (especially SSH/22) BEFORE `ufw enable`, so the running session survives.
 apply_firewall() { # ports (space separated, must include 22)
 	ports=$1
-	command -v ufw >/dev/null 2>&1 || {
+	if ! command -v ufw >/dev/null 2>&1; then
 		spinner_start "installing ufw"
-		{ apt-get update -qq && apt-get install -y -qq ufw; } >>"${LOGFILE:-/dev/null}" 2>&1
-		spinner_stop $?
-	}
+		set +e; { apt-get update -qq && apt-get install -y -qq ufw; } >>"${LOGFILE:-/dev/null}" 2>&1; rc=$?; set -e
+		spinner_stop "$rc"
+		# Not fatal: skip firewalling rather than abort the whole install.
+		[ "$rc" -eq 0 ] || { note "could not install ufw — skipping firewall (open ports manually)"; return 0; }
+	fi
 	# shellcheck disable=SC2086 # intentional word-splitting of the space-separated port list
 	for p in $ports; do
 		ufw allow "$p"/tcp >>"${LOGFILE:-/dev/null}" 2>&1 || true
@@ -532,8 +553,10 @@ main() {
 	: > "$LOGFILE" 2>/dev/null || LOGFILE=/dev/null
 	if [ "$VERBOSE" = 1 ]; then LOGFILE=/dev/stderr; fi
 	trap cleanup EXIT INT TERM
-	# Open the controlling terminal on fd 3 for prompts; fall back to stdin.
-	exec 3</dev/tty 2>/dev/null || exec 3<&0
+	# Open the controlling terminal on fd 3 for prompts. Under `curl | sh` there is
+	# usually a real /dev/tty; if not (fully headless pipe), fall back to /dev/null
+	# so prompts read EOF and take their safe defaults — never the script text on stdin.
+	exec 3</dev/tty 2>/dev/null || exec 3</dev/null
 
 	init_ui
 	hero
@@ -578,13 +601,20 @@ main() {
 	PORTS=''
 	if [ "$WANT_FW" = 1 ]; then
 		PORTS=$(derive_firewall_ports "$MODE" "$GITPORT")
+		# Preserve the port of the admin's LIVE SSH session too, in case sshd
+		# listens somewhere other than 22 — otherwise enabling ufw locks them out.
+		if [ -n "${SSH_CONNECTION:-}" ]; then
+			assh=${SSH_CONNECTION##* }
+			case " $PORTS " in *" $assh "*) ;; *) [ -n "$assh" ] && PORTS="$PORTS $assh";; esac
+		fi
 		printf '  Firewall will open (SSH always preserved): %s\n' "$PORTS"
 		if ask_yes_no "  Proceed?" y; then apply_firewall "$PORTS"; else PORTS=''; fi
 	fi
 
 	HURL=$(admin_health_url "${OUTHAUL_LISTEN_ADDR:-:8080}")
 	if wait_healthy "$HURL"; then HEALTHY=0; else HEALTHY=1; fi
-	SETUP=$(journalctl -u outhaul --no-pager 2>/dev/null | extract_setup_url)
+	# -b: current boot only, so a re-run doesn't surface a stale first-boot token.
+	SETUP=$(journalctl -u outhaul -b --no-pager 2>/dev/null | extract_setup_url)
 
 	completion_screen "$MODE" "$PUBLIC_URL" "$PORTS" "$SETUP" "$HEALTHY"
 }
