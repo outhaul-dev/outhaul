@@ -333,6 +333,55 @@ build_binary() {
 	step_ok "binary built"
 }
 
+# Pure: does PUBLIC_IP appear in the resolved-IP set?
+domain_ip_matches() { # public_ip resolved_ips
+	pub=$1
+	# shellcheck disable=SC2086 # intentional word-splitting of the resolved-IP set into positional args
+	set -- $2
+	[ "$#" -gt 0 ] || return 1
+	for ip in "$@"; do [ "$ip" = "$pub" ] && return 0; done
+	return 1
+}
+
+host_public_ip() {
+	curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null ||
+	curl -fsS --max-time 5 https://ifconfig.me 2>/dev/null || true
+}
+
+# Space-separated A records for a name, using whatever resolver tool exists.
+resolve_a() { # name
+	if command -v getent >/dev/null 2>&1; then
+		getent ahostsv4 "$1" 2>/dev/null | awk '{print $1}' | sort -u | paste -sd' ' -
+	else
+		host "$1" 2>/dev/null | awk '/has address/{print $NF}' | paste -sd' ' -
+	fi
+}
+
+port_in_use() { # port
+	if command -v ss >/dev/null 2>&1; then ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]$1\$"
+	else netstat -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]$1\$"; fi
+}
+
+# Warns (does not hard-fail) about DNS/port issues before choosing ACME.
+acme_preflight() { # domain
+	dom=$1
+	pub=$(host_public_ip)
+	ips=$(resolve_a "$dom")
+	note "this server's public IP: ${pub:-unknown}"
+	note "$dom resolves to: ${ips:-<nothing>}"
+	if [ -n "$pub" ] && ! domain_ip_matches "$pub" "$ips"; then
+		step_fail "$dom does not point at this server"
+		note "create a DNS A record:  $dom  A  $pub"
+		ask_yes_no "  Continue with Let's Encrypt anyway?" n ||
+			die "fix DNS, then re-run the installer"
+	else
+		step_ok "$dom points at this server"
+	fi
+	for p in 80 443; do
+		port_in_use "$p" && step_fail "port $p already in use — Traefik may fail to bind" || true
+	done
+}
+
 main() {
 	printf 'outhaul installer\n'
 }
