@@ -45,6 +45,13 @@ derive_firewall_ports() { # mode gitport
 	printf '%s\n' "$@" | sort -n -u | paste -sd' ' -
 }
 
+# Returns success (0) when total RAM+swap is below 2 GiB and a build
+# swapfile should be offered. Inputs are in KiB (as /proc/meminfo reports).
+need_swap() { # mem_kb swap_kb
+	total=$(( ${1:-0} + ${2:-0} ))
+	[ "$total" -lt 2097152 ]
+}
+
 main() {
 	printf 'outhaul installer\n'
 }
