@@ -401,6 +401,40 @@ apply_firewall() { # ports (space separated, must include 22)
 	note "open more later with: ufw allow <port>"
 }
 
+# Carry legacy slipway state across the rename (mirrors old install.sh).
+migrate_slipway() {
+	if [ -d /var/lib/slipway ] && [ ! -e /var/lib/outhaul ]; then
+		systemctl stop outhaul 2>/dev/null || true
+		mv /var/lib/slipway /var/lib/outhaul
+		[ -f /var/lib/outhaul/slipway.db ] && mv /var/lib/outhaul/slipway.db /var/lib/outhaul/outhaul.db
+		step_ok "migrated /var/lib/slipway -> /var/lib/outhaul"
+	fi
+	rm -f /usr/local/bin/slipway
+}
+
+ensure_service_user() {
+	if ! id outhaul >/dev/null 2>&1; then
+		nologin=$(command -v nologin || echo /usr/sbin/nologin)
+		useradd --system --home-dir /var/lib/outhaul --create-home --shell "$nologin" outhaul
+		step_ok "created system user outhaul"
+	fi
+	usermod -aG docker outhaul
+}
+
+install_binary() {
+	install -m 0755 "$SRC_DIR/outhaul" /usr/local/bin/outhaul
+	step_ok "installed /usr/local/bin/outhaul"
+}
+
+# Installs the systemd unit shipped in the repo and (re)starts the service.
+install_service() {
+	install -m 0644 "$SRC_DIR/deploy/outhaul.service" /etc/systemd/system/outhaul.service
+	systemctl daemon-reload
+	if systemctl is-active --quiet outhaul; then systemctl restart outhaul
+	else systemctl enable --now outhaul; fi
+	step_ok "outhaul service started"
+}
+
 main() {
 	printf 'outhaul installer\n'
 }
