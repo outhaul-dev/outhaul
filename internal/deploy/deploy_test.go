@@ -633,3 +633,28 @@ func TestNixpacksAppRoutesEveryDomainRow(t *testing.T) {
 		t.Errorf("distinct domain-row routers = %d, want one per domain row (2): %v", len(routers), c.Labels)
 	}
 }
+
+func TestEffectiveTLSHonoursTunnel(t *testing.T) {
+	ctx := context.Background()
+	box, err := secret.Load(filepath.Join(t.TempDir(), "key"))
+	if err != nil {
+		t.Fatalf("secret.Load: %v", err)
+	}
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"), box)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	w := &Worker{store: st, cfg: config.Config{ACMEEmail: "ops@example.com"}} // TLSEnabled() == true
+
+	if !w.effectiveTLS(ctx) {
+		t.Fatal("expected TLS on when ACME set and no tunnel")
+	}
+	if err := st.SetCloudflareToken(ctx, "tok"); err != nil {
+		t.Fatalf("SetCloudflareToken: %v", err)
+	}
+	if w.effectiveTLS(ctx) {
+		t.Fatal("expected TLS off once the tunnel is enabled")
+	}
+}

@@ -39,6 +39,7 @@ go build -o outhaul . && ./outhaul serve
 ### Deploys that don't break production
 - **Health-gated blue-green cutover** — a new release only takes traffic once it passes health checks; a broken build is never promoted.
 - **Automatic HTTPS** — Let's Encrypt certificates issued and renewed for every domain you assign.
+- **Cloudflare Tunnel** — expose apps with no public IP and no port-forwarding: paste a Cloudflare connector token in Settings, and Outhaul runs `cloudflared` and routes each Cloudflare public hostname through Traefik. While the tunnel is the ingress, Cloudflare terminates HTTPS at its edge and Outhaul's Let's Encrypt automation stands down.
 - **One-click rollback** — return to any past deployment that still has its image — no rebuild, same health-gated cutover.
 
 ### Organize your apps

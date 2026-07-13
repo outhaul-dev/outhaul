@@ -92,6 +92,26 @@
 </section>
 
 <section class="panel">
+  <h2 class="panel-title">Cloudflare Tunnel</h2>
+  {{if .TunnelAvailable}}
+    {{if .TunnelEnabled}}
+      <p class="muted env-note">The tunnel is <strong>enabled</strong>. Outhaul is reachable through Cloudflare with no exposed ports. In the Cloudflare Zero&nbsp;Trust dashboard, point each public hostname at <code>http://outhaul-traefik:80</code>. While the tunnel is on, Let's Encrypt is disabled — Cloudflare provides HTTPS.</p>
+      <form method="post" action="/settings/tunnel/disable" class="grid-form">
+        <button type="submit" class="btn btn-danger">Disable tunnel</button>
+      </form>
+    {{else}}
+      <p class="muted env-note">Expose apps without a public IP or port-forwarding. Create a tunnel in the Cloudflare Zero&nbsp;Trust dashboard, copy its connector token, and paste it here. Then point each public hostname at <code>http://outhaul-traefik:80</code>. Enabling the tunnel takes over ingress from Let's Encrypt (Cloudflare terminates HTTPS).</p>
+      <form method="post" action="/settings/tunnel/enable" class="grid-form">
+        <label class="field"><span>Connector token</span><input type="password" name="token" placeholder="eyJhIjoi…" autocomplete="off" required></label>
+        <button type="submit" class="btn btn-primary">Enable tunnel</button>
+      </form>
+    {{end}}
+  {{else}}
+    <p class="muted env-note">Tunnel management is unavailable — Docker must be reachable to run the cloudflared connector.</p>
+  {{end}}
+</section>
+
+<section class="panel">
   <h2 class="panel-title">Change password</h2>
   <form method="post" action="/settings/password" class="grid-form">
     <label class="field"><span>Current password</span><input type="password" name="current" autocomplete="current-password" required></label>

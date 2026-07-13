@@ -99,6 +99,7 @@ type Server struct {
 
 	repos      *gitrepo.Manager // push-app bare repos; nil disables push-repo cleanup
 	sshControl SSHControl       // git-push SSH server; nil disables the port setting
+	tunnel     TunnelControl    // Cloudflare Tunnel management; nil disables the tunnel card
 
 	stateMu     sync.Mutex
 	stateTokens map[string]time.Time // CSRF states for the GitHub App manifest flow
@@ -240,6 +241,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /settings/push-keys", s.requireAuth(s.handleAddPushKey))
 	mux.HandleFunc("POST /settings/push-keys/{id}/delete", s.requireAuth(s.handleDeletePushKey))
 	mux.HandleFunc("POST /settings/ssh", s.requireAuth(s.handleSetSSHAddr))
+	mux.HandleFunc("POST /settings/tunnel/enable", s.requireAuth(s.handleEnableTunnel))
+	mux.HandleFunc("POST /settings/tunnel/disable", s.requireAuth(s.handleDisableTunnel))
 
 	mux.HandleFunc("GET /github/connect", s.requireAuth(s.handleGithubConnect))
 	// callback and setup are called by GitHub directly (no session cookie); the

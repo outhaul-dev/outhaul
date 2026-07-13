@@ -16,14 +16,20 @@ import (
 // a specific version so upgrades are deliberate.
 const DefaultTraefikImage = "traefik:v3.7.6"
 
+// DefaultCloudflaredImage is the cloudflared image Outhaul runs for a Cloudflare
+// Tunnel. Pinned so upgrades are deliberate; override with
+// OUTHAUL_CLOUDFLARED_IMAGE.
+const DefaultCloudflaredImage = "cloudflare/cloudflared:2026.7.0"
+
 // Config holds resolved runtime settings.
 type Config struct {
-	DataDir      string // root data dir; holds the SQLite DB and work dirs
-	ListenAddr   string // address the admin UI/API listens on
-	SSHAddr      string // default listen address for the git-push SSH server
-	DockerHost   string // Docker endpoint; empty means "use the SDK's env default"
-	TraefikImage string // image used for the managed Traefik container
-	Network      string // shared Docker network app containers + Traefik join
+	DataDir          string // root data dir; holds the SQLite DB and work dirs
+	ListenAddr       string // address the admin UI/API listens on
+	SSHAddr          string // default listen address for the git-push SSH server
+	DockerHost       string // Docker endpoint; empty means "use the SDK's env default"
+	TraefikImage     string // image used for the managed Traefik container
+	CloudflaredImage string // image used for the managed cloudflared connector
+	Network          string // shared Docker network app containers + Traefik join
 
 	ACMEEmail     string        // Let's Encrypt account email; empty disables TLS
 	ACMEStaging   bool          // use the LE staging CA (avoid rate limits)
@@ -42,12 +48,13 @@ type Getenv func(string) string
 // Load resolves configuration from defaults overlaid with OUTHAUL_* env vars.
 func Load(getenv Getenv) Config {
 	return Config{
-		DataDir:      or(getenv("OUTHAUL_DATA_DIR"), "/var/lib/outhaul"),
-		ListenAddr:   or(getenv("OUTHAUL_LISTEN_ADDR"), ":8080"),
-		SSHAddr:      or(getenv("OUTHAUL_SSH_ADDR"), ":2222"),
-		DockerHost:   getenv("OUTHAUL_DOCKER_HOST"), // empty is a valid value: defer to SDK
-		TraefikImage: or(getenv("OUTHAUL_TRAEFIK_IMAGE"), DefaultTraefikImage),
-		Network:      or(getenv("OUTHAUL_NETWORK"), "outhaul"),
+		DataDir:          or(getenv("OUTHAUL_DATA_DIR"), "/var/lib/outhaul"),
+		ListenAddr:       or(getenv("OUTHAUL_LISTEN_ADDR"), ":8080"),
+		SSHAddr:          or(getenv("OUTHAUL_SSH_ADDR"), ":2222"),
+		DockerHost:       getenv("OUTHAUL_DOCKER_HOST"), // empty is a valid value: defer to SDK
+		TraefikImage:     or(getenv("OUTHAUL_TRAEFIK_IMAGE"), DefaultTraefikImage),
+		CloudflaredImage: or(getenv("OUTHAUL_CLOUDFLARED_IMAGE"), DefaultCloudflaredImage),
+		Network:          or(getenv("OUTHAUL_NETWORK"), "outhaul"),
 
 		ACMEEmail:     firstField(getenv("OUTHAUL_ACME_EMAIL")),
 		ACMEStaging:   truthy(getenv("OUTHAUL_ACME_STAGING")),
