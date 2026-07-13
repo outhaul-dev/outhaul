@@ -382,6 +382,25 @@ acme_preflight() { # domain
 	done
 }
 
+# Opens the given port set with ufw. CRITICAL: `ufw allow` every port
+# (especially SSH/22) BEFORE `ufw enable`, so the running session survives.
+apply_firewall() { # ports (space separated, must include 22)
+	ports=$1
+	command -v ufw >/dev/null 2>&1 || {
+		spinner_start "installing ufw"
+		{ apt-get update -qq && apt-get install -y -qq ufw; } >>"${LOGFILE:-/dev/null}" 2>&1
+		spinner_stop $?
+	}
+	# shellcheck disable=SC2086 # intentional word-splitting of the space-separated port list
+	for p in $ports; do
+		ufw allow "$p"/tcp >>"${LOGFILE:-/dev/null}" 2>&1 || true
+	done
+	# --force avoids the interactive "proceed?" prompt; SSH is already allowed above.
+	ufw --force enable >>"${LOGFILE:-/dev/null}" 2>&1 || true
+	step_ok "firewall: opened $ports (SSH preserved)"
+	note "open more later with: ufw allow <port>"
+}
+
 main() {
 	printf 'outhaul installer\n'
 }
