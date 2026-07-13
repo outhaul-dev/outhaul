@@ -1,0 +1,15 @@
+name: installer
+on:
+  push:
+    paths: [deploy/**, .github/workflows/installer.yml]
+  pull_request:
+    paths: [deploy/**]
+jobs:
+  lint-and-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck -s sh --severity=warning deploy/bootstrap.sh deploy/test/*.sh
+      - name: unit tests
+        run: sh deploy/test/run.sh

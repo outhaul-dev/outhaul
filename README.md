@@ -27,6 +27,15 @@ go build -o outhaul . && ./outhaul serve
 # → open the one-time setup URL it prints, create the admin account, deploy.
 ```
 
+## Install on a fresh Debian VPS
+
+    curl -fsSL https://outhaul.sh/install | sh
+
+The installer walks you through ingress (Let's Encrypt or Cloudflare Tunnel),
+opens the right firewall ports (keeping SSH), builds from source, and prints a
+one-time setup URL. Developers with a local checkout can run
+`sudo sh deploy/bootstrap.sh --from-checkout .`.
+
 ## Features
 
 ### Deploy straight from Git
@@ -88,22 +97,27 @@ below, which sets up a dedicated user and a systemd unit.
 > warning at the top. The installer sets up a long-running systemd service, so
 > only point it at a box you're happy to wipe.
 
-Don't run Outhaul as root. From a checkout on the server:
+Don't run Outhaul as root. On the server:
 
 ```sh
-git clone https://github.com/outhaul-dev/outhaul && cd outhaul
-sudo deploy/install.sh
+curl -fsSL https://outhaul.sh/install | sh
 ```
 
-The installer needs root once (systemd required; Ubuntu/Debian/Fedora/RHEL/
-openSUSE). Each step is skipped when already done, so it is safe to re-run —
-and a re-run after `git pull` upgrades the binary and restarts the service.
-It:
+That fetches [`deploy/bootstrap.sh`](deploy/bootstrap.sh) and runs it under
+`sh`. From a checkout, run `sudo sh deploy/bootstrap.sh --from-checkout .`
+instead — useful for testing local changes to the installer or app.
+
+The installer needs root once (systemd required; V1 targets Debian, prompting
+before continuing on anything else). Each step is skipped when already
+done, so it is safe to re-run — and a re-run upgrades the binary and restarts
+the service. It:
 
 - installs **Docker** (via get.docker.com), **git**, and **nixpacks** if missing;
 - creates an `outhaul` **system user** (no login shell, home `/var/lib/outhaul`)
   in the `docker` group;
-- builds the binary if needed and installs it to `/usr/local/bin/outhaul`;
+- walks you through ingress — Let's Encrypt, Cloudflare Tunnel, or local-only —
+  and opens the right firewall ports, always keeping SSH reachable;
+- builds the binary from source and installs it to `/usr/local/bin/outhaul`;
 - writes `/etc/outhaul.env` (put `OUTHAUL_*` overrides there — ACME email,
   public URL) and installs and starts `outhaul.service`
   ([deploy/outhaul.service](deploy/outhaul.service)).
