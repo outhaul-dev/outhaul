@@ -246,6 +246,43 @@ ensure_nixpacks() {
 	spinner_stop $?
 }
 
+# Maps uname -m to the go.dev download arch token.
+go_dl_arch() { # uname_m
+	case "$1" in
+		x86_64|amd64)  echo amd64;;
+		aarch64|arm64) echo arm64;;
+		*) return 1;;
+	esac
+}
+
+# Downloads the go.mod-pinned Go toolchain to a temp dir, verifies its SHA256
+# against the value published in the accompanying .sha256, and exports PATH.
+# Sets GOROOT_TMP so the caller can remove it later.
+install_go_toolchain() { # version srcdir
+	ver=$1; srcdir=$2
+	if command -v go >/dev/null 2>&1 && [ "$(go env GOVERSION 2>/dev/null)" = "go$ver" ]; then
+		step_ok "Go $ver present"; return
+	fi
+	a=$(go_dl_arch "$(uname -m)") || die "unsupported arch for Go download"
+	GOROOT_TMP=$(mktemp -d)
+	tarball="go${ver}.linux-${a}.tar.gz"
+	url="https://go.dev/dl/${tarball}"
+	spinner_start "downloading Go $ver ($a)"
+	{
+		curl -fsSL "$url" -o "$GOROOT_TMP/$tarball" &&
+		curl -fsSL "$url.sha256" -o "$GOROOT_TMP/$tarball.sha256"
+	} >>"${LOGFILE:-/dev/null}" 2>&1
+	rc=$?; spinner_stop $rc; [ $rc -eq 0 ] || die "could not download Go $ver from $url"
+	sum=$(cat "$GOROOT_TMP/$tarball.sha256")
+	echo "$sum  $GOROOT_TMP/$tarball" | sha256sum -c - >>"${LOGFILE:-/dev/null}" 2>&1 \
+		|| die "Go toolchain checksum mismatch — refusing to build"
+	step_ok "Go $ver checksum verified"
+	tar -C "$GOROOT_TMP" -xzf "$GOROOT_TMP/$tarball"
+	PATH="$GOROOT_TMP/go/bin:$PATH"; export PATH
+	GOTOOLCHAIN=local; export GOTOOLCHAIN   # do not let go fetch a different one
+	step_ok "Go $ver ready"
+}
+
 main() {
 	printf 'outhaul installer\n'
 }
