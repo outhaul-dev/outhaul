@@ -485,8 +485,108 @@ completion_screen() { # mode url ports setup_url healthy(0/1)
 	hr
 }
 
+LOGFILE=/var/log/outhaul-install.log
+VERBOSE=0
+FROM_CHECKOUT=0
+CHECKOUT_DIR=.
+
+parse_args() {
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+			--verbose) VERBOSE=1;;
+			--from-checkout) FROM_CHECKOUT=1; CHECKOUT_DIR=${2:-.}; shift;;
+			-h|--help) printf 'usage: bootstrap.sh [--verbose] [--from-checkout DIR]\n'; exit 0;;
+			*) die "unknown option: $1";;
+		esac
+		shift
+	done
+}
+
+cleanup() {
+	if [ -n "${SPIN_PID:-}" ]; then kill "$SPIN_PID" 2>/dev/null || true; fi
+	remove_build_swap || true
+	if [ "${FROM_CHECKOUT:-0}" != 1 ] && [ -n "${SRC_DIR:-}" ]; then rm -rf "$SRC_DIR"; fi
+	if [ -n "${GOROOT_TMP:-}" ]; then rm -rf "$GOROOT_TMP"; fi
+}
+
+# Ingress-mode menu. Sets MODE (a/b/c), PUBLIC_URL, ACME_EMAIL.
+choose_ingress() {
+	printf '\n  How should apps be reachable?\n'
+	printf '    1) Public domain + automatic HTTPS (Let'\''s Encrypt)\n'
+	printf '    2) Cloudflare Tunnel (no public IP / ports needed)\n'
+	printf '    3) Local only for now (admin UI on :8080)\n'
+	choice=$(ask_value "  Choose 1/2/3:" 1)
+	case "$choice" in
+		2) MODE=b; PUBLIC_URL=''; ACME_EMAIL='';;
+		3) MODE=c; PUBLIC_URL=''; ACME_EMAIL='';;
+		*) MODE=a
+		   PUBLIC_URL=$(ask_value "  Public URL (e.g. https://paas.example.com):" '')
+		   dom=${PUBLIC_URL#*://}; dom=${dom%%/*}
+		   acme_preflight "$dom"
+		   ACME_EMAIL=$(ask_value "  Email for Let's Encrypt:" '');;
+	esac
+}
+
 main() {
-	printf 'outhaul installer\n'
+	parse_args "$@"
+	: > "$LOGFILE" 2>/dev/null || LOGFILE=/dev/null
+	if [ "$VERBOSE" = 1 ]; then LOGFILE=/dev/stderr; fi
+	trap cleanup EXIT INT TERM
+	# Open the controlling terminal on fd 3 for prompts; fall back to stdin.
+	exec 3</dev/tty 2>/dev/null || exec 3<&0
+
+	init_ui
+	hero
+	preflight
+
+	choose_ingress
+
+	GITPORT=$(ask_value "  Git-push-to-deploy port (blank to disable):" 2222)
+	if [ -n "$GITPORT" ]; then SSH_ADDR=":$GITPORT"; else SSH_ADDR=''; fi
+
+	if ask_yes_no "  Install Nixpacks (needed for auto-detected builds)?" y; then WANT_NIXPACKS=1; else WANT_NIXPACKS=0; fi
+	if ask_yes_no "  Configure the firewall (ufw) now?" y; then WANT_FW=1; else WANT_FW=0; fi
+
+	ensure_docker
+	ensure_git
+	if [ "$WANT_NIXPACKS" = 1 ]; then ensure_nixpacks; fi
+
+	fetch_source
+	GO_VER=$(go_version_from_gomod "$SRC_DIR/go.mod")
+	maybe_add_swap "${MEM_KB:-0}" "${SWAP_KB:-0}"
+	install_go_toolchain "$GO_VER"
+	build_binary
+	remove_build_swap
+
+	migrate_slipway
+	ensure_service_user
+	install_binary
+	if [ ! -f /etc/outhaul.env ]; then
+		write_env_file /etc/outhaul.env "$MODE" "$PUBLIC_URL" "$ACME_EMAIL" "$SSH_ADDR"
+		step_ok "wrote /etc/outhaul.env"
+	else
+		note "/etc/outhaul.env exists — left unchanged"
+	fi
+	install_service
+
+	if [ -n "${GOROOT_TMP:-}" ]; then
+		if ask_yes_no "  Remove the downloaded Go toolchain (~150 MB)?" y; then
+			rm -rf "$GOROOT_TMP"; GOROOT_TMP=''; step_ok "removed Go toolchain"
+		fi
+	fi
+
+	PORTS=''
+	if [ "$WANT_FW" = 1 ]; then
+		PORTS=$(derive_firewall_ports "$MODE" "$GITPORT")
+		printf '  Firewall will open (SSH always preserved): %s\n' "$PORTS"
+		if ask_yes_no "  Proceed?" y; then apply_firewall "$PORTS"; else PORTS=''; fi
+	fi
+
+	HURL=$(admin_health_url "${OUTHAUL_LISTEN_ADDR:-:8080}")
+	if wait_healthy "$HURL"; then HEALTHY=0; else HEALTHY=1; fi
+	SETUP=$(journalctl -u outhaul --no-pager 2>/dev/null | extract_setup_url)
+
+	completion_screen "$MODE" "$PUBLIC_URL" "$PORTS" "$SETUP" "$HEALTHY"
 }
 
 # Run main only when executed, not when sourced by the test suite.
