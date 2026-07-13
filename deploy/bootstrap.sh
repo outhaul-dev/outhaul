@@ -283,6 +283,31 @@ install_go_toolchain() { # version srcdir
 	step_ok "Go $ver ready"
 }
 
+BUILD_SWAP=/var/lib/outhaul-build.swap
+
+# Offers a temporary build swapfile when RAM+swap is under 2 GiB.
+maybe_add_swap() { # mem_kb swap_kb
+	need_swap "$1" "$2" || return 0
+	note "low memory — the Go build may be OOM-killed without extra swap"
+	ask_yes_no "  Create a temporary 2 GB swapfile for the build?" y || return 0
+	[ -e "$BUILD_SWAP" ] && return 0
+	spinner_start "creating build swapfile"
+	{
+		fallocate -l 2G "$BUILD_SWAP" 2>/dev/null || dd if=/dev/zero of="$BUILD_SWAP" bs=1M count=2048
+		chmod 600 "$BUILD_SWAP" && mkswap "$BUILD_SWAP" && swapon "$BUILD_SWAP"
+	} >>"${LOGFILE:-/dev/null}" 2>&1
+	spinner_stop $?
+	SWAP_ADDED=1
+}
+
+# Removes only the swapfile we created.
+remove_build_swap() {
+	[ "${SWAP_ADDED:-0}" = 1 ] || return 0
+	swapoff "$BUILD_SWAP" 2>/dev/null || true
+	rm -f "$BUILD_SWAP"
+	SWAP_ADDED=0
+}
+
 main() {
 	printf 'outhaul installer\n'
 }
