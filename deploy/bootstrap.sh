@@ -35,6 +35,16 @@ detect_color_level() {
 	_color_level "${NO_COLOR:-}" "$tty" "${COLORTERM:-}" "$tc"
 }
 
+# Prints the space-separated, sorted, de-duplicated port set to open.
+# SSH (22) is ALWAYS included. Mode a adds 80/443. A non-empty git port is added.
+derive_firewall_ports() { # mode gitport
+	mode=$1; gitport=${2:-}
+	set -- 22
+	[ "$mode" = a ] && set -- "$@" 80 443
+	[ -n "$gitport" ] && set -- "$@" "$gitport"
+	printf '%s\n' "$@" | sort -n -u | paste -sd' ' -
+}
+
 main() {
 	printf 'outhaul installer\n'
 }
