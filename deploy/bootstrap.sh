@@ -258,8 +258,8 @@ go_dl_arch() { # uname_m
 # Downloads the go.mod-pinned Go toolchain to a temp dir, verifies its SHA256
 # against the value published in the accompanying .sha256, and exports PATH.
 # Sets GOROOT_TMP so the caller can remove it later.
-install_go_toolchain() { # version srcdir
-	ver=$1; srcdir=$2
+install_go_toolchain() { # version
+	ver=$1
 	if command -v go >/dev/null 2>&1 && [ "$(go env GOVERSION 2>/dev/null)" = "go$ver" ]; then
 		step_ok "Go $ver present"; return
 	fi
