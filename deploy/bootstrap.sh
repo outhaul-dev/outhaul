@@ -71,6 +71,25 @@ write_env_file() { # dest mode url email sshaddr
 	chmod 0600 "$dest"
 }
 
+# Yes/no prompt read from fd 3. $2 is the default ('y' or 'n').
+ask_yes_no() { # prompt default
+	_p=$1; _d=$2
+	if [ "$_d" = y ]; then _h='Y/n'; else _h='y/N'; fi
+	printf '%s [%s] ' "$_p" "$_h" >&2
+	read _a <&3 2>/dev/null || _a=''
+	[ -z "$_a" ] && _a=$_d
+	case "$_a" in [Yy]*) return 0;; *) return 1;; esac
+}
+
+# Free-text prompt read from fd 3; prints the answer (or default) to stdout.
+ask_value() { # prompt default
+	_p=$1; _d=$2
+	if [ -n "$_d" ]; then printf '%s [%s] ' "$_p" "$_d" >&2; else printf '%s ' "$_p" >&2; fi
+	read _a <&3 2>/dev/null || _a=''
+	[ -z "$_a" ] && _a=$_d
+	printf '%s\n' "$_a"
+}
+
 main() {
 	printf 'outhaul installer\n'
 }
