@@ -129,6 +129,67 @@ log_line() { [ -n "${LOGFILE:-}" ] && printf '%s\n' "$*" >> "$LOGFILE" 2>/dev/nu
 
 die() { _c '1;31'; printf 'error: ' >&2; _c 0; printf '%s\n' "$1" >&2; log_line "ERROR: $1"; exit 1; }
 
+_hero_rgb() { case $1 in
+	1) echo 247 120 186;; 2) echo 188 140 255;;
+	3) echo 88 166 255;;  4) echo 63 185 80;; esac; }
+
+# Gradient ASCII wordmark; degrades to a single line when narrow or plain.
+hero() {
+	if [ "${WIDTH:-80}" -lt 62 ]; then
+		printf '\n'; _c '1;35'; printf '  Outhaul'; _c 0; printf ' — self-hosted PaaS\n\n'; return
+	fi
+	printf '\n'
+	set -- \
+'  ██████  ██    ██ ████████ ██   ██  █████  ██    ██ ██     ' \
+'  ██   ██ ██    ██    ██    ██   ██ ██   ██ ██    ██ ██     ' \
+'  ██   ██ ██    ██    ██    ███████ ███████ ██    ██ ██     ' \
+'  ██████   ██████     ██    ██   ██ ██   ██  ██████  ███████'
+	i=0
+	# shellcheck disable=SC2046 # intentional: _hero_rgb's 3 numbers become 3 args to paint
+	for line in "$@"; do i=$((i+1)); paint $(_hero_rgb "$i") "$line"; printf '\n'; done
+	_c 90; printf '   self-hosted PaaS · one binary, zero sprawl\n'; _c 0; printf '\n'
+}
+
+# Braille spinner on a background PID while a long step runs.
+# Usage: spinner_start "message"; <work>; spinner_stop 0|1
+SPIN_PID=''
+spinner_start() {
+	SPIN_MSG=$1
+	if [ "${COLOR:-0}" = 0 ] || [ ! -t 1 ]; then printf '  .. %s\n' "$SPIN_MSG"; return; fi
+	( frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'; [ "${UNICODE:-0}" = 1 ] || frames='|/-\\'
+	  while :; do
+		i=1
+		while [ "$i" -le ${#frames} ]; do
+			f=$(printf '%s' "$frames" | cut -c "$i")
+			printf '\r  \033[35m%s\033[0m %s' "$f" "$SPIN_MSG"
+			sleep 0.1; i=$((i+1))
+		done
+	  done ) &
+	SPIN_PID=$!
+}
+spinner_stop() { # exitcode
+	[ -n "${SPIN_PID:-}" ] && kill "$SPIN_PID" 2>/dev/null && wait "$SPIN_PID" 2>/dev/null
+	SPIN_PID=''
+	[ "${COLOR:-0}" = 0 ] && return 0
+	printf '\r\033[K'
+	if [ "${1:-0}" -eq 0 ]; then step_ok "$SPIN_MSG"; else step_fail "$SPIN_MSG"; fi
+}
+
+# A single-line gradient progress bar: progress_bar PERCENT LABEL
+progress_bar() { # percent label
+	pct=$1; label=${2:-}
+	width=30; filled=$(( pct * width / 100 ))
+	[ "$filled" -gt "$width" ] && filled=$width
+	bar=''; i=0
+	while [ "$i" -lt "$filled" ]; do bar="$bar#"; i=$((i+1)); done
+	while [ "$i" -lt "$width" ]; do bar="$bar."; i=$((i+1)); done
+	if [ "${COLOR:-0}" -ge 1 ]; then
+		printf '\r  \033[32m%s\033[0m %3d%% %s' "$bar" "$pct" "$label"
+	else
+		printf '\r  %s %3d%% %s' "$bar" "$pct" "$label"
+	fi
+}
+
 main() {
 	printf 'outhaul installer\n'
 }
