@@ -220,6 +220,32 @@ preflight() {
 	note "memory: $((MEM_KB/1024)) MB RAM, $((SWAP_KB/1024)) MB swap"
 }
 
+ensure_docker() {
+	if command -v docker >/dev/null 2>&1; then step_ok "Docker present"; else
+		spinner_start "installing Docker (get.docker.com)"
+		curl -fsSL https://get.docker.com | sh >>"${LOGFILE:-/dev/null}" 2>&1
+		spinner_stop $?
+	fi
+	systemctl enable --now docker >/dev/null 2>&1 || true
+	docker compose version >/dev/null 2>&1 || die "docker compose v2 plugin missing (install docker-compose-plugin)"
+	step_ok "docker compose v2 available"
+}
+
+ensure_git() {
+	if command -v git >/dev/null 2>&1; then step_ok "git present"; return; fi
+	spinner_start "installing git"
+	{ apt-get update -qq && apt-get install -y -qq git; } >>"${LOGFILE:-/dev/null}" 2>&1
+	spinner_stop $?
+}
+
+# Optional — caller gates on ask_yes_no.
+ensure_nixpacks() {
+	if command -v nixpacks >/dev/null 2>&1; then step_ok "nixpacks present"; return; fi
+	spinner_start "installing nixpacks"
+	curl -fsSL https://nixpacks.com/install.sh | bash >>"${LOGFILE:-/dev/null}" 2>&1
+	spinner_stop $?
+}
+
 main() {
 	printf 'outhaul installer\n'
 }
