@@ -308,6 +308,31 @@ remove_build_swap() {
 	SWAP_ADDED=0
 }
 
+# Clones the repo (or uses --from-checkout dir). Prints the source dir via SRC_DIR.
+fetch_source() {
+	if [ "${FROM_CHECKOUT:-0}" = 1 ]; then
+		SRC_DIR=$(cd "$CHECKOUT_DIR" && pwd)
+		[ -f "$SRC_DIR/go.mod" ] || die "--from-checkout: no go.mod in $SRC_DIR"
+		step_ok "using local checkout $SRC_DIR"
+		return
+	fi
+	SRC_DIR=$(mktemp -d)
+	spinner_start "cloning outhaul"
+	git clone --depth 1 "$OUTHAUL_REPO" "$SRC_DIR" >>"${LOGFILE:-/dev/null}" 2>&1
+	spinner_stop $?
+}
+
+# Builds ./outhaul in SRC_DIR. Streams go build output to the log; shows a
+# spinner (progress bar is best-effort since `go build` has no clean %).
+build_binary() {
+	( cd "$SRC_DIR" || die "source dir vanished"
+	  spinner_start "building outhaul (this can take a few minutes)"
+	  GOFLAGS=-buildvcs=false go build -o outhaul . >>"${LOGFILE:-/dev/null}" 2>&1
+	  spinner_stop $? )
+	[ -x "$SRC_DIR/outhaul" ] || die "build failed — see ${LOGFILE:-the install log}"
+	step_ok "binary built"
+}
+
 main() {
 	printf 'outhaul installer\n'
 }
