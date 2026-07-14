@@ -1,0 +1,8 @@
+# Systemd-enabled Debian for installer integration testing.
+FROM debian:13
+RUN apt-get update && apt-get install -y systemd systemd-sysv curl ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY . /src
+WORKDIR /src
+# The container is run with --privileged and /sbin/init so systemctl works.
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

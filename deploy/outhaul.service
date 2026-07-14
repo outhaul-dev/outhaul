@@ -1,4 +1,4 @@
-# Outhaul systemd unit. Installed by deploy/install.sh to
+# Outhaul systemd unit. Installed by deploy/bootstrap.sh to
 # /etc/systemd/system/outhaul.service.
 #
 # The service runs as the dedicated `outhaul` system user, not root. Its only
