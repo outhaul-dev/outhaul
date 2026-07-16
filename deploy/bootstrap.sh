@@ -71,20 +71,21 @@ write_env_file() { # dest mode url email sshaddr
 	chmod 0600 "$dest"
 }
 
-# Yes/no prompt read from fd 3. $2 is the default ('y' or 'n').
+# Yes/no prompt: written to the tty on fd 3 (stderr fallback), read from fd 3. $2 is the default ('y' or 'n').
 ask_yes_no() { # prompt default
 	_p=$1; _d=$2
 	if [ "$_d" = y ]; then _h='Y/n'; else _h='y/N'; fi
-	printf '%s [%s] ' "$_p" "$_h" >&2
+	printf '%s [%s] ' "$_p" "$_h" >&3 2>/dev/null || printf '%s [%s] ' "$_p" "$_h" >&2
 	read _a <&3 2>/dev/null || _a=''
 	[ -z "$_a" ] && _a=$_d
 	case "$_a" in [Yy]*) return 0;; *) return 1;; esac
 }
 
-# Free-text prompt read from fd 3; prints the answer (or default) to stdout.
+# Free-text prompt: written to the tty on fd 3 (stderr fallback), read from fd 3; prints the answer (or default) to stdout.
 ask_value() { # prompt default
 	_p=$1; _d=$2
-	if [ -n "$_d" ]; then printf '%s [%s] ' "$_p" "$_d" >&2; else printf '%s ' "$_p" >&2; fi
+	if [ -n "$_d" ]; then _t="$_p [$_d] "; else _t="$_p "; fi
+	printf '%s' "$_t" >&3 2>/dev/null || printf '%s' "$_t" >&2
 	read _a <&3 2>/dev/null || _a=''
 	[ -z "$_a" ] && _a=$_d
 	printf '%s\n' "$_a"
@@ -553,10 +554,13 @@ main() {
 	: > "$LOGFILE" 2>/dev/null || LOGFILE=/dev/null
 	if [ "$VERBOSE" = 1 ]; then LOGFILE=/dev/stderr; fi
 	trap cleanup EXIT INT TERM
-	# Open the controlling terminal on fd 3 for prompts. Under `curl | sh` there is
-	# usually a real /dev/tty; if not (fully headless pipe), fall back to /dev/null
-	# so prompts read EOF and take their safe defaults — never the script text on stdin.
-	exec 3</dev/tty 2>/dev/null || exec 3</dev/null
+	# Open the controlling terminal read-write on fd 3, for BOTH prompt output and
+	# input. Under `curl | sh` stdin is the pipe and stderr may be redirected away,
+	# so prompts written to stderr can go unseen — routing them to the tty (fd 3)
+	# guarantees they land where the user is typing. If there is no /dev/tty (fully
+	# headless pipe), fall back to /dev/null so prompts read EOF and take their safe
+	# defaults, and prompt text is harmlessly discarded — never onto stdin.
+	exec 3<>/dev/tty 2>/dev/null || exec 3<>/dev/null
 
 	init_ui
 	hero
