@@ -252,6 +252,16 @@ ensure_nixpacks() {
 	[ "$rc" -eq 0 ] || note "nixpacks install failed — you can retry later; Dockerfile/compose apps work without it"
 }
 
+# Pure: true only for a bare 64-char hex sha256 digest. Guards against a checksum
+# endpoint answering 200 with an HTML stub, which would otherwise surface as a
+# confusing "checksum mismatch" instead of "the sidecar was not a digest".
+is_sha256() { # candidate
+	case "$1" in
+		''|*[!0-9a-fA-F]*) return 1;;
+	esac
+	[ "${#1}" -eq 64 ]
+}
+
 # Maps uname -m to the go.dev download arch token.
 go_dl_arch() { # uname_m
 	case "$1" in
@@ -272,7 +282,10 @@ install_go_toolchain() { # version
 	a=$(go_dl_arch "$(uname -m)") || die "unsupported arch for Go download"
 	GOROOT_TMP=$(mktemp -d)
 	tarball="go${ver}.linux-${a}.tar.gz"
-	url="https://go.dev/dl/${tarball}"
+	# dl.google.com is the canonical artifact host and serves the .sha256 sidecar as
+	# a raw 64-char digest. Do NOT use go.dev/dl/<file>.sha256: it answers 200 with an
+	# HTML redirect stub, which silently poisons $sum and fails verification.
+	url="https://dl.google.com/go/${tarball}"
 	spinner_start "downloading Go $ver ($a)"
 	set +e
 	{
@@ -282,7 +295,8 @@ install_go_toolchain() { # version
 	rc=$?
 	set -e
 	spinner_stop "$rc"; [ "$rc" -eq 0 ] || die "could not download Go $ver from $url"
-	sum=$(cat "$GOROOT_TMP/$tarball.sha256")
+	sum=$(tr -d '[:space:]' < "$GOROOT_TMP/$tarball.sha256")
+	is_sha256 "$sum" || die "bad checksum file from $url.sha256 — not a sha256 digest (got ${#sum} chars)"
 	echo "$sum  $GOROOT_TMP/$tarball" | sha256sum -c - >>"${LOGFILE:-/dev/null}" 2>&1 \
 		|| die "Go toolchain checksum mismatch — refusing to build"
 	step_ok "Go $ver checksum verified"
