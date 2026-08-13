@@ -512,7 +512,7 @@ completion_screen() { # mode url ports setup_url healthy(0/1) localca(0/1)
 		a) note "HTTPS: Let's Encrypt configured for $url";;
 		b) _c '1;33'; printf '  → Finish Cloudflare Tunnel: log in, then paste your connector token in Settings → Tunnel\n'; _c 0;;
 		c) if [ "$localca" = 1 ]; then
-			note "HTTPS: built-in local CA — install the root on your devices: outhaul ca root > outhaul-ca.pem (or download /ca.pem from the admin UI)"
+			note "HTTPS: built-in local CA — install the root on your devices: outhaul ca root > outhaul-ca.pem (or download /ca.pem from the admin UI). See docs/LOCAL-CA.md."
 		   else
 			note "admin UI on :8080 — set OUTHAUL_PUBLIC_URL + OUTHAUL_ACME_EMAIL later for HTTPS"
 		   fi;;
@@ -565,6 +565,7 @@ choose_ingress() {
 	case "$choice" in
 		2) MODE=b; PUBLIC_URL=''; ACME_EMAIL='';;
 		3) MODE=c; PUBLIC_URL=''; ACME_EMAIL=''
+		   # || true: a "no" answer must not abort under set -e
 		   ask_yes_no "  Enable HTTPS with a local certificate authority?" y && LOCAL_CA=1 || true;;
 		*) MODE=a
 		   PUBLIC_URL=$(ask_value "  Public URL (e.g. https://paas.example.com):" '')

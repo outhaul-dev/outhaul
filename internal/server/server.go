@@ -97,7 +97,7 @@ type Server struct {
 	setupToken string
 	publicURL  string
 	serverIP   string // for generated sslip.io template domains; may be empty
-	tlsEnabled bool   // ACME configured: HTTPS automation is available
+	tlsEnabled bool   // ACME or local CA configured: HTTPS automation is available
 	secure     bool   // Secure cookie flag; the admin UI is served directly over HTTP (not behind Traefik), so this stays false
 
 	repos      *gitrepo.Manager // push-app bare repos; nil disables push-repo cleanup

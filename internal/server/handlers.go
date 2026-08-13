@@ -613,6 +613,7 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 		"ProjDatabases": projDatabases,
 		"ServerIP":      s.serverIP,
 		"TLSAvailable":  s.tlsEnabled,
+		"LocalCA":       s.caFile != "",
 
 		"PreviewsAvailable": app.Source == core.SourceGithub,
 		"PreviewConfig":     previewCfg,

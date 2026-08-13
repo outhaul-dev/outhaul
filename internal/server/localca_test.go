@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
@@ -84,5 +85,36 @@ func TestNonComposeAppCreationTriggersCertSync(t *testing.T) {
 	}
 	if rs.n == 0 {
 		t.Error("creating a nixpacks app with a domain must trigger a cert sync")
+	}
+}
+
+// TestDomainFormCopyMatchesTLSMode checks the domain wizard's HTTPS-toggle
+// copy names the actual certificate source instead of always saying "Let's
+// Encrypt", which used to be hardcoded regardless of LocalCA.
+func TestDomainFormCopyMatchesTLSMode(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+
+	page := body(t, e.get(t, "/apps/"+itoa(app.ID)))
+	if !strings.Contains(page, "Automate HTTPS (Let's Encrypt)") {
+		t.Error("without a local CA, the toggle should still read Let's Encrypt")
+	}
+	if strings.Contains(page, "Automate HTTPS (local CA)") {
+		t.Error("without a local CA, the toggle should not claim local-CA copy")
+	}
+
+	caFile := filepath.Join(t.TempDir(), "rootCA.pem")
+	if err := os.WriteFile(caFile, []byte("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	e.srv.SetLocalCAFile(caFile)
+
+	page = body(t, e.get(t, "/apps/"+itoa(app.ID)))
+	if !strings.Contains(page, "Automate HTTPS (local CA)") {
+		t.Error("with a local CA, the toggle should read local CA")
+	}
+	if strings.Contains(page, "Automate HTTPS (Let's Encrypt)") {
+		t.Error("with a local CA, the toggle should not mention Let's Encrypt")
 	}
 }

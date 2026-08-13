@@ -6,13 +6,15 @@ mkcert-style certificate authority: set `OUTHAUL_LOCAL_CA=true` (the
 installer's local-only mode offers this) and Outhaul creates a CA on first
 boot, then automatically mints and rotates a certificate for every app
 domain with TLS enabled. Nothing to renew by hand — you install the CA root
-on each of your devices once.
+on each of your devices once. Apps deployed before the CA was enabled need a
+redeploy to pick up their HTTPS routers.
 
 ## Install the root certificate
 
 Get the root, either way:
 
-- from the server: `outhaul ca root > outhaul-ca.pem`
+- from the server: `sudo outhaul ca root > outhaul-ca.pem` (the CA dir is
+  `0700` and owned by the service user, so this needs root)
 - from any browser: `http://<server>:8080/ca.pem` (also linked from
   Settings)
 

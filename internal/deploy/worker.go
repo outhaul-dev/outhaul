@@ -103,7 +103,7 @@ func (w *Worker) effectiveTLS(ctx context.Context) bool {
 	}
 	on, err := w.store.TunnelEnabled(ctx)
 	if err != nil {
-		log.Printf("deploy: could not read tunnel setting, assuming Let's Encrypt on: %v", err)
+		log.Printf("deploy: could not read tunnel setting, assuming HTTPS on: %v", err)
 		return true
 	}
 	return !on
