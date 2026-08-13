@@ -287,8 +287,11 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 				"App created, but the domain could not be added: "+err.Error(), name, repo, domain)
 			return
 		}
-		s.syncCerts(r.Context())
 	}
+	// CreateApp itself seeds a primary domain row for non-compose apps (see
+	// store.CreateApp); compose apps seed one just above via firstDomain. Either
+	// way a new domain may now need a cert, so sync once here regardless of kind.
+	s.syncCerts(r.Context())
 	// The project-detail form asks to land back on its project; anything else
 	// (or a tampered value) falls back to the apps list.
 	ret := r.FormValue("return")

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -55,7 +56,33 @@ func TestDomainChangeTriggersCertSync(t *testing.T) {
 	form := url.Values{"host_kind": {"custom"}, "host": {"alias.test"}, "tls": {"on"}}
 	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/domains", form)
 	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("add domain status = %d, want 303", resp.StatusCode)
+	}
 	if rs.n == 0 {
 		t.Error("adding a domain must trigger a cert sync")
+	}
+}
+
+// TestNonComposeAppCreationTriggersCertSync covers the common case: creating a
+// nixpacks (or dockerfile) app through the real /apps endpoint the UI uses.
+// store.CreateApp seeds a TLS-enabled primary domain row for these apps inside
+// its own transaction (see internal/store/apps.go's addDomainTx call and
+// TestCreateAppSeedsPrimaryDomainRow) — no separate AddDomain call happens in
+// the handler, so the sync hook must fire from handleCreateApp itself, not just
+// from the compose-only firstDomain branch.
+func TestNonComposeAppCreationTriggersCertSync(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	rs := &recordingSyncer{}
+	e.srv.SetCertSync(rs)
+
+	resp := e.postForm(t, "/apps", appForm("web", "web.example.com"))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("create app status = %d, want 303", resp.StatusCode)
+	}
+	if rs.n == 0 {
+		t.Error("creating a nixpacks app with a domain must trigger a cert sync")
 	}
 }
