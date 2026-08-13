@@ -23,7 +23,7 @@ const dynamicCertsFile = "outhaul-local-certs.yml"
 // twice-daily check has weeks of slack.
 const syncInterval = 12 * time.Hour
 
-// DomainLister is the slice of store.Store the manager needs.
+// DomainLister is the subset of store.Store the manager needs.
 type DomainLister interface {
 	ListAllDomains(ctx context.Context) ([]core.DomainListing, error)
 }
@@ -84,6 +84,7 @@ func (m *Manager) Sync(ctx context.Context) error {
 	var served []string
 	for _, host := range sortedKeys(wanted) {
 		pemPath := filepath.Join(m.certsDir, host+".pem")
+		keyPath := filepath.Join(m.certsDir, host+".key")
 		cur, readErr := os.ReadFile(pemPath)
 		if readErr == nil && !NeedsRemint(cur, host, wanted[host], now) {
 			served = append(served, host)
@@ -97,12 +98,42 @@ func (m *Manager) Sync(ctx context.Context) error {
 			}
 			continue
 		}
-		if err := os.WriteFile(filepath.Join(m.certsDir, host+".key"), keyPEM, 0o600); err != nil {
-			log.Printf("localca: write key for %s: %v", host, err)
+		// Atomic-ish swap: write both to temp names first, rename only if both succeed.
+		keyTmp := keyPath + ".tmp"
+		pemTmp := pemPath + ".tmp"
+		if err := os.WriteFile(keyTmp, keyPEM, 0o600); err != nil {
+			log.Printf("localca: write temp key for %s: %v", host, err)
+			_ = os.Remove(pemTmp) // clean up any temp cert
+			if readErr == nil {
+				served = append(served, host) // keep serving the old cert
+			}
 			continue
 		}
-		if err := os.WriteFile(pemPath, certPEM, 0o644); err != nil {
-			log.Printf("localca: write cert for %s: %v", host, err)
+		if err := os.WriteFile(pemTmp, certPEM, 0o644); err != nil {
+			log.Printf("localca: write temp cert for %s: %v", host, err)
+			_ = os.Remove(keyTmp) // clean up the temp key
+			if readErr == nil {
+				served = append(served, host) // keep serving the old cert
+			}
+			continue
+		}
+		// Both temps are written; rename into place.
+		if err := os.Rename(keyTmp, keyPath); err != nil {
+			log.Printf("localca: rename key for %s: %v", host, err)
+			_ = os.Remove(keyTmp)
+			_ = os.Remove(pemTmp)
+			if readErr == nil {
+				served = append(served, host) // keep serving the old cert
+			}
+			continue
+		}
+		if err := os.Rename(pemTmp, pemPath); err != nil {
+			log.Printf("localca: rename cert for %s: %v", host, err)
+			_ = os.Remove(pemTmp)
+			// Key is already renamed; this is a partial failure. Keep serving old cert.
+			if readErr == nil {
+				served = append(served, host)
+			}
 			continue
 		}
 		served = append(served, host)

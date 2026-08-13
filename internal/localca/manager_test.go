@@ -95,3 +95,55 @@ func TestSyncRotatesExpiringLeaf(t *testing.T) {
 		t.Error("leaf inside renewal window was not rotated")
 	}
 }
+
+func TestSyncAtomicWritePreservesOldPairOnFailure(t *testing.T) {
+	lister := &fakeLister{rows: []core.DomainListing{domainRow("app.local", true)}}
+	m, certsDir, dynDir := testManager(t, lister)
+	// First sync: create initial cert/key pair
+	if err := m.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	oldPem, _ := os.ReadFile(filepath.Join(certsDir, "app.local.pem"))
+	oldKey, _ := os.ReadFile(filepath.Join(certsDir, "app.local.key"))
+
+	// Make certsDir read-only to force the cert write to fail during remint
+	if err := os.Chmod(certsDir, 0o555); err != nil {
+		t.Fatalf("chmod certsDir: %v", err)
+	}
+	defer os.Chmod(certsDir, 0o755) // restore for cleanup
+
+	// Second sync: try to remint (we're in renewal window)
+	m.now = func() time.Time { return time.Now().Add(800 * 24 * time.Hour) }
+	if err := m.Sync(context.Background()); err != nil {
+		// Sync may fail because certsDir is read-only; that's expected
+	}
+
+	// Restore permissions to verify the old pair is intact
+	if err := os.Chmod(certsDir, 0o755); err != nil {
+		t.Fatalf("chmod certsDir: %v", err)
+	}
+
+	// Verify old cert/key pair is unchanged
+	newPem, err := os.ReadFile(filepath.Join(certsDir, "app.local.pem"))
+	if err != nil {
+		t.Fatalf("read cert after failed remint: %v", err)
+	}
+	newKey, err := os.ReadFile(filepath.Join(certsDir, "app.local.key"))
+	if err != nil {
+		t.Fatalf("read key after failed remint: %v", err)
+	}
+	if string(oldPem) != string(newPem) {
+		t.Error("cert was modified despite remint failure")
+	}
+	if string(oldKey) != string(newKey) {
+		t.Error("key was modified despite remint failure")
+	}
+	// Verify app.local is still listed in the YAML (serving old cert)
+	body, err := os.ReadFile(filepath.Join(dynDir, "outhaul-local-certs.yml"))
+	if err != nil {
+		t.Fatalf("dynamic config: %v", err)
+	}
+	if !strings.Contains(string(body), "/etc/traefik/certs/app.local.pem") {
+		t.Error("app.local should still be listed in config despite remint failure")
+	}
+}
