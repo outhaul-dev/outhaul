@@ -73,7 +73,8 @@ type ProxyConfig struct {
 }
 
 // adminRoutingEnabled reports whether the admin UI should be published
-// through Traefik: over HTTPS (websecure + Let's Encrypt cert) when TLS is
+// through Traefik: over HTTPS (websecure + Let's Encrypt cert) when ACME is
+// enabled, over HTTPS (websecure + file-provider cert) when the local CA is
 // enabled, or over plain HTTP (web entrypoint) in tunnel mode where
 // Cloudflare terminates TLS. Either way it needs an admin host and a dir to
 // write the dynamic config into.
