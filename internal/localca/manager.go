@@ -39,8 +39,9 @@ type Manager struct {
 	domains     DomainLister
 
 	mu      sync.Mutex
-	hostIPs func() []net.IP  // injected for tests
-	now     func() time.Time // injected for tests
+	hostIPs func() []net.IP              // injected for tests
+	now     func() time.Time             // injected for tests
+	rename  func(oldpath, newpath string) error // injected for tests
 }
 
 // NewManager wires a manager; defaultHost also becomes Traefik's default
@@ -49,7 +50,7 @@ func NewManager(ca *CA, certsDir, dynamicDir, defaultHost string, domains Domain
 	return &Manager{
 		ca: ca, certsDir: certsDir, dynamicDir: dynamicDir,
 		defaultHost: defaultHost, domains: domains,
-		hostIPs: lanIPs, now: time.Now,
+		hostIPs: lanIPs, now: time.Now, rename: os.Rename,
 	}
 }
 
@@ -84,7 +85,6 @@ func (m *Manager) Sync(ctx context.Context) error {
 	var served []string
 	for _, host := range sortedKeys(wanted) {
 		pemPath := filepath.Join(m.certsDir, host+".pem")
-		keyPath := filepath.Join(m.certsDir, host+".key")
 		cur, readErr := os.ReadFile(pemPath)
 		if readErr == nil && !NeedsRemint(cur, host, wanted[host], now) {
 			served = append(served, host)
@@ -98,41 +98,10 @@ func (m *Manager) Sync(ctx context.Context) error {
 			}
 			continue
 		}
-		// Atomic-ish swap: write both to temp names first, rename only if both succeed.
-		keyTmp := keyPath + ".tmp"
-		pemTmp := pemPath + ".tmp"
-		if err := os.WriteFile(keyTmp, keyPEM, 0o600); err != nil {
-			log.Printf("localca: write temp key for %s: %v", host, err)
-			_ = os.Remove(pemTmp) // clean up any temp cert
+		if err := m.installPair(host, certPEM, keyPEM); err != nil {
+			log.Printf("localca: install pair for %s: %v", host, err)
 			if readErr == nil {
-				served = append(served, host) // keep serving the old cert
-			}
-			continue
-		}
-		if err := os.WriteFile(pemTmp, certPEM, 0o644); err != nil {
-			log.Printf("localca: write temp cert for %s: %v", host, err)
-			_ = os.Remove(keyTmp) // clean up the temp key
-			if readErr == nil {
-				served = append(served, host) // keep serving the old cert
-			}
-			continue
-		}
-		// Both temps are written; rename into place.
-		if err := os.Rename(keyTmp, keyPath); err != nil {
-			log.Printf("localca: rename key for %s: %v", host, err)
-			_ = os.Remove(keyTmp)
-			_ = os.Remove(pemTmp)
-			if readErr == nil {
-				served = append(served, host) // keep serving the old cert
-			}
-			continue
-		}
-		if err := os.Rename(pemTmp, pemPath); err != nil {
-			log.Printf("localca: rename cert for %s: %v", host, err)
-			_ = os.Remove(pemTmp)
-			// Key is already renamed; this is a partial failure. Keep serving old cert.
-			if readErr == nil {
-				served = append(served, host)
+				served = append(served, host) // old pair still intact
 			}
 			continue
 		}
@@ -158,6 +127,53 @@ func (m *Manager) Run(ctx context.Context) {
 	}
 }
 
+// installPair swaps host's key+cert into place so that any single failure
+// leaves the previous pair intact: both files are staged as temps, the old
+// key is set aside as a backup, and the backup is restored if either rename
+// fails. Plain rename cannot swap two files atomically; the backup closes
+// the window where a mid-sequence failure would leave a mismatched pair.
+func (m *Manager) installPair(host string, certPEM, keyPEM []byte) error {
+	keyPath := filepath.Join(m.certsDir, host+".key")
+	pemPath := filepath.Join(m.certsDir, host+".pem")
+	keyTmp, pemTmp, keyBak := keyPath+".tmp", pemPath+".tmp", keyPath+".bak"
+	if err := os.WriteFile(keyTmp, keyPEM, 0o600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(pemTmp, certPEM, 0o644); err != nil {
+		_ = os.Remove(keyTmp)
+		return err
+	}
+	hadOldKey := true
+	if err := m.rename(keyPath, keyBak); err != nil {
+		if !os.IsNotExist(err) {
+			_ = os.Remove(keyTmp)
+			_ = os.Remove(pemTmp)
+			return err
+		}
+		hadOldKey = false
+	}
+	restoreKey := func() {
+		if hadOldKey {
+			_ = m.rename(keyBak, keyPath)
+		}
+	}
+	if err := m.rename(keyTmp, keyPath); err != nil {
+		restoreKey()
+		_ = os.Remove(keyTmp)
+		_ = os.Remove(pemTmp)
+		return err
+	}
+	if err := m.rename(pemTmp, pemPath); err != nil {
+		restoreKey() // old cert never moved; put the old key back beside it
+		_ = os.Remove(pemTmp)
+		return err
+	}
+	if hadOldKey {
+		_ = os.Remove(keyBak)
+	}
+	return nil
+}
+
 // prune removes leaf files whose host no longer needs a cert.
 func (m *Manager) prune(wanted map[string][]net.IP) {
 	entries, err := os.ReadDir(m.certsDir)
@@ -166,6 +182,12 @@ func (m *Manager) prune(wanted map[string][]net.IP) {
 	}
 	for _, e := range entries {
 		name := e.Name()
+		// Sweep crash leftovers (prune runs under Sync's mutex after all installs,
+		// so any survivor is stale).
+		if strings.HasSuffix(name, ".tmp") || strings.HasSuffix(name, ".bak") {
+			_ = os.Remove(filepath.Join(m.certsDir, name))
+			continue
+		}
 		host := strings.TrimSuffix(strings.TrimSuffix(name, ".pem"), ".key")
 		if host == name { // neither suffix matched
 			continue

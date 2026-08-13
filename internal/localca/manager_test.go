@@ -2,6 +2,7 @@ package localca
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -96,54 +97,61 @@ func TestSyncRotatesExpiringLeaf(t *testing.T) {
 	}
 }
 
-func TestSyncAtomicWritePreservesOldPairOnFailure(t *testing.T) {
+func TestSyncKeepsOldPairWhenCertRenameFails(t *testing.T) {
 	lister := &fakeLister{rows: []core.DomainListing{domainRow("app.local", true)}}
 	m, certsDir, dynDir := testManager(t, lister)
-	// First sync: create initial cert/key pair
 	if err := m.Sync(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	oldPem, _ := os.ReadFile(filepath.Join(certsDir, "app.local.pem"))
 	oldKey, _ := os.ReadFile(filepath.Join(certsDir, "app.local.key"))
-
-	// Make certsDir read-only to force the cert write to fail during remint
-	if err := os.Chmod(certsDir, 0o555); err != nil {
-		t.Fatalf("chmod certsDir: %v", err)
-	}
-	defer os.Chmod(certsDir, 0o755) // restore for cleanup
-
-	// Second sync: try to remint (we're in renewal window)
 	m.now = func() time.Time { return time.Now().Add(800 * 24 * time.Hour) }
+	m.rename = func(oldpath, newpath string) error {
+		if strings.HasSuffix(newpath, ".pem") {
+			return errors.New("boom")
+		}
+		return os.Rename(oldpath, newpath)
+	}
 	if err := m.Sync(context.Background()); err != nil {
-		// Sync may fail because certsDir is read-only; that's expected
+		t.Fatal(err)
 	}
+	pem2, _ := os.ReadFile(filepath.Join(certsDir, "app.local.pem"))
+	key2, _ := os.ReadFile(filepath.Join(certsDir, "app.local.key"))
+	if string(pem2) != string(oldPem) || string(key2) != string(oldKey) {
+		t.Error("failed cert rename must leave the old pair untouched")
+	}
+	body, _ := os.ReadFile(filepath.Join(dynDir, "outhaul-local-certs.yml"))
+	if !strings.Contains(string(body), "app.local.pem") {
+		t.Error("host with intact old pair must stay in the YAML")
+	}
+}
 
-	// Restore permissions to verify the old pair is intact
-	if err := os.Chmod(certsDir, 0o755); err != nil {
-		t.Fatalf("chmod certsDir: %v", err)
+func TestSyncKeepsOldPairWhenKeyRenameFails(t *testing.T) {
+	lister := &fakeLister{rows: []core.DomainListing{domainRow("app.local", true)}}
+	m, certsDir, dynDir := testManager(t, lister)
+	if err := m.Sync(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-
-	// Verify old cert/key pair is unchanged
-	newPem, err := os.ReadFile(filepath.Join(certsDir, "app.local.pem"))
-	if err != nil {
-		t.Fatalf("read cert after failed remint: %v", err)
+	oldPem, _ := os.ReadFile(filepath.Join(certsDir, "app.local.pem"))
+	oldKey, _ := os.ReadFile(filepath.Join(certsDir, "app.local.key"))
+	m.now = func() time.Time { return time.Now().Add(800 * 24 * time.Hour) }
+	m.rename = func(oldpath, newpath string) error {
+		// Only fail the keyTmp→keyPath rename, not the backup restore
+		if strings.HasSuffix(newpath, ".key") && strings.HasSuffix(oldpath, ".key.tmp") {
+			return errors.New("boom")
+		}
+		return os.Rename(oldpath, newpath)
 	}
-	newKey, err := os.ReadFile(filepath.Join(certsDir, "app.local.key"))
-	if err != nil {
-		t.Fatalf("read key after failed remint: %v", err)
+	if err := m.Sync(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-	if string(oldPem) != string(newPem) {
-		t.Error("cert was modified despite remint failure")
+	pem2, _ := os.ReadFile(filepath.Join(certsDir, "app.local.pem"))
+	key2, _ := os.ReadFile(filepath.Join(certsDir, "app.local.key"))
+	if string(pem2) != string(oldPem) || string(key2) != string(oldKey) {
+		t.Error("failed key rename must leave the old pair untouched")
 	}
-	if string(oldKey) != string(newKey) {
-		t.Error("key was modified despite remint failure")
-	}
-	// Verify app.local is still listed in the YAML (serving old cert)
-	body, err := os.ReadFile(filepath.Join(dynDir, "outhaul-local-certs.yml"))
-	if err != nil {
-		t.Fatalf("dynamic config: %v", err)
-	}
-	if !strings.Contains(string(body), "/etc/traefik/certs/app.local.pem") {
-		t.Error("app.local should still be listed in config despite remint failure")
+	body, _ := os.ReadFile(filepath.Join(dynDir, "outhaul-local-certs.yml"))
+	if !strings.Contains(string(body), "app.local.pem") {
+		t.Error("host with intact old pair must stay in the YAML")
 	}
 }
