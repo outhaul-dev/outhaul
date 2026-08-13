@@ -39,8 +39,8 @@ type Manager struct {
 	domains     DomainLister
 
 	mu      sync.Mutex
-	hostIPs func() []net.IP              // injected for tests
-	now     func() time.Time             // injected for tests
+	hostIPs func() []net.IP                     // injected for tests
+	now     func() time.Time                    // injected for tests
 	rename  func(oldpath, newpath string) error // injected for tests
 }
 

@@ -77,6 +77,16 @@ which Traefik routes by Host header as usual. The tunnel takes precedence over
 ingress are labelled HTTP-only (no Let's Encrypt cert), so after disabling the
 tunnel they should be redeployed to regain HTTPS routing.
 
+**Local CA (LAN ingress).** With `OUTHAUL_LOCAL_CA=true`, Traefik keeps the
+websecure entrypoint and the HTTP→HTTPS redirect, but no ACME resolver runs.
+`internal/localca` mints leaf certs from a host-local root CA into
+`$DataDir/traefik/certs` (bind-mounted read-only into the Traefik container)
+and lists them in a file-provider config (`outhaul-local-certs.yml`) that
+Traefik hot-reloads; routes select certs by SNI, and the admin-host cert
+(carrying the server's LAN IPs as SANs) is the default certificate. Certs
+re-sync at boot, on domain changes, and on a 12-hour rotation ticker.
+Mutually exclusive with ACME and tunnel mode. See `docs/LOCAL-CA.md`.
+
 ### Milestone 3 (done)
 
 Private repos and auto-deploy on push — listed above as deferred — are now

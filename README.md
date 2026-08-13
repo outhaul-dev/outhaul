@@ -150,6 +150,7 @@ No config files — defaults with `OUTHAUL_*` environment overrides:
 | `OUTHAUL_NETWORK`       | `outhaul`            | Shared Docker network for app containers  |
 | `OUTHAUL_ACME_EMAIL`    | (empty)              | Let's Encrypt email; set to enable HTTPS   |
 | `OUTHAUL_ACME_STAGING`  | `false`              | Use the LE staging CA (testing)            |
+| `OUTHAUL_LOCAL_CA`      | `false`              | serve HTTPS from the built-in local CA (LAN installs; excludes OUTHAUL_ACME_EMAIL) — see docs/LOCAL-CA.md |
 | `OUTHAUL_HTTPS_PORT`    | `443`                | Host port for HTTPS                        |
 | `OUTHAUL_HEALTH_TIMEOUT`| `60s`                | Deploy health-check deadline               |
 | `OUTHAUL_IMAGE_KEEP`    | `5`                  | Built images kept per app for rollback (`0` keeps all) |
