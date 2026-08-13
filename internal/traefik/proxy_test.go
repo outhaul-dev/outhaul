@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/outhaul-dev/outhaul/internal/docker"
+	"github.com/outhaul-dev/outhaul/internal/localca"
 )
 
 func testProxyConfig() ProxyConfig {
@@ -356,6 +357,49 @@ func TestWriteAdminDynamicConfigRemovesStaleFile(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("stale dynamic config should have been removed (err=%v)", err)
+	}
+}
+
+func TestEnsureProxyRemovesStaleLocalCertsFileWhenLocalCAOff(t *testing.T) {
+	ctx := context.Background()
+	rec := &recordingFake{Fake: docker.NewFake()}
+	dynDir := t.TempDir()
+	path := filepath.Join(dynDir, localca.DynamicCertsFile)
+	if err := os.WriteFile(path, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pc := testProxyConfig()
+	pc.LocalCA = false
+	pc.DynamicDir = dynDir
+	if err := EnsureProxy(ctx, rec, pc, nil); err != nil {
+		t.Fatalf("EnsureProxy: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("stale local-certs config should have been removed when LocalCA is off (err=%v)", err)
+	}
+}
+
+func TestEnsureProxyKeepsLocalCertsFileWhenLocalCAOn(t *testing.T) {
+	ctx := context.Background()
+	rec := &recordingFake{Fake: docker.NewFake()}
+	dynDir := t.TempDir()
+	path := filepath.Join(dynDir, localca.DynamicCertsFile)
+	if err := os.WriteFile(path, []byte("kept"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pc := testProxyConfig()
+	pc.LocalCA = true
+	pc.CertsDir = t.TempDir()
+	pc.DynamicDir = dynDir
+	if err := EnsureProxy(ctx, rec, pc, nil); err != nil {
+		t.Fatalf("EnsureProxy: %v", err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("local-certs config should survive when LocalCA is on: %v", err)
+	}
+	if string(body) != "kept" {
+		t.Errorf("local-certs config should be untouched, got %q", body)
 	}
 }
 

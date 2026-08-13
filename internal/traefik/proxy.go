@@ -97,6 +97,9 @@ func EnsureProxy(ctx context.Context, dc docker.Client, pc ProxyConfig, logOut i
 	if err := writeAdminDynamicConfig(pc); err != nil {
 		return fmt.Errorf("write admin dynamic config: %w", err)
 	}
+	if err := removeStaleLocalCertsConfig(pc); err != nil {
+		return fmt.Errorf("remove stale local-certs config: %w", err)
+	}
 	if err := dc.EnsureNetwork(ctx, pc.Network); err != nil {
 		return fmt.Errorf("ensure network %q: %w", pc.Network, err)
 	}
@@ -273,6 +276,22 @@ func writeAdminDynamicConfig(pc ProxyConfig) error {
 		entrypoint, tlsBlock = "websecure", "\n      tls: {}"
 	}
 	return os.WriteFile(path, []byte(adminDynamicConfig(pc.AdminHost, port, entrypoint, tlsBlock)), 0o644)
+}
+
+// removeStaleLocalCertsConfig clears localca's file-provider cert list when
+// LocalCA is off. localca.Manager only writes/updates this file while the
+// local CA is running; without this, switching LocalCA -> ACME (or off)
+// leaves Traefik's file provider referencing cert paths under a dir that is
+// no longer mounted.
+func removeStaleLocalCertsConfig(pc ProxyConfig) error {
+	if pc.DynamicDir == "" || pc.LocalCA {
+		return nil
+	}
+	path := filepath.Join(pc.DynamicDir, localca.DynamicCertsFile)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // adminDynamicConfig renders the file-provider YAML that routes host to the

@@ -15,9 +15,10 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
-// dynamicCertsFile is the Traefik file-provider config (under the dynamic
-// dir, next to outhaul-admin.yml) listing every local-CA leaf.
-const dynamicCertsFile = "outhaul-local-certs.yml"
+// DynamicCertsFile is the Traefik file-provider config (under the dynamic
+// dir, next to outhaul-admin.yml) listing every local-CA leaf. Exported so
+// traefik.EnsureProxy can remove the stale file when LocalCA is disabled.
+const DynamicCertsFile = "outhaul-local-certs.yml"
 
 // syncInterval paces the rotation ticker; leafs renew 30 days early, so a
 // twice-daily check has weeks of slack.
