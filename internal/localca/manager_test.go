@@ -80,6 +80,35 @@ func TestSyncPrunesRemovedDomains(t *testing.T) {
 	}
 }
 
+func TestSyncRemintsWhenKeyFileMissing(t *testing.T) {
+	lister := &fakeLister{rows: []core.DomainListing{domainRow("app.local", true)}}
+	m, certsDir, _ := testManager(t, lister)
+	if err := m.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	beforePem, err := os.ReadFile(filepath.Join(certsDir, "app.local.pem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(certsDir, "app.local.key")
+	if err := os.Remove(keyPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(keyPath); err != nil {
+		t.Fatalf("key file should have been re-minted: %v", err)
+	}
+	afterPem, err := os.ReadFile(filepath.Join(certsDir, "app.local.pem"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(beforePem) == string(afterPem) {
+		t.Error("pem should have been reminted alongside the missing key so the pair matches")
+	}
+}
+
 func TestSyncRotatesExpiringLeaf(t *testing.T) {
 	lister := &fakeLister{rows: []core.DomainListing{domainRow("app.local", true)}}
 	m, certsDir, _ := testManager(t, lister)

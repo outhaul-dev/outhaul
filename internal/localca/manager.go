@@ -86,22 +86,25 @@ func (m *Manager) Sync(ctx context.Context) error {
 	var served []string
 	for _, host := range sortedKeys(wanted) {
 		pemPath := filepath.Join(m.certsDir, host+".pem")
+		keyPath := filepath.Join(m.certsDir, host+".key")
 		cur, readErr := os.ReadFile(pemPath)
-		if readErr == nil && !NeedsRemint(cur, host, wanted[host], now) {
+		_, keyErr := os.Stat(keyPath)
+		keyMissing := keyErr != nil
+		if readErr == nil && !keyMissing && !NeedsRemint(cur, host, wanted[host], now) {
 			served = append(served, host)
 			continue
 		}
 		certPEM, keyPEM, err := m.ca.MintLeaf(host, wanted[host], now)
 		if err != nil {
 			log.Printf("localca: mint %s: %v", host, err)
-			if readErr == nil {
+			if readErr == nil && !keyMissing {
 				served = append(served, host) // keep serving the old cert
 			}
 			continue
 		}
 		if err := m.installPair(host, certPEM, keyPEM); err != nil {
 			log.Printf("localca: install pair for %s: %v", host, err)
-			if readErr == nil {
+			if readErr == nil && !keyMissing {
 				served = append(served, host) // old pair still intact
 			}
 			continue
@@ -109,7 +112,15 @@ func (m *Manager) Sync(ctx context.Context) error {
 		served = append(served, host)
 	}
 	m.prune(wanted)
-	return os.WriteFile(filepath.Join(m.dynamicDir, dynamicCertsFile), renderCertsConfig(served, m.defaultHost), 0o644)
+	yamlPath := filepath.Join(m.dynamicDir, DynamicCertsFile)
+	yamlTmp := yamlPath + ".tmp"
+	if err := os.WriteFile(yamlTmp, renderCertsConfig(served, m.defaultHost), 0o644); err != nil {
+		return err
+	}
+	// Plain rename (not the m.rename seam): the prune .tmp sweep above runs
+	// before this write, so there's no conflict, and seam tests must not
+	// intercept this write.
+	return os.Rename(yamlTmp, yamlPath)
 }
 
 // Run re-syncs on a fixed interval so leafs rotate long before expiry.
