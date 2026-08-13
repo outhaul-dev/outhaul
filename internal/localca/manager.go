@@ -117,9 +117,9 @@ func (m *Manager) Sync(ctx context.Context) error {
 	if err := os.WriteFile(yamlTmp, renderCertsConfig(served, m.defaultHost), 0o644); err != nil {
 		return err
 	}
-	// Plain rename (not the m.rename seam): the prune .tmp sweep above runs
-	// before this write, so there's no conflict, and seam tests must not
-	// intercept this write.
+	// Staged write + plain rename (not the m.rename seam, which fault-injection
+	// tests intercept): Traefik's file provider ignores the .tmp name and the
+	// rename is atomic, so a watcher never sees a half-written config.
 	return os.Rename(yamlTmp, yamlPath)
 }
 
