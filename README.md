@@ -105,7 +105,8 @@ curl -fsSL https://outhaul.sh/install | sh
 
 That fetches [`deploy/bootstrap.sh`](deploy/bootstrap.sh) and runs it under
 `sh`. From a checkout, run `sudo sh deploy/bootstrap.sh --from-checkout .`
-instead — useful for testing local changes to the installer or app.
+instead — useful for testing local changes to the installer or app. Prefer to
+run every step by hand? See [docs/MANUAL-DEPLOY.md](docs/MANUAL-DEPLOY.md).
 
 The installer needs root once (systemd required; V1 targets Debian, prompting
 before continuing on anything else). Each step is skipped when already
