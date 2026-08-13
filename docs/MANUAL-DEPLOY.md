@@ -130,10 +130,30 @@ EOF
 chmod 0600 /etc/outhaul.env
 ```
 
-**Cloudflare Tunnel** (no public IP or open ports needed) or **local-only**:
-omit `OUTHAUL_PUBLIC_URL` and `OUTHAUL_ACME_EMAIL` — for a tunnel you'll paste
-the connector token in **Settings → Tunnel** after setup; for local-only you
-can add them later to enable HTTPS.
+**Local network HTTPS (built-in CA, no public domain).** For LAN-only
+installs that still want HTTPS (no cert warnings once the root is trusted):
+set `OUTHAUL_LOCAL_CA=true` instead of `OUTHAUL_ACME_EMAIL`. Outhaul creates
+a certificate authority on first boot and mints/rotates a certificate for
+every app domain automatically — see [docs/LOCAL-CA.md](LOCAL-CA.md) for
+installing the root on your devices.
+
+```sh
+cat > /etc/outhaul.env <<'EOF'
+# OUTHAUL_* overrides, one per line. Comments on their OWN line.
+# Edit, then: systemctl restart outhaul
+OUTHAUL_LOCAL_CA=true
+OUTHAUL_SSH_ADDR=:2222
+EOF
+chmod 0600 /etc/outhaul.env
+```
+
+`OUTHAUL_LOCAL_CA` and `OUTHAUL_ACME_EMAIL` are mutually exclusive.
+
+**Cloudflare Tunnel** (no public IP or open ports needed) or **plain
+local-only**: omit `OUTHAUL_PUBLIC_URL` and `OUTHAUL_ACME_EMAIL` — for a
+tunnel you'll paste the connector token in **Settings → Tunnel** after setup;
+for local-only you can add them later, or add `OUTHAUL_LOCAL_CA=true` (above)
+for HTTPS without a public domain.
 
 ```sh
 cat > /etc/outhaul.env <<'EOF'
@@ -171,14 +191,15 @@ you'll cut off your own session:
 ```sh
 apt-get install -y ufw
 ufw allow 22/tcp          # SSH — always. If sshd listens elsewhere, allow that port too.
-ufw allow 80/tcp          # only for the Let's Encrypt mode
-ufw allow 443/tcp         # only for the Let's Encrypt mode
+ufw allow 80/tcp          # Let's Encrypt and local-CA modes
+ufw allow 443/tcp         # Let's Encrypt and local-CA modes
 ufw allow 2222/tcp        # only if git-push-to-deploy is enabled
 ufw --force enable
 ```
 
-Cloudflare Tunnel and local-only modes need no inbound app ports — just SSH
-(and the git port, if enabled).
+Cloudflare Tunnel and plain local-only modes need no inbound app ports — just
+SSH (and the git port, if enabled). The local CA needs 80/443 like Let's
+Encrypt mode: Traefik serves the HTTPS redirect and the certificates there.
 
 ## 7. First-run setup
 
