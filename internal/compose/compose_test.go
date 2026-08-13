@@ -53,7 +53,7 @@ func TestOverride(t *testing.T) {
 		{ID: 1, Host: "shop.example.com", Service: "web", Port: 3000, TLS: true},
 	}
 
-	got := string(Override(app, domains, "outhaul", false))
+	got := string(Override(app, domains, "outhaul", false, ""))
 
 	for _, want := range []string{
 		"services:\n  \"web\":\n",
@@ -73,7 +73,7 @@ func TestOverride(t *testing.T) {
 		t.Error("TLS labels must not appear when TLS is disabled")
 	}
 
-	tls := string(Override(app, domains, "outhaul", true))
+	tls := string(Override(app, domains, "outhaul", true, "le"))
 	if !strings.Contains(tls, `"traefik.http.routers.outhaul-shop-d1-tls.tls.certresolver": "le"`) {
 		t.Errorf("TLS override missing certresolver labels; got:\n%s", tls)
 	}
@@ -84,7 +84,7 @@ func TestOverridePathAndTLS(t *testing.T) {
 	domains := []core.Domain{
 		{ID: 7, Host: "shop.example.com", Service: "api", Port: 8000, Path: "/api", InternalPath: "/", TLS: true},
 	}
-	got := string(Override(app, domains, "outhaul", true))
+	got := string(Override(app, domains, "outhaul", true, "le"))
 	if !strings.Contains(got, "PathPrefix(`/api`)") {
 		t.Errorf("override missing path rule:\n%s", got)
 	}
@@ -107,7 +107,7 @@ func TestOverrideMultipleDomains(t *testing.T) {
 		{ID: 9, Host: "api.example.com", Service: "api", Port: 8080},
 	}
 
-	got := string(Override(app, domains, "outhaul", false))
+	got := string(Override(app, domains, "outhaul", false, ""))
 
 	for _, want := range []string{
 		"\"traefik.http.routers.outhaul-shop-d7.rule\": \"Host(`shop.example.com`)\"",

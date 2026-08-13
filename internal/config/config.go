@@ -4,6 +4,7 @@
 package config
 
 import (
+	"errors"
 	"net"
 	"net/url"
 	"path/filepath"
@@ -33,6 +34,7 @@ type Config struct {
 
 	ACMEEmail     string        // Let's Encrypt account email; empty disables TLS
 	ACMEStaging   bool          // use the LE staging CA (avoid rate limits)
+	LocalCA       bool          // serve HTTPS from the built-in local CA (LAN installs; excludes ACME)
 	HTTPSPort     string        // host port for the websecure entrypoint
 	HealthTimeout time.Duration // deploy health-check deadline
 	ImageKeep     int           // built images kept per app; 0 disables pruning
@@ -58,6 +60,7 @@ func Load(getenv Getenv) Config {
 
 		ACMEEmail:     firstField(getenv("OUTHAUL_ACME_EMAIL")),
 		ACMEStaging:   truthy(getenv("OUTHAUL_ACME_STAGING")),
+		LocalCA:       truthy(getenv("OUTHAUL_LOCAL_CA")),
 		HTTPSPort:     or(getenv("OUTHAUL_HTTPS_PORT"), "443"),
 		HealthTimeout: durationOr(getenv("OUTHAUL_HEALTH_TIMEOUT"), 60*time.Second),
 		ImageKeep:     intOr(getenv("OUTHAUL_IMAGE_KEEP"), 5),
@@ -103,8 +106,32 @@ func or(v, fallback string) string {
 	return v
 }
 
-// TLSEnabled reports whether automatic HTTPS is configured (an ACME email set).
-func (c Config) TLSEnabled() bool { return c.ACMEEmail != "" }
+// ACMEEnabled reports whether Let's Encrypt automation is configured.
+func (c Config) ACMEEnabled() bool { return c.ACMEEmail != "" }
+
+// LocalCAEnabled reports whether the built-in local CA serves HTTPS instead.
+func (c Config) LocalCAEnabled() bool { return c.LocalCA }
+
+// TLSEnabled reports whether HTTPS is available by either mechanism; it gates
+// the websecure entrypoint, redirects, and the per-domain TLS toggle.
+func (c Config) TLSEnabled() bool { return c.ACMEEnabled() || c.LocalCAEnabled() }
+
+// CertResolver is the Traefik certresolver TLS routers should reference;
+// empty when certs come from the file provider (local CA) instead of ACME.
+func (c Config) CertResolver() string {
+	if c.ACMEEnabled() {
+		return "le"
+	}
+	return ""
+}
+
+// Validate rejects impossible combinations before any infrastructure moves.
+func (c Config) Validate() error {
+	if c.LocalCAEnabled() && c.ACMEEnabled() {
+		return errors.New("OUTHAUL_LOCAL_CA and OUTHAUL_ACME_EMAIL are mutually exclusive: choose local-CA or Let's Encrypt HTTPS")
+	}
+	return nil
+}
 
 // PublicURLSet reports whether an externally reachable base URL is configured.
 func (c Config) PublicURLSet() bool { return c.PublicURL != "" }
@@ -118,6 +145,13 @@ func (c Config) AcmeDir() string { return filepath.Join(c.DataDir, "traefik", "a
 // DynamicDir is the host directory bind-mounted into Traefik as its file
 // provider, holding the dynamic config that routes the admin UI over HTTPS.
 func (c Config) DynamicDir() string { return filepath.Join(c.DataDir, "traefik", "dynamic") }
+
+// CADir holds the local CA's root certificate and key.
+func (c Config) CADir() string { return filepath.Join(c.DataDir, "ca") }
+
+// CertsDir is the host directory of local-CA leaf certs, bind-mounted
+// read-only into Traefik at localca.ContainerCertsDir.
+func (c Config) CertsDir() string { return filepath.Join(c.DataDir, "traefik", "certs") }
 
 // AdminHost is the hostname the admin UI should be served under, parsed from
 // PublicURL (e.g. "outhaul.example.com" from "https://outhaul.example.com").

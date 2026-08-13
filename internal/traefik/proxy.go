@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/docker"
+	"github.com/outhaul-dev/outhaul/internal/localca"
 )
 
 // DefaultDockerSocket is the host path to the Docker socket that Traefik's
@@ -40,11 +41,18 @@ type ProxyConfig struct {
 	HTTPPort      string // host port for the web entrypoint, e.g. "80"
 	DockerSocket  string // host docker socket path; defaults to DefaultDockerSocket
 
-	TLSEnabled     bool
+	ACME           bool // Let's Encrypt automation on (websecure + ACME resolver)
 	ACMEEmail      string
 	ACMEStaging    bool
 	HTTPSPort      string // host port for :443
 	ACMEStorageDir string // host dir bind-mounted for acme.json
+
+	// LocalCA serves HTTPS from Outhaul-minted certs instead of ACME: the
+	// websecure entrypoint and redirect are on, no ACME flags are emitted,
+	// and CertsDir is mounted read-only for the file-provider tls config
+	// (outhaul-local-certs.yml under DynamicDir) to reference.
+	LocalCA  bool
+	CertsDir string
 
 	// DockerAPIVersion pins DOCKER_API_VERSION for Traefik's docker client.
 	// Empty falls back to fallbackDockerAPIVersion.
@@ -65,12 +73,13 @@ type ProxyConfig struct {
 }
 
 // adminRoutingEnabled reports whether the admin UI should be published
-// through Traefik: over HTTPS (websecure + Let's Encrypt cert) when TLS is
+// through Traefik: over HTTPS (websecure + Let's Encrypt cert) when ACME is
+// enabled, over HTTPS (websecure + file-provider cert) when the local CA is
 // enabled, or over plain HTTP (web entrypoint) in tunnel mode where
 // Cloudflare terminates TLS. Either way it needs an admin host and a dir to
 // write the dynamic config into.
 func (pc ProxyConfig) adminRoutingEnabled() bool {
-	return (pc.TLSEnabled || pc.TunnelMode) && pc.AdminHost != "" && pc.DynamicDir != ""
+	return (pc.ACME || pc.LocalCA || pc.TunnelMode) && pc.AdminHost != "" && pc.DynamicDir != ""
 }
 
 // EnsureProxy makes the Traefik proxy present and running: it creates the shared
@@ -87,6 +96,9 @@ func EnsureProxy(ctx context.Context, dc docker.Client, pc ProxyConfig, logOut i
 	}
 	if err := writeAdminDynamicConfig(pc); err != nil {
 		return fmt.Errorf("write admin dynamic config: %w", err)
+	}
+	if err := removeStaleLocalCertsConfig(pc); err != nil {
+		return fmt.Errorf("remove stale local-certs config: %w", err)
 	}
 	if err := dc.EnsureNetwork(ctx, pc.Network); err != nil {
 		return fmt.Errorf("ensure network %q: %w", pc.Network, err)
@@ -151,22 +163,29 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 	env := []string{"DOCKER_API_VERSION=" + apiVersion}
 	var extraHosts []string
 
-	if pc.adminRoutingEnabled() {
-		// File provider carries the admin-UI router; host-gateway lets the
-		// container reach the admin process listening on the host.
+	// The file provider carries the admin-UI router and/or the local-CA cert
+	// list; host-gateway is only needed for the admin route.
+	if pc.adminRoutingEnabled() || (pc.LocalCA && !pc.TunnelMode) {
 		cmd = append(cmd,
 			"--providers.file.directory=/etc/traefik/dynamic",
 			"--providers.file.watch=true",
 		)
 		mounts = append(mounts, docker.Mount{Source: pc.DynamicDir, Target: "/etc/traefik/dynamic", ReadOnly: true})
+	}
+	if pc.adminRoutingEnabled() {
 		extraHosts = append(extraHosts, "host.docker.internal:host-gateway")
 	}
 
-	if pc.TLSEnabled && !pc.TunnelMode {
+	if (pc.ACME || pc.LocalCA) && !pc.TunnelMode {
 		cmd = append(cmd,
 			"--entrypoints.websecure.address=:443",
 			"--entrypoints.web.http.redirections.entrypoint.to=websecure",
 			"--entrypoints.web.http.redirections.entrypoint.scheme=https",
+		)
+		ports = append(ports, docker.PortMapping{HostPort: pc.HTTPSPort, ContainerPort: "443", Proto: "tcp"})
+	}
+	if pc.ACME && !pc.TunnelMode {
+		cmd = append(cmd,
 			"--certificatesresolvers.le.acme.httpchallenge=true",
 			"--certificatesresolvers.le.acme.httpchallenge.entrypoint=web",
 			"--certificatesresolvers.le.acme.email="+pc.ACMEEmail,
@@ -175,8 +194,10 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 		if pc.ACMEStaging {
 			cmd = append(cmd, "--certificatesresolvers.le.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory")
 		}
-		ports = append(ports, docker.PortMapping{HostPort: pc.HTTPSPort, ContainerPort: "443", Proto: "tcp"})
 		mounts = append(mounts, docker.Mount{Source: pc.ACMEStorageDir, Target: "/etc/traefik/acme", ReadOnly: false})
+	}
+	if pc.LocalCA && !pc.TunnelMode {
+		mounts = append(mounts, docker.Mount{Source: pc.CertsDir, Target: localca.ContainerCertsDir, ReadOnly: true})
 	}
 
 	labels := map[string]string{
@@ -246,18 +267,39 @@ func writeAdminDynamicConfig(pc ProxyConfig) error {
 	if port == "" {
 		port = "8080"
 	}
-	return os.WriteFile(path, []byte(adminDynamicConfig(pc.AdminHost, port, pc.TunnelMode)), 0o644)
+	entrypoint, tlsBlock := "websecure", "\n      tls:\n        certResolver: le"
+	switch {
+	case pc.TunnelMode:
+		entrypoint, tlsBlock = "web", ""
+	case pc.LocalCA:
+		// Cert comes from the file-provider tls store, not a resolver.
+		entrypoint, tlsBlock = "websecure", "\n      tls: {}"
+	}
+	return os.WriteFile(path, []byte(adminDynamicConfig(pc.AdminHost, port, entrypoint, tlsBlock)), 0o644)
+}
+
+// removeStaleLocalCertsConfig clears localca's file-provider cert list when
+// LocalCA is off. localca.Manager only writes/updates this file while the
+// local CA is running; without this, switching LocalCA -> ACME (or off)
+// leaves Traefik's file provider referencing cert paths under a dir that is
+// no longer mounted.
+func removeStaleLocalCertsConfig(pc ProxyConfig) error {
+	if pc.DynamicDir == "" || pc.LocalCA {
+		return nil
+	}
+	path := filepath.Join(pc.DynamicDir, localca.DynamicCertsFile)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // adminDynamicConfig renders the file-provider YAML that routes host to the
 // admin UI on the host. In tunnel mode Cloudflare terminates TLS, so the router
-// sits on the plain-HTTP web entrypoint; otherwise it uses websecure with an
+// sits on the plain-HTTP web entrypoint; under LocalCA it uses the
+// file-provider tls store (tls: {}); otherwise it uses websecure with an
 // on-demand Let's Encrypt cert.
-func adminDynamicConfig(host, port string, tunnelMode bool) string {
-	entrypoint, tlsBlock := "websecure", "\n      tls:\n        certResolver: le"
-	if tunnelMode {
-		entrypoint, tlsBlock = "web", ""
-	}
+func adminDynamicConfig(host, port, entrypoint, tlsBlock string) string {
 	return fmt.Sprintf(`# Managed by Outhaul — routes the admin UI. Do not edit by hand.
 http:
   routers:

@@ -14,10 +14,12 @@ import (
 // AppLabels builds the full Docker-provider label set for a single-container
 // app (nixpacks/dockerfile) from its domain rows: the ownership markers once,
 // plus one router per domain against the container's port. globalTLS is the
-// server-wide switch (ACME configured); a row is served over HTTPS only when
-// its own TLS flag and globalTLS are both true. With no domains the app is
-// internal-only (traefik.enable=false).
-func AppLabels(app core.App, domains []core.Domain, port int, globalTLS bool) map[string]string {
+// server-wide switch (ACME configured or local CA active); a row is served
+// over HTTPS only when its own TLS flag and globalTLS are both true.
+// certResolver is "le" under ACME and empty under the local CA, where the
+// file provider supplies certs by SNI instead of a resolver. With no domains
+// the app is internal-only (traefik.enable=false).
+func AppLabels(app core.App, domains []core.Domain, port int, globalTLS bool, certResolver string) map[string]string {
 	labels := map[string]string{
 		"traefik.enable":  "true",
 		"outhaul.managed": "true",
@@ -28,7 +30,7 @@ func AppLabels(app core.App, domains []core.Domain, port int, globalTLS bool) ma
 		return labels
 	}
 	for _, d := range domains {
-		for k, v := range RouteLabels(RouterName(app.Name, d.ID), d.Host, port, d.Path, d.InternalPath, d.TLS && globalTLS) {
+		for k, v := range RouteLabels(RouterName(app.Name, d.ID), d.Host, port, d.Path, d.InternalPath, d.TLS && globalTLS, certResolver) {
 			labels[k] = v
 		}
 	}
@@ -39,8 +41,11 @@ func AppLabels(app core.App, domains []core.Domain, port int, globalTLS bool) ma
 // host[/path]→port route. Router names must be unique across everything Traefik
 // sees; callers derive them via RouterName. A container carrying several routes
 // sets traefik.enable and the ownership labels once (see AppLabels / the compose
-// override).
-func RouteLabels(router, host string, port int, urlPath, internalPath string, tlsEnabled bool) map[string]string {
+// override). certResolver is "le" under ACME, which asks Traefik to obtain a
+// cert for the router; an empty resolver leaves the TLS router without one,
+// which is correct under the local CA, where the file provider serves a
+// pre-issued cert by SNI instead.
+func RouteLabels(router, host string, port int, urlPath, internalPath string, tlsEnabled bool, certResolver string) map[string]string {
 	rule := fmt.Sprintf("Host(`%s`)", host)
 	if urlPath != "" {
 		rule += fmt.Sprintf(" && PathPrefix(`%s`)", urlPath)
@@ -59,7 +64,9 @@ func RouteLabels(router, host string, port int, urlPath, internalPath string, tl
 		labels["traefik.http.routers."+tls+".rule"] = rule
 		labels["traefik.http.routers."+tls+".entrypoints"] = "websecure"
 		labels["traefik.http.routers."+tls+".tls"] = "true"
-		labels["traefik.http.routers."+tls+".tls.certresolver"] = "le"
+		if certResolver != "" {
+			labels["traefik.http.routers."+tls+".tls.certresolver"] = certResolver
+		}
 		labels["traefik.http.routers."+tls+".service"] = router
 		if len(mws) > 0 {
 			labels["traefik.http.routers."+tls+".middlewares"] = strings.Join(mws, ",")

@@ -27,6 +27,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/github"
 	"github.com/outhaul-dev/outhaul/internal/gitrepo"
 	"github.com/outhaul-dev/outhaul/internal/gitssh"
+	"github.com/outhaul-dev/outhaul/internal/localca"
 	"github.com/outhaul-dev/outhaul/internal/logstream"
 	"github.com/outhaul-dev/outhaul/internal/previewmgr"
 	"github.com/outhaul-dev/outhaul/internal/prune"
@@ -44,6 +45,9 @@ func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "git-hook" {
 		os.Exit(runGitHook(os.Args[2:]))
 	}
+	if len(os.Args) >= 2 && os.Args[1] == "ca" {
+		os.Exit(runCA(os.Args[2:]))
+	}
 	if len(os.Args) < 2 || os.Args[1] != "serve" {
 		usage()
 		os.Exit(2)
@@ -55,6 +59,7 @@ func main() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "Usage: outhaul serve")
+	fmt.Fprintln(os.Stderr, "       outhaul ca root [--path]")
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "Starts the Outhaul admin UI and deploy worker.")
 	fmt.Fprintln(os.Stderr, "Configuration via OUTHAUL_* environment variables (see ARCHITECTURE.md).")
@@ -75,8 +80,34 @@ func runGitHook(args []string) int {
 	return code
 }
 
+// runCA implements `outhaul ca root [--path]`: prints the local CA root
+// certificate (or its path) so it can be installed on LAN devices.
+func runCA(args []string) int {
+	if len(args) < 1 || args[0] != "root" {
+		fmt.Fprintln(os.Stderr, "usage: outhaul ca root [--path]")
+		return 2
+	}
+	cfg := config.Load(os.Getenv)
+	path := localca.RootPath(cfg.CADir())
+	if len(args) >= 2 && args[1] == "--path" {
+		fmt.Println(path)
+		return 0
+	}
+	pemBytes, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "outhaul: local CA not initialised (%v)\n", err)
+		fmt.Fprintln(os.Stderr, "Set OUTHAUL_LOCAL_CA=true and start `outhaul serve` once to create it.")
+		return 1
+	}
+	os.Stdout.Write(pemBytes)
+	return 0
+}
+
 func serve() error {
 	cfg := config.Load(os.Getenv)
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
 
 	// Data directories.
 	if err := os.MkdirAll(cfg.WorkDir(), 0o755); err != nil {
@@ -116,6 +147,32 @@ func serve() error {
 	}
 	defer dc.Close()
 
+	// Local CA: refuse to run against an enabled tunnel (mutually exclusive
+	// ingress postures), then mint certs before Traefik comes up so the file
+	// provider finds them on first watch.
+	var certMgr *localca.Manager
+	if cfg.LocalCAEnabled() {
+		if on, err := st.TunnelEnabled(context.Background()); err == nil && on {
+			return fmt.Errorf("OUTHAUL_LOCAL_CA is set but a Cloudflare Tunnel is enabled; disable the tunnel in Settings first (or unset OUTHAUL_LOCAL_CA)")
+		}
+		ca, err := localca.LoadOrCreate(cfg.CADir())
+		if err != nil {
+			return fmt.Errorf("local CA: %w", err)
+		}
+		defaultHost := cfg.AdminHost()
+		if defaultHost == "" {
+			if hn, err := os.Hostname(); err == nil && hn != "" {
+				defaultHost = hn
+			} else {
+				defaultHost = "outhaul.local"
+			}
+		}
+		certMgr = localca.NewManager(ca, cfg.CertsDir(), cfg.DynamicDir(), defaultHost, st)
+		if err := certMgr.Sync(context.Background()); err != nil {
+			log.Printf("WARNING: local CA cert sync: %v", err)
+		}
+	}
+
 	infra := ensureInfra(dc, cfg, st)
 
 	ghClient := github.New()
@@ -134,6 +191,10 @@ func serve() error {
 	workerDone := make(chan struct{})
 	// worker.Run is launched below, after the preview manager is wired in as the
 	// after-deploy hook (SetDeployHook must be called before Run).
+
+	if certMgr != nil {
+		go certMgr.Run(workerCtx)
+	}
 
 	// Database manager (databases-as-a-service).
 	dbm := dbaas.NewManager(st, dc, cfg.Network, cfg.DatabasesDir())
@@ -203,6 +264,10 @@ func serve() error {
 		srv.SetSSHControl(sshSrv)
 	}
 	srv.SetTunnelControl(infra)
+	if certMgr != nil {
+		srv.SetCertSync(certMgr)
+		srv.SetLocalCAFile(localca.RootPath(cfg.CADir()))
+	}
 	printSetupHint(srv, cfg, setupToken)
 
 	httpServer := &http.Server{
@@ -321,11 +386,13 @@ func (ic *infraController) proxyConfig(ctx context.Context, tunnelOn bool) traef
 		pc.TunnelMode = true
 		return pc
 	}
-	pc.TLSEnabled = ic.cfg.TLSEnabled()
+	pc.ACME = ic.cfg.ACMEEnabled()
 	pc.ACMEEmail = ic.cfg.ACMEEmail
 	pc.ACMEStaging = ic.cfg.ACMEStaging
 	pc.HTTPSPort = ic.cfg.HTTPSPort
 	pc.ACMEStorageDir = ic.cfg.AcmeDir()
+	pc.LocalCA = ic.cfg.LocalCAEnabled()
+	pc.CertsDir = ic.cfg.CertsDir()
 	return pc
 }
 
@@ -333,6 +400,10 @@ func (ic *infraController) proxyConfig(ctx context.Context, tunnelOn bool) traef
 func (ic *infraController) logStatus(ctx context.Context) {
 	if on, _ := ic.st.TunnelEnabled(ctx); on {
 		log.Printf("Cloudflare Tunnel is the ingress: Traefik serves plain HTTP behind cloudflared on network %q (point Cloudflare hostnames at http://outhaul-traefik:80)", ic.cfg.Network)
+		return
+	}
+	if ic.cfg.LocalCAEnabled() {
+		log.Printf("Traefik proxy ready on :80 and :%s (TLS via built-in local CA; install the root with `outhaul ca root`) on network %q", ic.cfg.HTTPSPort, ic.cfg.Network)
 		return
 	}
 	if ic.cfg.TLSEnabled() {
@@ -351,6 +422,9 @@ func (ic *infraController) logStatus(ctx context.Context) {
 // (when the admin UI is proxied through Traefik). A cancelled reconcile could
 // strand the server with no ingress, so it must run to completion.
 func (ic *infraController) Enable(_ context.Context, token string) error {
+	if ic.cfg.LocalCAEnabled() {
+		return fmt.Errorf("cannot enable a Cloudflare Tunnel while OUTHAUL_LOCAL_CA is set; unset it and restart first")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	if err := ic.st.SetCloudflareToken(ctx, token); err != nil {

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/outhaul-dev/outhaul/internal/docker"
+	"github.com/outhaul-dev/outhaul/internal/localca"
 )
 
 func testProxyConfig() ProxyConfig {
@@ -131,7 +132,7 @@ func TestEnsureProxyConfiguresDockerProviderAndEntrypoint(t *testing.T) {
 
 func tlsProxyConfig() ProxyConfig {
 	pc := testProxyConfig()
-	pc.TLSEnabled = true
+	pc.ACME = true
 	pc.ACMEEmail = "ops@example.com"
 	pc.HTTPSPort = "443"
 	pc.ACMEStorageDir = "/var/lib/outhaul/traefik/acme"
@@ -330,7 +331,7 @@ func TestEnsureProxyNoAdminRouteWithoutTLS(t *testing.T) {
 	ctx := context.Background()
 	rec := &recordingFake{Fake: docker.NewFake()}
 	pc := adminProxyConfig(t)
-	pc.TLSEnabled = false // a cert is impossible, so no admin route
+	pc.ACME = false // a cert is impossible, so no admin route
 	pc.ACMEEmail = ""
 	if err := EnsureProxy(ctx, rec, pc, nil); err != nil {
 		t.Fatalf("EnsureProxy: %v", err)
@@ -350,12 +351,55 @@ func TestWriteAdminDynamicConfigRemovesStaleFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Routing now disabled (no AdminHost) — the stale route must be cleared.
-	pc := ProxyConfig{TLSEnabled: true, DynamicDir: dir}
+	pc := ProxyConfig{ACME: true, DynamicDir: dir}
 	if err := writeAdminDynamicConfig(pc); err != nil {
 		t.Fatalf("writeAdminDynamicConfig: %v", err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Errorf("stale dynamic config should have been removed (err=%v)", err)
+	}
+}
+
+func TestEnsureProxyRemovesStaleLocalCertsFileWhenLocalCAOff(t *testing.T) {
+	ctx := context.Background()
+	rec := &recordingFake{Fake: docker.NewFake()}
+	dynDir := t.TempDir()
+	path := filepath.Join(dynDir, localca.DynamicCertsFile)
+	if err := os.WriteFile(path, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pc := testProxyConfig()
+	pc.LocalCA = false
+	pc.DynamicDir = dynDir
+	if err := EnsureProxy(ctx, rec, pc, nil); err != nil {
+		t.Fatalf("EnsureProxy: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("stale local-certs config should have been removed when LocalCA is off (err=%v)", err)
+	}
+}
+
+func TestEnsureProxyKeepsLocalCertsFileWhenLocalCAOn(t *testing.T) {
+	ctx := context.Background()
+	rec := &recordingFake{Fake: docker.NewFake()}
+	dynDir := t.TempDir()
+	path := filepath.Join(dynDir, localca.DynamicCertsFile)
+	if err := os.WriteFile(path, []byte("kept"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pc := testProxyConfig()
+	pc.LocalCA = true
+	pc.CertsDir = t.TempDir()
+	pc.DynamicDir = dynDir
+	if err := EnsureProxy(ctx, rec, pc, nil); err != nil {
+		t.Fatalf("EnsureProxy: %v", err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("local-certs config should survive when LocalCA is on: %v", err)
+	}
+	if string(body) != "kept" {
+		t.Errorf("local-certs config should be untouched, got %q", body)
 	}
 }
 
@@ -416,6 +460,73 @@ func TestEnsureProxyTunnelModeAdminRouteNoTLS(t *testing.T) {
 	}
 	if !strings.Contains(body, "http://host.docker.internal:8080") {
 		t.Errorf("admin backend url missing:\n%s", body)
+	}
+}
+
+func localCAProxyConfig(t *testing.T) ProxyConfig {
+	pc := testProxyConfig()
+	pc.LocalCA = true
+	pc.HTTPSPort = "443"
+	pc.CertsDir = t.TempDir()
+	pc.DynamicDir = t.TempDir()
+	return pc
+}
+
+func TestEnsureProxyLocalCA(t *testing.T) {
+	ctx := context.Background()
+	rec := &recordingFake{Fake: docker.NewFake()}
+	if err := EnsureProxy(ctx, rec, localCAProxyConfig(t), nil); err != nil {
+		t.Fatalf("EnsureProxy: %v", err)
+	}
+	joined := strings.Join(rec.created.Cmd, " ")
+	for _, want := range []string{
+		"--entrypoints.websecure.address=:443",
+		"--entrypoints.web.http.redirections.entrypoint.to=websecure",
+		"--providers.file.directory=/etc/traefik/dynamic",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("cmd missing %q; got %v", want, rec.created.Cmd)
+		}
+	}
+	if strings.Contains(joined, "acme") {
+		t.Errorf("local CA posture must carry no ACME flags: %v", rec.created.Cmd)
+	}
+	foundCerts := false
+	for _, m := range rec.created.Mounts {
+		if m.Target == "/etc/traefik/certs" && m.ReadOnly {
+			foundCerts = true
+		}
+	}
+	if !foundCerts {
+		t.Errorf("certs dir not mounted read-only: %v", rec.created.Mounts)
+	}
+	found443 := false
+	for _, p := range rec.created.Ports {
+		if p.HostPort == "443" {
+			found443 = true
+		}
+	}
+	if !found443 {
+		t.Errorf("should publish :443, ports=%v", rec.created.Ports)
+	}
+}
+
+func TestAdminDynamicConfigLocalCA(t *testing.T) {
+	pc := localCAProxyConfig(t)
+	pc.AdminHost = "gateway.local"
+	pc.AdminPort = "8080"
+	if err := writeAdminDynamicConfig(pc); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(pc.DynamicDir, adminDynamicFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "tls: {}") {
+		t.Errorf("admin router should use tls: {} (file-provider cert), got:\n%s", body)
+	}
+	if strings.Contains(string(body), "certResolver") {
+		t.Errorf("local CA admin router must not reference a certresolver:\n%s", body)
 	}
 }
 

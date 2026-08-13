@@ -204,3 +204,46 @@ func TestACMEEmailStripsInlineComment(t *testing.T) {
 		t.Error("TLSEnabled() = false, want true")
 	}
 }
+
+func TestLocalCAConfig(t *testing.T) {
+	env := map[string]string{"OUTHAUL_LOCAL_CA": "true"}
+	cfg := Load(func(k string) string { return env[k] })
+	if !cfg.LocalCAEnabled() || cfg.ACMEEnabled() {
+		t.Errorf("LocalCAEnabled=%v ACMEEnabled=%v; want true,false", cfg.LocalCAEnabled(), cfg.ACMEEnabled())
+	}
+	if !cfg.TLSEnabled() {
+		t.Error("TLSEnabled should be true with local CA on")
+	}
+	if got := cfg.CertResolver(); got != "" {
+		t.Errorf("CertResolver = %q; want empty for local CA", got)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate: %v", err)
+	}
+}
+
+func TestACMECertResolver(t *testing.T) {
+	env := map[string]string{"OUTHAUL_ACME_EMAIL": "ops@example.com"}
+	cfg := Load(func(k string) string { return env[k] })
+	if got := cfg.CertResolver(); got != "le" {
+		t.Errorf("CertResolver = %q; want le", got)
+	}
+}
+
+func TestValidateRejectsLocalCAPlusACME(t *testing.T) {
+	env := map[string]string{"OUTHAUL_LOCAL_CA": "1", "OUTHAUL_ACME_EMAIL": "ops@example.com"}
+	cfg := Load(func(k string) string { return env[k] })
+	if err := cfg.Validate(); err == nil {
+		t.Error("Validate should reject LOCAL_CA together with ACME_EMAIL")
+	}
+}
+
+func TestCADirs(t *testing.T) {
+	cfg := Load(func(string) string { return "" })
+	if got, want := cfg.CADir(), filepath.Join(cfg.DataDir, "ca"); got != want {
+		t.Errorf("CADir = %q; want %q", got, want)
+	}
+	if got, want := cfg.CertsDir(), filepath.Join(cfg.DataDir, "traefik", "certs"); got != want {
+		t.Errorf("CertsDir = %q; want %q", got, want)
+	}
+}

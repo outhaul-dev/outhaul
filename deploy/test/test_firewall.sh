@@ -10,4 +10,8 @@ assert_eq "mode c + git 2222" "22 2222"        "$(derive_firewall_ports c 2222)"
 assert_eq "mode a no git"     "22 80 443"      "$(derive_firewall_ports a '')"
 assert_eq "dedup git=22"      "22 80 443"      "$(derive_firewall_ports a 22)"
 
+assert_eq "mode c + local CA opens web ports" "22 80 443" "$(derive_firewall_ports c '' 1)"
+assert_eq "mode c without local CA stays closed" "22" "$(derive_firewall_ports c '' 0)"
+assert_eq "mode a ignores localca arg" "22 80 443" "$(derive_firewall_ports a '' 1)"
+
 [ "${TESTS_FAIL:-0}" -eq 0 ]

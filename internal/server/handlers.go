@@ -288,6 +288,10 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// CreateApp itself seeds a primary domain row for non-compose apps (see
+	// store.CreateApp); compose apps seed one just above via firstDomain. Either
+	// way a new domain may now need a cert, so sync once here regardless of kind.
+	s.syncCerts(r.Context())
 	// The project-detail form asks to land back on its project; anything else
 	// (or a tampered value) falls back to the apps list.
 	ret := r.FormValue("return")
@@ -609,6 +613,7 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 		"ProjDatabases": projDatabases,
 		"ServerIP":      s.serverIP,
 		"TLSAvailable":  s.tlsEnabled,
+		"LocalCA":       s.caFile != "",
 
 		"PreviewsAvailable": app.Source == core.SourceGithub,
 		"PreviewConfig":     previewCfg,
@@ -688,6 +693,7 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Could not add domain (is it already configured?): "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.syncCerts(r.Context())
 	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
@@ -726,6 +732,7 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Could not update domain: "+err.Error(), http.StatusBadRequest)
 		return
 	}
+	s.syncCerts(r.Context())
 	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
@@ -744,6 +751,7 @@ func (s *Server) handleDeleteDomain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.syncCerts(r.Context())
 	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 

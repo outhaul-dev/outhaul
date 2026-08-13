@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
@@ -51,7 +52,26 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, status i
 	if on, err := s.store.TunnelEnabled(r.Context()); err == nil {
 		data["TunnelEnabled"] = on
 	}
+	data["LocalCA"] = s.caFile != ""
 	s.render(w, status, "settings", data)
+}
+
+// handleCARoot serves the local CA root certificate for device trust setup.
+// Unauthenticated: the root cert is public material, and LAN devices need to
+// fetch it before HTTPS to anything (including the login page) is trusted.
+func (s *Server) handleCARoot(w http.ResponseWriter, r *http.Request) {
+	if s.caFile == "" {
+		http.NotFound(w, r)
+		return
+	}
+	pemBytes, err := os.ReadFile(s.caFile)
+	if err != nil {
+		http.Error(w, "local CA not initialised", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/x-pem-file")
+	w.Header().Set("Content-Disposition", `attachment; filename="outhaul-ca.pem"`)
+	w.Write(pemBytes)
 }
 
 // handleChangePassword verifies the current password and stores a new hash.

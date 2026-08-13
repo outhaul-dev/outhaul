@@ -63,7 +63,7 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 	// sits beside the user's compose file and layers domain exposure over it.
 	files := []string{app.ComposePath}
 	if len(domains) > 0 {
-		ov := compose.Override(app, domains, w.cfg.Network, w.effectiveTLS(ctx))
+		ov := compose.Override(app, domains, w.cfg.Network, w.effectiveTLS(ctx), w.cfg.CertResolver())
 		if err := os.WriteFile(filepath.Join(stackDir, compose.OverrideFile), ov, 0o644); err != nil {
 			w.fail(dep, core.StatusBuilding, "write override: "+err.Error(), out)
 			return

@@ -229,7 +229,7 @@ func TestSupersedeOthersRetiresOldRunningRows(t *testing.T) {
 	}
 	assertStatus(d1.ID, core.StatusSuperseded)
 	assertStatus(d2.ID, core.StatusSuperseded)
-	assertStatus(d3.ID, core.StatusRunning)   // the one holding traffic
+	assertStatus(d3.ID, core.StatusRunning)    // the one holding traffic
 	assertStatus(other.ID, core.StatusRunning) // untouched: different app
 
 	// Idempotent: a second call with the same live row retires nothing more.
