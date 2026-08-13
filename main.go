@@ -264,6 +264,10 @@ func serve() error {
 		srv.SetSSHControl(sshSrv)
 	}
 	srv.SetTunnelControl(infra)
+	if certMgr != nil {
+		srv.SetCertSync(certMgr)
+		srv.SetLocalCAFile(localca.RootPath(cfg.CADir()))
+	}
 	printSetupHint(srv, cfg, setupToken)
 
 	httpServer := &http.Server{

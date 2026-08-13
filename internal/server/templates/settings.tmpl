@@ -111,6 +111,14 @@
   {{end}}
 </section>
 
+{{if .LocalCA}}
+<section class="panel">
+  <h2 class="panel-title">Local certificate authority</h2>
+  <p class="muted env-note">HTTPS here is signed by Outhaul's built-in CA. Install this root certificate on each device once and every app domain shows as valid — new apps included.</p>
+  <p><a href="/ca.pem" download>Download CA certificate</a></p>
+</section>
+{{end}}
+
 <section class="panel">
   <h2 class="panel-title">Change password</h2>
   <form method="post" action="/settings/password" class="grid-form">

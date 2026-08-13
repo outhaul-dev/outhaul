@@ -77,6 +77,9 @@ type Runtime interface {
 	RemoveVolume(ctx context.Context, name string, force bool) error
 }
 
+// CertSyncer re-mints local-CA certificates; satisfied by *localca.Manager.
+type CertSyncer interface{ Sync(context.Context) error }
+
 // Server holds the HTTP layer's dependencies.
 type Server struct {
 	store     *store.Store
@@ -100,6 +103,8 @@ type Server struct {
 	repos      *gitrepo.Manager // push-app bare repos; nil disables push-repo cleanup
 	sshControl SSHControl       // git-push SSH server; nil disables the port setting
 	tunnel     TunnelControl    // Cloudflare Tunnel management; nil disables the tunnel card
+	certSync   CertSyncer       // local-CA cert re-mint hook; nil disables cert re-sync
+	caFile     string           // path to the local CA root cert; "" disables /ca.pem and the settings card
 
 	stateMu     sync.Mutex
 	stateTokens map[string]time.Time // CSRF states for the GitHub App manifest flow
@@ -136,6 +141,24 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 	return s, nil
 }
 
+// SetCertSync installs the hook that refreshes local-CA certs after domain
+// changes. Call before Handler.
+func (s *Server) SetCertSync(cs CertSyncer) { s.certSync = cs }
+
+// SetLocalCAFile publishes the CA root certificate at GET /ca.pem.
+func (s *Server) SetLocalCAFile(path string) { s.caFile = path }
+
+// syncCerts refreshes local-CA certs after a domain change; best-effort — a
+// route reaches Traefik on the next deploy anyway, minting can lag a beat.
+func (s *Server) syncCerts(ctx context.Context) {
+	if s.certSync == nil {
+		return
+	}
+	if err := s.certSync.Sync(ctx); err != nil {
+		log.Printf("local CA sync: %v", err)
+	}
+}
+
 // parseTemplates builds one template set per page, each combining base.tmpl with
 // the page template (so every page can define its own "content" block).
 func (s *Server) parseTemplates() error {
@@ -162,6 +185,10 @@ func (s *Server) Handler() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
+
+	// Unauthenticated by design: the root certificate is public material and
+	// devices need it before they can trust anything (including the login page).
+	mux.HandleFunc("GET /ca.pem", s.handleCARoot)
 
 	sub, _ := fs.Sub(staticFS, "static")
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
