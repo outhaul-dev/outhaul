@@ -590,8 +590,14 @@ func TestMigrationCarriesLegacyGithubApp(t *testing.T) {
 	if _, err := s.db.Exec(`DELETE FROM schema_migrations WHERE name = ?`, "migrations/0022_git_sources.sql"); err != nil {
 		t.Fatalf("unrecord 0022: %v", err)
 	}
-	// 0022 is written to run against a schema without its own tables.
-	for _, stmt := range []string{`DROP TABLE github_app_sources`, `DROP TABLE git_sources`} {
+	// 0022 is written to run against a schema without its own tables *or* the
+	// column it adds — replaying it over an existing git_source_id column fails
+	// with "duplicate column name".
+	for _, stmt := range []string{
+		`DROP TABLE github_app_sources`,
+		`DROP TABLE git_sources`,
+		`ALTER TABLE apps DROP COLUMN git_source_id`,
+	} {
 		if _, err := s.db.Exec(stmt); err != nil {
 			t.Fatalf("%s: %v", stmt, err)
 		}
