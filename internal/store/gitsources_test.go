@@ -188,6 +188,26 @@ func TestMigrationCarriesLegacyGithubApp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateApp: %v", err)
 	}
+	// 0023 (Task 11) drops github_app once its row has been copied by 0022, so
+	// a fresh Open no longer leaves the table behind to seed. Un-record it and
+	// recreate the table (0003's schema) so it replays in order behind 0022.
+	if _, err := s.db.Exec(`DELETE FROM schema_migrations WHERE name = ?`, "migrations/0023_drop_github_app.sql"); err != nil {
+		t.Fatalf("unrecord 0023: %v", err)
+	}
+	if _, err := s.db.Exec(`
+		CREATE TABLE github_app (
+		    id              INTEGER PRIMARY KEY CHECK (id = 1),
+		    app_id          INTEGER NOT NULL,
+		    slug            TEXT    NOT NULL,
+		    private_key     TEXT    NOT NULL,
+		    webhook_secret  TEXT    NOT NULL,
+		    client_id       TEXT    NOT NULL,
+		    client_secret   TEXT    NOT NULL,
+		    installation_id INTEGER NOT NULL DEFAULT 0,
+		    created_at      TEXT    NOT NULL
+		)`); err != nil {
+		t.Fatalf("recreate github_app: %v", err)
+	}
 	encPK, _ := box.Seal([]byte("LEGACY-PEM"))
 	encWH, _ := box.Seal([]byte("LEGACY-WHS"))
 	encCS, _ := box.Seal([]byte("LEGACY-CSEC"))

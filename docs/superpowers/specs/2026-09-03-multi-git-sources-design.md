@@ -1,7 +1,7 @@
 # Multiple connected GitHub accounts (git sources) — design
 
 **Date:** 2026-09-03
-**Status:** Approved (pending spec review)
+**Status:** Implemented
 
 ## Overview
 

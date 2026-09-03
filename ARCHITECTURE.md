@@ -407,17 +407,34 @@ one-method hook interface so `internal/prune` stays out of the pipeline's
 dependency graph. Deliberate seams: per-app retention overrides, a disk-usage
 gauge, a "prune now" button.
 
-Design decisions from M3: private-repo access goes through a **GitHub App**,
-set up via GitHub's manifest flow (the operator submits a pre-filled manifest,
+Design decisions from M3: private-repo access goes through **GitHub Apps**, set
+up via GitHub's manifest flow (the operator submits a pre-filled manifest,
 GitHub redirects back with a temporary code that is exchanged for the App's
-credentials — no manual "create an app" form-filling). Clones authenticate
-with a short-lived **installation access token** minted from the App's
-private key, so no long-lived user PAT is ever stored. As a fallback/general
-path, each app also gets a per-app **SSH deploy key** (Ed25519, generated with
-`sshkey`, private half encrypted at rest the same way as other secrets) that
-can be added to a repo directly. Push notifications arrive via a **generic
-per-app webhook** (`internal/webhook`): a per-app HMAC secret authenticates
-the payload with a constant-time comparison, and `webhook.ParsePush` extracts
+credentials — no manual "create an app" form-filling). Outhaul creates
+*private* Apps, and GitHub only installs a private App on the account that owns
+it, so one App is one account: connecting a second account or an organization
+means a second App. Each is stored as a **git source** — a generic
+`git_sources` identity row plus a per-kind credential table — and read through
+the `internal/gitsource` `Provider` interface, which has exactly one
+implementation today. Apps carry `git_source_id`, so the create-app form offers
+every account's repositories in one grouped list and the chosen repo also
+chooses its credentials.
+
+Every App posts to the same `/webhooks/github` path (GitHub does not allow
+rewriting an installed App's hook URL), so a delivery is matched to its source
+by the `X-GitHub-Hook-Installation-Target-ID` header and verified against only
+that source's secret. Fan-out is scoped to the same source: two connected
+accounts can each expose the same `owner/repo`, and a push for one must never
+deploy the other's app.
+
+Clones authenticate with a short-lived **installation access token** minted
+from the source's private key, so no long-lived user PAT is ever stored. As a
+fallback/general path, each app also gets a per-app **SSH deploy key**
+(Ed25519, generated with `sshkey`, private half encrypted at rest the same way
+as other secrets) that can be added to a repo directly. Push notifications
+arrive via a **generic per-app webhook** (`internal/webhook`): a per-app HMAC
+secret authenticates the payload with a constant-time comparison, and
+`webhook.ParsePush` extracts
 the pushed branch independent of the Git host's payload shape. Auto-deploy is
 gated by two per-app settings — a target branch and an on/off toggle — so a
 push only enqueues a deploy when both match; tag pushes and pushes to other

@@ -141,25 +141,6 @@ func (s *Store) AppByWebhookSecret(ctx context.Context, secret string) (core.App
 	return scanApp(row)
 }
 
-// AppsByGithubRepo returns all apps sourced from the given "owner/name".
-func (s *Store) AppsByGithubRepo(ctx context.Context, fullName string) ([]core.App, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+appCols+` FROM apps WHERE source = ? AND github_repo = ?`, core.SourceGithub, fullName)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var apps []core.App
-	for rows.Next() {
-		app, err := scanApp(rows)
-		if err != nil {
-			return nil, err
-		}
-		apps = append(apps, app)
-	}
-	return apps, rows.Err()
-}
-
 // AppsByGithubRepoSource returns the apps sourced from "owner/name" *through a
 // particular git source*. Scoping by source is what stops a push signed by one
 // connected account from deploying another account's identically-named repo.
