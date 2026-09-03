@@ -1,11 +1,16 @@
 package server
 
 import (
+	"context"
+	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/github"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -22,9 +27,9 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, status i
 	if !s.publicURLSet() {
 		data["NeedsPublicURL"] = true
 	}
-	if ga, ok, err := s.store.GithubApp(r.Context()); err == nil && ok {
-		data["GithubSlug"] = ga.Slug
-		data["GithubInstalled"] = ga.InstallationID != 0
+	s.backfillAccounts(r.Context())
+	if sources, err := s.store.ListGitSources(r.Context()); err == nil {
+		data["GitSources"] = sources
 	}
 	dests, err := s.store.ListDestinations(r.Context())
 	if err != nil {
@@ -165,6 +170,76 @@ func (s *Server) handleSetSSHAddr(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.SetSetting(r.Context(), "ssh_addr", addr); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/settings", http.StatusSeeOther)
+}
+
+// backfillAccounts names sources that have none. A source carried over from the
+// pre-0022 single-App record was never told which account it belongs to,
+// because the old flow never asked. Failures are logged and ignored — Display()
+// falls back to the App slug, so the page always renders.
+func (s *Server) backfillAccounts(ctx context.Context) {
+	sources, err := s.store.ListGitSources(ctx)
+	if err != nil {
+		return
+	}
+	for _, src := range sources {
+		if src.AccountLogin != "" || !src.Installed() || src.Kind != core.GitSourceGithubApp {
+			continue
+		}
+		jwt, err := github.AppJWT(src.GithubApp.PrivateKey, src.GithubApp.AppID, time.Now())
+		if err != nil {
+			log.Printf("git source %s: app jwt: %v", src.Display(), err)
+			continue
+		}
+		inst, err := s.gh.Installation(ctx, jwt, src.GithubApp.InstallationID)
+		if err != nil {
+			log.Printf("git source %s: read installation: %v", src.Display(), err)
+			continue
+		}
+		if err := s.store.SetGitSourceAccount(ctx, src.ID, inst.AccountLogin, inst.AccountType); err != nil {
+			log.Printf("git source %s: record account: %v", src.Display(), err)
+		}
+	}
+}
+
+// handleDeleteGitSource removes a connected account, refusing while apps still
+// depend on it. Deleting anyway would leave running apps un-deployable, and a
+// Settings action must not have that blast radius — so the operator is shown
+// exactly which apps to move first.
+func (s *Server) handleDeleteGitSource(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	src, found, err := s.store.GetGitSource(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	users, err := s.store.AppsUsingGitSource(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if len(users) > 0 {
+		names := make([]string, 0, len(users))
+		for _, app := range users {
+			names = append(names, app.Name)
+		}
+		s.renderSettings(w, r, http.StatusBadRequest, fmt.Sprintf(
+			"Cannot remove %s — %d app(s) still use it: %s. Change their source or delete them first.",
+			src.Display(), len(users), strings.Join(names, ", ")))
+		return
+	}
+	if err := s.store.DeleteGitSource(r.Context(), id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
