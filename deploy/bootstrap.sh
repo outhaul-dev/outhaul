@@ -204,6 +204,7 @@ read_meminfo_kb() { # key file?
 }
 
 # Prints the distro ID from an os-release file (default /etc/os-release).
+# shellcheck disable=SC2120  # the file arg is only passed by the tests
 detect_distro() { # file?
 	awk -F= '$1=="ID"{gsub(/"/,"",$2); print $2; exit}' "${1:-/etc/os-release}"
 }
