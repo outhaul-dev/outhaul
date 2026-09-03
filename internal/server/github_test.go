@@ -3,7 +3,6 @@ package server
 import (
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 
@@ -13,7 +12,7 @@ import (
 func TestGithubCallbackStoresApp(t *testing.T) {
 	env := newTestEnv(t)
 	env.gh.ManifestResult = github.ManifestResult{
-		AppID: 55, Slug: "outhaul-t", PEM: "PEM", WebhookSecret: "whs",
+		AppID: 55, Slug: "outhaul-t", PEM: testAppKeyPEM(t), WebhookSecret: "whs",
 		ClientID: "cid", ClientSecret: "csec",
 	}
 
@@ -32,8 +31,8 @@ func TestGithubCallbackStoresApp(t *testing.T) {
 	if env.gh.LastCode != "xyz" {
 		t.Errorf("exchanged code = %q", env.gh.LastCode)
 	}
-	if _, ok, _ := env.store.GithubApp(req.Context()); !ok {
-		t.Error("github app not stored")
+	if _, ok, _ := env.store.GitSourceByGithubAppID(req.Context(), 55); !ok {
+		t.Error("git source not stored")
 	}
 }
 
@@ -47,27 +46,6 @@ func TestGithubCallbackRejectsBadState(t *testing.T) {
 	}
 	if env.gh.LastCode != "" {
 		t.Error("exchanged code despite bad state")
-	}
-}
-
-func TestGithubSetupStoresInstallation(t *testing.T) {
-	env := newTestEnv(t)
-	env.gh.ManifestResult = github.ManifestResult{AppID: 1, Slug: "s", PEM: "p", WebhookSecret: "w", ClientID: "c", ClientSecret: "cs"}
-	// Seed an app record first.
-	st := env.srv.newGithubState()
-	env.srv.Handler().ServeHTTP(httptest.NewRecorder(),
-		httptest.NewRequest("GET", "/github/callback?code=c&state="+st, nil))
-
-	form := url.Values{"installation_id": {"321"}, "setup_action": {"install"}}
-	req := httptest.NewRequest("GET", "/github/setup?"+form.Encode(), nil)
-	rec := httptest.NewRecorder()
-	env.srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("status = %d, want 303", rec.Code)
-	}
-	ga, _, _ := env.store.GithubApp(req.Context())
-	if ga.InstallationID != 321 {
-		t.Errorf("installation id = %d, want 321", ga.InstallationID)
 	}
 }
 

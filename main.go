@@ -26,6 +26,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/githook"
 	"github.com/outhaul-dev/outhaul/internal/github"
 	"github.com/outhaul-dev/outhaul/internal/gitrepo"
+	"github.com/outhaul-dev/outhaul/internal/gitsource"
 	"github.com/outhaul-dev/outhaul/internal/gitssh"
 	"github.com/outhaul-dev/outhaul/internal/localca"
 	"github.com/outhaul-dev/outhaul/internal/logstream"
@@ -176,6 +177,9 @@ func serve() error {
 	infra := ensureInfra(dc, cfg, st)
 
 	ghClient := github.New()
+	// One registry, shared by the deploy worker, the preview manager, and the
+	// HTTP layer: every consumer resolves a source's provider the same way.
+	sources := gitsource.NewRegistry(gitsource.NewGithubApp(ghClient))
 
 	// Background worker.
 	broker := logstream.New()
@@ -253,7 +257,7 @@ func serve() error {
 
 	setupToken := server.NewToken()
 	srv, err := server.New(st, worker, dc, compose.NewDocker(), dbm, backups, broker, ghClient,
-		previews,
+		sources, previews,
 		cfg.PublicURL, serverIP, cfg.TLSEnabled(), setupToken)
 	if err != nil {
 		stopWorker()

@@ -2,6 +2,10 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,6 +25,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/docker"
 	"github.com/outhaul-dev/outhaul/internal/github"
+	"github.com/outhaul-dev/outhaul/internal/gitsource"
 	"github.com/outhaul-dev/outhaul/internal/logstream"
 	"github.com/outhaul-dev/outhaul/internal/secret"
 	"github.com/outhaul-dev/outhaul/internal/store"
@@ -227,7 +232,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	bk := &fakeBackups{}
 	br := logstream.New()
 	gh := &github.Fake{}
-	srv, err := New(st, dep, rt, cp, dbm, bk, br, gh, nil, "https://slip.example.com", "203.0.113.7", false, "SETUPTOKEN")
+	srv, err := New(st, dep, rt, cp, dbm, bk, br, gh, gitsource.NewRegistry(gitsource.NewGithubApp(gh)), nil, "https://slip.example.com", "203.0.113.7", false, "SETUPTOKEN")
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -707,4 +712,17 @@ func TestAppSettingsHasHints(t *testing.T) {
 	if !strings.Contains(page, `class="hint"`) {
 		t.Error("app page should render (i) field hints")
 	}
+}
+
+// testAppKeyPEM generates an RSA key PEM. Handlers that mint an App JWT need a
+// real key, so seeded App credentials cannot use a placeholder string.
+func testAppKeyPEM(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{
+		Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key),
+	}))
 }

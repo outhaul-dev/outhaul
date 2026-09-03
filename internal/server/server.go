@@ -25,6 +25,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/docker"
 	"github.com/outhaul-dev/outhaul/internal/github"
 	"github.com/outhaul-dev/outhaul/internal/gitrepo"
+	"github.com/outhaul-dev/outhaul/internal/gitsource"
 	"github.com/outhaul-dev/outhaul/internal/hostmetrics"
 	"github.com/outhaul-dev/outhaul/internal/logstream"
 	"github.com/outhaul-dev/outhaul/internal/store"
@@ -89,9 +90,10 @@ type Server struct {
 	databases Databases
 	backups   Backups
 	broker    *logstream.Broker
-	gh        github.Client
-	previews  PreviewHandler // routes pull_request webhooks to the preview manager; nil disables previews
-	metrics   metricsSampler // host/self resource sampler for the Metrics page
+	gh        github.Client       // raw GitHub API: the manifest/installation connect flow only
+	sources   *gitsource.Registry // providers for connected git sources
+	previews  PreviewHandler      // routes pull_request webhooks to the preview manager; nil disables previews
+	metrics   metricsSampler      // host/self resource sampler for the Metrics page
 
 	pages      map[string]*template.Template
 	setupToken string
@@ -117,7 +119,7 @@ type Server struct {
 // first-boot admin-creation flow (printed by the caller as a one-time URL).
 // publicURL is Outhaul's externally reachable base URL, used to build the
 // GitHub App manifest's callback and webhook URLs.
-func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databases, bk Backups, br *logstream.Broker, gh github.Client, previews PreviewHandler, publicURL, serverIP string, tlsEnabled bool, setupToken string) (*Server, error) {
+func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databases, bk Backups, br *logstream.Broker, gh github.Client, reg *gitsource.Registry, previews PreviewHandler, publicURL, serverIP string, tlsEnabled bool, setupToken string) (*Server, error) {
 	s := &Server{
 		store:       st,
 		deployer:    d,
@@ -127,6 +129,7 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 		backups:     bk,
 		broker:      br,
 		gh:          gh,
+		sources:     reg,
 		previews:    previews,
 		metrics:     hostmetrics.NewSampler("/"),
 		publicURL:   publicURL,
