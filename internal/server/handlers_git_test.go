@@ -2,31 +2,16 @@ package server
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/github"
 )
-
-// testRSAKeyPEM generates a throwaway RSA private key PEM for constructing a
-// core.GithubApp record in tests (github.AppJWT requires a parseable key).
-func testRSAKeyPEM(t *testing.T) string {
-	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate RSA key: %v", err)
-	}
-	block := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}
-	return string(pem.EncodeToMemory(block))
-}
 
 func TestCreateAppSSHGeneratesKey(t *testing.T) {
 	env := newTestEnv(t)
@@ -84,9 +69,12 @@ func TestCreateAppSSHRejectsDashRepo(t *testing.T) {
 func TestCreateAppGithubUsesRepo(t *testing.T) {
 	env := newTestEnv(t)
 	env.login(t)
+	id := installSource(t, env, 55, "outhaul-a", 9001, "o", "User")
+	env.gh.Repos = []github.Repo{{FullName: "o/r", DefaultBranch: "main"}}
 	form := url.Values{
 		"name": {"prod"}, "domain": {"prod.example.com"}, "source": {"github"},
-		"github_repo": {"o/r"}, "branch": {"main"}, "auto_deploy": {"on"},
+		"github_repo": {"o/r"}, "git_source_id": {strconv.FormatInt(id, 10)},
+		"branch": {"main"}, "auto_deploy": {"on"},
 	}
 	req := httptest.NewRequest("POST", "/apps", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -130,15 +118,7 @@ func TestUpdateAppSettingsHandler(t *testing.T) {
 func TestAppsListShowsGithubReposWhenConnected(t *testing.T) {
 	env := newTestEnv(t)
 	env.login(t)
-	ctx := context.Background()
-	if err := env.store.SetGithubApp(ctx, core.GithubApp{
-		AppID: 1, Slug: "s", PrivateKey: testRSAKeyPEM(t), WebhookSecret: "w", ClientID: "c", ClientSecret: "cs",
-	}); err != nil {
-		t.Fatalf("SetGithubApp: %v", err)
-	}
-	if err := env.store.SetInstallationID(ctx, 42); err != nil {
-		t.Fatalf("SetInstallationID: %v", err)
-	}
+	installSource(t, env, 55, "outhaul-a", 9001, "o", "User")
 	env.gh.Token = "tok"
 	env.gh.Repos = []github.Repo{{FullName: "o/r"}}
 
@@ -158,15 +138,7 @@ func TestAppsListShowsGithubReposWhenConnected(t *testing.T) {
 func TestGithubReposAreCachedAcrossRenders(t *testing.T) {
 	env := newTestEnv(t)
 	env.login(t)
-	ctx := context.Background()
-	if err := env.store.SetGithubApp(ctx, core.GithubApp{
-		AppID: 1, Slug: "s", PrivateKey: testRSAKeyPEM(t), WebhookSecret: "w", ClientID: "c", ClientSecret: "cs",
-	}); err != nil {
-		t.Fatalf("SetGithubApp: %v", err)
-	}
-	if err := env.store.SetInstallationID(ctx, 42); err != nil {
-		t.Fatalf("SetInstallationID: %v", err)
-	}
+	installSource(t, env, 55, "outhaul-a", 9001, "o", "User")
 	env.gh.Token = "tok"
 	env.gh.Repos = []github.Repo{{FullName: "o/r"}}
 
@@ -188,15 +160,7 @@ func TestGithubReposAreCachedAcrossRenders(t *testing.T) {
 func TestAppsListDegradesGracefullyOnRepoListError(t *testing.T) {
 	env := newTestEnv(t)
 	env.login(t)
-	ctx := context.Background()
-	if err := env.store.SetGithubApp(ctx, core.GithubApp{
-		AppID: 1, Slug: "s", PrivateKey: testRSAKeyPEM(t), WebhookSecret: "w", ClientID: "c", ClientSecret: "cs",
-	}); err != nil {
-		t.Fatalf("SetGithubApp: %v", err)
-	}
-	if err := env.store.SetInstallationID(ctx, 42); err != nil {
-		t.Fatalf("SetInstallationID: %v", err)
-	}
+	installSource(t, env, 55, "outhaul-a", 9001, "o", "User")
 	env.gh.ReposErr = context.DeadlineExceeded
 
 	resp := env.get(t, "/")

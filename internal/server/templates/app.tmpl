@@ -434,14 +434,20 @@ git push outhaul {{.PushBranch}}</pre>{{template "copybtn" .}}</div>
         <option value="public" {{if eq .App.Source "public"}}selected{{end}}>Public Git URL</option>
         <option value="ssh" {{if eq .App.Source "ssh"}}selected{{end}}>Private (SSH deploy key)</option>
         <option value="push" {{if eq .App.Source "push"}}selected{{end}}>Push to deploy (git push)</option>
-        {{if or .GithubConnected (eq .App.Source "github")}}<option value="github" {{if eq .App.Source "github"}}selected{{end}}>GitHub App{{if not .GithubConnected}} (reconnect required){{end}}</option>{{end}}
+        {{if or .GitSourceConnected (eq .App.Source "github")}}<option value="github" {{if eq .App.Source "github"}}selected{{end}}>GitHub App{{if not .GitSourceConnected}} (reconnect required){{end}}</option>{{end}}
       </select>
     </label>
-    {{if .GithubConnected}}
-    <label class="field" data-src="github"><span>GitHub repository</span>
-      <select name="github_repo" id="src-github-repo">
-        {{range .GithubRepos}}<option value="{{.FullName}}" {{if eq .FullName $.App.GithubRepo}}selected{{end}}>{{.FullName}}</option>{{end}}
+    {{if .RepoGroups}}
+    <label class="field" data-src="github"><span>Repository</span>
+      <input type="text" id="src-repo-filter" placeholder="filter repos…" autocomplete="off">
+      <select name="github_repo" id="src-github-repo" size="8">
+        {{range .RepoGroups}}{{$group := .}}
+        <optgroup label="{{.AccountLogin}}{{if .AccountKind}} ({{.AccountKind}}){{end}}">
+          {{range .Repos}}<option value="{{.FullName}}" data-source-id="{{$group.SourceID}}"{{if and (eq .FullName $.App.GithubRepo) (eq $group.SourceID $.App.GitSourceID)}} selected{{end}}>{{.FullName}}</option>{{end}}
+        </optgroup>
+        {{end}}
       </select>
+      <input type="hidden" name="git_source_id" id="src-git-source-id" value="{{.App.GitSourceID}}">
     </label>
     {{end}}
     <label class="field" data-src="public ssh"><span>Git URL {{template "hint" "The clone URL of your repository. Use an https URL for a public repo or an ssh URL (git@host:owner/repo.git) for SSH."}}</span>
@@ -476,6 +482,26 @@ git push outhaul {{.PushBranch}}</pre>{{template "copybtn" .}}</div>
       });
     };
     src.addEventListener('change', applySrc); applySrc();
+  }
+  var srcRepo = document.getElementById('src-github-repo');
+  var srcSourceID = document.getElementById('src-git-source-id');
+  var srcFilter = document.getElementById('src-repo-filter');
+  // Mirrors appform.tmpl's syncRepo: picking a repo also picks its account.
+  function syncSrcRepo() {
+    if (!srcRepo || !srcSourceID) return;
+    var opt = srcRepo.options[srcRepo.selectedIndex];
+    if (!opt) return;
+    srcSourceID.value = opt.getAttribute('data-source-id') || '';
+  }
+  if (srcRepo) { srcRepo.addEventListener('change', syncSrcRepo); syncSrcRepo(); }
+  if (srcFilter && srcRepo) {
+    srcFilter.addEventListener('input', function () {
+      var q = srcFilter.value.toLowerCase();
+      for (var i = 0; i < srcRepo.options.length; i++) {
+        var o = srcRepo.options[i];
+        o.hidden = q !== '' && o.value.toLowerCase().indexOf(q) === -1;
+      }
+    });
   }
   var kind = document.getElementById('src-kind-select');
   if (kind) {

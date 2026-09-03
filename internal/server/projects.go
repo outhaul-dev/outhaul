@@ -140,7 +140,7 @@ func (s *Server) renderProject(w http.ResponseWriter, r *http.Request, status in
 	if dbForm != nil {
 		data["OpenDialog"] = "db-dialog"
 	}
-	for k, v := range s.githubRepoData(r) {
+	for k, v := range s.gitSourceData(r) {
 		data[k] = v
 	}
 	s.render(w, status, "project", data)

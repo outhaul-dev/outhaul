@@ -17,7 +17,7 @@ import (
 
 	"github.com/outhaul-dev/outhaul/internal/compose"
 	"github.com/outhaul-dev/outhaul/internal/core"
-	"github.com/outhaul-dev/outhaul/internal/github"
+	"github.com/outhaul-dev/outhaul/internal/gitsource"
 	"github.com/outhaul-dev/outhaul/internal/sshkey"
 )
 
@@ -76,7 +76,7 @@ func (s *Server) handleAppsList(w http.ResponseWriter, r *http.Request) {
 		"Title": "Apps", "Active": "apps", "Apps": rows,
 		"Projects": projects, "SelectedProject": selectedProject(projects),
 	}
-	for k, v := range s.githubRepoData(r) {
+	for k, v := range s.gitSourceData(r) {
 		data[k] = v
 	}
 	s.render(w, http.StatusOK, "apps", data)
@@ -109,15 +109,13 @@ func (s *Server) appRows(ctx context.Context, apps []core.App, projectNames map[
 	return rows, nil
 }
 
-// ghRepoCache memoizes the installation's repo list. Fetching it costs two
-// sequential api.github.com round-trips (token exchange + list), and every
-// app/create/project page render calls githubRepoData purely to fill a repo
-// dropdown — without this, each page open paid that latency (and blocked on
-// GitHub being reachable). Keyed by installation so a reconnect refetches.
-type ghRepoCache struct {
-	installationID int64
-	repos          []github.Repo
-	fetchedAt      time.Time
+// repoCache memoizes one source's repo list. Listing costs two sequential
+// api.github.com round-trips (token exchange + list), and every app/create/
+// project render fills a repo dropdown — without this, each page open paid that
+// latency per connected account, and blocked on GitHub being reachable.
+type repoCache struct {
+	repos     []gitsource.Repo
+	fetchedAt time.Time
 }
 
 // ghRepoTTL is how long a fetched repo list is served before refetching. Short
@@ -125,67 +123,117 @@ type ghRepoCache struct {
 // navigation doesn't hammer the API.
 const ghRepoTTL = 60 * time.Second
 
-// cachedRepos returns the memoized repo list for an installation and whether it
-// is still fresh. Stale-but-present entries are returned too (fresh=false) so
+// cachedRepos returns the memoized repo list for a source and whether it is
+// still fresh. Stale-but-present entries are returned too (fresh=false) so
 // callers can fall back to them when a refetch fails.
-func (s *Server) cachedRepos(installationID int64) (repos []github.Repo, fresh bool) {
+func (s *Server) cachedRepos(sourceID int64) (repos []gitsource.Repo, fresh bool) {
 	s.ghReposMu.Lock()
 	defer s.ghReposMu.Unlock()
-	c := s.ghRepos
-	if c == nil || c.installationID != installationID {
+	c := s.ghRepos[sourceID]
+	if c == nil {
 		return nil, false
 	}
 	return c.repos, time.Since(c.fetchedAt) < ghRepoTTL
 }
 
-func (s *Server) storeRepos(installationID int64, repos []github.Repo) {
+func (s *Server) storeRepos(sourceID int64, repos []gitsource.Repo) {
 	s.ghReposMu.Lock()
-	s.ghRepos = &ghRepoCache{installationID: installationID, repos: repos, fetchedAt: time.Now()}
-	s.ghReposMu.Unlock()
+	defer s.ghReposMu.Unlock()
+	if s.ghRepos == nil {
+		s.ghRepos = map[int64]*repoCache{}
+	}
+	s.ghRepos[sourceID] = &repoCache{repos: repos, fetchedAt: time.Now()}
 }
 
-// githubRepoData returns template data describing GitHub App connectivity for
-// the create-app form: "GithubConnected" (bool) when an App is connected and
-// installed, and "GithubRepos" ([]github.Repo) when the repo list is available.
-// The repo list is cached (see ghRepoCache) so it is not re-fetched on every
-// render. Any failure along the way (missing key, token exchange, API error)
-// degrades gracefully — falling back to a stale cached list if there is one,
-// otherwise to no repo dropdown — rather than failing the page.
-func (s *Server) githubRepoData(r *http.Request) map[string]any {
-	data := map[string]any{}
-	ga, ok, err := s.store.GithubApp(r.Context())
-	if err != nil || !ok || ga.InstallationID == 0 {
-		return data
-	}
-	data["GithubConnected"] = true
+// repoGroup is one connected account's repositories, rendered as an <optgroup>.
+type repoGroup struct {
+	SourceID     int64
+	AccountLogin string
+	AccountKind  string // "personal" | "org" | ""
+	Repos        []gitsource.Repo
+}
 
-	cached, fresh := s.cachedRepos(ga.InstallationID)
-	if fresh {
-		data["GithubRepos"] = cached
+// gitSourceData describes connected git sources for the create-app and
+// change-source forms: "GitSourceConnected" when at least one source is
+// installed, and "RepoGroups" — every account's repos, in one list the operator
+// picks from directly.
+//
+// Each source degrades on its own: a source whose fetch fails falls back to its
+// stale cache, or drops out. One unreachable account must never blank the whole
+// dropdown, which is what a single shared cache used to do.
+func (s *Server) gitSourceData(r *http.Request) map[string]any {
+	data := map[string]any{}
+	sources, err := s.store.ListGitSources(r.Context())
+	if err != nil {
+		log.Printf("git sources: %v", err)
 		return data
 	}
-	// stale serves as the fallback if any step of the refetch fails.
-	stale := func() map[string]any {
-		if cached != nil {
-			data["GithubRepos"] = cached
+	var groups []repoGroup
+	for _, src := range sources {
+		if !src.Installed() {
+			continue
 		}
-		return data
+		data["GitSourceConnected"] = true
+		repos, ok := s.reposFor(r.Context(), src)
+		if !ok || len(repos) == 0 {
+			continue
+		}
+		groups = append(groups, repoGroup{
+			SourceID: src.ID, AccountLogin: src.Display(),
+			AccountKind: src.AccountKind(), Repos: repos,
+		})
 	}
-	jwt, err := github.AppJWT(ga.PrivateKey, ga.AppID, time.Now())
-	if err != nil {
-		return stale()
+	if len(groups) > 0 {
+		data["RepoGroups"] = groups
 	}
-	tok, err := s.gh.InstallationToken(r.Context(), jwt, ga.InstallationID)
-	if err != nil {
-		return stale()
-	}
-	repos, err := s.gh.ListRepos(r.Context(), tok)
-	if err != nil {
-		return stale()
-	}
-	s.storeRepos(ga.InstallationID, repos)
-	data["GithubRepos"] = repos
 	return data
+}
+
+// reposFor returns a source's repositories, preferring a fresh cache and
+// falling back to a stale one when the refetch fails.
+func (s *Server) reposFor(ctx context.Context, src core.GitSource) ([]gitsource.Repo, bool) {
+	cached, fresh := s.cachedRepos(src.ID)
+	if fresh {
+		return cached, true
+	}
+	provider, err := s.sources.For(src.Kind)
+	if err != nil {
+		return cached, cached != nil
+	}
+	repos, err := provider.Repos(ctx, src)
+	if err != nil {
+		log.Printf("git source %s: list repos: %v", src.Display(), err)
+		return cached, cached != nil
+	}
+	s.storeRepos(src.ID, repos)
+	return repos, true
+}
+
+// resolveRepoSource checks that a submitted (git source, repo) pair is real:
+// the source must exist and be installed, and — when we hold a fresh repo list
+// for it — must actually contain the repo. A stale or missing cache accepts the
+// pair rather than blocking on GitHub; a wrong pair then fails loudly at clone
+// time instead of silently deploying someone else's repo.
+func (s *Server) resolveRepoSource(ctx context.Context, sourceID int64, fullName string) (int64, string) {
+	if sourceID == 0 {
+		return 0, "Choose a repository from a connected GitHub account."
+	}
+	src, ok, err := s.store.GetGitSource(ctx, sourceID)
+	if err != nil {
+		return 0, "Could not read the connected GitHub account."
+	}
+	if !ok || !src.Installed() {
+		return 0, "That GitHub account is not connected. Reconnect it in Settings."
+	}
+	if repos, fresh := s.cachedRepos(sourceID); fresh {
+		for _, repo := range repos {
+			if repo.FullName == fullName {
+				return sourceID, ""
+			}
+		}
+		return 0, "That repository is not available from the selected GitHub account."
+	}
+	return sourceID, ""
 }
 
 func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
@@ -207,7 +255,15 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 
 	repo := strings.TrimSpace(r.FormValue("repo_url"))
 	githubRepo := strings.TrimSpace(r.FormValue("github_repo"))
+	var gitSourceID int64
 	if source == core.SourceGithub {
+		id, _ := parseID(strings.TrimSpace(r.FormValue("git_source_id")))
+		resolved, verr := s.resolveRepoSource(r.Context(), id, githubRepo)
+		if verr != "" {
+			s.renderAppsWithError(w, r, verr, name, repo, domain)
+			return
+		}
+		gitSourceID = resolved
 		repo = "https://github.com/" + githubRepo + ".git"
 	}
 
@@ -228,7 +284,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 
 	app := core.App{
 		Name: name, RepoURL: repo, Domain: domain, Source: source, Kind: kind,
-		Branch: branch, AutoDeploy: autoDeploy, GithubRepo: githubRepo,
+		Branch: branch, AutoDeploy: autoDeploy, GithubRepo: githubRepo, GitSourceID: gitSourceID,
 		WebhookSecret: newSecret(), ProjectID: projectID,
 	}
 	// Compose domains live in their own table (a stack can have many); the
@@ -426,7 +482,15 @@ func (s *Server) handleUpdateAppSource(w http.ResponseWriter, r *http.Request) {
 	source := strings.TrimSpace(r.FormValue("source"))
 	repo := strings.TrimSpace(r.FormValue("repo_url"))
 	githubRepo := strings.TrimSpace(r.FormValue("github_repo"))
+	var gitSourceID int64
 	if source == core.SourceGithub {
+		srcID, _ := parseID(strings.TrimSpace(r.FormValue("git_source_id")))
+		resolved, verr := s.resolveRepoSource(r.Context(), srcID, githubRepo)
+		if verr != "" {
+			http.Error(w, verr, http.StatusBadRequest)
+			return
+		}
+		gitSourceID = resolved
 		repo = "https://github.com/" + githubRepo + ".git"
 	}
 	if source == core.SourcePush {
@@ -448,7 +512,7 @@ func (s *Server) handleUpdateAppSource(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.store.UpdateAppSource(r.Context(), id, source, repo, githubRepo, 0, pub, priv); err != nil {
+	if err := s.store.UpdateAppSource(r.Context(), id, source, repo, githubRepo, gitSourceID, pub, priv); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -474,7 +538,7 @@ func (s *Server) renderAppsWithError(w http.ResponseWriter, r *http.Request, msg
 		"Form":       map[string]string{"Name": name, "RepoURL": repo, "Domain": domain},
 		"OpenDialog": "app-dialog",
 	}
-	for k, v := range s.githubRepoData(r) {
+	for k, v := range s.gitSourceData(r) {
 		data[k] = v
 	}
 	s.render(w, http.StatusBadRequest, "apps", data)
@@ -663,7 +727,7 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 	data["LiveDeploymentID"] = liveID
 	// GitHub connectivity for the Settings "Source & build" editor (repo dropdown).
 	// Degrades gracefully to no dropdown when no App is connected.
-	for k, v := range s.githubRepoData(r) {
+	for k, v := range s.gitSourceData(r) {
 		data[k] = v
 	}
 	s.render(w, http.StatusOK, "app", data)

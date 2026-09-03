@@ -112,7 +112,7 @@ type Server struct {
 	stateTokens map[string]time.Time // CSRF states for the GitHub App manifest flow
 
 	ghReposMu sync.Mutex
-	ghRepos   *ghRepoCache // last-fetched installation repo list; see githubRepoData
+	ghRepos   map[int64]*repoCache // per git source; see gitSourceData
 }
 
 // New constructs a Server, parsing the embedded templates. setupToken guards the
