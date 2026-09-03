@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/webhook"
@@ -13,21 +14,47 @@ import (
 // maxWebhookBody caps how much of a webhook body we read.
 const maxWebhookBody = 1 << 20 // 1 MiB
 
-// handleGithubWebhook verifies the GitHub App webhook and deploys all matching
-// apps. push events deploy matching apps; pull_request events drive preview
-// environments (when a preview handler is wired). Other events and non-matching
-// pushes are 200 no-ops.
+// handleGithubWebhook verifies a GitHub App delivery and deploys the matching
+// apps. Every connected App posts here, so the delivery is first matched to the
+// source that signed it: GitHub names the App in
+// X-GitHub-Hook-Installation-Target-ID, and only that source's secret is
+// checked. Fan-out is then scoped to the same source, so a push for one
+// connected account can never deploy another account's app.
 func (s *Server) handleGithubWebhook(w http.ResponseWriter, r *http.Request) {
 	body, ok := readBody(w, r)
 	if !ok {
 		return
 	}
-	ga, configured, err := s.store.GithubApp(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if got := r.Header.Get("X-GitHub-Hook-Installation-Target-Type"); got != "integration" {
+		log.Printf("github webhook: unexpected hook target type %q", got)
+		http.Error(w, "unexpected hook target", http.StatusUnauthorized)
 		return
 	}
-	if !configured || !webhook.VerifyGitHub(ga.WebhookSecret, r.Header.Get("X-Hub-Signature-256"), body) {
+	appID, err := strconv.ParseInt(r.Header.Get("X-GitHub-Hook-Installation-Target-ID"), 10, 64)
+	if err != nil {
+		log.Printf("github webhook: unparseable hook installation target id %q: %v", r.Header.Get("X-GitHub-Hook-Installation-Target-ID"), err)
+		http.Error(w, "unidentified hook", http.StatusUnauthorized)
+		return
+	}
+	src, found, err := s.store.GitSourceByGithubAppID(r.Context(), appID)
+	if err != nil {
+		log.Printf("github webhook: look up app %d: %v", appID, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		log.Printf("github webhook: unknown app id %d", appID)
+		http.Error(w, "unknown app", http.StatusUnauthorized)
+		return
+	}
+	provider, err := s.sources.For(src.Kind)
+	if err != nil {
+		log.Printf("github webhook: provider unavailable for app %d: %v", appID, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if !provider.VerifyWebhook(src, r.Header, body) {
+		log.Printf("github webhook: signature mismatch for app %d", appID)
 		http.Error(w, "bad signature", http.StatusUnauthorized)
 		return
 	}
@@ -38,9 +65,10 @@ func (s *Server) handleGithubWebhook(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "bad payload", http.StatusBadRequest)
 			return
 		}
-		apps, err := s.store.AppsByGithubRepo(r.Context(), ev.RepoFullName)
+		apps, err := s.store.AppsByGithubRepoSource(r.Context(), src.ID, ev.RepoFullName)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			log.Printf("github webhook: look up apps for %s/%s: %v", src.Display(), ev.RepoFullName, err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
 		for _, app := range apps {
@@ -58,7 +86,7 @@ func (s *Server) handleGithubWebhook(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "bad payload", http.StatusBadRequest)
 			return
 		}
-		if err := s.previews.Handle(r.Context(), ev); err != nil {
+		if err := s.previews.Handle(r.Context(), src.ID, ev); err != nil {
 			log.Printf("webhook: preview handling: %v", err)
 		}
 		w.WriteHeader(http.StatusOK)

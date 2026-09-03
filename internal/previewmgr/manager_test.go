@@ -94,12 +94,14 @@ func (c *fakeCommenter) UpsertPRComment(_ context.Context, _, repo string, pr in
 // --- harness ---------------------------------------------------------------
 
 type harness struct {
-	st       *store.Store
-	mgr      *Manager
-	notifier *fakeNotifier
-	docker   *fakeDocker
-	dbprov   *fakeDBProvisioner
-	gh       *fakeCommenter
+	st                *store.Store
+	mgr               *Manager
+	notifier          *fakeNotifier
+	docker            *fakeDocker
+	dbprov            *fakeDBProvisioner
+	gh                *fakeCommenter
+	sourceID          int64 // git source every seeded parent app belongs to
+	lastTokenSourceID int64 // sourceID the fake TokenSource was last called with
 }
 
 const serverIP = "1.2.3.4"
@@ -123,7 +125,21 @@ func newHarness(t *testing.T) *harness {
 		dbprov:   &fakeDBProvisioner{st: st},
 		gh:       &fakeCommenter{comments: map[string][]string{}},
 	}
-	ts := func(context.Context) (string, bool, error) { return "tok", true, nil }
+	src, err := st.CreateGithubAppSource(context.Background(), core.GithubAppCreds{
+		AppID: 77, Slug: "outhaul-test", PrivateKey: "PEM",
+		WebhookSecret: "whs", ClientID: "cid", ClientSecret: "csec",
+	})
+	if err != nil {
+		t.Fatalf("CreateGithubAppSource: %v", err)
+	}
+	if err := st.BindGithubInstallation(context.Background(), src.ID, 9001, "acme-corp", "Organization"); err != nil {
+		t.Fatalf("BindGithubInstallation: %v", err)
+	}
+	h.sourceID = src.ID
+	ts := func(_ context.Context, sourceID int64) (string, bool, error) {
+		h.lastTokenSourceID = sourceID
+		return "tok", true, nil
+	}
 	h.mgr = New(st, h.notifier, h.dbprov, h.docker, h.gh, ts, serverIP)
 	return h
 }
@@ -135,12 +151,13 @@ func (h *harness) seedGithubApp(t *testing.T, name, repo string, tweak func(*cor
 	t.Helper()
 	ctx := context.Background()
 	app, err := h.st.CreateApp(ctx, core.App{
-		Name:       name,
-		RepoURL:    "https://github.com/" + repo + ".git",
-		Domain:     name + ".example",
-		Source:     core.SourceGithub,
-		GithubRepo: repo,
-		Branch:     "main",
+		Name:        name,
+		RepoURL:     "https://github.com/" + repo + ".git",
+		Domain:      name + ".example",
+		Source:      core.SourceGithub,
+		GithubRepo:  repo,
+		GitSourceID: h.sourceID,
+		Branch:      "main",
 	})
 	if err != nil {
 		t.Fatalf("CreateApp parent: %v", err)
@@ -202,7 +219,7 @@ func TestSpawnCreatesChildAppDomainsAndDeploys(t *testing.T) {
 	parent := h.seedGithubApp(t, "web", repo, nil)
 	h.seedAttachment(t, parent, "web-db", "DATABASE_URL")
 
-	if err := h.mgr.Handle(ctx, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
 
@@ -294,7 +311,7 @@ func TestSpawnDedupesWholeHostDomains(t *testing.T) {
 		t.Fatalf("parent domains = %d, want 2 (setup)", len(parentDoms))
 	}
 
-	if err := h.mgr.Handle(ctx, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
 
@@ -322,7 +339,7 @@ func TestSpawnForkPRGated(t *testing.T) {
 	repo := "acme/web"
 	parent := h.seedGithubApp(t, "web", repo, nil) // AllowForkPRs defaults false
 
-	if err := h.mgr.Handle(ctx, prEvent("opened", 7, "fork-branch", repo, true)); err != nil {
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 7, "fork-branch", repo, true)); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
 
@@ -340,14 +357,14 @@ func TestSpawnRespectsMaxConcurrent(t *testing.T) {
 	repo := "acme/web"
 	parent := h.seedGithubApp(t, "web", repo, func(c *core.PreviewConfig) { c.MaxConcurrent = 1 })
 
-	if err := h.mgr.Handle(ctx, prEvent("opened", 1, "b1", repo, false)); err != nil {
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 1, "b1", repo, false)); err != nil {
 		t.Fatalf("Handle PR1: %v", err)
 	}
 	if _, err := h.st.GetPreviewByPR(ctx, parent.ID, 1); err != nil {
 		t.Fatalf("PR1 child missing: %v", err)
 	}
 
-	if err := h.mgr.Handle(ctx, prEvent("opened", 2, "b2", repo, false)); err != nil {
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 2, "b2", repo, false)); err != nil {
 		t.Fatalf("Handle PR2: %v", err)
 	}
 	if _, err := h.st.GetPreviewByPR(ctx, parent.ID, 2); err == nil {
@@ -370,7 +387,7 @@ func TestClosedTearsDown(t *testing.T) {
 	parent := h.seedGithubApp(t, "web", repo, nil)
 	h.seedAttachment(t, parent, "web-db", "DATABASE_URL")
 
-	if err := h.mgr.Handle(ctx, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
 		t.Fatalf("Handle opened: %v", err)
 	}
 	child, err := h.st.GetPreviewByPR(ctx, parent.ID, 42)
@@ -383,7 +400,7 @@ func TestClosedTearsDown(t *testing.T) {
 	}
 	childDBID := childAtts[0].DatabaseID
 
-	if err := h.mgr.Handle(ctx, prEvent("closed", 42, "feature-x", repo, false)); err != nil {
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("closed", 42, "feature-x", repo, false)); err != nil {
 		t.Fatalf("Handle closed: %v", err)
 	}
 
@@ -414,7 +431,7 @@ func TestSynchronizeRedeploys(t *testing.T) {
 	repo := "acme/web"
 	parent := h.seedGithubApp(t, "web", repo, nil)
 
-	if err := h.mgr.Handle(ctx, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
 		t.Fatalf("Handle opened: %v", err)
 	}
 	child, err := h.st.GetPreviewByPR(ctx, parent.ID, 42)
@@ -422,7 +439,7 @@ func TestSynchronizeRedeploys(t *testing.T) {
 		t.Fatalf("child missing: %v", err)
 	}
 
-	if err := h.mgr.Handle(ctx, prEvent("synchronize", 42, "feature-x", repo, false)); err != nil {
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("synchronize", 42, "feature-x", repo, false)); err != nil {
 		t.Fatalf("Handle synchronize: %v", err)
 	}
 
@@ -452,7 +469,7 @@ func TestTeardownFailureLeavesAppForRetry(t *testing.T) {
 	parent := h.seedGithubApp(t, "web", repo, nil)
 	h.seedAttachment(t, parent, "web-db", "DATABASE_URL")
 
-	if err := h.mgr.Handle(ctx, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
 		t.Fatalf("Handle opened: %v", err)
 	}
 	child, err := h.st.GetPreviewByPR(ctx, parent.ID, 42)
@@ -467,7 +484,7 @@ func TestTeardownFailureLeavesAppForRetry(t *testing.T) {
 
 	// Container removal fails: teardown must abort before deleting any rows.
 	h.docker.fail = true
-	if err := h.mgr.Handle(ctx, prEvent("closed", 42, "feature-x", repo, false)); err != nil {
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("closed", 42, "feature-x", repo, false)); err != nil {
 		t.Fatalf("Handle closed: %v", err)
 	}
 
@@ -508,7 +525,7 @@ func TestSpawnRollsBackOnFailure(t *testing.T) {
 	h.seedAttachment(t, parent, "web-db", "DATABASE_URL") // makes provisionDatabases run
 
 	h.dbprov.failProvision = true
-	if err := h.mgr.Handle(ctx, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
 
@@ -538,7 +555,7 @@ func TestSpawnDropsProdScopedEnv(t *testing.T) {
 		t.Fatalf("SetEnvScoped prod: %v", err)
 	}
 
-	if err := h.mgr.Handle(ctx, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
 	child, err := h.st.GetPreviewByPR(ctx, parent.ID, 42)
@@ -569,7 +586,7 @@ func TestSpawnSuppressesCommentWhenDisabled(t *testing.T) {
 	repo := "acme/web"
 	h.seedGithubApp(t, "web", repo, func(c *core.PreviewConfig) { c.PostPRComment = false })
 
-	if err := h.mgr.Handle(ctx, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
 	if len(h.gh.comments) != 0 {
@@ -583,7 +600,7 @@ func TestOnDeployFinishedPostsReadyComment(t *testing.T) {
 	repo := "acme/web"
 	parent := h.seedGithubApp(t, "web", repo, nil)
 
-	if err := h.mgr.Handle(ctx, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
 		t.Fatalf("Handle opened: %v", err)
 	}
 	child, err := h.st.GetPreviewByPR(ctx, parent.ID, 42)
@@ -612,6 +629,9 @@ func TestOnDeployFinishedPostsReadyComment(t *testing.T) {
 	if !strings.Contains(last, "web-pr-42.1.2.3.4.sslip.io") {
 		t.Errorf("ready comment = %q, want the preview URL", last)
 	}
+	if h.lastTokenSourceID != h.sourceID {
+		t.Errorf("comment token minted for source %d, want the parent's source %d — a comment must never be posted with another account's token", h.lastTokenSourceID, h.sourceID)
+	}
 }
 
 func TestOnDeployFinishedFailedComment(t *testing.T) {
@@ -620,7 +640,7 @@ func TestOnDeployFinishedFailedComment(t *testing.T) {
 	repo := "acme/web"
 	parent := h.seedGithubApp(t, "web", repo, nil)
 
-	if err := h.mgr.Handle(ctx, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
 		t.Fatalf("Handle opened: %v", err)
 	}
 	child, err := h.st.GetPreviewByPR(ctx, parent.ID, 42)
@@ -674,7 +694,7 @@ func TestDestroyByIDRejectsNonPreview(t *testing.T) {
 	parent := h.seedGithubApp(t, "web", repo, nil)
 	other := h.seedGithubApp(t, "api", "acme/api", nil)
 
-	if err := h.mgr.Handle(ctx, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
 		t.Fatalf("Handle opened: %v", err)
 	}
 	child, err := h.st.GetPreviewByPR(ctx, parent.ID, 42)

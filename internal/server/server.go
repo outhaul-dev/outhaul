@@ -25,6 +25,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/docker"
 	"github.com/outhaul-dev/outhaul/internal/github"
 	"github.com/outhaul-dev/outhaul/internal/gitrepo"
+	"github.com/outhaul-dev/outhaul/internal/gitsource"
 	"github.com/outhaul-dev/outhaul/internal/hostmetrics"
 	"github.com/outhaul-dev/outhaul/internal/logstream"
 	"github.com/outhaul-dev/outhaul/internal/store"
@@ -34,7 +35,7 @@ import (
 // PreviewHandler routes a parsed pull_request event to the preview manager.
 // *previewmgr.Manager satisfies it. Nil when previews aren't wired.
 type PreviewHandler interface {
-	Handle(ctx context.Context, ev webhook.PullRequestEvent) error
+	Handle(ctx context.Context, sourceID int64, ev webhook.PullRequestEvent) error
 	DestroyByID(ctx context.Context, parentID, childID int64) error
 }
 
@@ -89,9 +90,10 @@ type Server struct {
 	databases Databases
 	backups   Backups
 	broker    *logstream.Broker
-	gh        github.Client
-	previews  PreviewHandler // routes pull_request webhooks to the preview manager; nil disables previews
-	metrics   metricsSampler // host/self resource sampler for the Metrics page
+	gh        github.Client       // raw GitHub API: the manifest/installation connect flow only
+	sources   *gitsource.Registry // providers for connected git sources
+	previews  PreviewHandler      // routes pull_request webhooks to the preview manager; nil disables previews
+	metrics   metricsSampler      // host/self resource sampler for the Metrics page
 
 	pages      map[string]*template.Template
 	setupToken string
@@ -110,30 +112,35 @@ type Server struct {
 	stateTokens map[string]time.Time // CSRF states for the GitHub App manifest flow
 
 	ghReposMu sync.Mutex
-	ghRepos   *ghRepoCache // last-fetched installation repo list; see githubRepoData
+	ghRepos   map[int64]*repoCache // per git source; see gitSourceData
+
+	backfillMu        sync.Mutex
+	backfillAttempted map[int64]bool // git source ids already probed for a missing account name, this process lifetime
 }
 
 // New constructs a Server, parsing the embedded templates. setupToken guards the
 // first-boot admin-creation flow (printed by the caller as a one-time URL).
 // publicURL is Outhaul's externally reachable base URL, used to build the
 // GitHub App manifest's callback and webhook URLs.
-func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databases, bk Backups, br *logstream.Broker, gh github.Client, previews PreviewHandler, publicURL, serverIP string, tlsEnabled bool, setupToken string) (*Server, error) {
+func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databases, bk Backups, br *logstream.Broker, gh github.Client, reg *gitsource.Registry, previews PreviewHandler, publicURL, serverIP string, tlsEnabled bool, setupToken string) (*Server, error) {
 	s := &Server{
-		store:       st,
-		deployer:    d,
-		runtime:     rt,
-		compose:     cp,
-		databases:   dbm,
-		backups:     bk,
-		broker:      br,
-		gh:          gh,
-		previews:    previews,
-		metrics:     hostmetrics.NewSampler("/"),
-		publicURL:   publicURL,
-		serverIP:    serverIP,
-		tlsEnabled:  tlsEnabled,
-		setupToken:  setupToken,
-		stateTokens: map[string]time.Time{},
+		store:             st,
+		deployer:          d,
+		runtime:           rt,
+		compose:           cp,
+		databases:         dbm,
+		backups:           bk,
+		broker:            br,
+		gh:                gh,
+		sources:           reg,
+		previews:          previews,
+		metrics:           hostmetrics.NewSampler("/"),
+		publicURL:         publicURL,
+		serverIP:          serverIP,
+		tlsEnabled:        tlsEnabled,
+		setupToken:        setupToken,
+		stateTokens:       map[string]time.Time{},
+		backfillAttempted: map[int64]bool{},
 	}
 	if err := s.parseTemplates(); err != nil {
 		return nil, err
@@ -270,6 +277,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /settings/ssh", s.requireAuth(s.handleSetSSHAddr))
 	mux.HandleFunc("POST /settings/tunnel/enable", s.requireAuth(s.handleEnableTunnel))
 	mux.HandleFunc("POST /settings/tunnel/disable", s.requireAuth(s.handleDisableTunnel))
+	mux.HandleFunc("POST /settings/git-sources/{id}/delete", s.requireAuth(s.handleDeleteGitSource))
 
 	mux.HandleFunc("GET /github/connect", s.requireAuth(s.handleGithubConnect))
 	// callback and setup are called by GitHub directly (no session cookie); the

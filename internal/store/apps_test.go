@@ -19,7 +19,7 @@ func TestUpdateAppSource(t *testing.T) {
 	}
 	// public -> github
 	if err := s.UpdateAppSource(ctx, app.ID, core.SourceGithub,
-		"https://github.com/o/n.git", "o/n", "", ""); err != nil {
+		"https://github.com/o/n.git", "o/n", 0, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.GetApp(ctx, app.ID)
@@ -32,7 +32,7 @@ func TestUpdateAppSource(t *testing.T) {
 	}
 	// github -> ssh, storing a deploy key
 	if err := s.UpdateAppSource(ctx, app.ID, core.SourceSSH,
-		"git@github.com:o/n.git", "", "ssh-ed25519 AAA deploy", "PRIVATEKEY"); err != nil {
+		"git@github.com:o/n.git", "", 0, "ssh-ed25519 AAA deploy", "PRIVATEKEY"); err != nil {
 		t.Fatal(err)
 	}
 	got, _ = s.GetApp(ctx, app.ID)

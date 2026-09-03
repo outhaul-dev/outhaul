@@ -31,6 +31,7 @@ type App struct {
 	Source        string // one of SourcePublic | SourceSSH | SourceGithub
 	WebhookSecret string // per-app generic-webhook token (identifies + verifies)
 	GithubRepo    string // "owner/name" when Source == SourceGithub
+	GitSourceID   int64  // git source supplying the repo; 0 unless Source == SourceGithub
 	SSHPublicKey  string // authorized_keys line to add as a deploy key (Source == SourceSSH)
 
 	Kind           string   // KindNixpacks | KindDockerfile | KindCompose — deploy strategy

@@ -9,7 +9,7 @@ import (
 func TestSweeperReapsStalePreview(t *testing.T) {
 	h := newHarness(t)
 	parent := h.seedGithubApp(t, "web", "acme/web", nil) // IdleTTLDays defaults 7
-	if err := h.mgr.Handle(context.Background(), prEvent("opened", 42, "feature-x", "acme/web", false)); err != nil {
+	if err := h.mgr.Handle(context.Background(), h.sourceID, prEvent("opened", 42, "feature-x", "acme/web", false)); err != nil {
 		t.Fatal(err)
 	}
 	child, err := h.st.GetPreviewByPR(context.Background(), parent.ID, 42)
@@ -37,7 +37,7 @@ func TestSweeperReapsStalePreview(t *testing.T) {
 func TestSweeperKeepsFreshPreview(t *testing.T) {
 	h := newHarness(t)
 	parent := h.seedGithubApp(t, "web", "acme/web", nil)
-	if err := h.mgr.Handle(context.Background(), prEvent("opened", 42, "feature-x", "acme/web", false)); err != nil {
+	if err := h.mgr.Handle(context.Background(), h.sourceID, prEvent("opened", 42, "feature-x", "acme/web", false)); err != nil {
 		t.Fatal(err)
 	}
 	h.mgr.SweepTick(context.Background(), time.Now()) // deployment is ~now, within TTL

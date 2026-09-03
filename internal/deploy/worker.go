@@ -19,7 +19,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/config"
 	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/docker"
-	"github.com/outhaul-dev/outhaul/internal/github"
+	"github.com/outhaul-dev/outhaul/internal/gitsource"
 	"github.com/outhaul-dev/outhaul/internal/logstream"
 	"github.com/outhaul-dev/outhaul/internal/store"
 )
@@ -57,7 +57,7 @@ type Worker struct {
 	compose  compose.Runner
 	cloner   Cloner
 	broker   *logstream.Broker
-	gh       github.Client
+	sources  *gitsource.Registry // providers for the git sources apps clone from
 	cfg      config.Config
 
 	healthCheck HealthChecker
@@ -73,7 +73,7 @@ type Worker struct {
 }
 
 // NewWorker wires the worker's dependencies.
-func NewWorker(st *store.Store, dc docker.Client, b Builders, cp compose.Runner, cl Cloner, br *logstream.Broker, gh github.Client, cfg config.Config) *Worker {
+func NewWorker(st *store.Store, dc docker.Client, b Builders, cp compose.Runner, cl Cloner, br *logstream.Broker, sources *gitsource.Registry, cfg config.Config) *Worker {
 	return &Worker{
 		store:    st,
 		docker:   dc,
@@ -81,7 +81,7 @@ func NewWorker(st *store.Store, dc docker.Client, b Builders, cp compose.Runner,
 		compose:  cp,
 		cloner:   cl,
 		broker:   br,
-		gh:       gh,
+		sources:  sources,
 		cfg:      cfg,
 
 		healthCheck: httpPoll,

@@ -32,20 +32,26 @@
         </label>
         {{end}}
         <label class="field">
-          <span>Source {{template "hint" "Where your code lives. Public Git URL needs no credentials; SSH uses a deploy key; GitHub App lets you pick a connected repo and auto-deploy on push."}}</span>
+          <span>Source {{template "hint" "Where your code lives. Public Git URL needs no credentials; SSH uses a deploy key; GitHub App lets you pick a repo from a connected account and auto-deploy on push."}}</span>
           <select name="source" id="source-select">
             <option value="public">Public Git URL</option>
             <option value="ssh">Private (SSH deploy key)</option>
             <option value="push">Push to deploy (git push)</option>
-            {{if .GithubConnected}}<option value="github">GitHub App</option>{{end}}
+            {{if .GitSourceConnected}}<option value="github">GitHub App</option>{{end}}
           </select>
         </label>
-        {{if .GithubConnected}}
+        {{if .RepoGroups}}
         <label class="field" data-source="github">
-          <span>GitHub repository</span>
-          <select name="github_repo" id="github-repo-select">
-            {{range .GithubRepos}}<option value="{{.FullName}}" data-default-branch="{{.DefaultBranch}}">{{.FullName}}</option>{{end}}
+          <span>Repository {{template "hint" "Every repository Outhaul can reach, grouped by the account it comes from."}}</span>
+          <input type="text" id="repo-filter" placeholder="filter repos…" autocomplete="off">
+          <select name="github_repo" id="github-repo-select" size="8">
+            {{range .RepoGroups}}{{$group := .}}
+            <optgroup label="{{.AccountLogin}}{{if .AccountKind}} ({{.AccountKind}}){{end}}">
+              {{range .Repos}}<option value="{{.FullName}}" data-source-id="{{$group.SourceID}}" data-default-branch="{{.DefaultBranch}}">{{.FullName}}</option>{{end}}
+            </optgroup>
+            {{end}}
           </select>
+          <input type="hidden" name="git_source_id" id="git-source-id">
         </label>
         {{end}}
         <label class="field" data-source="public ssh">
@@ -56,7 +62,7 @@
           <span>Branch {{template "hint" "The Git branch to deploy. For a GitHub repo this is filled with the repo's default branch automatically."}}</span>
           <input type="text" name="branch" id="branch-input" placeholder="main" value="main">
         </label>
-        {{if not .GithubConnected}}<p class="env-note"><a href="/github/connect">Connect a GitHub App</a> to deploy private GitHub repos and auto-deploy on push.</p>{{end}}
+        {{if not .GitSourceConnected}}<p class="env-note"><a href="/github/connect">Connect a GitHub account</a> to deploy private repos and auto-deploy on push.</p>{{end}}
       </div>
 
       <!-- Step 2: Build -->
@@ -141,19 +147,38 @@
     var source = document.getElementById('source-select');
     var repo = document.getElementById('github-repo-select');
     var branch = document.getElementById('branch-input');
-    function syncBranch() {
-      if (!repo || !branch || !source || source.value !== 'github') return;
+    var sourceID = document.getElementById('git-source-id');
+    var filter = document.getElementById('repo-filter');
+
+    // Picking a repo also picks the account it came from: the option carries
+    // its source, so the operator never chooses an account separately.
+    function syncRepo() {
+      if (!repo || !source || source.value !== 'github') return;
       var opt = repo.options[repo.selectedIndex];
-      var def = opt && opt.getAttribute('data-default-branch');
-      if (def) branch.value = def;
+      if (!opt) return;
+      var def = opt.getAttribute('data-default-branch');
+      if (def && branch) branch.value = def;
+      if (sourceID) sourceID.value = opt.getAttribute('data-source-id') || '';
     }
-    if (repo) repo.addEventListener('change', syncBranch);
+    if (repo) repo.addEventListener('change', syncRepo);
+
+    // Filtering hides options in place; with JS off the full grouped list and
+    // the browser's own type-ahead still work.
+    if (filter && repo) {
+      filter.addEventListener('input', function () {
+        var q = filter.value.toLowerCase();
+        for (var i = 0; i < repo.options.length; i++) {
+          var o = repo.options[i];
+          o.hidden = q !== '' && o.value.toLowerCase().indexOf(q) === -1;
+        }
+      });
+    }
     function applySource() {
       if (!source) return;
       document.querySelectorAll('[data-source]').forEach(function (el) {
         el.hidden = el.getAttribute('data-source').split(' ').indexOf(source.value) === -1;
       });
-      syncBranch();
+      syncRepo();
     }
     if (source) source.addEventListener('change', applySource);
 
@@ -211,6 +236,7 @@
     if (steps.length) {
       applyKind();
       applySource();
+      syncRepo();
       show(0);
     }
 

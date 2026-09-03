@@ -6,6 +6,23 @@
   public HTTPS URL, then reload this page. GitHub needs a reachable callback and
   webhook URL to create the App.</p>
 </section>
+{{else if .Choose}}
+<section class="panel">
+  <p>Outhaul creates a GitHub App under one account and names this source after
+  it. A private App can only be installed on the account that owns it, so
+  connecting an organization means creating the App there.</p>
+  <form method="get" action="/github/connect" class="grid-form">
+    <label class="field"><span>
+      <input type="radio" name="owner" value="user" checked> My personal account
+    </span></label>
+    <label class="field"><span>
+      <input type="radio" name="owner" value="org"> An organization
+    </span>
+      <input type="text" name="org" placeholder="acme-corp">
+    </label>
+    <button type="submit" class="btn btn-primary">Continue to GitHub</button>
+  </form>
+</section>
 {{else}}
 <section class="panel">
   <p>Click below to create a GitHub App for Outhaul. GitHub will ask you to

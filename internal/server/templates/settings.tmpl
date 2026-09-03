@@ -5,15 +5,29 @@
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 
 <section class="panel">
-  <h2 class="panel-title">GitHub App</h2>
+  <h2 class="panel-title">Git sources {{template "hint" "The GitHub accounts and organizations Outhaul can deploy from. Each is its own GitHub App: a private App can only be installed on the account that owns it, so a second account means a second App."}}</h2>
   {{if .NeedsPublicURL}}
-  <p class="env-note">Set <code>OUTHAUL_PUBLIC_URL</code> to your admin UI's public HTTPS URL to enable GitHub App setup.</p>
-  {{else if .GithubInstalled}}
-  <p>Connected as <span class="mono">{{.GithubSlug}}</span> and installed. Private GitHub repos and auto-deploy on push are available.</p>
-  {{else if .GithubSlug}}
-  <p>App <span class="mono">{{.GithubSlug}}</span> created but not installed. <a href="/github/connect">Finish installation</a>.</p>
+  <p class="env-note">Set <code>OUTHAUL_PUBLIC_URL</code> to your admin UI's public HTTPS URL to connect a GitHub account.</p>
   {{else}}
-  <p><a href="/github/connect">Connect a GitHub App</a> to deploy private GitHub repos and auto-deploy on push.</p>
+  {{if .GitSources}}
+  <table class="table">
+    <thead><tr><th>Account</th><th>Type</th><th>App</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+      {{range .GitSources}}
+      <tr>
+        <td>{{.Display}}</td>
+        <td>{{if .AccountKind}}{{.AccountKind}}{{else}}—{{end}}</td>
+        <td><span class="mono">{{.GithubApp.Slug}}</span></td>
+        <td>{{if .Installed}}Installed{{else}}<a href="https://github.com/apps/{{.GithubApp.Slug}}/installations/new">Finish installing</a>{{end}}</td>
+        <td><form method="post" action="/settings/git-sources/{{.ID}}/delete"><button type="submit" class="btn btn-danger">Remove</button></form></td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p>No GitHub account connected yet. Connect one to deploy private repos and auto-deploy on push.</p>
+  {{end}}
+  <p><a href="/github/connect" class="btn">Connect another account</a></p>
   {{end}}
 </section>
 

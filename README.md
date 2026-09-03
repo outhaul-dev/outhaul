@@ -43,7 +43,7 @@ one-time setup URL. Developers with a local checkout can run
 - **Dockerfile builds** — repos that carry their own `Dockerfile` build with it, through the same pipeline.
 - **Compose stacks** — a `docker-compose.yml` deploys as a multi-service stack, with any number of domains routed to its services.
 - **Auto-deploy on push** — GitHub webhooks redeploy on push, scoped by a per-app branch and optional **watch paths** so only relevant changes trigger a build.
-- **Private repos** — a GitHub App plus per-app SSH deploy keys.
+- **Private repos** — connect one or more GitHub accounts or organizations (each its own GitHub App), plus per-app SSH deploy keys.
 
 ### Deploys that don't break production
 - **Health-gated blue-green cutover** — a new release only takes traffic once it passes health checks; a broken build is never promoted.

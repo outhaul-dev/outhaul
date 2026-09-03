@@ -82,7 +82,7 @@ func TestSSHPrivateKeyRoundTripEncrypted(t *testing.T) {
 	}
 }
 
-func TestAppLookupsByWebhookSecretAndRepo(t *testing.T) {
+func TestAppLookupByWebhookSecret(t *testing.T) {
 	st := gitTestStore(t)
 	ctx := context.Background()
 	_, err := st.CreateApp(ctx, core.App{
@@ -103,14 +103,6 @@ func TestAppLookupsByWebhookSecretAndRepo(t *testing.T) {
 	}
 	if _, err := st.AppByWebhookSecret(ctx, "nope"); err == nil {
 		t.Error("expected error for unknown token")
-	}
-
-	byRepo, err := st.AppsByGithubRepo(ctx, "o/r")
-	if err != nil {
-		t.Fatalf("AppsByGithubRepo: %v", err)
-	}
-	if len(byRepo) != 1 || byRepo[0].Name != "gh" {
-		t.Errorf("byRepo = %+v", byRepo)
 	}
 }
 

@@ -18,6 +18,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/docker"
 	"github.com/outhaul-dev/outhaul/internal/github"
+	"github.com/outhaul-dev/outhaul/internal/gitsource"
 	"github.com/outhaul-dev/outhaul/internal/logstream"
 	"github.com/outhaul-dev/outhaul/internal/secret"
 	"github.com/outhaul-dev/outhaul/internal/store"
@@ -100,7 +101,8 @@ func newHarness(t *testing.T) *harness {
 	}
 	cfg := config.Config{DataDir: t.TempDir(), Network: "outhaul"}
 	h.worker = NewWorker(st, h.docker, Builders{Nixpacks: h.builder, Dockerfile: h.dockerfile},
-		h.compose, h.cloner, h.broker, &github.Fake{}, cfg)
+		h.compose, h.cloner, h.broker,
+		gitsource.NewRegistry(gitsource.NewGithubApp(&github.Fake{Token: "ghs_test"})), cfg)
 	h.worker.healthCheck = func(context.Context, string, time.Duration) bool { return true }
 	return h
 }

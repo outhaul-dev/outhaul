@@ -26,6 +26,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/githook"
 	"github.com/outhaul-dev/outhaul/internal/github"
 	"github.com/outhaul-dev/outhaul/internal/gitrepo"
+	"github.com/outhaul-dev/outhaul/internal/gitsource"
 	"github.com/outhaul-dev/outhaul/internal/gitssh"
 	"github.com/outhaul-dev/outhaul/internal/localca"
 	"github.com/outhaul-dev/outhaul/internal/logstream"
@@ -176,12 +177,15 @@ func serve() error {
 	infra := ensureInfra(dc, cfg, st)
 
 	ghClient := github.New()
+	// One registry, shared by the deploy worker, the preview manager, and the
+	// HTTP layer: every consumer resolves a source's provider the same way.
+	sources := gitsource.NewRegistry(gitsource.NewGithubApp(ghClient))
 
 	// Background worker.
 	broker := logstream.New()
 	worker := deploy.NewWorker(st, dc,
 		deploy.Builders{Nixpacks: builder.NewNixpacks(), Dockerfile: builder.NewDocker()},
-		compose.NewDocker(), deploy.NewGit(), broker, ghClient, cfg)
+		compose.NewDocker(), deploy.NewGit(), broker, sources, cfg)
 
 	// Image pruner: after-deploy retention hook + daily sweep.
 	pruner := prune.New(st, dc, cfg.ImageKeep, cfg.WorkDir())
@@ -223,21 +227,14 @@ func serve() error {
 	repos := gitrepo.New(cfg.GitDir(), self, cfg.GitHookSocketPath())
 	sshSrv := startGitPush(workerCtx, cfg, st, worker, broker, serverIP, repos, self)
 
-	// Preview environments: per-PR ephemeral child apps. The token source mints
-	// an installation token (via the App JWT) so the manager can post PR comments.
-	tokenSource := func(ctx context.Context) (string, bool, error) {
-		ga, ok, err := st.GithubApp(ctx)
-		if err != nil {
+	// Preview environments: per-PR ephemeral child apps. They post PR comments
+	// as the app's own connected account.
+	tokenSource := func(ctx context.Context, sourceID int64) (string, bool, error) {
+		src, ok, err := st.GetGitSource(ctx, sourceID)
+		if err != nil || !ok {
 			return "", false, err
 		}
-		if !ok {
-			return "", false, nil
-		}
-		jwt, err := github.AppJWT(ga.PrivateKey, ga.AppID, time.Now())
-		if err != nil {
-			return "", false, err
-		}
-		tok, err := ghClient.InstallationToken(ctx, jwt, ga.InstallationID)
+		tok, err := sources.TokenFor(ctx, src)
 		return tok, err == nil, err
 	}
 	previews := previewmgr.New(st, worker,
@@ -253,7 +250,7 @@ func serve() error {
 
 	setupToken := server.NewToken()
 	srv, err := server.New(st, worker, dc, compose.NewDocker(), dbm, backups, broker, ghClient,
-		previews,
+		sources, previews,
 		cfg.PublicURL, serverIP, cfg.TLSEnabled(), setupToken)
 	if err != nil {
 		stopWorker()
