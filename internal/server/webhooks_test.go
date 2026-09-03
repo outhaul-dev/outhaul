@@ -167,7 +167,7 @@ func TestGithubAppWebhookFansOut(t *testing.T) {
 		Source: core.SourceGithub, GithubRepo: "o/r", GitSourceID: srcID, Branch: "main", AutoDeploy: true, WebhookSecret: "t1",
 	})
 	// Same repo, non-matching branch -> should not deploy.
-	env.store.CreateApp(ctx, core.App{
+	a2, _ := env.store.CreateApp(ctx, core.App{
 		Name: "stage", RepoURL: "x", Domain: "stage.example.com",
 		Source: core.SourceGithub, GithubRepo: "o/r", GitSourceID: srcID, Branch: "develop", AutoDeploy: true, WebhookSecret: "t2",
 	})
@@ -179,5 +179,8 @@ func TestGithubAppWebhookFansOut(t *testing.T) {
 	}
 	if d1, _ := env.store.ListDeploymentsForApp(ctx, a1.ID); len(d1) != 1 {
 		t.Errorf("prod deployments = %d, want 1", len(d1))
+	}
+	if d2, _ := env.store.ListDeploymentsForApp(ctx, a2.ID); len(d2) != 0 {
+		t.Errorf("stage deployments = %d, want 0 (branch mismatch)", len(d2))
 	}
 }

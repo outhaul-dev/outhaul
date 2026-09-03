@@ -102,6 +102,26 @@ func TestGithubAppVerifyWebhookUsesTheSourcesSecret(t *testing.T) {
 	}
 }
 
+// TestGithubAppVerifyWebhookRejectsWrongKind guards against a source of some
+// other Kind ever reaching this provider: without the Kind check,
+// src.GithubApp.WebhookSecret would be its zero value (empty), and an empty
+// HMAC key verifies anything. Not reachable via the Registry today, but
+// appJWT carries the same guard, so VerifyWebhook must too.
+func TestGithubAppVerifyWebhookRejectsWrongKind(t *testing.T) {
+	src := installedSource(t)
+	src.Kind = "something-else"
+	p := NewGithubApp(&github.Fake{})
+	body := []byte(`{"ref":"refs/heads/main"}`)
+
+	mac := hmac.New(sha256.New, []byte(""))
+	mac.Write(body)
+	h := http.Header{}
+	h.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	if p.VerifyWebhook(src, h, body) {
+		t.Error("a source of the wrong Kind must not verify, even against an empty secret")
+	}
+}
+
 func TestRegistryResolvesByKind(t *testing.T) {
 	reg := NewRegistry(NewGithubApp(&github.Fake{Token: "t"}))
 	if _, err := reg.For(core.GitSourceGithubApp); err != nil {

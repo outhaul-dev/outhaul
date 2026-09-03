@@ -39,14 +39,20 @@ func TestWebhookDeploysOnlyTheSigningSourcesApp(t *testing.T) {
 	srcA := connectApp(t, env, 55, "outhaul-a")
 	srcB := connectApp(t, env, 77, "outhaul-b")
 
-	appA, _ := env.store.CreateApp(ctx, core.App{
+	appA, err := env.store.CreateApp(ctx, core.App{
 		Name: "a-web", Domain: "a.test", Source: core.SourceGithub, Kind: core.KindNixpacks,
 		GithubRepo: "acme-corp/api", GitSourceID: srcA, Branch: "main", AutoDeploy: true, WebhookSecret: "w1",
 	})
-	appB, _ := env.store.CreateApp(ctx, core.App{
+	if err != nil {
+		t.Fatalf("create app A: %v", err)
+	}
+	appB, err := env.store.CreateApp(ctx, core.App{
 		Name: "b-web", Domain: "b.test", Source: core.SourceGithub, Kind: core.KindNixpacks,
 		GithubRepo: "acme-corp/api", GitSourceID: srcB, Branch: "main", AutoDeploy: true, WebhookSecret: "w2",
 	})
+	if err != nil {
+		t.Fatalf("create app B: %v", err)
+	}
 
 	rec := postPush(t, env, 55, "whs-outhaul-a", "acme-corp/api", "main")
 	if rec.Code != http.StatusOK {

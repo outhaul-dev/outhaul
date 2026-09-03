@@ -437,10 +437,15 @@ git push outhaul {{.PushBranch}}</pre>{{template "copybtn" .}}</div>
         {{if or .GitSourceConnected (eq .App.Source "github")}}<option value="github" {{if eq .App.Source "github"}}selected{{end}}>GitHub App{{if not .GitSourceConnected}} (reconnect required){{end}}</option>{{end}}
       </select>
     </label>
-    {{if .RepoGroups}}
+    {{if or .RepoGroups .CurrentRepoUnlisted}}
     <label class="field" data-src="github"><span>Repository</span>
       <input type="text" id="src-repo-filter" placeholder="filter repos…" autocomplete="off">
       <select name="github_repo" id="src-github-repo" size="8">
+        {{if .CurrentRepoUnlisted}}
+        <optgroup label="{{.CurrentRepoLabel}}">
+          <option value="{{.App.GithubRepo}}" data-source-id="{{.App.GitSourceID}}" selected>{{.App.GithubRepo}}</option>
+        </optgroup>
+        {{end}}
         {{range .RepoGroups}}{{$group := .}}
         <optgroup label="{{.AccountLogin}}{{if .AccountKind}} ({{.AccountKind}}){{end}}">
           {{range .Repos}}<option value="{{.FullName}}" data-source-id="{{$group.SourceID}}"{{if and (eq .FullName $.App.GithubRepo) (eq $group.SourceID $.App.GitSourceID)}} selected{{end}}>{{.FullName}}</option>{{end}}

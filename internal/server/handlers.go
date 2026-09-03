@@ -198,11 +198,17 @@ func (s *Server) reposFor(ctx context.Context, src core.GitSource) ([]gitsource.
 	}
 	provider, err := s.sources.For(src.Kind)
 	if err != nil {
+		log.Printf("git source %s: provider unavailable: %v", src.Display(), err)
 		return cached, cached != nil
 	}
 	repos, err := provider.Repos(ctx, src)
 	if err != nil {
 		log.Printf("git source %s: list repos: %v", src.Display(), err)
+		// Re-stamp the cache with what we had (possibly nil) so ghRepoTTL
+		// rate-limits the retry instead of re-fetching on every render — a
+		// permanently-unreachable source would otherwise pay the ~60s worst
+		// case (two sequential api.github.com calls) on every page load.
+		s.storeRepos(src.ID, cached)
 		return cached, cached != nil
 	}
 	s.storeRepos(src.ID, repos)
@@ -496,6 +502,13 @@ func (s *Server) handleUpdateAppSource(w http.ResponseWriter, r *http.Request) {
 	if source == core.SourcePush {
 		repo = ""
 	}
+	if source != core.SourceGithub {
+		// gitSourceID is already 0 here (only the github branch above sets it).
+		// Clear githubRepo alongside it rather than writing whatever the form
+		// submitted — otherwise a stale repo name sits next to git_source_id = 0
+		// with nothing left to validate it against.
+		githubRepo = ""
+	}
 	// Validate with the same rules as create: keep the app's existing name/
 	// domain/kind (already valid) and swap in the new source fields.
 	check := app
@@ -729,6 +742,36 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 	// Degrades gracefully to no dropdown when no App is connected.
 	for k, v := range s.gitSourceData(r) {
 		data[k] = v
+	}
+	// If this app's own (source, repo) pair isn't in any rendered group — its
+	// source failed to fetch, was uninstalled, or the repo list is stale — no
+	// <option> matches it and the browser would silently select the first repo
+	// of a *different* account. Render the app's real pair as its own optgroup
+	// so "Change source" round-trips instead of moving the app to another
+	// account's repo. This also covers the case where RepoGroups is empty
+	// entirely: without it, "GitHub App" could be selected with no repo field.
+	if app.Source == core.SourceGithub && app.GithubRepo != "" {
+		found := false
+		if groups, ok := data["RepoGroups"].([]repoGroup); ok {
+			for _, g := range groups {
+				if g.SourceID != app.GitSourceID {
+					continue
+				}
+				for _, repo := range g.Repos {
+					if repo.FullName == app.GithubRepo {
+						found = true
+					}
+				}
+			}
+		}
+		if !found {
+			label := "current account unavailable"
+			if src, ok, err := s.store.GetGitSource(r.Context(), app.GitSourceID); err == nil && ok {
+				label = src.Display() + " (unavailable)"
+			}
+			data["CurrentRepoUnlisted"] = true
+			data["CurrentRepoLabel"] = label
+		}
 	}
 	s.render(w, http.StatusOK, "app", data)
 }

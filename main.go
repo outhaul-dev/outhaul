@@ -227,8 +227,8 @@ func serve() error {
 	repos := gitrepo.New(cfg.GitDir(), self, cfg.GitHookSocketPath())
 	sshSrv := startGitPush(workerCtx, cfg, st, worker, broker, serverIP, repos, self)
 
-	// Preview environments: per-PR ephemeral child apps. Preview environments
-	// post PR comments as the app's own connected account.
+	// Preview environments: per-PR ephemeral child apps. They post PR comments
+	// as the app's own connected account.
 	tokenSource := func(ctx context.Context, sourceID int64) (string, bool, error) {
 		src, ok, err := st.GetGitSource(ctx, sourceID)
 		if err != nil || !ok {

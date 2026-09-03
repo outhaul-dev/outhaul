@@ -51,6 +51,14 @@ func (p *GithubApp) Repos(ctx context.Context, src core.GitSource) ([]Repo, erro
 }
 
 func (p *GithubApp) VerifyWebhook(src core.GitSource, h http.Header, body []byte) bool {
+	// Guard against a non-GitHub-App source ever reaching this provider: without
+	// it, src.GithubApp.WebhookSecret would be the empty HMAC key and every
+	// signature would verify. Unreachable today (Registry only routes
+	// core.GitSourceGithubApp here), but appJWT below carries the same guard —
+	// stay consistent rather than relying on the caller alone.
+	if src.Kind != core.GitSourceGithubApp {
+		return false
+	}
 	return webhook.VerifyGitHub(src.GithubApp.WebhookSecret, h.Get("X-Hub-Signature-256"), body)
 }
 

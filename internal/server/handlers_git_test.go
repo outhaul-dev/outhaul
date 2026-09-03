@@ -154,6 +154,29 @@ func TestGithubReposAreCachedAcrossRenders(t *testing.T) {
 	}
 }
 
+// TestGithubReposFailureIsCachedAcrossRenders verifies a source whose repo
+// fetch fails is only probed once per ghRepoTTL window, not once per render —
+// otherwise a permanently-unreachable source (App deleted, key revoked, no
+// network) pays two api.github.com round-trips' worth of latency on every
+// page load, forever.
+func TestGithubReposFailureIsCachedAcrossRenders(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	installSource(t, env, 55, "outhaul-a", 9001, "o", "User")
+	env.gh.ReposErr = context.DeadlineExceeded
+
+	for i := 0; i < 2; i++ {
+		resp := env.get(t, "/apps")
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("render %d: status = %d, want 200", i, resp.StatusCode)
+		}
+		body(t, resp)
+	}
+	if env.gh.ReposCalls != 1 {
+		t.Errorf("ListRepos called %d times across 2 renders of a failing source, want 1 (failure cached)", env.gh.ReposCalls)
+	}
+}
+
 // TestAppsListDegradesGracefullyOnRepoListError verifies a GitHub API failure
 // while listing repos does not break the apps page — it should just render
 // without a repo dropdown.
@@ -229,5 +252,46 @@ func TestUpdateAppSourceHandler(t *testing.T) {
 	})
 	if bad.StatusCode != http.StatusBadRequest {
 		t.Fatalf("bad public url status = %d, want 400", bad.StatusCode)
+	}
+}
+
+// TestUpdateAppSourceClearsStaleGithubRepo covers switching a github-sourced
+// app away to public/ssh/push: git_source_id is reset to 0 in that branch, and
+// github_repo must be cleared alongside it rather than keeping whatever the
+// form submitted — a stale repo name next to git_source_id = 0 is a value
+// nothing validates any more, and AppsUsingGitSource's delete guard assumes
+// the two only ever mean something together.
+func TestUpdateAppSourceClearsStaleGithubRepo(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	id := installSource(t, env, 55, "outhaul-a", 9001, "jsmart", "User")
+	env.gh.Repos = []github.Repo{{FullName: "jsmart/outhaul", DefaultBranch: "main"}}
+
+	app, err := env.store.CreateApp(context.Background(), core.App{
+		Name: "web3", RepoURL: "https://github.com/jsmart/outhaul.git", Domain: "web3.test",
+		Source: core.SourceGithub, GithubRepo: "jsmart/outhaul", GitSourceID: id,
+		Branch: "main", Kind: core.KindNixpacks, WebhookSecret: "w",
+	})
+	if err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+
+	resp := env.postForm(t, "/apps/"+itoa(app.ID)+"/source", url.Values{
+		"source": {"public"}, "repo_url": {"https://example.com/other.git"},
+		// A stale github_repo value, as a leftover hidden field would carry.
+		"github_repo": {"jsmart/outhaul"},
+	})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", resp.StatusCode)
+	}
+	got, err := env.store.GetApp(context.Background(), app.ID)
+	if err != nil {
+		t.Fatalf("GetApp: %v", err)
+	}
+	if got.GithubRepo != "" {
+		t.Errorf("GithubRepo = %q, want cleared alongside GitSourceID", got.GithubRepo)
+	}
+	if got.GitSourceID != 0 {
+		t.Errorf("GitSourceID = %d, want 0", got.GitSourceID)
 	}
 }

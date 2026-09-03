@@ -214,3 +214,34 @@ func TestCreateAppStoresTheChosenGitSource(t *testing.T) {
 		t.Errorf("source = %q", app.Source)
 	}
 }
+
+// TestAppDetailKeepsUnlistedRepoSelected covers the app.tmpl "Change source"
+// dead end: an app's own (repo, git source) pair may not appear in any
+// rendered RepoGroups optgroup — its source uninstalled, unreachable, or
+// simply not connected. Without an explicit selected option for the app's
+// real pair, the browser silently selects the first option of a *different*
+// group, and submitting the form would move the app to another account's
+// repo. This also covers RepoGroups being empty entirely (no source
+// connected at all), which used to offer "GitHub App" with no repo field.
+func TestAppDetailKeepsUnlistedRepoSelected(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	// No git source is connected at all: RepoGroups will be empty, but the app
+	// still claims source=github with a real repo and source id.
+	app, err := env.store.CreateApp(context.Background(), core.App{
+		Name: "orphan", RepoURL: "https://github.com/acme/orphan.git", Domain: "orphan.test",
+		Source: core.SourceGithub, GithubRepo: "acme/orphan", GitSourceID: 4242,
+		Branch: "main", Kind: core.KindNixpacks, WebhookSecret: "w",
+	})
+	if err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+
+	page := body(t, env.get(t, "/apps/"+strconv.FormatInt(app.ID, 10)))
+	if !strings.Contains(page, `value="acme/orphan" data-source-id="4242" selected`) {
+		t.Error("app's own unlisted repo must render as a selected option")
+	}
+	if !strings.Contains(page, "unavailable") {
+		t.Error("the unlisted repo's optgroup should say the account is unavailable")
+	}
+}

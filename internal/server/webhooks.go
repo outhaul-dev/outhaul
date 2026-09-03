@@ -25,30 +25,36 @@ func (s *Server) handleGithubWebhook(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if r.Header.Get("X-GitHub-Hook-Installation-Target-Type") != "integration" {
+	if got := r.Header.Get("X-GitHub-Hook-Installation-Target-Type"); got != "integration" {
+		log.Printf("github webhook: unexpected hook target type %q", got)
 		http.Error(w, "unexpected hook target", http.StatusUnauthorized)
 		return
 	}
 	appID, err := strconv.ParseInt(r.Header.Get("X-GitHub-Hook-Installation-Target-ID"), 10, 64)
 	if err != nil {
+		log.Printf("github webhook: unparseable hook installation target id %q: %v", r.Header.Get("X-GitHub-Hook-Installation-Target-ID"), err)
 		http.Error(w, "unidentified hook", http.StatusUnauthorized)
 		return
 	}
 	src, found, err := s.store.GitSourceByGithubAppID(r.Context(), appID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("github webhook: look up app %d: %v", appID, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	if !found {
+		log.Printf("github webhook: unknown app id %d", appID)
 		http.Error(w, "unknown app", http.StatusUnauthorized)
 		return
 	}
 	provider, err := s.sources.For(src.Kind)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("github webhook: provider unavailable for app %d: %v", appID, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	if !provider.VerifyWebhook(src, r.Header, body) {
+		log.Printf("github webhook: signature mismatch for app %d", appID)
 		http.Error(w, "bad signature", http.StatusUnauthorized)
 		return
 	}
@@ -61,7 +67,8 @@ func (s *Server) handleGithubWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 		apps, err := s.store.AppsByGithubRepoSource(r.Context(), src.ID, ev.RepoFullName)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			log.Printf("github webhook: look up apps for %s/%s: %v", src.Display(), ev.RepoFullName, err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
 		for _, app := range apps {

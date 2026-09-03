@@ -152,6 +152,12 @@ func (s *Store) AppsByGithubRepoSource(ctx context.Context, sourceID int64, full
 
 // AppsUsingGitSource returns every app that depends on a source, ordered by
 // name. Removing a source is refused while this is non-empty.
+//
+// This filters purely on git_source_id, with no "source = 'github'" predicate:
+// it relies on the invariant that git_source_id is non-zero only for apps with
+// source = 'github' (see UpdateAppSource, which clears both together). If that
+// invariant is ever broken, this silently weakens the delete guard instead of
+// failing a test — keep the two columns in lockstep.
 func (s *Store) AppsUsingGitSource(ctx context.Context, sourceID int64) ([]core.App, error) {
 	return s.appsQuery(ctx,
 		`SELECT `+appCols+` FROM apps WHERE git_source_id = ? ORDER BY name`, sourceID)
@@ -220,9 +226,13 @@ func (s *Store) UpdateAppDockerfilePath(ctx context.Context, id int64, dockerfil
 // UpdateAppSource re-points where an app's code comes from: its source kind and
 // the fields that source needs. All source-specific columns are overwritten to
 // the passed values — an empty repoURL/githubRepo/sshPublicKey clears that
-// column. The SSH private key is sealed like on create (empty stays empty), so
-// switching away from SSH clears it and switching to SSH stores the freshly
-// generated key. The change takes effect on the app's next deploy.
+// column. gitSourceID is the connected GitHub account the repo belongs to; it
+// is stored as given for source = "github" and must be passed as 0 for every
+// other source, since AppsUsingGitSource and the delete guard rely on
+// git_source_id being non-zero only for GitHub-sourced apps. The SSH private
+// key is sealed like on create (empty stays empty), so switching away from SSH
+// clears it and switching to SSH stores the freshly generated key. The change
+// takes effect on the app's next deploy.
 func (s *Store) UpdateAppSource(ctx context.Context, id int64, source, repoURL, githubRepo string, gitSourceID int64, sshPublicKey, sshPrivateKey string) error {
 	enc, err := s.sealMaybe(sshPrivateKey)
 	if err != nil {
