@@ -672,7 +672,8 @@ re-encrypt into a combined blob."
 
 **Files:**
 - Modify: `internal/store/apps.go` (`appCols` line 15, `CreateApp` insert, `UpdateAppSource` line 211, `AppsByGithubRepo` line 145, `scanApp` line 281)
-- Modify: `internal/server/handlers.go:451` (the one `UpdateAppSource` call site)
+- Modify: `internal/server/handlers.go:451` (the one production `UpdateAppSource` call site)
+- Modify: `internal/store/apps_test.go` (two existing `UpdateAppSource` call sites — mechanical signature update, pass `0`)
 - Create: `internal/store/apps_gitsource_test.go`
 
 **Interfaces:**
