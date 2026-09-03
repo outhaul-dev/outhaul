@@ -1651,11 +1651,18 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 
 - [ ] **Step 5: Update both `server.New` call sites**
 
-`main.go` — build the registry above the call and pass it:
+`main.go` — build the registry immediately after `ghClient := github.New()` (line 178), **before** `deploy.NewWorker` at line 182. Task 7 and Task 8 both need it there; creating it next to `server.New` (line 255) would be too late:
 
 ```go
+	ghClient := github.New()
+	// One registry, shared by the deploy worker, the preview manager, and the
+	// HTTP layer: every consumer resolves a source's provider the same way.
 	sources := gitsource.NewRegistry(gitsource.NewGithubApp(ghClient))
+```
 
+then pass it to `server.New`:
+
+```go
 	srv, err := server.New(st, worker, dc, compose.NewDocker(), dbm, backups, broker, ghClient,
 		sources, previews,
 		cfg.PublicURL, serverIP, cfg.TLSEnabled(), setupToken)
@@ -2845,9 +2852,9 @@ Replace the source/repo fields (lines 33-59):
           <span>Repository {{template "hint" "Every repository Outhaul can reach, grouped by the account it comes from."}}</span>
           <input type="text" id="repo-filter" placeholder="filter repos…" autocomplete="off">
           <select name="github_repo" id="github-repo-select" size="8">
-            {{range .RepoGroups}}
+            {{range .RepoGroups}}{{$group := .}}
             <optgroup label="{{.AccountLogin}}{{if .AccountKind}} ({{.AccountKind}}){{end}}">
-              {{range .Repos}}<option value="{{.FullName}}" data-source-id="{{$.SourceIDOf}}" data-default-branch="{{.DefaultBranch}}">{{.FullName}}</option>{{end}}
+              {{range .Repos}}<option value="{{.FullName}}" data-source-id="{{$group.SourceID}}" data-default-branch="{{.DefaultBranch}}">{{.FullName}}</option>{{end}}
             </optgroup>
             {{end}}
           </select>
@@ -2863,15 +2870,6 @@ Replace the source/repo fields (lines 33-59):
           <input type="text" name="branch" id="branch-input" placeholder="main" value="main">
         </label>
         {{if not .GitSourceConnected}}<p class="env-note"><a href="/github/connect">Connect a GitHub account</a> to deploy private repos and auto-deploy on push.</p>{{end}}
-```
-
-`$.SourceIDOf` is wrong — inside `{{range .Repos}}` the group is the *outer* dot. Bind it before the inner range:
-
-```html
-            {{$group := .}}
-            <optgroup label="{{.AccountLogin}}{{if .AccountKind}} ({{.AccountKind}}){{end}}">
-              {{range .Repos}}<option value="{{.FullName}}" data-source-id="{{$group.SourceID}}" data-default-branch="{{.DefaultBranch}}">{{.FullName}}</option>{{end}}
-            </optgroup>
 ```
 
 - [ ] **Step 7: Extend the form script**
