@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -78,5 +79,31 @@ func TestSettingsBackfillsAMissingAccountName(t *testing.T) {
 	src, _, _ := env.store.GetGitSource(ctx, id)
 	if src.AccountLogin != "jsmart" {
 		t.Errorf("account login = %q, want it backfilled to jsmart", src.AccountLogin)
+	}
+}
+
+// A source whose credentials are permanently broken (revoked key, App
+// uninstalled on GitHub's side) must only be probed once per process
+// lifetime — renderSettings backs every /settings/... error redisplay too,
+// not just GET /settings, and nothing must retry a live GitHub call forever.
+func TestBackfillGivesUpAfterOneFailure(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	ctx := context.Background()
+	id := connectApp(t, env, 55, "outhaul-a")
+	if err := env.store.BindGithubInstallation(ctx, id, 9001, "", ""); err != nil {
+		t.Fatalf("BindGithubInstallation: %v", err)
+	}
+	env.gh.InstallationErr = fmt.Errorf("installation revoked")
+
+	body(t, env.get(t, "/settings"))
+	body(t, env.get(t, "/settings"))
+
+	if env.gh.InstallationCalls != 1 {
+		t.Errorf("Installation calls = %d, want 1 (probed once, not retried every render)", env.gh.InstallationCalls)
+	}
+	src, _, _ := env.store.GetGitSource(ctx, id)
+	if src.AccountLogin != "" {
+		t.Errorf("account login = %q, want still empty after a permanent failure", src.AccountLogin)
 	}
 }

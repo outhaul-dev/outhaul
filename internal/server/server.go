@@ -113,6 +113,9 @@ type Server struct {
 
 	ghReposMu sync.Mutex
 	ghRepos   map[int64]*repoCache // per git source; see gitSourceData
+
+	backfillMu        sync.Mutex
+	backfillAttempted map[int64]bool // git source ids already probed for a missing account name, this process lifetime
 }
 
 // New constructs a Server, parsing the embedded templates. setupToken guards the
@@ -121,22 +124,23 @@ type Server struct {
 // GitHub App manifest's callback and webhook URLs.
 func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databases, bk Backups, br *logstream.Broker, gh github.Client, reg *gitsource.Registry, previews PreviewHandler, publicURL, serverIP string, tlsEnabled bool, setupToken string) (*Server, error) {
 	s := &Server{
-		store:       st,
-		deployer:    d,
-		runtime:     rt,
-		compose:     cp,
-		databases:   dbm,
-		backups:     bk,
-		broker:      br,
-		gh:          gh,
-		sources:     reg,
-		previews:    previews,
-		metrics:     hostmetrics.NewSampler("/"),
-		publicURL:   publicURL,
-		serverIP:    serverIP,
-		tlsEnabled:  tlsEnabled,
-		setupToken:  setupToken,
-		stateTokens: map[string]time.Time{},
+		store:             st,
+		deployer:          d,
+		runtime:           rt,
+		compose:           cp,
+		databases:         dbm,
+		backups:           bk,
+		broker:            br,
+		gh:                gh,
+		sources:           reg,
+		previews:          previews,
+		metrics:           hostmetrics.NewSampler("/"),
+		publicURL:         publicURL,
+		serverIP:          serverIP,
+		tlsEnabled:        tlsEnabled,
+		setupToken:        setupToken,
+		stateTokens:       map[string]time.Time{},
+		backfillAttempted: map[int64]bool{},
 	}
 	if err := s.parseTemplates(); err != nil {
 		return nil, err

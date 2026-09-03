@@ -180,6 +180,15 @@ func (s *Server) handleSetSSHAddr(w http.ResponseWriter, r *http.Request) {
 // pre-0022 single-App record was never told which account it belongs to,
 // because the old flow never asked. Failures are logged and ignored — Display()
 // falls back to the App slug, so the page always renders.
+//
+// renderSettings (this method's only caller) also backs the destination,
+// push-key and SSH error redisplays, not just GET /settings — so a source
+// whose credentials are permanently broken (revoked key, App uninstalled on
+// GitHub's side) must not be re-probed on every one of those renders forever.
+// Each source is attempted at most once per process lifetime, tracked in
+// s.backfillAttempted; a success writes the login to the DB, so a successfully
+// backfilled source no longer matches the empty-AccountLogin filter below and
+// would not be re-probed anyway. Only failures actually rely on this guard.
 func (s *Server) backfillAccounts(ctx context.Context) {
 	sources, err := s.store.ListGitSources(ctx)
 	if err != nil {
@@ -187,6 +196,9 @@ func (s *Server) backfillAccounts(ctx context.Context) {
 	}
 	for _, src := range sources {
 		if src.AccountLogin != "" || !src.Installed() || src.Kind != core.GitSourceGithubApp {
+			continue
+		}
+		if s.markBackfillAttempted(src.ID) {
 			continue
 		}
 		jwt, err := github.AppJWT(src.GithubApp.PrivateKey, src.GithubApp.AppID, time.Now())
@@ -203,6 +215,20 @@ func (s *Server) backfillAccounts(ctx context.Context) {
 			log.Printf("git source %s: record account: %v", src.Display(), err)
 		}
 	}
+}
+
+// markBackfillAttempted records that source id has been probed for a missing
+// account name and reports whether it already had been. It marks before doing
+// any work so a failure — the case this exists for — is only ever attempted
+// once, not just successes.
+func (s *Server) markBackfillAttempted(id int64) (already bool) {
+	s.backfillMu.Lock()
+	defer s.backfillMu.Unlock()
+	if s.backfillAttempted[id] {
+		return true
+	}
+	s.backfillAttempted[id] = true
+	return false
 }
 
 // handleDeleteGitSource removes a connected account, refusing while apps still

@@ -27,7 +27,8 @@ type Fake struct {
 	LastInstallationID int64
 	LastToken          string
 
-	ReposCalls int // number of ListRepos invocations, for cache tests
+	ReposCalls        int // number of ListRepos invocations, for cache tests
+	InstallationCalls int // number of Installation invocations, for backfill-retry tests
 
 	Comments map[string]string
 }
@@ -64,6 +65,7 @@ func (f *Fake) LastComment(repo string, pr int) string {
 
 func (f *Fake) Installation(ctx context.Context, appJWT string, installationID int64) (Installation, error) {
 	f.LastJWT = appJWT
+	f.InstallationCalls++
 	if f.InstallationErr != nil {
 		return Installation{}, f.InstallationErr
 	}
