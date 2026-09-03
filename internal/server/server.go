@@ -35,7 +35,7 @@ import (
 // PreviewHandler routes a parsed pull_request event to the preview manager.
 // *previewmgr.Manager satisfies it. Nil when previews aren't wired.
 type PreviewHandler interface {
-	Handle(ctx context.Context, ev webhook.PullRequestEvent) error
+	Handle(ctx context.Context, sourceID int64, ev webhook.PullRequestEvent) error
 	DestroyByID(ctx context.Context, parentID, childID int64) error
 }
 

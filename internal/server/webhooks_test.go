@@ -16,39 +16,50 @@ import (
 
 // fakePreviews records the last pull_request event routed to it.
 type fakePreviews struct {
-	last  webhook.PullRequestEvent
-	calls int
+	last     webhook.PullRequestEvent
+	sourceID int64
+	calls    int
 }
 
-func (f *fakePreviews) Handle(_ context.Context, ev webhook.PullRequestEvent) error {
+func (f *fakePreviews) Handle(_ context.Context, sourceID int64, ev webhook.PullRequestEvent) error {
 	f.calls++
+	f.sourceID = sourceID
 	f.last = ev
 	return nil
 }
 
 func (f *fakePreviews) DestroyByID(_ context.Context, parentID, childID int64) error { return nil }
 
+// postPullRequest delivers a signed pull_request webhook naming the App, mirroring postPush.
+func postPullRequest(t *testing.T, env *testEnv, appID int64, secret, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/webhooks/github", strings.NewReader(body))
+	req.Header.Set("X-GitHub-Event", "pull_request")
+	req.Header.Set("X-GitHub-Hook-Installation-Target-Type", "integration")
+	req.Header.Set("X-GitHub-Hook-Installation-Target-ID", itoa(appID))
+	req.Header.Set("X-Hub-Signature-256", sign(secret, body))
+	rec := httptest.NewRecorder()
+	env.srv.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
 func TestGithubWebhookRoutesPullRequest(t *testing.T) {
 	env := newTestEnv(t)
-	ctx := context.Background()
-	env.store.SetGithubApp(ctx, core.GithubApp{
-		AppID: 1, Slug: "s", PrivateKey: "p", WebhookSecret: "ghwhs", ClientID: "c", ClientSecret: "cs",
-	})
+	srcID := connectApp(t, env, 1, "s")
 	fake := &fakePreviews{}
 	env.srv.previews = fake
 
 	body := `{"action":"opened","number":42,"pull_request":{"head":{"ref":"feature-x","sha":"abc123","repo":{"full_name":"me/app"}},"base":{"repo":{"full_name":"me/app"}}}}`
-	req := httptest.NewRequest("POST", "/webhooks/github", strings.NewReader(body))
-	req.Header.Set("X-Hub-Signature-256", sign("ghwhs", body))
-	req.Header.Set("X-GitHub-Event", "pull_request")
-	rec := httptest.NewRecorder()
-	env.srv.Handler().ServeHTTP(rec, req)
+	rec := postPullRequest(t, env, 1, "whs-s", body)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body)
 	}
 	if fake.calls != 1 {
 		t.Fatalf("calls = %d, want 1", fake.calls)
+	}
+	if fake.sourceID != srcID {
+		t.Errorf("sourceID = %d, want %d", fake.sourceID, srcID)
 	}
 	if fake.last.Action != "opened" || fake.last.Number != 42 || fake.last.BaseRepoFullName != "me/app" {
 		t.Errorf("last event = %+v, want opened/42/me/app", fake.last)
@@ -57,18 +68,11 @@ func TestGithubWebhookRoutesPullRequest(t *testing.T) {
 
 func TestGithubWebhookPullRequestNilPreviewsIsNoop(t *testing.T) {
 	env := newTestEnv(t)
-	ctx := context.Background()
-	env.store.SetGithubApp(ctx, core.GithubApp{
-		AppID: 1, Slug: "s", PrivateKey: "p", WebhookSecret: "ghwhs", ClientID: "c", ClientSecret: "cs",
-	})
+	connectApp(t, env, 1, "s")
 	// env.srv.previews is nil (harness default).
 
 	body := `{"action":"opened","number":42,"pull_request":{"head":{"ref":"feature-x","sha":"abc123","repo":{"full_name":"me/app"}},"base":{"repo":{"full_name":"me/app"}}}}`
-	req := httptest.NewRequest("POST", "/webhooks/github", strings.NewReader(body))
-	req.Header.Set("X-Hub-Signature-256", sign("ghwhs", body))
-	req.Header.Set("X-GitHub-Event", "pull_request")
-	rec := httptest.NewRecorder()
-	env.srv.Handler().ServeHTTP(rec, req)
+	rec := postPullRequest(t, env, 1, "whs-s", body)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 no-op", rec.Code)
@@ -157,26 +161,18 @@ func TestAppWebhookUnknownToken(t *testing.T) {
 func TestGithubAppWebhookFansOut(t *testing.T) {
 	env := newTestEnv(t)
 	ctx := context.Background()
-	// Configure the App (sets the webhook secret used to verify).
-	env.store.SetGithubApp(ctx, core.GithubApp{
-		AppID: 1, Slug: "s", PrivateKey: "p", WebhookSecret: "ghwhs", ClientID: "c", ClientSecret: "cs",
-	})
+	srcID := connectApp(t, env, 1, "s")
 	a1, _ := env.store.CreateApp(ctx, core.App{
 		Name: "prod", RepoURL: "x", Domain: "prod.example.com",
-		Source: core.SourceGithub, GithubRepo: "o/r", Branch: "main", AutoDeploy: true, WebhookSecret: "t1",
+		Source: core.SourceGithub, GithubRepo: "o/r", GitSourceID: srcID, Branch: "main", AutoDeploy: true, WebhookSecret: "t1",
 	})
 	// Same repo, non-matching branch -> should not deploy.
 	env.store.CreateApp(ctx, core.App{
 		Name: "stage", RepoURL: "x", Domain: "stage.example.com",
-		Source: core.SourceGithub, GithubRepo: "o/r", Branch: "develop", AutoDeploy: true, WebhookSecret: "t2",
+		Source: core.SourceGithub, GithubRepo: "o/r", GitSourceID: srcID, Branch: "develop", AutoDeploy: true, WebhookSecret: "t2",
 	})
 
-	body := `{"ref":"refs/heads/main","repository":{"full_name":"o/r"}}`
-	req := httptest.NewRequest("POST", "/webhooks/github", strings.NewReader(body))
-	req.Header.Set("X-Hub-Signature-256", sign("ghwhs", body))
-	req.Header.Set("X-GitHub-Event", "push")
-	rec := httptest.NewRecorder()
-	env.srv.Handler().ServeHTTP(rec, req)
+	rec := postPush(t, env, 1, "whs-s", "o/r", "main")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body)
