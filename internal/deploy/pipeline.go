@@ -12,7 +12,6 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/dbaas"
 	"github.com/outhaul-dev/outhaul/internal/docker"
-	"github.com/outhaul-dev/outhaul/internal/github"
 	"github.com/outhaul-dev/outhaul/internal/traefik"
 )
 
@@ -457,7 +456,7 @@ func (w *Worker) cloneSpec(ctx context.Context, app core.App) (CloneSpec, error)
 		}
 		spec.Auth = Auth{Kind: AuthSSH, SSHKey: key}
 	case core.SourceGithub:
-		token, err := w.githubToken(ctx)
+		token, err := w.sourceToken(ctx, app)
 		if err != nil {
 			return CloneSpec{}, err
 		}
@@ -467,23 +466,21 @@ func (w *Worker) cloneSpec(ctx context.Context, app core.App) (CloneSpec, error)
 	return spec, nil
 }
 
-// githubToken mints a fresh installation access token from the configured App.
-func (w *Worker) githubToken(ctx context.Context) (string, error) {
-	ga, ok, err := w.store.GithubApp(ctx)
+// sourceToken mints a fresh clone credential from the git source this app's
+// repo comes from. Messages surface in deploy logs, so they say which link is
+// missing rather than "github app not configured".
+func (w *Worker) sourceToken(ctx context.Context, app core.App) (string, error) {
+	if app.GitSourceID == 0 {
+		return "", fmt.Errorf("app %s has no git source; reconnect its account in Settings", app.Name)
+	}
+	src, ok, err := w.store.GetGitSource(ctx, app.GitSourceID)
 	if err != nil {
-		return "", fmt.Errorf("load github app: %w", err)
+		return "", fmt.Errorf("load git source: %w", err)
 	}
 	if !ok {
-		return "", fmt.Errorf("github app not configured")
+		return "", fmt.Errorf("app %s references git source %d, which no longer exists", app.Name, app.GitSourceID)
 	}
-	if ga.InstallationID == 0 {
-		return "", fmt.Errorf("github app not installed")
-	}
-	jwt, err := github.AppJWT(ga.PrivateKey, ga.AppID, time.Now())
-	if err != nil {
-		return "", fmt.Errorf("build app jwt: %w", err)
-	}
-	return w.gh.InstallationToken(ctx, jwt, ga.InstallationID)
+	return w.sources.TokenFor(ctx, src)
 }
 
 // containerName is the deterministic name of an app's running container.

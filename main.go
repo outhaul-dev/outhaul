@@ -185,7 +185,7 @@ func serve() error {
 	broker := logstream.New()
 	worker := deploy.NewWorker(st, dc,
 		deploy.Builders{Nixpacks: builder.NewNixpacks(), Dockerfile: builder.NewDocker()},
-		compose.NewDocker(), deploy.NewGit(), broker, ghClient, cfg)
+		compose.NewDocker(), deploy.NewGit(), broker, sources, cfg)
 
 	// Image pruner: after-deploy retention hook + daily sweep.
 	pruner := prune.New(st, dc, cfg.ImageKeep, cfg.WorkDir())
