@@ -1008,7 +1008,7 @@ func TestFakeInstallationScopedToCallingApp(t *testing.T) {
 }
 ```
 
-Add these helpers to the same file (`testRSAKeyPEM` may already exist in `jwt_test.go` — check first and reuse it rather than duplicating):
+`jwt_test.go` already has `testKeyPEM(t) (string, *rsa.PublicKey)` — reuse it (discarding the public key) rather than adding a second key generator to the same package. Add only the time helper:
 
 ```go
 func timeNowForTest() time.Time { return time.Unix(1_700_000_000, 0) }
