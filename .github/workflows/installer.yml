@@ -8,7 +8,9 @@ jobs:
   lint-and-unit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: shellcheck
         run: shellcheck -s sh --severity=warning deploy/bootstrap.sh deploy/test/*.sh
       - name: unit tests
