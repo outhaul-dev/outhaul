@@ -101,8 +101,6 @@ ALTER TABLE apps ADD COLUMN git_source_id INTEGER NOT NULL DEFAULT 0;
 
 UPDATE apps SET git_source_id = (SELECT id FROM git_sources ORDER BY id LIMIT 1)
     WHERE source = 'github' AND EXISTS (SELECT 1 FROM git_sources);
-
-DROP TABLE github_app;
 ```
 
 Notes:
@@ -113,6 +111,18 @@ Notes:
   no-ops and no source exists. Correct.
 - `account_login` is empty after migration — GitHub never told us. It is
   backfilled lazily (see "Account backfill").
+
+### Migration `0023_drop_github_app.sql`
+
+```sql
+DROP TABLE IF EXISTS github_app;
+```
+
+`0022` copies the legacy row rather than dropping its table, because the
+legacy `github_app` table and its store methods stayed alive for the rest of
+the branch — every intermediate commit still compiled and its tests still
+passed while callers were migrated across one at a time. `0023` is added once
+the last caller (`store.AppsByGithubRepo`) is gone, and retires the table.
 
 ### Core types
 
