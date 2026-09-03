@@ -12,7 +12,7 @@ import (
 
 // appCols is the column list read into core.App by scanApp (excludes the
 // write-only ssh_private_key, which is fetched separately and decrypted).
-const appCols = `id, project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_secret, ssh_public_key, github_repo, kind, compose_path, dockerfile_path, watch_paths, template_id, compose_raw, parent_id, pr_number, ephemeral, preview_status`
+const appCols = `id, project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_secret, ssh_public_key, github_repo, git_source_id, kind, compose_path, dockerfile_path, watch_paths, template_id, compose_raw, parent_id, pr_number, ephemeral, preview_status`
 
 // CreateApp inserts an app and returns it with ID and CreatedAt populated. The
 // SSH private key (if any) is encrypted at rest.
@@ -41,11 +41,11 @@ func (s *Store) CreateApp(ctx context.Context, app core.App) (core.App, error) {
 	defer tx.Rollback()
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO apps
-		   (project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_secret, ssh_private_key, ssh_public_key, github_repo,
+		   (project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_secret, ssh_private_key, ssh_public_key, github_repo, git_source_id,
 		    kind, compose_path, dockerfile_path, watch_paths, template_id, compose_raw, parent_id, pr_number, ephemeral, preview_status)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		app.ProjectID, app.Name, app.RepoURL, app.Domain, fmtTime(app.CreatedAt),
-		app.Branch, boolToInt(app.AutoDeploy), app.Source, app.WebhookSecret, encKey, app.SSHPublicKey, app.GithubRepo,
+		app.Branch, boolToInt(app.AutoDeploy), app.Source, app.WebhookSecret, encKey, app.SSHPublicKey, app.GithubRepo, app.GitSourceID,
 		app.Kind, app.ComposePath, app.DockerfilePath, joinWatchPaths(app.WatchPaths), app.TemplateID, app.ComposeRaw,
 		app.ParentID, app.PRNumber, boolToInt(app.Ephemeral), app.PreviewStatus)
 	if err != nil {
@@ -160,6 +160,40 @@ func (s *Store) AppsByGithubRepo(ctx context.Context, fullName string) ([]core.A
 	return apps, rows.Err()
 }
 
+// AppsByGithubRepoSource returns the apps sourced from "owner/name" *through a
+// particular git source*. Scoping by source is what stops a push signed by one
+// connected account from deploying another account's identically-named repo.
+func (s *Store) AppsByGithubRepoSource(ctx context.Context, sourceID int64, fullName string) ([]core.App, error) {
+	return s.appsQuery(ctx,
+		`SELECT `+appCols+` FROM apps WHERE source = ? AND github_repo = ? AND git_source_id = ?`,
+		core.SourceGithub, fullName, sourceID)
+}
+
+// AppsUsingGitSource returns every app that depends on a source, ordered by
+// name. Removing a source is refused while this is non-empty.
+func (s *Store) AppsUsingGitSource(ctx context.Context, sourceID int64) ([]core.App, error) {
+	return s.appsQuery(ctx,
+		`SELECT `+appCols+` FROM apps WHERE git_source_id = ? ORDER BY name`, sourceID)
+}
+
+// appsQuery runs a query returning appCols and scans every row.
+func (s *Store) appsQuery(ctx context.Context, query string, args ...any) ([]core.App, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var apps []core.App
+	for rows.Next() {
+		app, err := scanApp(rows)
+		if err != nil {
+			return nil, err
+		}
+		apps = append(apps, app)
+	}
+	return apps, rows.Err()
+}
+
 // SSHPrivateKey returns the decrypted deploy private key for an app.
 func (s *Store) SSHPrivateKey(ctx context.Context, appID int64) (string, error) {
 	var enc string
@@ -208,14 +242,14 @@ func (s *Store) UpdateAppDockerfilePath(ctx context.Context, id int64, dockerfil
 // column. The SSH private key is sealed like on create (empty stays empty), so
 // switching away from SSH clears it and switching to SSH stores the freshly
 // generated key. The change takes effect on the app's next deploy.
-func (s *Store) UpdateAppSource(ctx context.Context, id int64, source, repoURL, githubRepo, sshPublicKey, sshPrivateKey string) error {
+func (s *Store) UpdateAppSource(ctx context.Context, id int64, source, repoURL, githubRepo string, gitSourceID int64, sshPublicKey, sshPrivateKey string) error {
 	enc, err := s.sealMaybe(sshPrivateKey)
 	if err != nil {
 		return err
 	}
 	_, err = s.db.ExecContext(ctx,
-		`UPDATE apps SET source = ?, repo_url = ?, github_repo = ?, ssh_public_key = ?, ssh_private_key = ? WHERE id = ?`,
-		source, repoURL, githubRepo, sshPublicKey, enc, id)
+		`UPDATE apps SET source = ?, repo_url = ?, github_repo = ?, git_source_id = ?, ssh_public_key = ?, ssh_private_key = ? WHERE id = ?`,
+		source, repoURL, githubRepo, gitSourceID, sshPublicKey, enc, id)
 	return err
 }
 
@@ -288,6 +322,7 @@ func scanApp(row scanner) (core.App, error) {
 	)
 	if err := row.Scan(&app.ID, &app.ProjectID, &app.Name, &app.RepoURL, &app.Domain, &createdAt,
 		&app.Branch, &autoDeploy, &app.Source, &app.WebhookSecret, &app.SSHPublicKey, &app.GithubRepo,
+		&app.GitSourceID,
 		&app.Kind, &app.ComposePath, &app.DockerfilePath, &watchPaths, &app.TemplateID, &app.ComposeRaw,
 		&app.ParentID, &app.PRNumber, &ephemeral, &app.PreviewStatus); err != nil {
 		return core.App{}, err

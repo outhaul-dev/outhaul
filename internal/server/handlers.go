@@ -448,7 +448,7 @@ func (s *Server) handleUpdateAppSource(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.store.UpdateAppSource(r.Context(), id, source, repo, githubRepo, pub, priv); err != nil {
+	if err := s.store.UpdateAppSource(r.Context(), id, source, repo, githubRepo, 0, pub, priv); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
