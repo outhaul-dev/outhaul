@@ -3191,7 +3191,7 @@ In `internal/server/server.go`, beside the other `/settings/...` routes:
         <td>{{.Display}}</td>
         <td>{{if .AccountKind}}{{.AccountKind}}{{else}}—{{end}}</td>
         <td><span class="mono">{{.GithubApp.Slug}}</span></td>
-        <td>{{if .Installed}}Installed{{else}}<a href="/github/connect">Not installed</a>{{end}}</td>
+        <td>{{if .Installed}}Installed{{else}}<a href="https://github.com/apps/{{.GithubApp.Slug}}/installations/new">Finish installing</a>{{end}}</td>
         <td><form method="post" action="/settings/git-sources/{{.ID}}/delete"><button type="submit" class="btn btn-danger">Remove</button></form></td>
       </tr>
       {{end}}
