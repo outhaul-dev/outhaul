@@ -94,13 +94,14 @@ func (c *fakeCommenter) UpsertPRComment(_ context.Context, _, repo string, pr in
 // --- harness ---------------------------------------------------------------
 
 type harness struct {
-	st       *store.Store
-	mgr      *Manager
-	notifier *fakeNotifier
-	docker   *fakeDocker
-	dbprov   *fakeDBProvisioner
-	gh       *fakeCommenter
-	sourceID int64 // git source every seeded parent app belongs to
+	st                *store.Store
+	mgr               *Manager
+	notifier          *fakeNotifier
+	docker            *fakeDocker
+	dbprov            *fakeDBProvisioner
+	gh                *fakeCommenter
+	sourceID          int64 // git source every seeded parent app belongs to
+	lastTokenSourceID int64 // sourceID the fake TokenSource was last called with
 }
 
 const serverIP = "1.2.3.4"
@@ -135,7 +136,10 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("BindGithubInstallation: %v", err)
 	}
 	h.sourceID = src.ID
-	ts := func(context.Context, int64) (string, bool, error) { return "tok", true, nil }
+	ts := func(_ context.Context, sourceID int64) (string, bool, error) {
+		h.lastTokenSourceID = sourceID
+		return "tok", true, nil
+	}
 	h.mgr = New(st, h.notifier, h.dbprov, h.docker, h.gh, ts, serverIP)
 	return h
 }
@@ -624,6 +628,9 @@ func TestOnDeployFinishedPostsReadyComment(t *testing.T) {
 	}
 	if !strings.Contains(last, "web-pr-42.1.2.3.4.sslip.io") {
 		t.Errorf("ready comment = %q, want the preview URL", last)
+	}
+	if h.lastTokenSourceID != h.sourceID {
+		t.Errorf("comment token minted for source %d, want the parent's source %d — a comment must never be posted with another account's token", h.lastTokenSourceID, h.sourceID)
 	}
 }
 

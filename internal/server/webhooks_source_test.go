@@ -79,3 +79,27 @@ func TestWebhookRejectsASignatureFromAnotherSource(t *testing.T) {
 		t.Errorf("status = %d, want 401 — a signature from another source must not verify", rec.Code)
 	}
 }
+
+// GitHub always sets X-GitHub-Hook-Installation-Target-Type: integration on a
+// GitHub App delivery. A request missing (or lying about) it must not reach
+// signature verification at all, correctly signed or not.
+func TestWebhookRejectsMissingTargetType(t *testing.T) {
+	env := newTestEnv(t)
+	connectApp(t, env, 55, "outhaul-a")
+
+	payload := `{"ref":"refs/heads/main","repository":{"full_name":"acme-corp/api"}}`
+	mac := hmac.New(sha256.New, []byte("whs-outhaul-a"))
+	mac.Write([]byte(payload))
+
+	req := httptest.NewRequest("POST", "/webhooks/github", strings.NewReader(payload))
+	req.Header.Set("X-GitHub-Event", "push")
+	req.Header.Set("X-GitHub-Hook-Installation-Target-ID", "55")
+	req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	// X-GitHub-Hook-Installation-Target-Type deliberately omitted.
+	rec := httptest.NewRecorder()
+	env.srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401 — a delivery missing the integration target type must not verify, even with a correct signature", rec.Code)
+	}
+}
