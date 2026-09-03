@@ -18,7 +18,7 @@ import (
 
 // Store is the slice of *store.Store the manager needs.
 type Store interface {
-	AppsByGithubRepo(ctx context.Context, repo string) ([]core.App, error)
+	AppsByGithubRepoSource(ctx context.Context, sourceID int64, repo string) ([]core.App, error)
 	GetApp(ctx context.Context, id int64) (core.App, error)
 	GetPreviewConfig(ctx context.Context, appID int64) (core.PreviewConfig, error)
 	GetPreviewByPR(ctx context.Context, parentID int64, pr int) (core.App, error)
@@ -56,8 +56,8 @@ type GithubCommenter interface {
 	UpsertPRComment(ctx context.Context, token, repo string, pr int, body string) error
 }
 
-// TokenSource yields an installation token for API calls (nil disables comments).
-type TokenSource func(ctx context.Context) (token string, ok bool, err error)
+// TokenSource yields an API credential for one git source (nil disables comments).
+type TokenSource func(ctx context.Context, sourceID int64) (token string, ok bool, err error)
 
 // Docker tears down a preview's containers/stack.
 type Docker interface {
@@ -80,9 +80,10 @@ func New(st Store, n Notifier, db DBProvisioner, dk Docker, gh GithubCommenter, 
 }
 
 // Handle routes one pull_request event to the right lifecycle action for every
-// enabled app targeting the PR's base repo.
-func (m *Manager) Handle(ctx context.Context, ev webhook.PullRequestEvent) error {
-	apps, err := m.store.AppsByGithubRepo(ctx, ev.BaseRepoFullName)
+// enabled app targeting the PR's base repo *through the source that delivered
+// the event*.
+func (m *Manager) Handle(ctx context.Context, sourceID int64, ev webhook.PullRequestEvent) error {
+	apps, err := m.store.AppsByGithubRepoSource(ctx, sourceID, ev.BaseRepoFullName)
 	if err != nil {
 		return err
 	}
@@ -128,7 +129,7 @@ func (m *Manager) spawn(ctx context.Context, parent core.App, cfg core.PreviewCo
 		return err
 	}
 	if len(live) >= cfg.MaxConcurrent {
-		m.comment(ctx, cfg, ev.BaseRepoFullName, ev.Number,
+		m.comment(ctx, cfg, parent.GitSourceID, ev.BaseRepoFullName, ev.Number,
 			fmt.Sprintf("Preview skipped: max concurrent previews (%d) reached.", cfg.MaxConcurrent))
 		return nil
 	}
@@ -156,7 +157,7 @@ func (m *Manager) spawn(ctx context.Context, parent core.App, cfg core.PreviewCo
 
 	// Comment before notifying so a very fast deploy can't finish (and post the
 	// ready comment) before the building comment call runs.
-	m.comment(ctx, cfg, ev.BaseRepoFullName, ev.Number, buildingComment(ev.HeadSHA))
+	m.comment(ctx, cfg, parent.GitSourceID, ev.BaseRepoFullName, ev.Number, buildingComment(ev.HeadSHA))
 	m.notifier.Notify()
 	return nil
 }
@@ -317,7 +318,7 @@ func (m *Manager) redeploy(ctx context.Context, parent core.App, ev webhook.Pull
 	}
 	m.notifier.Notify()
 	cfg, _ := m.store.GetPreviewConfig(ctx, parent.ID)
-	m.comment(ctx, cfg, ev.BaseRepoFullName, ev.Number, buildingComment(ev.HeadSHA))
+	m.comment(ctx, cfg, parent.GitSourceID, ev.BaseRepoFullName, ev.Number, buildingComment(ev.HeadSHA))
 	return nil
 }
 
@@ -374,7 +375,7 @@ func (m *Manager) teardown(ctx context.Context, parent core.App, pr int, repo st
 			log.Printf("previewmgr: destroy db %s after app delete: %v", db.Name, err)
 		}
 	}
-	m.comment(ctx, cfg, repo, pr, "Preview environment destroyed.")
+	m.comment(ctx, cfg, parent.GitSourceID, repo, pr, "Preview environment destroyed.")
 	return nil
 }
 
@@ -438,14 +439,14 @@ func (m *Manager) OnDeployFinished(ctx context.Context, app core.App, success bo
 	} else {
 		body = FailedComment("")
 	}
-	m.comment(ctx, cfg, parent.GithubRepo, app.PRNumber, body)
+	m.comment(ctx, cfg, parent.GitSourceID, parent.GithubRepo, app.PRNumber, body)
 }
 
-func (m *Manager) comment(ctx context.Context, cfg core.PreviewConfig, repo string, pr int, body string) {
+func (m *Manager) comment(ctx context.Context, cfg core.PreviewConfig, sourceID int64, repo string, pr int, body string) {
 	if !cfg.PostPRComment || m.token == nil || repo == "" {
 		return
 	}
-	tok, ok, err := m.token(ctx)
+	tok, ok, err := m.token(ctx, sourceID)
 	if err != nil || !ok {
 		return
 	}
