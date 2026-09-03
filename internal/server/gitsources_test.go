@@ -104,6 +104,36 @@ func TestGithubSetupRejectsAnUnownedInstallation(t *testing.T) {
 	}
 }
 
+// The setup route is unauthenticated (GitHub calls it directly), so its error
+// body must never carry internal detail — only the fixed, non-revealing
+// message, and never the raw installation id or anything that looks like
+// driver/SQL text.
+func TestGithubSetupUnownedInstallationBodyHasNoInternalDetail(t *testing.T) {
+	env := newTestEnv(t)
+	connectApp(t, env, 55, "outhaul-a")
+	env.gh.InstallationsByApp = map[int64][]github.Installation{}
+
+	rec := httptest.NewRecorder()
+	env.srv.Handler().ServeHTTP(rec,
+		httptest.NewRequest("GET", "/github/setup?installation_id=4242", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	got := strings.TrimSpace(rec.Body.String())
+	want := "no connected GitHub App owns this installation"
+	if got != want {
+		t.Errorf("body = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "4242") {
+		t.Error("body must not echo the installation id back to an unauthenticated caller")
+	}
+	for _, term := range []string{"sql", "SQL", "database", "driver"} {
+		if strings.Contains(got, term) {
+			t.Errorf("body leaked internal detail: contains %q", term)
+		}
+	}
+}
+
 func TestGithubConnectOffersPersonalAndOrg(t *testing.T) {
 	env := newTestEnv(t)
 	env.login(t)

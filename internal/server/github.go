@@ -4,7 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"fmt"
+	"errors"
 	"log"
 	"net/http"
 	"regexp"
@@ -15,6 +15,11 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/github"
 )
+
+// errNoOwningApp is returned by bindInstallation when no connected GitHub App
+// owns the installation. It is the only bindInstallation error safe to show a
+// caller: it carries no store/driver detail, unlike every other failure path.
+var errNoOwningApp = errors.New("no connected GitHub App owns this installation")
 
 // orgLogin matches a GitHub account name: alphanumerics and single hyphens,
 // no leading or trailing hyphen.
@@ -101,7 +106,14 @@ func (s *Server) handleGithubSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.bindInstallation(r.Context(), id); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		if errors.Is(err, errNoOwningApp) {
+			http.Error(w, errNoOwningApp.Error(), http.StatusBadRequest)
+			return
+		}
+		// A store or bind failure is our fault, not the caller's, and this route
+		// is unauthenticated — never echo internal/driver detail into the body.
+		log.Printf("github setup: bind installation %d: %v", id, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -149,7 +161,7 @@ func (s *Server) bindInstallation(ctx context.Context, installationID int64) (co
 		src.AccountLogin, src.AccountType = inst.AccountLogin, inst.AccountType
 		return src, nil
 	}
-	return core.GitSource{}, fmt.Errorf("no connected GitHub App owns installation %d", installationID)
+	return core.GitSource{}, errNoOwningApp
 }
 
 func (s *Server) publicURLSet() bool { return s.publicURL != "" }
