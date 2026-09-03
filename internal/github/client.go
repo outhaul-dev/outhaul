@@ -18,6 +18,14 @@ type ManifestResult struct {
 	ClientSecret  string
 }
 
+// Installation is one GitHub App installation and the account it belongs to.
+// A private App has exactly one, on the account that owns the App.
+type Installation struct {
+	ID           int64
+	AccountLogin string
+	AccountType  string // "User" | "Organization"
+}
+
 // Client talks to the GitHub App API. Implemented by *HTTPClient and *Fake.
 type Client interface {
 	ExchangeManifest(ctx context.Context, code string) (ManifestResult, error)
@@ -26,4 +34,8 @@ type Client interface {
 	// UpsertPRComment creates or updates the single Outhaul preview comment on a
 	// PR, identified by a hidden marker in the body.
 	UpsertPRComment(ctx context.Context, token, repoFullName string, pr int, body string) error
+	// Installation describes one installation. GitHub scopes this to the App
+	// the JWT authenticates as, so a 404 means "this App does not own it" —
+	// which is how an installation is matched back to its source.
+	Installation(ctx context.Context, appJWT string, installationID int64) (Installation, error)
 }

@@ -131,6 +131,21 @@ func (c *HTTPClient) ListRepos(ctx context.Context, token string) ([]Repo, error
 	return repos, nil
 }
 
+func (c *HTTPClient) Installation(ctx context.Context, appJWT string, installationID int64) (Installation, error) {
+	var r struct {
+		ID      int64 `json:"id"`
+		Account struct {
+			Login string `json:"login"`
+			Type  string `json:"type"`
+		} `json:"account"`
+	}
+	url := fmt.Sprintf("%s/app/installations/%d", c.BaseURL, installationID)
+	if err := c.do(ctx, http.MethodGet, url, "Bearer "+appJWT, &r); err != nil {
+		return Installation{}, err
+	}
+	return Installation{ID: r.ID, AccountLogin: r.Account.Login, AccountType: r.Account.Type}, nil
+}
+
 func (c *HTTPClient) UpsertPRComment(ctx context.Context, token, repo string, pr int, body string) error {
 	full := previewCommentMarker + "\n" + body
 	var comments []struct {
