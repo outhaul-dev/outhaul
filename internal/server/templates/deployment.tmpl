@@ -56,11 +56,11 @@
     }
     if (indicator) { indicator.textContent = 'complete'; }
     if (received === 0) {
-      // Build logs live in memory only, so an older deployment (or anything
-      // from before the last restart) replays nothing. Say so rather than
-      // leaving a bare empty box.
+      // Build logs live in memory only, for the most recent deployments, so
+      // an older deployment (or anything from before the last restart)
+      // replays nothing. Say so rather than leaving a bare empty box.
       el.classList.add('log-empty');
-      el.textContent = 'Build logs for this deployment are no longer available. They are kept in memory only and cleared when the service restarts.';
+      el.textContent = 'Build logs for this deployment are no longer available. Outhaul keeps them in memory only for the most recent deployments, and clears them when the service restarts.';
       if (indicator) { indicator.textContent = 'no logs'; }
     }
   });

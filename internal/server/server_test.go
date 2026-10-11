@@ -787,3 +787,18 @@ func TestSSEUnknownDeployment404(t *testing.T) {
 		t.Fatalf("status = %d, want 404", resp.StatusCode)
 	}
 }
+
+// The broker now drops a finished deployment's log once enough newer ones
+// have finished, not only on restart; the page must not blame a restart.
+func TestDeploymentPageExplainsLogsAreKeptForRecentDeploymentsOnly(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	ctx := context.Background()
+	app, _ := e.store.CreateApp(ctx, core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	dep, _ := e.store.CreateDeployment(ctx, app.ID)
+
+	page := body(t, e.get(t, "/deployments/"+itoa(dep.ID)))
+	if !strings.Contains(page, "only for the most recent deployments") {
+		t.Errorf("deployment page does not say logs are kept for recent deployments only")
+	}
+}
