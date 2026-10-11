@@ -1207,6 +1207,10 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if err := s.destroyPreviews(r.Context(), app); err != nil {
+		http.Error(w, "Could not delete app: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	// Best-effort teardown; proceed with the row delete regardless, but log
 	// failures so orphaned containers aren't silently lost. Compose stacks go
 	// down whole (containers + networks; named volumes deliberately survive —
@@ -1247,6 +1251,27 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.Redirect(w, r, "/apps", http.StatusSeeOther)
+}
+
+// destroyPreviews tears down every preview of parent before the parent itself
+// goes. A preview carries copies of the parent's secrets and keeps serving until
+// torn down, and once the parent row is gone nothing would ever reap it — so any
+// failure (including having no preview manager to do it) keeps the parent, and a
+// retried delete picks up where this one stopped.
+func (s *Server) destroyPreviews(ctx context.Context, parent core.App) error {
+	kids, err := s.store.ListPreviewsForParent(ctx, parent.ID)
+	if err != nil {
+		return err
+	}
+	if len(kids) > 0 && s.previews == nil {
+		return fmt.Errorf("it has %d preview environment(s) and previews are not enabled on this server to tear them down", len(kids))
+	}
+	for _, k := range kids {
+		if err := s.previews.DestroyByID(ctx, parent.ID, k.ID); err != nil {
+			return fmt.Errorf("could not tear down the preview for PR #%d: %w", k.PRNumber, err)
+		}
+	}
+	return nil
 }
 
 // distinctImages collects the unique unpruned image tags across deployments.
