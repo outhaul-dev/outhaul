@@ -261,6 +261,19 @@ func (s *Store) FinishBackupRun(ctx context.Context, runID int64, status, reason
 	return err
 }
 
+// FailRunningBackupRuns marks every run of kind still in status running as
+// failed with reason, returning how many it changed. Boot recovery: the
+// process that would have finished them is gone.
+func (s *Store) FailRunningBackupRuns(ctx context.Context, kind, reason string) (int64, error) {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE backup_runs SET status = ?, reason = ?, finished_at = ? WHERE status = ? AND kind = ?`,
+		core.RunFailed, reason, fmtTime(time.Now().UTC()), core.RunRunning, kind)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // ListBackupRuns returns a backup's newest runs, most recent first.
 func (s *Store) ListBackupRuns(ctx context.Context, backupID int64, limit int) ([]core.BackupRun, error) {
 	rows, err := s.db.QueryContext(ctx,

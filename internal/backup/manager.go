@@ -8,6 +8,7 @@ package backup
 import (
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -45,6 +46,12 @@ type Manager struct {
 
 	mu       sync.Mutex
 	inFlight map[int64]bool // backup IDs currently running
+	stopped  bool           // set by Stop: no new runs start
+
+	timeout time.Duration      // bounds one run; runTimeout outside tests
+	base    context.Context    // parent of every run's context; cancelled by Stop
+	cancel  context.CancelFunc // cancels base
+	wg      sync.WaitGroup     // in-flight runs
 
 	// runDone, when non-nil, is signalled after each run finishes (tests use
 	// it to wait deterministically).
@@ -53,13 +60,67 @@ type Manager struct {
 
 // NewManager wires a Manager. workDir is config.WorkDir().
 func NewManager(st *store.Store, dc docker.Client, workDir string) *Manager {
+	base, cancel := context.WithCancel(context.Background())
 	return &Manager{
 		store:    st,
 		docker:   dc,
 		workDir:  workDir,
 		dial:     blobstore.Open,
 		inFlight: map[int64]bool{},
+		timeout:  runTimeout,
+		base:     base,
+		cancel:   cancel,
 	}
+}
+
+// Stop cancels in-flight backups and restores and waits, until ctx ends, for
+// each to record its outcome (a restore also restarts the containers it
+// stopped). No run starts after Stop. Runs still going when ctx ends are
+// failed by RecoverInterrupted at the next boot.
+func (m *Manager) Stop(ctx context.Context) error {
+	m.mu.Lock()
+	m.stopped = true
+	m.mu.Unlock()
+	m.cancel()
+
+	done := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// RecoverInterrupted fails runs left "running" by a process that died
+// before they finished: nothing will ever finish them. Call it at boot,
+// before any run can start.
+func (m *Manager) RecoverInterrupted(ctx context.Context) (int64, error) {
+	n, err := m.store.FailRunningBackupRuns(ctx, core.RunKindBackup,
+		"interrupted: Outhaul stopped before the backup finished")
+	if err != nil {
+		return n, err
+	}
+	r, err := m.store.FailRunningBackupRuns(ctx, core.RunKindRestore,
+		"interrupted: Outhaul stopped before the restore finished; the target may be partly restored "+
+			"and its containers stopped. Check it, then restore again")
+	return n + r, err
+}
+
+// failure is the reason recorded for a failed run: the error, prefixed with
+// why the run's context ended when that is what stopped it.
+func (m *Manager) failure(ctx context.Context, err error) string {
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return fmt.Sprintf("timed out after %s: %v", m.timeout, err)
+	case ctx.Err() != nil:
+		return "interrupted: Outhaul shut down during the run: " + err.Error()
+	}
+	return err.Error()
 }
 
 // Run ticks once a minute until ctx is cancelled, starting whichever enabled
@@ -105,19 +166,21 @@ func (m *Manager) RunNow(b core.Backup) {
 }
 
 // launch runs job in a goroutine under the per-schedule in-flight guard,
-// bounded by runTimeout. Backups and restores of the same schedule share the
-// guard so they can never overlap each other.
+// bounded by the run timeout and cancelled by Stop. Backups and restores of
+// the same schedule share the guard so they can never overlap each other.
 func (m *Manager) launch(backupID int64, job func(ctx context.Context)) {
 	m.mu.Lock()
-	if m.inFlight[backupID] {
+	if m.stopped || m.inFlight[backupID] {
 		m.mu.Unlock()
 		return
 	}
 	m.inFlight[backupID] = true
+	m.wg.Add(1)
 	m.mu.Unlock()
 
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
+		defer m.wg.Done()
+		ctx, cancel := context.WithTimeout(m.base, m.timeout)
 		defer cancel()
 		job(ctx)
 		m.mu.Lock()
@@ -147,13 +210,15 @@ func (m *Manager) run(ctx context.Context, b core.Backup) {
 		return
 	}
 	key, size, err := m.execute(ctx, b)
+	// Record the outcome even when ctx has ended (timeout or shutdown).
+	rctx := context.WithoutCancel(ctx)
 	if err != nil {
-		if ferr := m.store.FinishBackupRun(ctx, runID, core.RunFailed, err.Error(), key, size); ferr != nil {
+		if ferr := m.store.FinishBackupRun(rctx, runID, core.RunFailed, m.failure(ctx, err), key, size); ferr != nil {
 			log.Printf("backup %d: record failure: %v (original: %v)", b.ID, ferr, err)
 		}
 		return
 	}
-	if err := m.store.FinishBackupRun(ctx, runID, core.RunOK, "", key, size); err != nil {
+	if err := m.store.FinishBackupRun(rctx, runID, core.RunOK, "", key, size); err != nil {
 		log.Printf("backup %d: record success: %v", b.ID, err)
 	}
 }

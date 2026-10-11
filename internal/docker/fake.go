@@ -38,6 +38,9 @@ type Fake struct {
 
 	// OnExec, when set, supplies ExecContainer's output and exit code.
 	OnExec func(id string, cmd, env []string) (stdout, stderr string, exit int, err error)
+	// OnExecCtx is OnExec with the call's context, for tool runs that hang
+	// until cancelled. It takes precedence over OnExec.
+	OnExecCtx func(ctx context.Context, id string, cmd, env []string) (stdout, stderr string, exit int, err error)
 	// OnRun, when set, supplies RunContainer's stdout and exit code.
 	OnRun func(spec ContainerSpec) (stdout string, exit int, err error)
 
@@ -219,7 +222,7 @@ func (f *Fake) ContainerIP(_ context.Context, id, _ string) (string, error) {
 	return f.IPs[id], nil
 }
 
-func (f *Fake) ExecContainer(_ context.Context, id string, cmd, env []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
+func (f *Fake) ExecContainer(ctx context.Context, id string, cmd, env []string, stdin io.Reader, stdout, stderr io.Writer) (int, error) {
 	var in []byte
 	if stdin != nil {
 		var err error
@@ -234,6 +237,10 @@ func (f *Fake) ExecContainer(_ context.Context, id string, cmd, env []string, st
 	}
 	f.Execs = append(f.Execs, ExecCall{ContainerID: id, Cmd: cmd, Env: env, Stdin: in})
 	hook := f.OnExec
+	if f.OnExecCtx != nil {
+		ctxHook := f.OnExecCtx
+		hook = func(id string, cmd, env []string) (string, string, int, error) { return ctxHook(ctx, id, cmd, env) }
+	}
 	f.mu.Unlock()
 	if hook == nil {
 		return 0, nil

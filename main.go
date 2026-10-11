@@ -204,7 +204,14 @@ func serve() error {
 	dbm := dbaas.NewManager(st, dc, cfg.Network, cfg.DatabasesDir())
 
 	// Backup scheduler (dumps + volume tarballs to S3-compatible storage).
+	// Runs a dead process left "running" are failed before any can start.
 	backups := backup.NewManager(st, dc, cfg.WorkDir())
+	if n, err := backups.RecoverInterrupted(context.Background()); err != nil {
+		stopWorker()
+		return fmt.Errorf("crash recovery: %w", err)
+	} else if n > 0 {
+		log.Printf("recovered %d interrupted backup/restore run(s) as failed", n)
+	}
 	go backups.Run(workerCtx)
 
 	// Daily disk-cleanup sweep (image retention, dangling images, build cache).
@@ -289,7 +296,7 @@ func serve() error {
 		log.Printf("received %s, shutting down", s)
 	}
 
-	return shutdown(httpServer, stopWorker, workerDone)
+	return shutdown(httpServer, stopWorker, workerDone, backups.Stop)
 }
 
 // infraController reconciles the managed Traefik proxy and cloudflared connector
@@ -459,15 +466,24 @@ func newHTTPServer(addr string, h http.Handler, onShutdown func()) *http.Server 
 }
 
 // shutdown performs graceful shutdown: stop the worker first so in-flight
-// pipelines abort (and are marked failed) and their log streams close, then
-// drain the HTTP server, which ends any log streams still open (see
-// newHTTPServer).
-func shutdown(httpServer *http.Server, stopWorker context.CancelFunc, workerDone <-chan struct{}) error {
+// pipelines abort (and are marked failed) and their log streams close, and
+// stop the backup manager so in-flight backups and restores are cancelled
+// and record their outcome; then drain the HTTP server, which ends any log
+// streams still open (see newHTTPServer).
+func shutdown(httpServer *http.Server, stopWorker context.CancelFunc, workerDone <-chan struct{}, stopBackups func(context.Context) error) error {
 	stopWorker()
+	drain, cancelDrain := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancelDrain()
+	backupsStopped := make(chan error, 1)
+	go func() { backupsStopped <- stopBackups(drain) }()
+
 	select {
 	case <-workerDone:
-	case <-time.After(20 * time.Second):
+	case <-drain.Done():
 		log.Print("WARNING: worker did not drain within 20s")
+	}
+	if err := <-backupsStopped; err != nil {
+		log.Printf("WARNING: backups did not stop within 20s (%v); their runs are marked failed at next boot", err)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

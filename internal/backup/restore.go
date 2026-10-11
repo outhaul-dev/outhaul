@@ -82,13 +82,15 @@ func (m *Manager) restoreRun(ctx context.Context, b core.Backup, key string) {
 		return
 	}
 	size, err := m.restore(ctx, b, key)
+	// Record the outcome even when ctx has ended (timeout or shutdown).
+	rctx := context.WithoutCancel(ctx)
 	if err != nil {
-		if ferr := m.store.FinishBackupRun(ctx, runID, core.RunFailed, err.Error(), key, size); ferr != nil {
+		if ferr := m.store.FinishBackupRun(rctx, runID, core.RunFailed, m.failure(ctx, err), key, size); ferr != nil {
 			log.Printf("restore %d: record failure: %v (original: %v)", b.ID, ferr, err)
 		}
 		return
 	}
-	if err := m.store.FinishBackupRun(ctx, runID, core.RunOK, "", key, size); err != nil {
+	if err := m.store.FinishBackupRun(rctx, runID, core.RunOK, "", key, size); err != nil {
 		log.Printf("restore %d: record success: %v", b.ID, err)
 	}
 }

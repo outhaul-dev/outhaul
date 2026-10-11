@@ -40,3 +40,26 @@ func TestHTTPServerShutdownEndsStreams(t *testing.T) {
 		t.Fatalf("Shutdown with an open stream: %v", err)
 	}
 }
+
+// shutdown stops the backup manager (cancelling in-flight runs so each records
+// its outcome) within a bounded wait, alongside the deploy worker.
+func TestShutdownStopsBackups(t *testing.T) {
+	workerDone := make(chan struct{})
+	close(workerDone)
+	var stopCtx context.Context
+	stopBackups := func(ctx context.Context) error {
+		stopCtx = ctx
+		return nil
+	}
+	srv := newHTTPServer("127.0.0.1:0", http.NotFoundHandler(), func() {})
+
+	if err := shutdown(srv, func() {}, workerDone, stopBackups); err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+	if stopCtx == nil {
+		t.Fatal("shutdown did not stop the backup manager")
+	}
+	if _, ok := stopCtx.Deadline(); !ok {
+		t.Error("backups were stopped without a deadline: a hung run would block shutdown")
+	}
+}
