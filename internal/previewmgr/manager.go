@@ -124,8 +124,20 @@ func (m *Manager) handleApp(ctx context.Context, parent core.App, cfg core.Previ
 }
 
 func (m *Manager) spawn(ctx context.Context, parent core.App, cfg core.PreviewConfig, ev webhook.PullRequestEvent) error {
-	if ev.IsFork && !cfg.AllowForkPRs {
-		return nil
+	if ev.IsFork {
+		if !cfg.AllowForkPRs {
+			return nil
+		}
+		// A compose app's runtime — host mounts, privileged mode, host
+		// networking — comes from its compose file, which a fork's author
+		// controls. Running it would hand them the host.
+		if parent.Kind == core.KindCompose {
+			if ev.Action != "synchronize" {
+				m.comment(ctx, cfg, parent.GitSourceID, ev.BaseRepoFullName, ev.Number,
+					"Preview skipped: pull requests from forks don't get previews on Docker Compose apps, because the fork's compose file would control how it runs on the server.")
+			}
+			return nil
+		}
 	}
 	if _, err := m.store.GetPreviewByPR(ctx, parent.ID, ev.Number); err == nil {
 		return m.redeploy(ctx, parent, ev)
@@ -146,7 +158,7 @@ func (m *Manager) spawn(ctx context.Context, parent core.App, cfg core.PreviewCo
 	child := parent
 	child.ID = 0
 	child.Name = core.PreviewAppName(parent.Name, ev.Number)
-	child.Branch = ev.HeadRef
+	child.Branch = previewRef(ev)
 	child.Domain = ""
 	// Previews are driven by pull_request events, never by the parent's generic
 	// webhook; a copied token would give two apps the same webhook URL.
@@ -183,7 +195,7 @@ func (m *Manager) spawn(ctx context.Context, parent core.App, cfg core.PreviewCo
 // domain rows, the preview URL var, and the first deployment. It returns the
 // first error; the caller rolls the child back on failure.
 func (m *Manager) buildPreview(ctx context.Context, parent, child core.App, cfg core.PreviewConfig, ev webhook.PullRequestEvent) error {
-	if err := m.copyEnv(ctx, parent.ID, child.ID, ev.Number); err != nil {
+	if err := m.copyEnv(ctx, parent.ID, child.ID, ev.Number, ev.IsFork); err != nil {
 		return err
 	}
 	if err := m.provisionDatabases(ctx, parent, child); err != nil {
@@ -226,13 +238,19 @@ func (m *Manager) cleanupChild(ctx context.Context, child core.App) {
 
 // copyEnv copies the parent's non-prod env into the child (shared+preview),
 // preserving scope. Prod-only vars are dropped here AND again at deploy time.
-// It also injects the preview marker vars OUTHAUL_PREVIEW and OUTHAUL_PR_NUMBER.
-func (m *Manager) copyEnv(ctx context.Context, parentID, childID int64, pr int) error {
+// A fork's preview runs untrusted code, so it gets only the variables marked
+// "Preview only" — no shared ones. It also injects the preview marker vars
+// OUTHAUL_PREVIEW and OUTHAUL_PR_NUMBER.
+func (m *Manager) copyEnv(ctx context.Context, parentID, childID int64, pr int, fork bool) error {
 	vars, err := m.store.ListEnv(ctx, parentID)
 	if err != nil {
 		return err
 	}
-	for _, v := range core.EnvForScope(vars, true) {
+	vars = core.EnvForScope(vars, true)
+	if fork {
+		vars = previewOnly(vars)
+	}
+	for _, v := range vars {
 		if err := m.store.SetEnvScoped(ctx, childID, v.Key, v.Value, v.IsSecret, v.Scope); err != nil {
 			return err
 		}
@@ -240,6 +258,27 @@ func (m *Manager) copyEnv(ctx context.Context, parentID, childID int64, pr int) 
 	_ = m.store.SetEnvScoped(ctx, childID, "OUTHAUL_PREVIEW", "true", false, core.ScopeShared)
 	_ = m.store.SetEnvScoped(ctx, childID, "OUTHAUL_PR_NUMBER", strconv.Itoa(pr), false, core.ScopeShared)
 	return nil
+}
+
+// previewOnly keeps the variables scoped to previews alone.
+func previewOnly(vars []core.EnvVar) []core.EnvVar {
+	out := vars[:0:0]
+	for _, v := range vars {
+		if v.Scope == core.ScopePreview {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// previewRef is what a PR's preview builds: the PR's branch, or for a fork —
+// whose commits are on no branch of the base repo — the base repo's
+// refs/pull/<n>/head.
+func previewRef(ev webhook.PullRequestEvent) string {
+	if ev.IsFork {
+		return fmt.Sprintf("refs/pull/%d/head", ev.Number)
+	}
+	return ev.HeadRef
 }
 
 // injectPreviewURL sets OUTHAUL_PREVIEW_URL from the child's first minted domain
