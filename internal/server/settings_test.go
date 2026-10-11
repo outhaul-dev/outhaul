@@ -6,6 +6,9 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 func TestSettingsPageRenders(t *testing.T) {
@@ -59,5 +62,33 @@ func TestChangePasswordUpdates(t *testing.T) {
 	ok, _ := VerifyPassword(u.PasswordHash, "newpassword1")
 	if !ok {
 		t.Error("new password hash does not verify")
+	}
+}
+
+// Changing the password is what an admin does after a session leaks, but
+// every existing session stayed valid for its full week. Other sessions are
+// revoked now; the one making the change stays signed in.
+func TestChangePasswordRevokesOtherSessions(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	ctx := context.Background()
+	u, _ := e.store.GetUserByName(ctx, "admin")
+	if err := e.store.CreateSession(ctx, core.Session{Token: "stolen", UserID: u.ID, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := e.postForm(t, "/settings/password", url.Values{
+		"current": {"supersecret"}, "new": {"newpassword1"},
+	})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", resp.StatusCode)
+	}
+
+	if _, err := e.store.GetSession(ctx, "stolen"); err == nil {
+		t.Error("another session survived the password change")
+	}
+	if _, err := e.store.GetSession(ctx, e.sessionToken); err != nil {
+		t.Errorf("the session that changed the password was revoked: %v", err)
 	}
 }

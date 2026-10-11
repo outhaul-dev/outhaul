@@ -66,11 +66,24 @@ func (s *Store) GetUser(ctx context.Context, id int64) (core.User, error) {
 	return u, nil
 }
 
-// UpdateUserPassword sets a new password hash for the user.
-func (s *Store) UpdateUserPassword(ctx context.Context, id int64, passwordHash string) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE users SET password_hash = ? WHERE id = ?`, passwordHash, id)
-	return err
+// UpdateUserPassword sets a new password hash for the user and, in the same
+// transaction, revokes every one of their sessions except keepSession (the
+// one making the change; "" revokes all).
+func (s *Store) UpdateUserPassword(ctx context.Context, id int64, passwordHash, keepSession string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE users SET password_hash = ? WHERE id = ?`, passwordHash, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM sessions WHERE user_id = ? AND token <> ?`, id, keepSession); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // CreateSession stores a session. CreatedAt defaults to now when zero.

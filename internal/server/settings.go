@@ -107,7 +107,9 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := s.store.UpdateUserPassword(r.Context(), user.ID, hash); err != nil {
+	// Other sessions are revoked with the old password: a password change is
+	// how an admin locks out a leaked session.
+	if err := s.store.UpdateUserPassword(r.Context(), user.ID, hash, sess.Token); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
