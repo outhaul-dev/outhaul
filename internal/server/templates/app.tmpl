@@ -559,7 +559,7 @@ git push outhaul {{.PushBranch}}</pre>{{template "copybtn" .}}</div>
     <tbody>
       {{range .Env}}
       <tr>
-        <td class="mono">{{.Key}}{{if ne .Scope "shared"}}{{if ne .Scope ""}} <span class="badge">{{.Scope}}</span>{{end}}{{end}}</td>
+        <td class="mono">{{.Key}}{{if ne .Scope "shared"}}{{if ne .Scope ""}} <span class="badge">{{.Scope}}</span>{{end}}{{end}}{{if .Reach}}<br><span class="muted">{{.Reach}}</span>{{end}}</td>
         <td class="mono muted">
           <span data-env-val>{{if .IsSecret}}••••••{{else}}{{.Value}}{{end}}</span>
           <form method="post" action="/apps/{{$.App.ID}}/env" class="env-edit" data-env-edit hidden>

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
@@ -68,5 +69,45 @@ func TestDeleteEnvRemovesOnlyTheSubmittedScope(t *testing.T) {
 	vars, _ := e.store.ListEnv(context.Background(), app.ID)
 	if len(vars) != 1 || vars[0].Scope != core.ScopeProd {
 		t.Fatalf("after deleting the preview row: %+v", vars)
+	}
+}
+
+// Once a key has a production- or preview-only value, its shared row no
+// longer reaches every deploy. The page must say so: re-adding a secret as
+// "Production only" leaves the shared copy flowing to (public) previews.
+func TestAppPageFlagsOverriddenSharedEnv(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	ctx := context.Background()
+	app, _ := e.store.CreateApp(ctx, core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	_ = e.store.SetEnvScoped(ctx, app.ID, "DATABASE_URL", "shared", true, core.ScopeShared)
+	_ = e.store.SetEnvScoped(ctx, app.ID, "DATABASE_URL", "prod", true, core.ScopeProd)
+	_ = e.store.SetEnvScoped(ctx, app.ID, "LOG_LEVEL", "info", false, core.ScopeShared)
+
+	page := body(t, e.get(t, "/apps/"+itoa(app.ID)))
+	if !strings.Contains(page, "previews only") {
+		t.Errorf("app page does not flag the overridden shared DATABASE_URL")
+	}
+	if strings.Count(page, "previews only") != 1 {
+		t.Errorf("hint should appear once (only the overridden row), got %d", strings.Count(page, "previews only"))
+	}
+}
+
+func TestSharedEnvReach(t *testing.T) {
+	vars := []core.EnvVar{
+		{Key: "A", Scope: core.ScopeShared}, {Key: "A", Scope: core.ScopeProd},
+		{Key: "B", Scope: core.ScopeShared}, {Key: "B", Scope: core.ScopePreview},
+		{Key: "C", Scope: core.ScopeShared}, {Key: "C", Scope: core.ScopeProd}, {Key: "C", Scope: core.ScopePreview},
+		{Key: "D", Scope: core.ScopeShared},
+	}
+	got := sharedEnvReach(vars)
+	want := map[string]string{"A": "previews only", "B": "production only", "C": "unused"}
+	if len(got) != len(want) {
+		t.Fatalf("sharedEnvReach = %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if !strings.Contains(got[k], v) {
+			t.Errorf("reach[%s] = %q, want it to say %q", k, got[k], v)
+		}
 	}
 }

@@ -1026,18 +1026,55 @@ type envRow struct {
 	Value    string
 	IsSecret bool
 	Scope    string
+	Reach    string // shared rows only: where the value still applies, when a scoped row overrides it
 }
 
 func maskEnv(vars []core.EnvVar) []envRow {
+	reach := sharedEnvReach(vars)
 	rows := make([]envRow, 0, len(vars))
 	for _, v := range vars {
 		row := envRow{Key: v.Key, IsSecret: v.IsSecret, Scope: v.Scope}
 		if !v.IsSecret {
 			row.Value = v.Value
 		}
+		if v.Scope == core.ScopeShared || v.Scope == "" {
+			row.Reach = reach[v.Key]
+		}
 		rows = append(rows, row)
 	}
 	return rows
+}
+
+// sharedEnvReach describes, per key, where a shared value still applies once
+// the same key has a production- and/or preview-only value (core.EnvForScope
+// lets the scoped value win). Keys with no scoped sibling are absent. It is
+// shown next to the shared row so that re-adding a secret as "Production
+// only" visibly leaves the shared copy flowing to previews.
+func sharedEnvReach(vars []core.EnvVar) map[string]string {
+	prod, preview := map[string]bool{}, map[string]bool{}
+	for _, v := range vars {
+		switch v.Scope {
+		case core.ScopeProd:
+			prod[v.Key] = true
+		case core.ScopePreview:
+			preview[v.Key] = true
+		}
+	}
+	out := map[string]string{}
+	for _, v := range vars {
+		if v.Scope != core.ScopeShared && v.Scope != "" {
+			continue
+		}
+		switch {
+		case prod[v.Key] && preview[v.Key]:
+			out[v.Key] = "unused — production and previews both have their own value"
+		case prod[v.Key]:
+			out[v.Key] = "previews only — production has its own value"
+		case preview[v.Key]:
+			out[v.Key] = "production only — previews have their own value"
+		}
+	}
+	return out
 }
 
 func (s *Server) handleSetEnv(w http.ResponseWriter, r *http.Request) {
