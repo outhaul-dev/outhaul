@@ -22,7 +22,13 @@ func (s *Server) handleSavePreviewConfig(w http.ResponseWriter, r *http.Request)
 	}
 	cfg := core.DefaultPreviewConfig(id)
 	cfg.Enabled = r.FormValue("enabled") != ""
-	cfg.BaseDomain = strings.TrimSpace(r.FormValue("base_domain"))
+	// The base domain becomes part of every preview host, which lands in a
+	// Traefik Host() rule and a local-CA cert filename: bare hostnames only.
+	cfg.BaseDomain = strings.ToLower(strings.TrimSpace(r.FormValue("base_domain")))
+	if cfg.BaseDomain != "" && !domainHostRe.MatchString(cfg.BaseDomain) {
+		http.Error(w, "Preview base domain must be a bare hostname (e.g. preview.example.com).", http.StatusBadRequest)
+		return
+	}
 	cfg.PostPRComment = r.FormValue("post_pr_comment") != ""
 	cfg.AllowForkPRs = r.FormValue("allow_fork_prs") != ""
 	cfg.IdleTTLDays = atoiDefault(r.FormValue("idle_ttl_days"), 7)

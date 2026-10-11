@@ -244,7 +244,7 @@ func (s *Server) resolveRepoSource(ctx context.Context, sourceID int64, fullName
 
 func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.FormValue("name"))
-	domain := strings.TrimSpace(r.FormValue("domain"))
+	domain := strings.ToLower(strings.TrimSpace(r.FormValue("domain")))
 	source := strings.TrimSpace(r.FormValue("source"))
 	branch := strings.TrimSpace(r.FormValue("branch"))
 	kind := strings.TrimSpace(r.FormValue("kind"))
@@ -1346,7 +1346,7 @@ func validateApp(app core.App) string {
 	if app.Kind != core.KindCompose && app.Domain == "" {
 		return "Domain must be a bare hostname (e.g. app.example.com)."
 	}
-	if app.Domain != "" && strings.ContainsAny(app.Domain, " /") {
+	if app.Domain != "" && !domainHostRe.MatchString(app.Domain) {
 		return "Domain must be a bare hostname (e.g. app.example.com)."
 	}
 	switch app.Source {
@@ -1395,8 +1395,8 @@ func parseDockerfilePath(r *http.Request) (string, string) {
 // needs all three: the host Traefik matches, the compose service it routes
 // to, and the container port that service listens on.
 func parseDomainFields(domain, service, portStr string) (core.Domain, string) {
-	domain = strings.TrimSpace(domain)
-	if domain == "" || strings.ContainsAny(domain, " /") {
+	domain = strings.ToLower(strings.TrimSpace(domain))
+	if !domainHostRe.MatchString(domain) {
 		return core.Domain{}, "Domain must be a bare hostname (e.g. app.example.com)."
 	}
 	if !composeServiceRe.MatchString(strings.TrimSpace(service)) {
