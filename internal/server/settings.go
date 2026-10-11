@@ -97,12 +97,24 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	valid, err := VerifyPassword(user.PasswordHash, current)
-	if err != nil || !valid {
+	var (
+		valid     bool
+		verifyErr error
+		hash      string
+	)
+	busy := s.withHashSlot(r.Context(), func() {
+		if valid, verifyErr = VerifyPassword(user.PasswordHash, current); verifyErr == nil && valid {
+			hash, err = HashPassword(next)
+		}
+	})
+	if busy != nil {
+		http.Error(w, busyMessage, http.StatusServiceUnavailable)
+		return
+	}
+	if verifyErr != nil || !valid {
 		http.Error(w, "Current password is incorrect.", http.StatusBadRequest)
 		return
 	}
-	hash, err := HashPassword(next)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

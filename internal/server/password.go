@@ -1,12 +1,14 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -35,6 +37,37 @@ func HashPassword(pw string) (string, error) {
 		base64.RawStdEncoding.EncodeToString(salt),
 		base64.RawStdEncoding.EncodeToString(key),
 	), nil
+}
+
+const (
+	// maxConcurrentHashes bounds argon2 work in flight: each hash takes
+	// argonMemory (64 MiB), so a burst of sign-in attempts was a memory
+	// exhaustion attack.
+	maxConcurrentHashes = 2
+	// defaultHashWait is how long a password check waits for a free slot
+	// before the request is refused as busy.
+	defaultHashWait = 10 * time.Second
+)
+
+// errHashBusy means no argon2 slot freed up in time.
+var errHashBusy = errors.New("too many password checks in progress")
+
+// withHashSlot runs fn, which hashes or verifies a password, once one of the
+// maxConcurrentHashes slots is free. It returns errHashBusy, without running
+// fn, when no slot frees within s.hashWait or ctx ends first.
+func (s *Server) withHashSlot(ctx context.Context, fn func()) error {
+	t := time.NewTimer(s.hashWait)
+	defer t.Stop()
+	select {
+	case s.hashSlots <- struct{}{}:
+	case <-t.C:
+		return errHashBusy
+	case <-ctx.Done():
+		return errHashBusy
+	}
+	defer func() { <-s.hashSlots }()
+	fn()
+	return nil
 }
 
 // VerifyPassword reports whether pw matches the encoded argon2id hash. It uses a

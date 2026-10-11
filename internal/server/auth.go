@@ -129,7 +129,13 @@ func (s *Server) handleSetupSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hash, err := HashPassword(password)
+	var hash string
+	if busy := s.withHashSlot(r.Context(), func() { hash, err = HashPassword(password) }); busy != nil {
+		s.render(w, http.StatusServiceUnavailable, "setup", map[string]any{
+			"Title": "Setup", "Token": s.setupToken, "HideChrome": true, "Error": busyMessage,
+		})
+		return
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -178,7 +184,13 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		s.loginFailed(w, r, err)
 		return
 	}
-	ok, err := VerifyPassword(user.PasswordHash, password)
+	var ok bool
+	if busy := s.withHashSlot(r.Context(), func() { ok, err = VerifyPassword(user.PasswordHash, password) }); busy != nil {
+		s.render(w, http.StatusServiceUnavailable, "login", map[string]any{
+			"Title": "Sign in", "Error": busyMessage, "HideChrome": true,
+		})
+		return
+	}
 	if err != nil || !ok {
 		s.loginFailed(w, r, errors.New("invalid credentials"))
 		return
@@ -207,6 +219,9 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	})
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
+
+// busyMessage is shown when every password-hashing slot stayed taken.
+const busyMessage = "Too many sign-in attempts right now. Wait a moment and try again."
 
 // validateCredentials enforces minimal admin credential rules.
 func validateCredentials(username, password string) error {

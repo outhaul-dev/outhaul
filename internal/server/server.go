@@ -119,6 +119,9 @@ type Server struct {
 
 	streams     context.Context // cancelled by CloseStreams; ends every open log stream
 	stopStreams context.CancelFunc
+
+	hashSlots chan struct{} // bounds concurrent argon2 work; see withHashSlot
+	hashWait  time.Duration // how long a password check waits for a slot
 }
 
 // New constructs a Server, parsing the embedded templates. setupToken guards the
@@ -146,6 +149,8 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 		backfillAttempted: map[int64]bool{},
 	}
 	s.streams, s.stopStreams = context.WithCancel(context.Background())
+	s.hashSlots = make(chan struct{}, maxConcurrentHashes)
+	s.hashWait = defaultHashWait
 	if err := s.parseTemplates(); err != nil {
 		return nil, err
 	}
@@ -318,7 +323,26 @@ func (s *Server) Handler() http.Handler {
 	// would ride the session cookie. Refuse any unsafe request whose fetch
 	// metadata (or Origin) says it came from another origin. Webhooks are
 	// server-to-server and carry neither header, so they pass.
-	return http.NewCrossOriginProtection().Handler(mux)
+	return http.NewCrossOriginProtection().Handler(limitBodies(mux))
+}
+
+// maxRequestBody bounds every request body. The largest legitimate ones (a
+// pasted compose file, a webhook, which reads at most 1 MiB anyway) are far
+// smaller; unbounded, an unauthenticated multipart POST was parsed in full,
+// spilling to temp files.
+const maxRequestBody = 1 << 20
+
+// limitBodies refuses a body declared over maxRequestBody and cuts off an
+// undeclared (chunked) one once it passes the limit.
+func limitBodies(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ContentLength > maxRequestBody {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+		next.ServeHTTP(w, r)
+	})
 }
 
 // render executes the named page template with the base layout. It renders into
