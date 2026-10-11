@@ -109,3 +109,35 @@ func TestWebhookRejectsMissingTargetType(t *testing.T) {
 		t.Errorf("status = %d, want 401 — a delivery missing the integration target type must not verify, even with a correct signature", rec.Code)
 	}
 }
+
+// A preview child copies its parent's repo and tracks the PR's head branch, so a
+// push to that branch used to deploy it here AND again via the pull_request
+// "synchronize" event. Previews redeploy only from pull_request events.
+func TestPushDoesNotDeployPreviewChildren(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	src := connectApp(t, env, 55, "outhaul-a")
+	parent, err := env.store.CreateApp(ctx, core.App{
+		Name: "web", Domain: "web.test", Source: core.SourceGithub, Kind: core.KindNixpacks,
+		GithubRepo: "acme-corp/api", GitSourceID: src, Branch: "main", AutoDeploy: true, WebhookSecret: "w1",
+	})
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	child, err := env.store.CreateApp(ctx, core.App{
+		Name: "web-pr-7", Source: core.SourceGithub, Kind: core.KindNixpacks,
+		GithubRepo: "acme-corp/api", GitSourceID: src, Branch: "feature", AutoDeploy: true,
+		ParentID: parent.ID, PRNumber: 7, Ephemeral: true, PreviewStatus: core.PreviewReady,
+	})
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	rec := postPush(t, env, 55, "whs-outhaul-a", "acme-corp/api", "feature")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body)
+	}
+	if got := deployCount(t, env, child.ID); got != 0 {
+		t.Errorf("preview child got %d deployments from a push, want 0", got)
+	}
+}

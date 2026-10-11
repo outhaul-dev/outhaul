@@ -144,9 +144,11 @@ func (s *Store) AppByWebhookSecret(ctx context.Context, secret string) (core.App
 // AppsByGithubRepoSource returns the apps sourced from "owner/name" *through a
 // particular git source*. Scoping by source is what stops a push signed by one
 // connected account from deploying another account's identically-named repo.
+// Preview children are excluded: they share the parent's repo but are driven
+// only by pull_request events, so a push must not deploy them a second time.
 func (s *Store) AppsByGithubRepoSource(ctx context.Context, sourceID int64, fullName string) ([]core.App, error) {
 	return s.appsQuery(ctx,
-		`SELECT `+appCols+` FROM apps WHERE source = ? AND github_repo = ? AND git_source_id = ?`,
+		`SELECT `+appCols+` FROM apps WHERE source = ? AND github_repo = ? AND git_source_id = ? AND ephemeral = 0`,
 		core.SourceGithub, fullName, sourceID)
 }
 
