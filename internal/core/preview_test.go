@@ -12,14 +12,19 @@ func TestPreviewHost(t *testing.T) {
 	if got != "api-web-pr-42.1.2.3.4.sslip.io" {
 		t.Errorf("sslip service host = %q", got)
 	}
+	// The app name is part of the host under a base domain too: two apps sharing
+	// one wildcard base must not both claim pr-42.<base>.
 	cfg.BaseDomain = "preview.example.com"
 	got = PreviewHost(cfg, "web", 42, "", "1.2.3.4")
-	if got != "pr-42.preview.example.com" {
+	if got != "web-pr-42.preview.example.com" {
 		t.Errorf("wildcard host = %q", got)
 	}
 	got = PreviewHost(cfg, "web", 42, "api", "1.2.3.4")
-	if got != "api-pr-42.preview.example.com" {
+	if got != "api-web-pr-42.preview.example.com" {
 		t.Errorf("wildcard service host = %q", got)
+	}
+	if a, b := PreviewHost(cfg, "web", 1, "", ""), PreviewHost(cfg, "shop", 1, "", ""); a == b {
+		t.Errorf("apps web and shop share preview host %q", a)
 	}
 }
 

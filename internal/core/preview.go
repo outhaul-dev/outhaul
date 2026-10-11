@@ -40,18 +40,16 @@ func PreviewAppName(parentName string, pr int) string {
 }
 
 // PreviewHost builds a preview's public host for one service. service is "" for
-// single-container apps. With a BaseDomain it produces "[service-]pr-<n>.<base>";
-// otherwise it falls back to sslip.io "<name[-service]>-pr-<n>.<ip>.sslip.io".
+// single-container apps. The first label is "[service-]<name>-pr-<n>" — the app
+// name keeps two apps sharing one base domain from claiming the same host. With
+// a BaseDomain the label sits under it; otherwise it falls back to sslip.io.
 func PreviewHost(cfg PreviewConfig, appName string, pr int, service, serverIP string) string {
-	if cfg.BaseDomain != "" {
-		if service != "" {
-			return fmt.Sprintf("%s-pr-%d.%s", service, pr, cfg.BaseDomain)
-		}
-		return fmt.Sprintf("pr-%d.%s", pr, cfg.BaseDomain)
-	}
 	label := PreviewAppName(appName, pr)
 	if service != "" {
-		label = fmt.Sprintf("%s-%s-pr-%d", service, appName, pr)
+		label = service + "-" + label
+	}
+	if cfg.BaseDomain != "" {
+		return label + "." + cfg.BaseDomain
 	}
 	return fmt.Sprintf("%s.%s.sslip.io", label, serverIP)
 }
