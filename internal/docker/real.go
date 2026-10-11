@@ -458,6 +458,9 @@ func (r *real) ExecContainer(ctx context.Context, id string, cmd, env []string, 
 		return 0, err
 	}
 	defer resp.Close()
+	// A hijacked stream ignores ctx once it is open; close it on cancel so a
+	// hung tool cannot outlive its timeout or a shutdown.
+	defer context.AfterFunc(ctx, resp.Close)()
 	// Feed stdin concurrently with draining output, half-closing the exec's
 	// input when the reader is exhausted so the tool sees EOF and finishes.
 	inErr := make(chan error, 1)
@@ -479,6 +482,9 @@ func (r *real) ExecContainer(ctx context.Context, id string, cmd, env []string, 
 		stderr = io.Discard
 	}
 	if _, err := stdcopy.StdCopy(stdout, stderr, resp.Reader); err != nil {
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
 		return 0, err
 	}
 	if err := <-inErr; err != nil {
@@ -558,6 +564,9 @@ func (r *real) RunContainer(ctx context.Context, spec ContainerSpec, stdout, std
 		return 0, err
 	}
 	defer att.Close()
+	// The attach stream ignores ctx once hijacked; close it on cancel so the
+	// deferred force-remove above stops a hung container.
+	defer context.AfterFunc(ctx, att.Close)()
 
 	waitC, errC := r.cli.ContainerWait(ctx, id, container.WaitConditionNextExit)
 	if err := r.cli.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
@@ -570,6 +579,9 @@ func (r *real) RunContainer(ctx context.Context, spec ContainerSpec, stdout, std
 		stderr = io.Discard
 	}
 	if _, err := stdcopy.StdCopy(stdout, stderr, att.Reader); err != nil {
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
 		return 0, err
 	}
 	select {
