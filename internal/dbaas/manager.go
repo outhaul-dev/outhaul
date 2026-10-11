@@ -173,6 +173,11 @@ func (m *Manager) Stop(ctx context.Context, d core.Database) error {
 // Remove deletes the database: container, data directory, and row. This is
 // irreversible — the caller's UI must say the data goes with it.
 func (m *Manager) Remove(ctx context.Context, d core.Database) error {
+	// Refuse before touching Docker or disk: the row's guards (attachments)
+	// used to run only after the container and data were already gone.
+	if err := m.store.DatabaseDeletable(ctx, d.ID); err != nil {
+		return err
+	}
 	c, err := m.docker.FindContainer(ctx, ContainerName(d.Name))
 	if err != nil {
 		return err

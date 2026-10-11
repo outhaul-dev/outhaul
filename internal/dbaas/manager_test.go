@@ -336,3 +336,38 @@ func TestConnectionURLs(t *testing.T) {
 		t.Errorf("redis InternalURL = %q, want %q", got, want)
 	}
 }
+
+// Delete must be refused before anything irreversible happens: an attached
+// database keeps its container, its data and its row.
+func TestRemoveRefusesAttachedDatabaseWithoutTouchingIt(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	d := h.database(t, "shop", core.EnginePostgres)
+	if err := h.m.provision(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(h.m.DataPath("shop"), "base")
+	if err := os.WriteFile(marker, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app, err := h.store.CreateApp(ctx, core.App{Name: "web", Kind: core.KindNixpacks, ProjectID: d.ProjectID})
+	if err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+	if _, err := h.store.AttachDatabase(ctx, app.ID, d.ID, "DATABASE_URL"); err != nil {
+		t.Fatalf("AttachDatabase: %v", err)
+	}
+
+	if err := h.m.Remove(ctx, d); err == nil {
+		t.Fatal("Remove of an attached database succeeded")
+	}
+	if c, _ := h.docker.FindContainer(ctx, "outhaul-db-shop"); c == nil {
+		t.Error("container was removed although the delete was refused")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("data was destroyed although the delete was refused: %v", err)
+	}
+	if _, err := h.store.GetDatabase(ctx, d.ID); err != nil {
+		t.Errorf("row gone: %v", err)
+	}
+}

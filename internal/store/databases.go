@@ -103,9 +103,10 @@ func (s *Store) SetDatabaseExtPort(ctx context.Context, id int64, port int) erro
 	return err
 }
 
-// DeleteDatabase removes the row and its backup schedules. The caller is
-// responsible for the container and data directory (see dbaas.Manager.Remove).
-func (s *Store) DeleteDatabase(ctx context.Context, id int64) error {
+// DatabaseDeletable returns an error explaining why the database must not be
+// deleted yet (it is attached to apps), or nil. Callers that destroy the
+// container and data first must ask this before doing anything irreversible.
+func (s *Store) DatabaseDeletable(ctx context.Context, id int64) error {
 	atts, err := s.AttachmentsForDatabase(ctx, id)
 	if err != nil {
 		return err
@@ -116,6 +117,15 @@ func (s *Store) DeleteDatabase(ctx context.Context, id int64) error {
 			appIDs = append(appIDs, fmt.Sprintf("app %d (%s)", a.AppID, a.EnvVar))
 		}
 		return fmt.Errorf("database is attached to %s; detach it first", strings.Join(appIDs, ", "))
+	}
+	return nil
+}
+
+// DeleteDatabase removes the row and its backup schedules. The caller is
+// responsible for the container and data directory (see dbaas.Manager.Remove).
+func (s *Store) DeleteDatabase(ctx context.Context, id int64) error {
+	if err := s.DatabaseDeletable(ctx, id); err != nil {
+		return err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
