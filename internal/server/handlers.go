@@ -513,6 +513,9 @@ func (s *Server) handleUpdateAppSource(w http.ResponseWriter, r *http.Request) {
 	// domain/kind (already valid) and swap in the new source fields.
 	check := app
 	check.Source, check.RepoURL, check.GithubRepo = source, repo, githubRepo
+	// Domains stored before strict validation may be mixed-case; Traefik
+	// matches Host case-insensitively, so judge the host, not its spelling.
+	check.Domain = strings.ToLower(check.Domain)
 	if verr := validateApp(check); verr != "" {
 		http.Error(w, verr, http.StatusBadRequest)
 		return

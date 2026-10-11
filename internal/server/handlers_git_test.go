@@ -295,3 +295,23 @@ func TestUpdateAppSourceClearsStaleGithubRepo(t *testing.T) {
 		t.Errorf("GitSourceID = %d, want 0", got.GitSourceID)
 	}
 }
+
+// Before hostnames were validated strictly, the create form stored the domain
+// as typed (Traefik matches Host case-insensitively, so it routed fine). A
+// source change re-validates the stored domain and must not reject such an
+// app on a form that doesn't touch its domain.
+func TestUpdateAppSourceAcceptsLegacyMixedCaseDomain(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	app, _ := env.store.CreateApp(context.Background(), core.App{
+		Name: "web", RepoURL: "https://example.com/r.git", Domain: "Shop.Example.com",
+		Source: core.SourcePublic, Branch: "main", Kind: core.KindNixpacks, WebhookSecret: "w",
+	})
+	resp := env.postForm(t, "/apps/"+itoa(app.ID)+"/source", url.Values{
+		"source": {"public"}, "repo_url": {"https://example.com/other.git"},
+	})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("source change status = %d, want 303", resp.StatusCode)
+	}
+}
