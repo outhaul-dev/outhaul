@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
@@ -50,6 +51,15 @@ func (s *Server) currentSession(r *http.Request) (core.Session, bool) {
 	return sess, true
 }
 
+// requestIsHTTPS reports whether the browser reached us over HTTPS — directly,
+// or through Traefik, which terminates TLS and sets X-Forwarded-Proto. The
+// session cookie is marked Secure only then, so plain-HTTP access on the admin
+// port (LAN, SSH tunnel) keeps working while an HTTPS session can never leak
+// over cleartext. A spoofed header only makes the spoofer's own cookie Secure.
+func requestIsHTTPS(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
 // login creates a session and sets the cookie.
 func (s *Server) login(w http.ResponseWriter, r *http.Request, user core.User) error {
 	token := NewToken()
@@ -65,7 +75,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, user core.User) e
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   s.secure,
+		Secure:   requestIsHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 		Expires:  time.Now().Add(sessionTTL),
 	})

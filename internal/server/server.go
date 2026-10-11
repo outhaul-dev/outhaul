@@ -100,7 +100,6 @@ type Server struct {
 	publicURL  string
 	serverIP   string // for generated sslip.io template domains; may be empty
 	tlsEnabled bool   // ACME or local CA configured: HTTPS automation is available
-	secure     bool   // Secure cookie flag; the admin UI is served directly over HTTP (not behind Traefik), so this stays false
 
 	repos      *gitrepo.Manager // push-app bare repos; nil disables push-repo cleanup
 	sshControl SSHControl       // git-push SSH server; nil disables the port setting
@@ -294,7 +293,12 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /"+p.active, s.requireAuth(s.handlePlaceholder(p)))
 	}
 
-	return mux
+	// SameSite=Lax alone is not CSRF protection here: PR previews and apps on
+	// sibling subdomains are same-site with the admin host, so their pages
+	// would ride the session cookie. Refuse any unsafe request whose fetch
+	// metadata (or Origin) says it came from another origin. Webhooks are
+	// server-to-server and carry neither header, so they pass.
+	return http.NewCrossOriginProtection().Handler(mux)
 }
 
 // render executes the named page template with the base layout. It renders into
