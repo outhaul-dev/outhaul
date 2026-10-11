@@ -417,7 +417,14 @@ func (m *Manager) DestroyByID(ctx context.Context, parentID, childID int64) erro
 	if err != nil {
 		return err
 	}
-	return m.teardown(ctx, parent, child.PRNumber, parent.GithubRepo, cfg)
+	// Destroy the child already in hand rather than re-finding it by PR number:
+	// teardown treats a failed lookup as "nothing to destroy", which would turn
+	// a transient error into a false success.
+	if err := m.destroyChild(ctx, child); err != nil {
+		return err
+	}
+	m.comment(ctx, cfg, parent.GitSourceID, parent.GithubRepo, child.PRNumber, "Preview environment destroyed.")
+	return nil
 }
 
 // OnDeployFinished updates a preview's PR comment and status after its

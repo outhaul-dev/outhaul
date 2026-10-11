@@ -836,3 +836,35 @@ func TestSpawnDoesNotCopyWebhookCredentials(t *testing.T) {
 		t.Errorf("parent token resolves to %+v (err %v), want the parent", got, err)
 	}
 }
+
+// flakyPreviewLookup fails GetPreviewByPR, standing in for a transient DB error.
+type flakyPreviewLookup struct{ *store.Store }
+
+func (flakyPreviewLookup) GetPreviewByPR(context.Context, int64, int) (core.App, error) {
+	return core.App{}, context.DeadlineExceeded
+}
+
+// DestroyByID already holds the child. Re-finding it by PR number (and treating
+// a failed lookup as "nothing to destroy") let a transient error report success
+// with the preview still running — and a parent delete then went ahead.
+func TestDestroyByIDDestroysTheChildItHolds(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	parent := h.seedGithubApp(t, "web", "acme/web", nil)
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 42, "feature-x", "acme/web", false)); err != nil {
+		t.Fatal(err)
+	}
+	child, err := h.st.GetPreviewByPR(ctx, parent.ID, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.mgr.store = flakyPreviewLookup{h.st}
+
+	err = h.mgr.DestroyByID(ctx, parent.ID, child.ID)
+	if _, gone := h.st.GetApp(ctx, child.ID); err == nil && gone == nil {
+		t.Fatal("DestroyByID reported success but the preview still exists")
+	}
+	if !h.docker.removed[child.Name] {
+		t.Errorf("containers for %s were not removed", child.Name)
+	}
+}
