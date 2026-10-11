@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -117,15 +118,10 @@ func serve() error {
 	if err := os.MkdirAll(cfg.AcmeDir(), 0o700); err != nil {
 		return fmt.Errorf("create acme dir: %w", err)
 	}
-	box, err := secret.Load(cfg.SecretKeyPath())
+	// Store (with its secret key) + crash recovery.
+	st, err := openStore(cfg)
 	if err != nil {
-		return fmt.Errorf("load secret key: %w", err)
-	}
-
-	// Store + crash recovery.
-	st, err := store.Open(cfg.DBPath(), box)
-	if err != nil {
-		return fmt.Errorf("open store: %w", err)
+		return err
 	}
 	defer st.Close()
 
@@ -451,6 +447,47 @@ func (ic *infraController) Disable(_ context.Context) error {
 	}
 	ic.logStatus(ctx)
 	return nil
+}
+
+// openStore opens the database with its secret box. A missing key file is
+// generated only when nothing in the database was sealed with the old one:
+// a new key would leave every sealed value (env vars, database passwords,
+// Git credentials) unreadable.
+func openStore(cfg config.Config) (*store.Store, error) {
+	box, err := secret.LoadExisting(cfg.SecretKeyPath())
+	if err == nil {
+		return openStoreWith(cfg, box)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+
+	st, err := store.Open(cfg.DBPath(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("open store: %w", err)
+	}
+	sealed, err := st.HasSealedValues(context.Background())
+	st.Close()
+	if err != nil {
+		return nil, fmt.Errorf("check for sealed values: %w", err)
+	}
+	if sealed {
+		return nil, fmt.Errorf("secret key %s is missing, but %s holds values encrypted with it; "+
+			"restore the key file from a backup (a new key would make those values unreadable)",
+			cfg.SecretKeyPath(), cfg.DBPath())
+	}
+	if box, err = secret.Load(cfg.SecretKeyPath()); err != nil {
+		return nil, err
+	}
+	return openStoreWith(cfg, box)
+}
+
+func openStoreWith(cfg config.Config, box *secret.Box) (*store.Store, error) {
+	st, err := store.Open(cfg.DBPath(), box)
+	if err != nil {
+		return nil, fmt.Errorf("open store: %w", err)
+	}
+	return st, nil
 }
 
 // newHTTPServer builds the admin UI's server. onShutdown runs as Shutdown

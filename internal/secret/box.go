@@ -31,6 +31,21 @@ func Load(path string) (*Box, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load secret key: %w", err)
 	}
+	return newBox(path, raw)
+}
+
+// LoadExisting reads the key at path without ever creating one; a missing
+// file is an error wrapping os.ErrNotExist. A caller holding sealed values
+// must not replace a lost key, so it decides before calling Load.
+func LoadExisting(path string) (*Box, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("load secret key: %w", err)
+	}
+	return newBox(path, raw)
+}
+
+func newBox(path string, raw []byte) (*Box, error) {
 	if len(raw) != 32 {
 		return nil, fmt.Errorf("secret key at %s is %d bytes, want 32", path, len(raw))
 	}

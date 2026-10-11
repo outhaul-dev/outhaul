@@ -3,6 +3,7 @@ package secret
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -148,4 +149,29 @@ func newTestBox(t *testing.T) *Box {
 		t.Fatalf("Load: %v", err)
 	}
 	return b
+}
+
+// LoadExisting never creates a key: the caller decides whether a missing key
+// may be replaced (it may not while values sealed with it exist).
+func TestLoadExistingDoesNotGenerate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secret.key")
+	if _, err := LoadExisting(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("LoadExisting on a missing key: err = %v, want os.ErrNotExist", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("LoadExisting created a key file (stat err = %v)", err)
+	}
+
+	created, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadExisting(path)
+	if err != nil {
+		t.Fatalf("LoadExisting on an existing key: %v", err)
+	}
+	sealed, _ := created.Seal([]byte("v"))
+	if got, err := loaded.Open(sealed); err != nil || string(got) != "v" {
+		t.Fatalf("LoadExisting returned a different key: %q, %v", got, err)
+	}
 }
