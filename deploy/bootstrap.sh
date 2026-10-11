@@ -76,6 +76,49 @@ write_env_file() { # dest mode url email sshaddr localca
 	chmod 0600 "$dest"
 }
 
+# Maps the git-port answer to a port, or empty to disable push-to-deploy.
+# The prompt defaults to 2222, so an empty answer can never mean "disable".
+normalize_git_port() { # answer
+	case "$1" in
+		none | no | n | 0 | -) printf '\n' ;;
+		*) printf '%s\n' "$1" ;;
+	esac
+}
+
+# Where prompts are read from (see open_prompt_fd): the controlling terminal
+# when there is one; else stdin, but only when this script was started from a
+# file — under `curl | sh` stdin IS the script, and reading answers from it
+# would eat the code; else nothing, so every prompt takes its safe default.
+prompt_source() { # tty_openable(0/1) script_path
+	if [ "$1" = 1 ]; then
+		echo tty
+	elif [ -n "$2" ] && [ -f "$2" ]; then
+		echo stdin
+	else
+		echo null
+	fi
+}
+
+# Probes /dev/tty in a subshell: `exec 3<>/dev/tty` on a headless run is a
+# failed redirection on a special builtin, which exits a POSIX shell outright
+# (dash, bash --posix, busybox) before any `||` fallback can run.
+tty_openable() { ( : <>/dev/tty ) 2>/dev/null; }
+
+# Opens fd 3 for BOTH prompt output and input. Under `curl | sh` stdin is the
+# pipe and stderr may be redirected away, so prompts written to stderr can go
+# unseen — routing them to the tty guarantees they land where the user is
+# typing. Without a tty, answers come from stdin (script run from a file, e.g.
+# `printf '3\n…' | sh bootstrap.sh`) or not at all (/dev/null: prompts read EOF
+# and take their defaults). Writes to a read-only fd 3 fall back to stderr.
+open_prompt_fd() { # script_path
+	if tty_openable; then _t=1; else _t=0; fi
+	case $(prompt_source "$_t" "$1") in
+		tty) exec 3<>/dev/tty ;;
+		stdin) exec 3<&0 ;;
+		*) exec 3<>/dev/null ;;
+	esac
+}
+
 # Yes/no prompt: written to the tty on fd 3 (stderr fallback), read from fd 3. $2 is the default ('y' or 'n').
 ask_yes_no() { # prompt default
 	_p=$1; _d=$2
@@ -509,6 +552,11 @@ completion_screen() { # mode url ports setup_url healthy(0/1) localca(0/1)
 	_c '1;32'; printf '  Outhaul is installed\n'; _c 0
 	[ "$healthy" = 0 ] && step_ok "admin UI reachable" || step_fail "admin UI did not answer yet (check: journalctl -u outhaul)"
 	[ -n "$ports" ] && note "firewall: $ports open"
+	# The firewall never opens the admin port, and only Let's Encrypt mode
+	# routes the admin UI through Traefik — everyone else needs a tunnel.
+	if [ -n "$ports" ] && [ "$mode" != a ]; then
+		note "admin UI (:8080) is firewalled — reach it over SSH: ssh -L 8080:127.0.0.1:8080 you@this-server, then open http://127.0.0.1:8080"
+	fi
 	case "$mode" in
 		a) note "HTTPS: Let's Encrypt configured for $url";;
 		b) _c '1;33'; printf '  → Finish Cloudflare Tunnel: log in, then paste your connector token in Settings → Tunnel\n'; _c 0;;
@@ -581,13 +629,7 @@ main() {
 	: > "$LOGFILE" 2>/dev/null || LOGFILE=/dev/null
 	if [ "$VERBOSE" = 1 ]; then LOGFILE=/dev/stderr; fi
 	trap cleanup EXIT INT TERM
-	# Open the controlling terminal read-write on fd 3, for BOTH prompt output and
-	# input. Under `curl | sh` stdin is the pipe and stderr may be redirected away,
-	# so prompts written to stderr can go unseen — routing them to the tty (fd 3)
-	# guarantees they land where the user is typing. If there is no /dev/tty (fully
-	# headless pipe), fall back to /dev/null so prompts read EOF and take their safe
-	# defaults, and prompt text is harmlessly discarded — never onto stdin.
-	exec 3<>/dev/tty 2>/dev/null || exec 3<>/dev/null
+	open_prompt_fd "$0"
 
 	init_ui
 	hero
@@ -595,7 +637,7 @@ main() {
 
 	choose_ingress
 
-	GITPORT=$(ask_value "  Git-push-to-deploy port (blank to disable):" 2222)
+	GITPORT=$(normalize_git_port "$(ask_value "  Git-push-to-deploy port ('none' to disable):" 2222)")
 	if [ -n "$GITPORT" ]; then SSH_ADDR=":$GITPORT"; else SSH_ADDR=''; fi
 
 	if ask_yes_no "  Install Nixpacks (needed for auto-detected builds)?" y; then WANT_NIXPACKS=1; else WANT_NIXPACKS=0; fi

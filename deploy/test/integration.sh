@@ -11,12 +11,14 @@ cid=$(docker run -d --privileged --tmpfs /run --tmpfs /run/lock -v /sys/fs/cgrou
 trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
 sleep 5  # let systemd come up
 
-# Non-interactive run (mode c): feed answers on fd 0; installer reads /dev/tty
-# which in this container falls back to fd 0. Choose 3 (local), disable git port,
-# skip nixpacks, skip firewall.
-docker exec -i "$cid" sh -c '
-  printf "3\n\nn\nn\n" | sh /src/deploy/bootstrap.sh --from-checkout /src
-' | tee /tmp/outhaul-install.out
+# Non-interactive run (mode c): docker exec without -t has no controlling
+# terminal, and the installer runs from a file, so it reads answers from stdin.
+# One answer per prompt, in order: 3 (local only), n (no local CA), none (no
+# git port), n (skip nixpacks), n (skip firewall).
+answers='3\nn\nnone\nn\nn\n'
+docker exec -i "$cid" sh -c "
+  printf '$answers' | sh /src/deploy/bootstrap.sh --from-checkout /src
+" | tee /tmp/outhaul-install.out
 
 # 0) sanity: the installer must have produced output — otherwise the escape
 # check below would false-pass on an empty file.
@@ -35,6 +37,6 @@ docker exec "$cid" systemctl is-active --quiet outhaul && echo "ok: service acti
 docker exec "$cid" test -x /usr/local/bin/outhaul && echo "ok: binary installed"
 
 # 4) idempotent re-run succeeds
-docker exec -i "$cid" sh -c 'printf "3\n\nn\nn\n" | sh /src/deploy/bootstrap.sh --from-checkout /src' >/dev/null && echo "ok: idempotent re-run"
+docker exec -i "$cid" sh -c "printf '$answers' | sh /src/deploy/bootstrap.sh --from-checkout /src" >/dev/null && echo "ok: idempotent re-run"
 
 echo "INTEGRATION PASS"
