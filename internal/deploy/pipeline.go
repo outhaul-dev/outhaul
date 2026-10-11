@@ -190,10 +190,22 @@ func (w *Worker) deployBlueGreen(ctx context.Context, dep core.Deployment, app c
 		return false
 	}
 
+	// Shutdown arrived before the cutover began: abort while the old
+	// container is still serving.
+	if ctx.Err() != nil {
+		cleanupContainer(newID)
+		w.fail(dep, core.StatusDeploying, "server shutting down before cutover; the previous container is still serving", out)
+		return false
+	}
+	// Past this point the old container gets removed, so the cutover runs to
+	// completion even if the pipeline context is cancelled (graceful
+	// shutdown): stopping halfway would leave the app with no container.
+	cctx := context.WithoutCancel(ctx)
+
 	// The app may have been deleted while we were building/health-checking (a
 	// deploying deployment is not cancellable). If so, abort before recreating
 	// the canonical container, or we'd orphan a container for a gone app.
-	if _, err := w.store.GetApp(ctx, app.ID); err != nil {
+	if _, err := w.store.GetApp(cctx, app.ID); err != nil {
 		cleanupContainer(newID)
 		w.fail(dep, core.StatusDeploying, "app was deleted during deploy", out)
 		return false
@@ -201,18 +213,34 @@ func (w *Worker) deployBlueGreen(ctx context.Context, dep core.Deployment, app c
 
 	// --- healthy: cut over. Remove old, create canonical, then drop the temp. ---
 	logf(out, "Healthy. Cutting over to the new container...")
-	if err := w.removeContainerByName(ctx, containerName(app.Name)); err != nil {
+	if err := w.removeContainerByName(cctx, containerName(app.Name)); err != nil {
 		cleanupContainer(newID)
 		w.fail(dep, core.StatusDeploying, "remove previous container: "+err.Error(), out)
 		return false
 	}
-	if _, err := w.createContainer(ctx, app, image, containerName(app.Name), runtimeEnv, true); err != nil {
+	canonicalID, err := w.createContainer(cctx, app, image, containerName(app.Name), runtimeEnv, true)
+	if err != nil {
 		cleanupContainer(newID)
 		logf(out, "ERROR: cutover failed — the app has NO running container until the next successful deploy")
 		w.fail(dep, core.StatusDeploying, "cutover failed (app is down): "+err.Error(), out)
 		return false
 	}
 	cleanupContainer(newID) // canonical is up; drop the temp
+
+	// The canonical is a fresh container, not the one that passed the check
+	// above, and Traefik already routes to it: verify it before calling the
+	// deploy running. On failure leave it up (degraded-but-live, like
+	// stop-first) — the old container is gone, so a teardown means an outage.
+	cip, err := w.docker.ContainerIP(cctx, canonicalID, w.cfg.Network)
+	if err != nil || cip == "" {
+		w.fail(dep, core.StatusDeploying, "could not resolve the new container's IP after cutover", out)
+		return false
+	}
+	if !w.healthCheck(cctx, fmt.Sprintf("http://%s:%d/", cip, AppPort), w.cfg.HealthTimeout) {
+		logf(out, "ERROR: the new container stopped responding after cutover — the app is degraded until the next successful deploy")
+		w.fail(dep, core.StatusDeploying, "health check failed after cutover: the new container did not respond (app is degraded)", out)
+		return false
+	}
 	return true
 }
 
