@@ -1,6 +1,9 @@
 package core
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestPreviewHost(t *testing.T) {
 	cfg := PreviewConfig{} // no base domain -> sslip.io
@@ -56,5 +59,38 @@ func TestDefaultPreviewConfig(t *testing.T) {
 	}
 	if cfg.BaseDomain != "" {
 		t.Errorf("BaseDomain = %q", cfg.BaseDomain)
+	}
+}
+
+// Compose service names may hold "_" and "." (and capitals), none of which are
+// valid inside a single DNS label.
+func TestPreviewHostSanitizesServiceName(t *testing.T) {
+	got := PreviewHost(PreviewConfig{BaseDomain: "preview.example.com"}, "web", 3, "My_API.v2", "")
+	if got != "my-api-v2-web-pr-3.preview.example.com" {
+		t.Errorf("host = %q", got)
+	}
+}
+
+// A DNS label is at most 63 characters. Long app + service names are cut and
+// suffixed with a hash of the full label, so they stay valid and distinct.
+func TestPreviewHostCapsLabelLength(t *testing.T) {
+	cfg := PreviewConfig{BaseDomain: "preview.example.com"}
+	app := "a-very-long-application-name-for-testing" // 40 chars, the maximum
+	a := PreviewHost(cfg, app, 12345, "background-worker-service-one", "")
+	b := PreviewHost(cfg, app, 12345, "background-worker-service-two", "")
+	for _, h := range []string{a, b} {
+		label := strings.SplitN(h, ".", 2)[0]
+		if len(label) > 63 {
+			t.Errorf("label %q is %d chars, want <= 63", label, len(label))
+		}
+		if !strings.HasSuffix(h, ".preview.example.com") {
+			t.Errorf("host %q lost its base domain", h)
+		}
+	}
+	if a == b {
+		t.Errorf("distinct services share host %q", a)
+	}
+	if again := PreviewHost(cfg, app, 12345, "background-worker-service-one", ""); again != a {
+		t.Errorf("host not deterministic: %q then %q", a, again)
 	}
 }

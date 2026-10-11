@@ -1,6 +1,11 @@
 package core
 
-import "fmt"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"strings"
+)
 
 // Preview lifecycle states.
 const (
@@ -43,13 +48,45 @@ func PreviewAppName(parentName string, pr int) string {
 // single-container apps. The first label is "[service-]<name>-pr-<n>" — the app
 // name keeps two apps sharing one base domain from claiming the same host. With
 // a BaseDomain the label sits under it; otherwise it falls back to sslip.io.
+// The label is made DNS-safe: the service name is lowercased with anything
+// outside [a-z0-9-] turned into "-", and a label over 63 characters is cut and
+// suffixed with a hash of the whole label so it stays valid and distinct.
 func PreviewHost(cfg PreviewConfig, appName string, pr int, service, serverIP string) string {
 	label := PreviewAppName(appName, pr)
 	if service != "" {
-		label = service + "-" + label
+		label = dnsSafe(service) + "-" + label
 	}
+	label = capLabel(label)
 	if cfg.BaseDomain != "" {
 		return label + "." + cfg.BaseDomain
 	}
 	return fmt.Sprintf("%s.%s.sslip.io", label, serverIP)
+}
+
+// maxLabel is the longest a single DNS label may be.
+const maxLabel = 63
+
+// dnsSafe lowercases s and replaces every character outside [a-z0-9-] with "-".
+func dnsSafe(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r + ('a' - 'A')
+		}
+		return '-'
+	}, s)
+}
+
+// capLabel returns label unchanged if it fits in a DNS label, else its first
+// characters plus "-" and 8 hex characters of its SHA-256.
+func capLabel(label string) string {
+	if len(label) <= maxLabel {
+		return label
+	}
+	sum := sha256.Sum256([]byte(label))
+	suffix := hex.EncodeToString(sum[:])[:8]
+	head := strings.TrimRight(label[:maxLabel-len(suffix)-1], "-")
+	return head + "-" + suffix
 }
