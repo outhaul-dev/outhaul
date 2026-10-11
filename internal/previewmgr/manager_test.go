@@ -593,9 +593,30 @@ func TestSpawnRollsBackOnFailure(t *testing.T) {
 	if h.notifier.notified {
 		t.Error("notifier should not fire when spawn fails")
 	}
-	// (c) No comment posted for a preview that never came up.
-	if len(h.gh.comments) != 0 {
-		t.Errorf("expected no PR comments on a failed spawn, got %v", h.gh.comments)
+	// (c) The PR is told the preview could not be created, instead of silence.
+	got := h.gh.comments[repo+"#42"]
+	if len(got) != 1 || !strings.Contains(got[0], "could not be created") {
+		t.Errorf("PR comments = %v, want one 'could not be created' notice", got)
+	}
+}
+
+// A preview host another app already serves (a custom domain, or a colliding
+// [service-]app label) makes the spawn fail; the PR comment says why.
+func TestSpawnExplainsHostCollision(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	repo := "acme/web"
+	h.seedGithubApp(t, "web", repo, nil)
+	if _, err := h.st.CreateApp(ctx, core.App{Name: "squatter", RepoURL: "https://x/y.git", Domain: "web-pr-42." + serverIP + ".sslip.io"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	got := h.gh.comments[repo+"#42"]
+	if len(got) != 1 || !strings.Contains(got[0], "already used by another app") {
+		t.Errorf("PR comments = %v, want a notice that the preview host is taken", got)
 	}
 }
 

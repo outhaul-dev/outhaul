@@ -1,6 +1,11 @@
 package previewmgr
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+
+	"github.com/outhaul-dev/outhaul/internal/store"
+)
 
 func buildingComment(sha string) string {
 	return fmt.Sprintf("⏳ Preview building… (commit `%s`)", short(sha))
@@ -32,4 +37,14 @@ func short(sha string) string {
 		return sha[:7]
 	}
 	return sha
+}
+
+// spawnFailedComment tells the PR a preview never came up. The comment is
+// public, so the cause is named only when it is safe and actionable (a host
+// clash); anything else points at the server logs.
+func spawnFailedComment(err error) string {
+	if errors.Is(err, store.ErrDomainTaken) {
+		return "✗ Preview could not be created: its hostname is already used by another app."
+	}
+	return "✗ Preview could not be created. See the Outhaul server logs for details."
 }

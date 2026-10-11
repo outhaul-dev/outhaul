@@ -154,6 +154,7 @@ func (m *Manager) spawn(ctx context.Context, parent core.App, cfg core.PreviewCo
 	child.PreviewStatus = core.PreviewBuilding
 	child, err = m.store.CreateApp(ctx, child)
 	if err != nil {
+		m.comment(ctx, cfg, parent.GitSourceID, ev.BaseRepoFullName, ev.Number, spawnFailedComment(err))
 		return err
 	}
 
@@ -162,7 +163,9 @@ func (m *Manager) spawn(ctx context.Context, parent core.App, cfg core.PreviewCo
 	// The rollback must outlive a timed-out or cancelled ctx — that is often
 	// why the build failed.
 	if err := m.buildPreview(ctx, parent, child, cfg, ev); err != nil {
-		m.cleanupChild(context.WithoutCancel(ctx), child)
+		bg := context.WithoutCancel(ctx)
+		m.cleanupChild(bg, child)
+		m.comment(bg, cfg, parent.GitSourceID, ev.BaseRepoFullName, ev.Number, spawnFailedComment(err))
 		return err
 	}
 
