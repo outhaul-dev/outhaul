@@ -29,7 +29,8 @@ type App struct {
 	Branch        string // branch to clone and match webhooks against ("main" default)
 	AutoDeploy    bool   // webhook pushes to Branch trigger a deploy
 	Source        string // one of SourcePublic | SourceSSH | SourceGithub
-	WebhookSecret string // per-app generic-webhook token (identifies + verifies)
+	WebhookToken  string // per-app generic-webhook URL segment (identifies the app)
+	WebhookSecret string // per-app generic-webhook HMAC key / GitLab token (verifies the delivery)
 	GithubRepo    string // "owner/name" when Source == SourceGithub
 	GitSourceID   int64  // git source supplying the repo; 0 unless Source == SourceGithub
 	SSHPublicKey  string // authorized_keys line to add as a deploy key (Source == SourceSSH)

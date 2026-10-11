@@ -499,7 +499,7 @@ func TestAppDetailShowsConnectAndStats(t *testing.T) {
 	if !strings.Contains(page, `id="metric-cpu"`) {
 		t.Error("app detail should show the live metric stats")
 	}
-	if !strings.Contains(page, "/webhooks/app/"+app.WebhookSecret) {
+	if !strings.Contains(page, "/webhooks/app/"+app.WebhookToken) {
 		t.Error("app detail should show the connect-repo webhook URL")
 	}
 }

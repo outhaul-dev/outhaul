@@ -103,10 +103,11 @@ func (s *Server) handleGithubWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAppWebhook verifies a per-app generic webhook and deploys if the branch
-// matches. Accepts a GitHub HMAC signature or a GitLab token.
+// matches. The URL token picks the app; the delivery must carry a GitHub/Gitea
+// HMAC signature or a GitLab token made with the app's separate webhook secret.
 func (s *Server) handleAppWebhook(w http.ResponseWriter, r *http.Request) {
 	token := r.PathValue("token")
-	app, err := s.store.AppByWebhookSecret(r.Context(), token)
+	app, err := s.store.AppByWebhookToken(r.Context(), token)
 	if err != nil {
 		http.Error(w, "unknown webhook", http.StatusNotFound)
 		return

@@ -111,12 +111,12 @@ func TestAppWebhookEnqueuesOnMatch(t *testing.T) {
 	ctx := context.Background()
 	app, _ := env.store.CreateApp(ctx, core.App{
 		Name: "web", RepoURL: "https://github.com/o/r.git", Domain: "web.example.com",
-		Source: core.SourcePublic, Branch: "main", AutoDeploy: true, WebhookSecret: "tok",
+		Source: core.SourcePublic, Branch: "main", AutoDeploy: true, WebhookToken: "tok", WebhookSecret: "sek",
 	})
 
 	body := `{"ref":"refs/heads/main","repository":{"full_name":"o/r"}}`
 	req := httptest.NewRequest("POST", "/webhooks/app/tok", strings.NewReader(body))
-	req.Header.Set("X-Hub-Signature-256", sign("tok", body))
+	req.Header.Set("X-Hub-Signature-256", sign("sek", body))
 	rec := httptest.NewRecorder()
 	env.srv.Handler().ServeHTTP(rec, req)
 
@@ -137,11 +137,11 @@ func TestAppWebhookNoDeployOnBranchMismatch(t *testing.T) {
 	ctx := context.Background()
 	app, _ := env.store.CreateApp(ctx, core.App{
 		Name: "web", RepoURL: "https://github.com/o/r.git", Domain: "web.example.com",
-		Source: core.SourcePublic, Branch: "main", AutoDeploy: true, WebhookSecret: "tok",
+		Source: core.SourcePublic, Branch: "main", AutoDeploy: true, WebhookToken: "tok", WebhookSecret: "sek",
 	})
 	body := `{"ref":"refs/heads/other","repository":{"full_name":"o/r"}}`
 	req := httptest.NewRequest("POST", "/webhooks/app/tok", strings.NewReader(body))
-	req.Header.Set("X-Hub-Signature-256", sign("tok", body))
+	req.Header.Set("X-Hub-Signature-256", sign("sek", body))
 	rec := httptest.NewRecorder()
 	env.srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -157,7 +157,7 @@ func TestAppWebhookBadSignature(t *testing.T) {
 	env := newTestEnv(t)
 	env.store.CreateApp(context.Background(), core.App{
 		Name: "web", RepoURL: "https://github.com/o/r.git", Domain: "web.example.com",
-		Source: core.SourcePublic, Branch: "main", AutoDeploy: true, WebhookSecret: "tok",
+		Source: core.SourcePublic, Branch: "main", AutoDeploy: true, WebhookToken: "tok", WebhookSecret: "sek",
 	})
 	body := `{"ref":"refs/heads/main","repository":{"full_name":"o/r"}}`
 	req := httptest.NewRequest("POST", "/webhooks/app/tok", strings.NewReader(body))
@@ -203,5 +203,35 @@ func TestGithubAppWebhookFansOut(t *testing.T) {
 	}
 	if d2, _ := env.store.ListDeploymentsForApp(ctx, a2.ID); len(d2) != 0 {
 		t.Errorf("stage deployments = %d, want 0 (branch mismatch)", len(d2))
+	}
+}
+
+// The URL names the app; a separate secret signs the delivery. Knowing the URL
+// is not enough to sign, and the secret is what the sender is configured with.
+func TestAppWebhookVerifiesWithSecretNotURLToken(t *testing.T) {
+	env := newTestEnv(t)
+	ctx := context.Background()
+	app, _ := env.store.CreateApp(ctx, core.App{
+		Name: "web", RepoURL: "https://github.com/o/r.git", Domain: "web.example.com",
+		Source: core.SourcePublic, Branch: "main", AutoDeploy: true,
+		WebhookToken: "tok", WebhookSecret: "sek",
+	})
+	body := `{"ref":"refs/heads/main","repository":{"full_name":"o/r"}}`
+	deliver := func(sig string) int {
+		req := httptest.NewRequest("POST", "/webhooks/app/tok", strings.NewReader(body))
+		req.Header.Set("X-Hub-Signature-256", sig)
+		rec := httptest.NewRecorder()
+		env.srv.Handler().ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if code := deliver(sign("tok", body)); code != http.StatusUnauthorized {
+		t.Errorf("signed with the URL token: status = %d, want 401", code)
+	}
+	if code := deliver(sign("sek", body)); code != http.StatusOK {
+		t.Fatalf("signed with the secret: status = %d, want 200", code)
+	}
+	if deps, _ := env.store.ListDeploymentsForApp(ctx, app.ID); len(deps) != 1 {
+		t.Errorf("deployments = %d, want 1", len(deps))
 	}
 }

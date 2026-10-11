@@ -12,7 +12,7 @@ import (
 
 // appCols is the column list read into core.App by scanApp (excludes the
 // write-only ssh_private_key, which is fetched separately and decrypted).
-const appCols = `id, project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_secret, ssh_public_key, github_repo, git_source_id, kind, compose_path, dockerfile_path, watch_paths, template_id, compose_raw, parent_id, pr_number, ephemeral, preview_status`
+const appCols = `id, project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_token, webhook_secret, ssh_public_key, github_repo, git_source_id, kind, compose_path, dockerfile_path, watch_paths, template_id, compose_raw, parent_id, pr_number, ephemeral, preview_status`
 
 // CreateApp inserts an app and returns it with ID and CreatedAt populated. The
 // SSH private key (if any) is encrypted at rest.
@@ -41,11 +41,11 @@ func (s *Store) CreateApp(ctx context.Context, app core.App) (core.App, error) {
 	defer tx.Rollback()
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO apps
-		   (project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_secret, ssh_private_key, ssh_public_key, github_repo, git_source_id,
+		   (project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_token, webhook_secret, ssh_private_key, ssh_public_key, github_repo, git_source_id,
 		    kind, compose_path, dockerfile_path, watch_paths, template_id, compose_raw, parent_id, pr_number, ephemeral, preview_status)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		app.ProjectID, app.Name, app.RepoURL, app.Domain, fmtTime(app.CreatedAt),
-		app.Branch, boolToInt(app.AutoDeploy), app.Source, app.WebhookSecret, encKey, app.SSHPublicKey, app.GithubRepo, app.GitSourceID,
+		app.Branch, boolToInt(app.AutoDeploy), app.Source, app.WebhookToken, app.WebhookSecret, encKey, app.SSHPublicKey, app.GithubRepo, app.GitSourceID,
 		app.Kind, app.ComposePath, app.DockerfilePath, joinWatchPaths(app.WatchPaths), app.TemplateID, app.ComposeRaw,
 		app.ParentID, app.PRNumber, boolToInt(app.Ephemeral), app.PreviewStatus)
 	if err != nil {
@@ -132,13 +132,22 @@ func (s *Store) ListAppsByProject(ctx context.Context, projectID int64) ([]core.
 	return apps, rows.Err()
 }
 
-// AppByWebhookSecret finds the app whose generic-webhook token matches secret.
-func (s *Store) AppByWebhookSecret(ctx context.Context, secret string) (core.App, error) {
-	if secret == "" {
+// AppByWebhookToken finds the app whose generic-webhook URL segment is token.
+// The token only identifies the app; the delivery is verified against its
+// WebhookSecret.
+func (s *Store) AppByWebhookToken(ctx context.Context, token string) (core.App, error) {
+	if token == "" {
 		return core.App{}, sql.ErrNoRows
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT `+appCols+` FROM apps WHERE webhook_secret = ?`, secret)
+	row := s.db.QueryRowContext(ctx, `SELECT `+appCols+` FROM apps WHERE webhook_token = ?`, token)
 	return scanApp(row)
+}
+
+// SetWebhookSecret replaces an app's generic-webhook secret. The URL token is
+// unchanged, so the sender keeps its URL and needs only the new secret.
+func (s *Store) SetWebhookSecret(ctx context.Context, id int64, secret string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE apps SET webhook_secret = ? WHERE id = ?`, secret, id)
+	return err
 }
 
 // AppsByGithubRepoSource returns the apps sourced from "owner/name" *through a
@@ -314,7 +323,7 @@ func scanApp(row scanner) (core.App, error) {
 		ephemeral  int
 	)
 	if err := row.Scan(&app.ID, &app.ProjectID, &app.Name, &app.RepoURL, &app.Domain, &createdAt,
-		&app.Branch, &autoDeploy, &app.Source, &app.WebhookSecret, &app.SSHPublicKey, &app.GithubRepo,
+		&app.Branch, &autoDeploy, &app.Source, &app.WebhookToken, &app.WebhookSecret, &app.SSHPublicKey, &app.GithubRepo,
 		&app.GitSourceID,
 		&app.Kind, &app.ComposePath, &app.DockerfilePath, &watchPaths, &app.TemplateID, &app.ComposeRaw,
 		&app.ParentID, &app.PRNumber, &ephemeral, &app.PreviewStatus); err != nil {

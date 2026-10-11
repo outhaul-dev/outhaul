@@ -291,7 +291,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	app := core.App{
 		Name: name, RepoURL: repo, Domain: domain, Source: source, Kind: kind,
 		Branch: branch, AutoDeploy: autoDeploy, GithubRepo: githubRepo, GitSourceID: gitSourceID,
-		WebhookSecret: newSecret(), ProjectID: projectID,
+		WebhookToken: newSecret(), WebhookSecret: newSecret(), ProjectID: projectID,
 	}
 	// Compose domains live in their own table (a stack can have many); the
 	// form's optional domain/service/port trio seeds the first row after the
@@ -703,8 +703,8 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 	if p, err := s.store.GetProject(r.Context(), app.ProjectID); err == nil {
 		data["Project"] = p
 	}
-	if s.publicURL != "" {
-		data["WebhookURL"] = strings.TrimRight(s.publicURL, "/") + "/webhooks/app/" + app.WebhookSecret
+	if s.publicURL != "" && app.WebhookToken != "" {
+		data["WebhookURL"] = strings.TrimRight(s.publicURL, "/") + "/webhooks/app/" + app.WebhookToken
 	}
 	if app.Source == core.SourcePush {
 		data["PushRemote"] = s.pushRemote(app.Name)
@@ -1272,6 +1272,25 @@ func (s *Server) destroyPreviews(ctx context.Context, parent core.App) error {
 		}
 	}
 	return nil
+}
+
+// handleRegenerateWebhookSecret gives an app a fresh generic-webhook secret,
+// keeping its URL token, so the sender needs only the new secret.
+func (s *Server) handleRegenerateWebhookSecret(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := s.store.GetApp(r.Context(), id); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if err := s.store.SetWebhookSecret(r.Context(), id, newSecret()); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
 // distinctImages collects the unique unpruned image tags across deployments.

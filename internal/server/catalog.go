@@ -75,6 +75,7 @@ func (s *Server) handleDeployTemplate(w http.ResponseWriter, r *http.Request) {
 		Source: core.SourceTemplate, Kind: core.KindCompose,
 		ComposePath: "docker-compose.yml",
 		TemplateID:  tmpl.ID, ComposeRaw: tmpl.Compose,
+		WebhookToken:  newSecret(),
 		WebhookSecret: newSecret(),
 	})
 	if err != nil {

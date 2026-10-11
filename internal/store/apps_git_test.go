@@ -82,27 +82,49 @@ func TestSSHPrivateKeyRoundTripEncrypted(t *testing.T) {
 	}
 }
 
-func TestAppLookupByWebhookSecret(t *testing.T) {
+func TestAppLookupByWebhookToken(t *testing.T) {
 	st := gitTestStore(t)
 	ctx := context.Background()
 	_, err := st.CreateApp(ctx, core.App{
 		Name: "gh", RepoURL: "https://github.com/o/r.git", Domain: "gh.example.com",
 		Source: core.SourceGithub, GithubRepo: "o/r", Branch: "main",
-		AutoDeploy: true, WebhookSecret: "tok123",
+		AutoDeploy: true, WebhookToken: "tok123", WebhookSecret: "sek456",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	byTok, err := st.AppByWebhookSecret(ctx, "tok123")
+	byTok, err := st.AppByWebhookToken(ctx, "tok123")
 	if err != nil {
-		t.Fatalf("AppByWebhookSecret: %v", err)
+		t.Fatalf("AppByWebhookToken: %v", err)
 	}
-	if byTok.Name != "gh" {
+	if byTok.Name != "gh" || byTok.WebhookSecret != "sek456" {
 		t.Errorf("byTok = %+v", byTok)
 	}
-	if _, err := st.AppByWebhookSecret(ctx, "nope"); err == nil {
+	if _, err := st.AppByWebhookToken(ctx, "sek456"); err == nil {
+		t.Error("the secret must not route: lookup by secret found an app")
+	}
+	if _, err := st.AppByWebhookToken(ctx, "nope"); err == nil {
 		t.Error("expected error for unknown token")
+	}
+}
+
+func TestSetWebhookSecretKeepsToken(t *testing.T) {
+	st := gitTestStore(t)
+	ctx := context.Background()
+	app, err := st.CreateApp(ctx, core.App{
+		Name: "web", RepoURL: "https://example.com/r.git", Domain: "web.example.com",
+		WebhookToken: "tok", WebhookSecret: "old",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetWebhookSecret(ctx, app.ID, "new"); err != nil {
+		t.Fatalf("SetWebhookSecret: %v", err)
+	}
+	got, _ := st.GetApp(ctx, app.ID)
+	if got.WebhookToken != "tok" || got.WebhookSecret != "new" {
+		t.Fatalf("token=%q secret=%q, want tok/new", got.WebhookToken, got.WebhookSecret)
 	}
 }
 

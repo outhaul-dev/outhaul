@@ -1,47 +1,12 @@
 package store
 
-import (
-	"database/sql"
-	"io/fs"
-	"path/filepath"
-	"sort"
-	"testing"
-)
+import "testing"
 
 // TestEnvScopeUniqueMigration replays a pre-0024 database holding a scoped env
 // row and checks the rebuild keeps every row (id, value, scope) and then lets
 // the same key exist once per scope.
 func TestEnvScopeUniqueMigration(t *testing.T) {
-	db, err := sql.Open("sqlite", "file:"+filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	db.SetMaxOpenConns(1)
-
-	if _, err := db.Exec(`CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
-		t.Fatal(err)
-	}
-	names, err := fs.Glob(migrationsFS, "migrations/*.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		if name >= "migrations/0024" {
-			break
-		}
-		body, err := migrationsFS.ReadFile(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.Exec(string(body)); err != nil {
-			t.Fatalf("apply %s: %v", name, err)
-		}
-		if _, err := db.Exec(`INSERT INTO schema_migrations (name, applied_at) VALUES (?, datetime('now'))`, name); err != nil {
-			t.Fatal(err)
-		}
-	}
+	db := openMigratedBefore(t, "0024")
 
 	mustExec := func(q string, args ...any) {
 		t.Helper()

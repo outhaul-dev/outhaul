@@ -546,8 +546,13 @@ git push outhaul {{.PushBranch}}</pre>{{template "copybtn" .}}</div>
   {{if eq .App.Source "github"}}
   <p class="env-note">Auto-deploy is handled by the connected GitHub App — pushes to <span class="mono">{{.App.Branch}}</span> deploy automatically when auto-deploy is enabled. No webhook setup needed.</p>
   {{else if .WebhookURL}}
-  <p class="env-note">Point a push webhook here to auto-deploy:</p>
+  <p class="env-note">Point a push webhook here to auto-deploy (content type <span class="mono">application/json</span>):</p>
   <div class="copywrap"><div class="cmd"><code>{{.WebhookURL}}</code></div>{{template "copybtn" .}}</div>
+  <p class="env-note">and give it this secret — GitHub/Gitea: <em>Secret</em>; GitLab: <em>Secret token</em>. Deliveries without it are refused.</p>
+  <div class="copywrap"><div class="cmd"><code>{{.App.WebhookSecret}}</code></div>{{template "copybtn" .}}</div>
+  <form method="post" action="/apps/{{.App.ID}}/webhook/secret" class="inline" onsubmit="return confirm('Regenerate the webhook secret? Deliveries signed with the current one will be refused until the sender is updated.');">
+    <button type="submit" class="linkbtn">regenerate secret</button>
+  </form>
   {{end}}
 </section>
 {{end}}

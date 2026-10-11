@@ -15,7 +15,7 @@ func watchedApp(t *testing.T, env *testEnv, watch []string) core.App {
 	t.Helper()
 	app, err := env.store.CreateApp(context.Background(), core.App{
 		Name: "web", RepoURL: "https://github.com/o/r.git", Domain: "web.example.com",
-		Source: core.SourcePublic, Branch: "main", AutoDeploy: true, WebhookSecret: "tok",
+		Source: core.SourcePublic, Branch: "main", AutoDeploy: true, WebhookToken: "tok", WebhookSecret: "sek",
 		WatchPaths: watch,
 	})
 	if err != nil {
@@ -27,7 +27,7 @@ func watchedApp(t *testing.T, env *testEnv, watch []string) core.App {
 func pushWebhook(t *testing.T, env *testEnv, body string) int {
 	t.Helper()
 	req := httptest.NewRequest("POST", "/webhooks/app/tok", strings.NewReader(body))
-	req.Header.Set("X-Hub-Signature-256", sign("tok", body))
+	req.Header.Set("X-Hub-Signature-256", sign("sek", body))
 	rec := httptest.NewRecorder()
 	env.srv.Handler().ServeHTTP(rec, req)
 	return rec.Code

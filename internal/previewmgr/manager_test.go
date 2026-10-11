@@ -783,3 +783,38 @@ func hasEnv(vars []core.EnvVar, key, val string) bool {
 	}
 	return false
 }
+
+// A child is a copy of its parent; inheriting the parent's webhook token would
+// give two apps the same /webhooks/app/<token> URL, and the lookup could route
+// the parent's deliveries to a preview.
+func TestSpawnDoesNotCopyWebhookCredentials(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	parent, err := h.st.CreateApp(ctx, core.App{
+		Name: "web", RepoURL: "https://github.com/acme/web.git", Domain: "web.example",
+		Source: core.SourceGithub, GithubRepo: "acme/web", GitSourceID: h.sourceID, Branch: "main",
+		WebhookToken: "parent-token", WebhookSecret: "parent-secret",
+	})
+	if err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+	cfg := core.DefaultPreviewConfig(parent.ID)
+	cfg.Enabled = true
+	if err := h.st.SetPreviewConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 42, "feature-x", "acme/web", false)); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	child, err := h.st.GetPreviewByPR(ctx, parent.ID, 42)
+	if err != nil {
+		t.Fatalf("child missing: %v", err)
+	}
+	if child.WebhookToken != "" || child.WebhookSecret != "" {
+		t.Errorf("child webhook token=%q secret=%q, want both empty", child.WebhookToken, child.WebhookSecret)
+	}
+	if got, err := h.st.AppByWebhookToken(ctx, "parent-token"); err != nil || got.ID != parent.ID {
+		t.Errorf("parent token resolves to %+v (err %v), want the parent", got, err)
+	}
+}

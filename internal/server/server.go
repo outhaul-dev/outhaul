@@ -248,6 +248,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /apps/{id}/env/delete", s.requireAuth(s.handleDeleteEnv))
 	mux.HandleFunc("POST /apps/{id}/attachments", s.requireAuth(s.handleAttachDatabase))
 	mux.HandleFunc("POST /apps/{id}/attachments/{attachmentID}/delete", s.requireAuth(s.handleDetachDatabase))
+	mux.HandleFunc("POST /apps/{id}/webhook/secret", s.requireAuth(s.handleRegenerateWebhookSecret))
 	mux.HandleFunc("POST /apps/{id}/previews", s.requireAuth(s.handleSavePreviewConfig))
 	mux.HandleFunc("POST /apps/{id}/previews/{previewID}/destroy", s.requireAuth(s.handleDestroyPreview))
 	mux.HandleFunc("POST /apps/{id}/stop", s.requireAuth(s.handleStopApp))

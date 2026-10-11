@@ -141,6 +141,9 @@ func (m *Manager) spawn(ctx context.Context, parent core.App, cfg core.PreviewCo
 	child.Name = core.PreviewAppName(parent.Name, ev.Number)
 	child.Branch = ev.HeadRef
 	child.Domain = ""
+	// Previews are driven by pull_request events, never by the parent's generic
+	// webhook; a copied token would give two apps the same webhook URL.
+	child.WebhookToken, child.WebhookSecret = "", ""
 	child.ParentID = parent.ID
 	child.PRNumber = ev.Number
 	child.Ephemeral = true
