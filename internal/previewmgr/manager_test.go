@@ -462,6 +462,44 @@ func TestSynchronizeRedeploys(t *testing.T) {
 	}
 }
 
+// PRs opened before previews could fire (the App lacked pull_request events, or
+// previews were off) have no child. Their next push must create one rather than
+// be silently dropped until the PR is closed and reopened.
+func TestSynchronizeSpawnsMissingPreview(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	repo := "acme/web"
+	parent := h.seedGithubApp(t, "web", repo, nil)
+
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("synchronize", 42, "feature-x", repo, false)); err != nil {
+		t.Fatalf("Handle synchronize: %v", err)
+	}
+	child, err := h.st.GetPreviewByPR(ctx, parent.ID, 42)
+	if err != nil {
+		t.Fatalf("synchronize without a preview created no child: %v", err)
+	}
+	if deps, _ := h.st.ListDeploymentsForApp(ctx, child.ID); len(deps) != 1 {
+		t.Errorf("child deployments = %d, want 1", len(deps))
+	}
+	if !h.notifier.notified {
+		t.Error("deploy worker was not woken")
+	}
+}
+
+func TestSynchronizeRespectsForkGate(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	repo := "acme/web"
+	parent := h.seedGithubApp(t, "web", repo, nil) // AllowForkPRs defaults false
+
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("synchronize", 7, "fork-branch", repo, true)); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if _, err := h.st.GetPreviewByPR(ctx, parent.ID, 7); err == nil {
+		t.Fatal("synchronize from a gated fork PR created a child")
+	}
+}
+
 func TestTeardownFailureLeavesAppForRetry(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

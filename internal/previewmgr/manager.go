@@ -107,10 +107,10 @@ func (m *Manager) Handle(ctx context.Context, sourceID int64, ev webhook.PullReq
 
 func (m *Manager) handleApp(ctx context.Context, parent core.App, cfg core.PreviewConfig, ev webhook.PullRequestEvent) error {
 	switch ev.Action {
-	case "opened", "reopened":
+	// synchronize spawns too: spawn redeploys an existing preview, and a PR
+	// opened before previews could fire gets one on its next push.
+	case "opened", "reopened", "synchronize":
 		return m.spawn(ctx, parent, cfg, ev)
-	case "synchronize":
-		return m.redeploy(ctx, parent, ev)
 	case "closed":
 		return m.teardown(ctx, parent, ev.Number, ev.BaseRepoFullName, cfg)
 	}
