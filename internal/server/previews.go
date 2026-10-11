@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -37,7 +39,35 @@ func (s *Server) handleSavePreviewConfig(w http.ResponseWriter, r *http.Request)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if !cfg.AllowForkPRs {
+		if err := s.destroyForkPreviews(context.WithoutCancel(r.Context()), id); err != nil {
+			http.Error(w, "Saved, but "+err.Error()+" — the next hourly sweep will retry.", http.StatusInternalServerError)
+			return
+		}
+	}
 	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
+// destroyForkPreviews tears down parentID's previews of fork PRs. Turning
+// "Allow fork PRs" off must stop stranger code running now, not when each PR
+// closes or idles out; same-repo previews are left alone.
+func (s *Server) destroyForkPreviews(ctx context.Context, parentID int64) error {
+	kids, err := s.store.ListPreviewsForParent(ctx, parentID)
+	if err != nil {
+		return err
+	}
+	for _, k := range kids {
+		if !k.IsForkPreview() {
+			continue
+		}
+		if s.previews == nil {
+			return fmt.Errorf("fork previews could not be torn down: previews are not enabled on this server")
+		}
+		if err := s.previews.DestroyByID(ctx, parentID, k.ID); err != nil {
+			return fmt.Errorf("the fork preview for PR #%d could not be torn down: %w", k.PRNumber, err)
+		}
+	}
+	return nil
 }
 
 // handleDestroyPreview manually tears down one preview child app.

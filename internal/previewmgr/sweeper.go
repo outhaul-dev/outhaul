@@ -66,6 +66,14 @@ func (m *Manager) SweepTick(ctx context.Context, now time.Time) {
 			}
 			continue
 		}
+		// Backstop for turning "Allow fork PRs" off: the settings page tears
+		// fork previews down at once, and this catches any it couldn't.
+		if p.IsForkPreview() && !cfg.AllowForkPRs {
+			if err := m.teardown(ctx, parent, p.PRNumber, parent.GithubRepo, cfg); err != nil {
+				log.Printf("previewmgr: sweep teardown %s (fork PRs disabled): %v", p.Name, err)
+			}
+			continue
+		}
 		if cfg.IdleTTLDays <= 0 {
 			continue
 		}

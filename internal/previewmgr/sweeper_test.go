@@ -143,3 +143,31 @@ func TestRunSweepsOnStart(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// Backstop for the settings page: a fork preview left running after "Allow
+// fork PRs" was turned off (its teardown there failed) goes on the next sweep.
+func TestSweeperReapsForkPreviewWhenForksDisabled(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	parent := h.seedGithubApp(t, "web", "acme/web", allowForks)
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 7, "patch-1", "acme/web", true)); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 8, "feature-x", "acme/web", false)); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := h.st.GetPreviewConfig(ctx, parent.ID)
+	cfg.AllowForkPRs = false
+	if err := h.st.SetPreviewConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	h.mgr.SweepTick(ctx, time.Now())
+
+	if _, err := h.st.GetPreviewByPR(ctx, parent.ID, 7); err == nil {
+		t.Error("fork preview survived the sweep with forks disabled")
+	}
+	if _, err := h.st.GetPreviewByPR(ctx, parent.ID, 8); err != nil {
+		t.Errorf("same-repo preview was reaped: %v", err)
+	}
+}

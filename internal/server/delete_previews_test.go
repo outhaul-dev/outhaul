@@ -148,3 +148,33 @@ func TestDeleteAppCompletesWhenTheRequestIsCancelled(t *testing.T) {
 		t.Errorf("parent survived (status %d)", rec.Code)
 	}
 }
+
+// Turning "Allow fork PRs" off must stop stranger code running now, not when
+// each PR closes or idles out a week later. Same-repo previews are unaffected.
+func TestDisablingForkPRsTearsDownForkPreviews(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	ctx := context.Background()
+	parent, sameRepo := seedParentWithPreview(t, e)
+	fork, err := e.store.CreateApp(ctx, core.App{
+		Name: core.PreviewAppName("web", 8), Source: core.SourceGithub, GithubRepo: "me/app", Kind: core.KindNixpacks,
+		Branch: core.ForkPreviewRef(8), ParentID: parent.ID, PRNumber: 8, Ephemeral: true, PreviewStatus: core.PreviewReady,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev := &destroyingPreviews{st: e.store}
+	e.srv.previews = prev
+
+	resp := e.postForm(t, "/apps/"+itoa(parent.ID)+"/previews", url.Values{"enabled": {"on"}}) // allow_fork_prs unticked
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", resp.StatusCode)
+	}
+	if _, err := e.store.GetApp(ctx, fork.ID); err == nil {
+		t.Error("fork preview still running after Allow fork PRs was turned off")
+	}
+	if _, err := e.store.GetApp(ctx, sameRepo.ID); err != nil {
+		t.Errorf("same-repo preview was torn down too: %v", err)
+	}
+}
