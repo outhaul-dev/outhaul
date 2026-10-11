@@ -553,6 +553,11 @@ git push outhaul {{.PushBranch}}</pre>{{template "copybtn" .}}</div>
   <form method="post" action="/apps/{{.App.ID}}/webhook/secret" class="inline" onsubmit="return confirm('Regenerate the webhook secret? Deliveries signed with the current one will be refused until the sender is updated.');">
     <button type="submit" class="linkbtn">regenerate secret</button>
   </form>
+  {{else if .WebhookEnable}}
+  <p class="env-note">This app has no push webhook yet.</p>
+  <form method="post" action="/apps/{{.App.ID}}/webhook/secret" class="inline">
+    <button type="submit" class="btn btn-quiet">enable push webhook</button>
+  </form>
   {{end}}
 </section>
 {{end}}

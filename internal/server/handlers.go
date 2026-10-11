@@ -702,6 +702,10 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 	if s.publicURL != "" && app.WebhookToken != "" {
 		data["WebhookURL"] = strings.TrimRight(s.publicURL, "/") + "/webhooks/app/" + app.WebhookToken
 	}
+	// Repo-backed apps without a token (created by a cold git push, then moved
+	// to a public or SSH repo) can enable a webhook from the page.
+	data["WebhookEnable"] = s.publicURL != "" && app.WebhookToken == "" &&
+		(app.Source == core.SourcePublic || app.Source == core.SourceSSH)
 	if app.Source == core.SourcePush {
 		data["PushRemote"] = s.pushRemote(app.Name)
 		data["PushBranch"] = app.Branch
@@ -1275,18 +1279,25 @@ func (s *Server) destroyPreviews(ctx context.Context, parent core.App) error {
 }
 
 // handleRegenerateWebhookSecret gives an app a fresh generic-webhook secret,
-// keeping its URL token, so the sender needs only the new secret.
+// keeping its URL token, so the sender needs only the new secret. An app with
+// no token yet (created by a cold git push) gets both, enabling its webhook.
 func (s *Server) handleRegenerateWebhookSecret(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(r.PathValue("id"))
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	if _, err := s.store.GetApp(r.Context(), id); err != nil {
+	app, err := s.store.GetApp(r.Context(), id)
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	if err := s.store.SetWebhookSecret(r.Context(), id, newSecret()); err != nil {
+	if app.WebhookToken == "" {
+		err = s.store.SetWebhookCredentials(r.Context(), id, newSecret(), newSecret())
+	} else {
+		err = s.store.SetWebhookSecret(r.Context(), id, newSecret())
+	}
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

@@ -156,6 +156,13 @@ func (s *Store) AppByWebhookToken(ctx context.Context, token string) (core.App, 
 	return scanApp(row)
 }
 
+// SetWebhookCredentials sets both an app's generic-webhook URL token and secret
+// — used to give a webhook to an app that has none.
+func (s *Store) SetWebhookCredentials(ctx context.Context, id int64, token, secret string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE apps SET webhook_token = ?, webhook_secret = ? WHERE id = ?`, token, secret, id)
+	return err
+}
+
 // SetWebhookSecret replaces an app's generic-webhook secret. The URL token is
 // unchanged, so the sender keeps its URL and needs only the new secret.
 func (s *Store) SetWebhookSecret(ctx context.Context, id int64, secret string) error {

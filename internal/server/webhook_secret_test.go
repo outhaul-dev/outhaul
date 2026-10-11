@@ -75,3 +75,28 @@ func TestRegenerateWebhookSecret(t *testing.T) {
 		t.Errorf("secret = %q, want a fresh value distinct from the token", got.WebhookSecret)
 	}
 }
+
+// Apps created by a cold git push have no webhook token. Switched to a public
+// or SSH repo they need one, and the page used to offer no way to get it.
+func TestEnableWebhookForAppWithoutToken(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	ctx := context.Background()
+	app, _ := e.store.CreateApp(ctx, core.App{
+		Name: "web", RepoURL: "https://x/y.git", Domain: "web.test", Source: core.SourcePublic,
+	})
+	page := body(t, e.get(t, "/apps/"+itoa(app.ID)))
+	if !strings.Contains(page, `action="/apps/`+itoa(app.ID)+`/webhook/secret"`) || !strings.Contains(page, "enable push webhook") {
+		t.Fatal("app without a webhook token offers no way to enable one")
+	}
+
+	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/webhook/secret", url.Values{})
+	resp.Body.Close()
+	got, _ := e.store.GetApp(ctx, app.ID)
+	if got.WebhookToken == "" || got.WebhookSecret == "" || got.WebhookToken == got.WebhookSecret {
+		t.Fatalf("token=%q secret=%q, want two distinct non-empty values", got.WebhookToken, got.WebhookSecret)
+	}
+	if page := body(t, e.get(t, "/apps/"+itoa(app.ID))); !strings.Contains(page, "/webhooks/app/"+got.WebhookToken) {
+		t.Error("enabled webhook URL not shown")
+	}
+}
