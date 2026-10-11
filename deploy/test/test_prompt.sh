@@ -22,5 +22,7 @@ assert_eq "git port: custom port"         "2022" "$(normalize_git_port 2022)"
 assert_eq "git port: none disables"       ""     "$(normalize_git_port none)"
 assert_eq "git port: no disables"         ""     "$(normalize_git_port no)"
 assert_eq "git port: 0 disables"          ""     "$(normalize_git_port 0)"
+assert_eq "git port: None disables"       ""     "$(normalize_git_port None)"
+assert_eq "git port: NO disables"         ""     "$(normalize_git_port NO)"
 
 [ "${TESTS_FAIL:-0}" -eq 0 ]

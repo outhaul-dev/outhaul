@@ -80,7 +80,7 @@ write_env_file() { # dest mode url email sshaddr localca
 # The prompt defaults to 2222, so an empty answer can never mean "disable".
 normalize_git_port() { # answer
 	case "$1" in
-		none | no | n | 0 | -) printf '\n' ;;
+		[Nn][Oo][Nn][Ee] | [Nn][Oo] | [Nn] | 0 | -) printf '\n' ;;
 		*) printf '%s\n' "$1" ;;
 	esac
 }
