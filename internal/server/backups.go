@@ -102,6 +102,20 @@ func (s *Server) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Same target + destination + prefix means the same bucket directory, and
+	// each schedule's retention would prune the other's archives.
+	existing, err := s.store.ListBackupsForTarget(r.Context(), kind, targetID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	for _, b := range existing {
+		if b.DestinationID == destID && b.Prefix == prefix {
+			http.Error(w, "Another schedule for this target already writes to this destination with the same prefix; its retention would delete this schedule's archives. Use a different prefix.", http.StatusBadRequest)
+			return
+		}
+	}
+
 	if _, err := s.store.CreateBackup(r.Context(), core.Backup{
 		TargetKind: kind, TargetID: targetID, DestinationID: destID,
 		Schedule: schedule, Prefix: prefix, Retention: retention,

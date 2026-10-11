@@ -523,3 +523,38 @@ func TestInFlightGuardSkipsOverlap(t *testing.T) {
 		t.Errorf("runs = %d, want 1", len(runs))
 	}
 }
+
+// A database and a compose app may share a name, and so a directory: volume
+// archives live one level below the database's dumps. Retention must only
+// ever count and delete this schedule's own archives.
+func TestRetentionIgnoresArchivesInSubdirectories(t *testing.T) {
+	h := newHarness(t)
+	dest := h.destination(t)
+	db := h.seedRunningDatabase(t, "shop", core.EnginePostgres)
+	b := h.backup(t, core.BackupTargetDatabase, db.ID, dest.ID, 2)
+
+	vol1 := "prod/shop/outhaul-shop_data/20200101T000000Z.tar.gz"
+	vol2 := "prod/shop/outhaul-shop_data/20210101T000000Z.tar.gz"
+	h.blob.objects[vol1] = []byte("v1")
+	h.blob.objects[vol2] = []byte("v2")
+	h.docker.OnExec = func(string, []string, []string) (string, string, int, error) { return "new", "", 0, nil }
+
+	h.m.RunNow(b)
+	h.waitRun(t)
+
+	keys := h.blob.keys()
+	have := map[string]bool{}
+	var dumps int
+	for _, k := range keys {
+		have[k] = true
+		if strings.HasSuffix(k, ".dump.gz") {
+			dumps++
+		}
+	}
+	if !have[vol1] || !have[vol2] {
+		t.Errorf("another target's volume archives were pruned: %v", keys)
+	}
+	if dumps != 1 {
+		t.Errorf("the fresh dump was pruned (dumps = %d): %v", dumps, keys)
+	}
+}

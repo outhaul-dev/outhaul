@@ -228,7 +228,7 @@ func (m *Manager) backupDatabase(ctx context.Context, b core.Backup, blob blobst
 	if err := blob.Put(ctx, key, f.file, f.size); err != nil {
 		return key, 0, err
 	}
-	if err := m.prune(ctx, blob, joinKey(b.Prefix, db.Name)+"/", b.Retention); err != nil {
+	if err := m.prune(ctx, blob, joinKey(b.Prefix, db.Name)+"/", ext, b.Retention); err != nil {
 		return key, f.size, fmt.Errorf("uploaded, but pruning old backups failed: %w", err)
 	}
 	return key, f.size, nil
@@ -308,16 +308,19 @@ func (m *Manager) backupAppVolumes(ctx context.Context, b core.Backup, blob blob
 			return key, total, err
 		}
 		lastKey, total = key, total+size
-		if err := m.prune(ctx, blob, joinKey(b.Prefix, app.Name, vol)+"/", b.Retention); err != nil {
+		if err := m.prune(ctx, blob, joinKey(b.Prefix, app.Name, vol)+"/", ".tar.gz", b.Retention); err != nil {
 			return key, total, fmt.Errorf("uploaded, but pruning old backups failed: %w", err)
 		}
 	}
 	return lastKey, total, nil
 }
 
-// prune keeps the newest retention objects under dir (keys sort
-// chronologically because of stamp); 0 keeps everything.
-func (m *Manager) prune(ctx context.Context, blob blobstore.Client, dir string, retention int) error {
+// prune keeps the newest retention archives directly under dir (keys sort
+// chronologically because of stamp); 0 keeps everything. Only direct children
+// ending in ext count: List is recursive, and a database and a compose app
+// with the same name share dir — the app's volume archives sit one level
+// below and must never be counted against, or deleted by, this schedule.
+func (m *Manager) prune(ctx context.Context, blob blobstore.Client, dir, ext string, retention int) error {
 	if retention <= 0 {
 		return nil
 	}
@@ -325,8 +328,15 @@ func (m *Manager) prune(ctx context.Context, blob blobstore.Client, dir string, 
 	if err != nil {
 		return err
 	}
-	for i := 0; i < len(objs)-retention; i++ {
-		if err := blob.Delete(ctx, objs[i].Key); err != nil {
+	var own []blobstore.Object
+	for _, o := range objs {
+		rest := strings.TrimPrefix(o.Key, dir)
+		if !strings.Contains(rest, "/") && strings.HasSuffix(rest, ext) {
+			own = append(own, o)
+		}
+	}
+	for i := 0; i < len(own)-retention; i++ {
+		if err := blob.Delete(ctx, own[i].Key); err != nil {
 			return err
 		}
 	}

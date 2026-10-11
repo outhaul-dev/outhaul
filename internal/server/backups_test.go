@@ -403,3 +403,36 @@ func TestBackupPanelShowsRestoreLinkAndBadge(t *testing.T) {
 		t.Error("restore run row missing its kind badge")
 	}
 }
+
+// Two schedules for the same target, destination and prefix write into one
+// directory, so each one's retention would prune the other's archives (an
+// hourly schedule eating the dailies). The second must be refused.
+func TestCreateBackupRejectsSharedDirectory(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	d := seedDestination(t, e, "minio")
+	db := seedDatabase(t, e, "shop", core.EnginePostgres)
+
+	first := e.postForm(t, "/backups", backupForm(core.BackupTargetDatabase, db.ID, d.ID))
+	first.Body.Close()
+	if first.StatusCode != http.StatusSeeOther {
+		t.Fatalf("first schedule status = %d, want 303", first.StatusCode)
+	}
+	hourly := withField(backupForm(core.BackupTargetDatabase, db.ID, d.ID), "schedule", "0 * * * *")
+	resp := e.postForm(t, "/backups", hourly)
+	page := body(t, resp)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("second schedule status = %d, want 400", resp.StatusCode)
+	}
+	if !strings.Contains(page, "prefix") {
+		t.Errorf("error should point at the prefix; got %q", page)
+	}
+
+	// A different prefix is a different directory and is fine.
+	other := withField(hourly, "prefix", "hourly")
+	ok := e.postForm(t, "/backups", other)
+	ok.Body.Close()
+	if ok.StatusCode != http.StatusSeeOther {
+		t.Fatalf("schedule with a distinct prefix status = %d, want 303", ok.StatusCode)
+	}
+}
