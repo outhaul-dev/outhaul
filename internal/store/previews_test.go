@@ -63,7 +63,9 @@ func TestCreatePreviewChildApp(t *testing.T) {
 	}
 }
 
-func TestSetEnvPreservesScope(t *testing.T) {
+// SetEnv writes the shared value; a production-only value of the same key is
+// a separate row and must survive untouched.
+func TestSetEnvLeavesOtherScopesAlone(t *testing.T) {
 	s := openWithBox(t)
 	ctx := context.Background()
 	app, _ := s.CreateApp(ctx, core.App{Name: "web", Source: core.SourcePublic, Kind: core.KindNixpacks, Branch: "main"})
@@ -74,8 +76,12 @@ func TestSetEnvPreservesScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	vars, _ := s.ListEnv(ctx, app.ID)
-	if len(vars) != 1 || vars[0].Value != "v2" || vars[0].Scope != core.ScopeProd {
-		t.Fatalf("SetEnv clobbered scope or value: %+v", vars)
+	got := map[string]string{}
+	for _, v := range vars {
+		got[v.Scope] = v.Value
+	}
+	if len(vars) != 2 || got[core.ScopeProd] != "v" || got[core.ScopeShared] != "v2" {
+		t.Fatalf("SetEnv touched another scope's row: %+v", vars)
 	}
 }
 

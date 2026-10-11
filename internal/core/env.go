@@ -25,21 +25,31 @@ const (
 )
 
 // EnvForScope returns the vars that apply to a deploy. previewMode true drops
-// prod-only vars; false drops preview-only vars. Shared/empty always apply.
+// prod-only vars; false drops preview-only vars. Shared/empty always apply,
+// except where the same key also has a value for the deploy's own scope:
+// the scoped value overrides the shared one, so each key appears once.
 func EnvForScope(vars []EnvVar, previewMode bool) []EnvVar {
+	own := ScopeProd
+	if previewMode {
+		own = ScopePreview
+	}
+	overridden := map[string]bool{}
+	for _, v := range vars {
+		if v.Scope == own {
+			overridden[v.Key] = true
+		}
+	}
 	out := make([]EnvVar, 0, len(vars))
 	for _, v := range vars {
 		switch v.Scope {
-		case ScopeProd:
-			if !previewMode {
-				out = append(out, v)
-			}
-		case ScopePreview:
-			if previewMode {
+		case ScopeProd, ScopePreview:
+			if v.Scope == own {
 				out = append(out, v)
 			}
 		default: // shared or empty
-			out = append(out, v)
+			if !overridden[v.Key] {
+				out = append(out, v)
+			}
 		}
 	}
 	return out

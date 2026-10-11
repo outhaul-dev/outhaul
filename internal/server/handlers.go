@@ -1087,7 +1087,7 @@ func (s *Server) handleDeleteEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := strings.TrimSpace(r.FormValue("key"))
-	if err := s.store.DeleteEnv(r.Context(), id, key); err != nil {
+	if err := s.store.DeleteEnv(r.Context(), id, key, r.FormValue("scope")); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

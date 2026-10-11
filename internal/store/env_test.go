@@ -106,7 +106,7 @@ func TestDeleteEnv(t *testing.T) {
 		t.Fatalf("SetEnv: %v", err)
 	}
 
-	if err := st.DeleteEnv(ctx, app.ID, "K"); err != nil {
+	if err := st.DeleteEnv(ctx, app.ID, "K", core.ScopeShared); err != nil {
 		t.Fatalf("DeleteEnv: %v", err)
 	}
 	vars, _ := st.ListEnv(ctx, app.ID)
@@ -153,5 +153,56 @@ func TestEnvWithoutBoxErrors(t *testing.T) {
 	}
 	if _, err := st.ListEnv(ctx, app.ID); err == nil {
 		t.Error("ListEnv should error with a nil box")
+	}
+}
+
+// Scopes exist so one key can carry different values in production and in
+// previews. Writing one scope must never touch another scope's row.
+func TestEnvSameKeyDifferentScopesCoexist(t *testing.T) {
+	st := openWithBox(t)
+	ctx := context.Background()
+	app, err := st.CreateApp(ctx, core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	if err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+	if err := st.SetEnvScoped(ctx, app.ID, "DATABASE_URL", "prod-url", true, core.ScopeProd); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetEnvScoped(ctx, app.ID, "DATABASE_URL", "preview-url", true, core.ScopePreview); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetEnvScoped(ctx, app.ID, "DATABASE_URL", "prod-url-2", true, core.ScopeProd); err != nil { // same scope updates in place
+		t.Fatal(err)
+	}
+
+	vars, err := st.ListEnv(ctx, app.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, v := range vars {
+		got[v.Scope] = v.Value
+	}
+	if len(vars) != 2 || got[core.ScopeProd] != "prod-url-2" || got[core.ScopePreview] != "preview-url" {
+		t.Fatalf("scoped rows clobbered each other: %+v", vars)
+	}
+}
+
+func TestDeleteEnvOnlyRemovesThatScope(t *testing.T) {
+	st := openWithBox(t)
+	ctx := context.Background()
+	app, err := st.CreateApp(ctx, core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	if err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+	_ = st.SetEnvScoped(ctx, app.ID, "K", "p", false, core.ScopeProd)
+	_ = st.SetEnvScoped(ctx, app.ID, "K", "v", false, core.ScopePreview)
+
+	if err := st.DeleteEnv(ctx, app.ID, "K", core.ScopePreview); err != nil {
+		t.Fatalf("DeleteEnv: %v", err)
+	}
+	vars, _ := st.ListEnv(ctx, app.ID)
+	if len(vars) != 1 || vars[0].Scope != core.ScopeProd {
+		t.Fatalf("after deleting the preview row: %+v", vars)
 	}
 }

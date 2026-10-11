@@ -574,6 +574,7 @@ git push outhaul {{.PushBranch}}</pre>{{template "copybtn" .}}</div>
           <button type="button" class="linkbtn" data-env-editbtn>edit</button>
           <form method="post" action="/apps/{{$.App.ID}}/env/delete" class="inline">
             <input type="hidden" name="key" value="{{.Key}}">
+            <input type="hidden" name="scope" value="{{if .Scope}}{{.Scope}}{{else}}shared{{end}}">
             <button type="submit" class="linkbtn">remove</button>
           </form>
         </td>

@@ -52,3 +52,21 @@ func scopeOf(vars []core.EnvVar, key string) string {
 	}
 	return "<missing>"
 }
+
+func TestDeleteEnvRemovesOnlyTheSubmittedScope(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	_ = e.store.SetEnvScoped(context.Background(), app.ID, "DATABASE_URL", "p", true, core.ScopeProd)
+	_ = e.store.SetEnvScoped(context.Background(), app.ID, "DATABASE_URL", "v", true, core.ScopePreview)
+
+	r := e.postForm(t, "/apps/"+itoa(app.ID)+"/env/delete", url.Values{"key": {"DATABASE_URL"}, "scope": {"preview"}})
+	r.Body.Close()
+	if r.StatusCode != http.StatusSeeOther {
+		t.Fatalf("delete env status = %d, want 303", r.StatusCode)
+	}
+	vars, _ := e.store.ListEnv(context.Background(), app.ID)
+	if len(vars) != 1 || vars[0].Scope != core.ScopeProd {
+		t.Fatalf("after deleting the preview row: %+v", vars)
+	}
+}

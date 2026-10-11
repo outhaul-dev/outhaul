@@ -8,9 +8,8 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
-// SetEnv upserts an env var for an app, encrypting the value at rest. New rows
-// default to scope 'shared'; updates to an existing row leave its scope intact
-// (use SetEnvScoped to change scope explicitly).
+// SetEnv upserts an app's shared-scope env var, encrypting the value at rest
+// (use SetEnvScoped for production- or preview-only values).
 func (s *Store) SetEnv(ctx context.Context, appID int64, key, value string, isSecret bool) error {
 	if s.box == nil {
 		return fmt.Errorf("store: no secret box configured; cannot store env")
@@ -22,12 +21,13 @@ func (s *Store) SetEnv(ctx context.Context, appID int64, key, value string, isSe
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO app_env (app_id, key, value, is_secret, scope, created_at)
 		 VALUES (?, ?, ?, ?, 'shared', ?)
-		 ON CONFLICT(app_id, key) DO UPDATE SET value=excluded.value, is_secret=excluded.is_secret`,
+		 ON CONFLICT(app_id, key, scope) DO UPDATE SET value=excluded.value, is_secret=excluded.is_secret`,
 		appID, key, enc, boolToInt(isSecret), fmtTime(time.Now().UTC()))
 	return err
 }
 
-// SetEnvScoped upserts an env var with an explicit scope.
+// SetEnvScoped upserts an env var in an explicit scope. Each (key, scope) is
+// its own row: setting a key's preview value leaves its production value alone.
 func (s *Store) SetEnvScoped(ctx context.Context, appID int64, key, value string, isSecret bool, scope string) error {
 	if s.box == nil {
 		return fmt.Errorf("store: no secret box configured; cannot store env")
@@ -42,25 +42,28 @@ func (s *Store) SetEnvScoped(ctx context.Context, appID int64, key, value string
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO app_env (app_id, key, value, is_secret, scope, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(app_id, key) DO UPDATE SET
-		   value=excluded.value, is_secret=excluded.is_secret, scope=excluded.scope`,
+		 ON CONFLICT(app_id, key, scope) DO UPDATE SET
+		   value=excluded.value, is_secret=excluded.is_secret`,
 		appID, key, enc, boolToInt(isSecret), scope, fmtTime(time.Now().UTC()))
 	return err
 }
 
-// DeleteEnv removes an env var by key.
-func (s *Store) DeleteEnv(ctx context.Context, appID int64, key string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM app_env WHERE app_id = ? AND key = ?`, appID, key)
+// DeleteEnv removes one scope's value of an env var.
+func (s *Store) DeleteEnv(ctx context.Context, appID int64, key, scope string) error {
+	if scope == "" {
+		scope = core.ScopeShared
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM app_env WHERE app_id = ? AND key = ? AND scope = ?`, appID, key, scope)
 	return err
 }
 
-// ListEnv returns an app's env vars (decrypted), ordered by key.
+// ListEnv returns an app's env vars (decrypted), ordered by key then scope.
 func (s *Store) ListEnv(ctx context.Context, appID int64) ([]core.EnvVar, error) {
 	if s.box == nil {
 		return nil, fmt.Errorf("store: no secret box configured; cannot read env")
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT key, value, is_secret, scope FROM app_env WHERE app_id = ? ORDER BY key`, appID)
+		`SELECT key, value, is_secret, scope FROM app_env WHERE app_id = ? ORDER BY key, scope`, appID)
 	if err != nil {
 		return nil, err
 	}

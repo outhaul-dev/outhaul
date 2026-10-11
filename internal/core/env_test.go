@@ -121,3 +121,20 @@ func TestResolveEnvNotRecursive(t *testing.T) {
 		t.Errorf("Value = %q, want the literal placeholder (no recursion)", got[0].Value)
 	}
 }
+
+// A key set both shared and scoped resolves to the scoped value in that scope
+// and to the shared value elsewhere — never to two entries.
+func TestEnvForScopeScopedOverridesShared(t *testing.T) {
+	vars := []EnvVar{
+		{Key: "DATABASE_URL", Value: "shared", Scope: ScopeShared},
+		{Key: "DATABASE_URL", Value: "prod", Scope: ScopeProd},
+	}
+	prod := EnvForScope(vars, false)
+	if len(prod) != 1 || prod[0].Value != "prod" {
+		t.Fatalf("prod deploy got %+v, want only the prod value", prod)
+	}
+	prev := EnvForScope(vars, true)
+	if len(prev) != 1 || prev[0].Value != "shared" {
+		t.Fatalf("preview deploy got %+v, want only the shared value", prev)
+	}
+}
