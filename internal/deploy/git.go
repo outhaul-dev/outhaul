@@ -71,14 +71,40 @@ func (g *Git) Clone(ctx context.Context, spec CloneSpec, dir string, out io.Writ
 		env = append(env, sshVars...)
 	}
 
-	cmd := exec.CommandContext(ctx, bin, cloneArgs(spec, dir)...)
-	cmd.Env = env
-	cmd.Stdout = out
-	cmd.Stderr = out
-	if err := cmd.Run(); err != nil {
+	run := func(args ...string) error {
+		cmd := exec.CommandContext(ctx, bin, args...)
+		cmd.Env = env
+		cmd.Stdout = out
+		cmd.Stderr = out
+		return cmd.Run()
+	}
+	if isRef(spec.Branch) {
+		// `clone --branch` takes only branch and tag names. A full ref (a fork
+		// PR's refs/pull/<n>/head) is fetched into an empty repo instead.
+		for _, args := range refFetchArgs(spec, dir) {
+			if err := run(args...); err != nil {
+				return fmt.Errorf("git checkout of %s failed: %w", spec.Branch, err)
+			}
+		}
+		return nil
+	}
+	if err := run(cloneArgs(spec, dir)...); err != nil {
 		return fmt.Errorf("git clone failed: %w", err)
 	}
 	return nil
+}
+
+// isRef reports whether branch is a full ref (refs/...) rather than a branch name.
+func isRef(branch string) bool { return strings.HasPrefix(branch, "refs/") }
+
+// refFetchArgs checks out a full ref shallowly: init an empty repo, fetch just
+// that ref, and detach onto it.
+func refFetchArgs(spec CloneSpec, dir string) [][]string {
+	return [][]string{
+		{"init", "-q", "--", dir},
+		{"-C", dir, "fetch", "-q", "--depth", "1", "--", spec.URL, spec.Branch},
+		{"-C", dir, "checkout", "-q", "--detach", "FETCH_HEAD"},
+	}
 }
 
 // cloneArgs builds a shallow, single-branch clone command for the given spec.
