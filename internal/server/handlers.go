@@ -335,20 +335,16 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		app.SSHPrivateKey, app.SSHPublicKey = priv, pub
 	}
 
-	created, err := s.store.CreateApp(r.Context(), app)
-	if err != nil {
-		// Most likely a duplicate name (UNIQUE constraint).
+	// A compose app's first route is created with it, so a refused route (say,
+	// a host another app serves) leaves no half-created app behind.
+	var extra []core.Domain
+	if firstDomain != nil {
+		extra = []core.Domain{*firstDomain}
+	}
+	if _, err := s.store.CreateAppWithDomains(r.Context(), app, extra); err != nil {
+		// Most likely a duplicate name (UNIQUE constraint) or a taken host.
 		s.renderAppsWithError(w, r, "Could not create app: "+err.Error(), name, repo, domain)
 		return
-	}
-	if firstDomain != nil {
-		firstDomain.AppID = created.ID
-		if _, err := s.store.AddDomain(r.Context(), *firstDomain); err != nil {
-			// The app row exists; surface the domain failure instead of hiding it.
-			s.renderAppsWithError(w, r,
-				"App created, but the domain could not be added: "+err.Error(), name, repo, domain)
-			return
-		}
 	}
 	// CreateApp itself seeds a primary domain row for non-compose apps (see
 	// store.CreateApp); compose apps seed one just above via firstDomain. Either

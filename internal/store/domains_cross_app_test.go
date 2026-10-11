@@ -97,3 +97,31 @@ func TestUpdateDomainKeepsPreexistingDuplicateEditable(t *testing.T) {
 		t.Fatalf("case-only host edit on a legacy duplicate: %v", err)
 	}
 }
+
+// A compose app's first route is created with the app. Committing the app first
+// and refusing the route afterwards left a half-created app with no domain.
+func TestCreateAppWithDomainsIsAllOrNothing(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	testApp(t, st, "shop", core.KindNixpacks, "shop.example.com")
+
+	_, err := st.CreateAppWithDomains(ctx,
+		core.App{Name: "stack", RepoURL: "https://example.com/s.git", Kind: core.KindCompose},
+		[]core.Domain{{Host: "shop.example.com", Service: "web", Port: 80}})
+	if !errors.Is(err, ErrDomainTaken) {
+		t.Fatalf("err = %v, want ErrDomainTaken", err)
+	}
+	if _, err := st.GetAppByName(ctx, "stack"); err == nil {
+		t.Fatal("app row was created although its first route was refused")
+	}
+
+	app, err := st.CreateAppWithDomains(ctx,
+		core.App{Name: "stack", RepoURL: "https://example.com/s.git", Kind: core.KindCompose},
+		[]core.Domain{{Host: "stack.example.com", Service: "web", Port: 80}})
+	if err != nil {
+		t.Fatalf("CreateAppWithDomains: %v", err)
+	}
+	if doms, _ := st.ListDomains(ctx, app.ID); len(doms) != 1 || doms[0].AppID != app.ID || doms[0].Host != "stack.example.com" {
+		t.Fatalf("domains = %+v, want the one route bound to the new app", doms)
+	}
+}

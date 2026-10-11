@@ -17,6 +17,13 @@ const appCols = `id, project_id, name, repo_url, domain, created_at, branch, aut
 // CreateApp inserts an app and returns it with ID and CreatedAt populated. The
 // SSH private key (if any) is encrypted at rest.
 func (s *Store) CreateApp(ctx context.Context, app core.App) (core.App, error) {
+	return s.CreateAppWithDomains(ctx, app, nil)
+}
+
+// CreateAppWithDomains is CreateApp plus extra routes (each bound to the new
+// app) in the same transaction: if any route is refused — e.g. another app
+// already serves it — no app is created, rather than one with no domain.
+func (s *Store) CreateAppWithDomains(ctx context.Context, app core.App, domains []core.Domain) (core.App, error) {
 	app.CreatedAt = time.Now().UTC()
 	if app.Source == "" {
 		app.Source = core.SourcePublic
@@ -66,6 +73,12 @@ func (s *Store) CreateApp(ctx context.Context, app core.App) (core.App, error) {
 		if _, err := addDomainTx(ctx, tx, core.Domain{
 			AppID: app.ID, Host: app.Domain, Port: primaryDomainPort, TLS: true,
 		}); err != nil {
+			return core.App{}, err
+		}
+	}
+	for _, d := range domains {
+		d.AppID = app.ID
+		if _, err := addDomainTx(ctx, tx, d); err != nil {
 			return core.App{}, err
 		}
 	}

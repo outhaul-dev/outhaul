@@ -331,3 +331,23 @@ func TestComposeAppDetailShowsStack(t *testing.T) {
 		t.Error("domains panel missing the remove button")
 	}
 }
+
+func TestCreateComposeAppOnTakenHostCreatesNothing(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	if _, err := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "shop.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := e.postForm(t, "/apps", composeForm("shop")) // asks for shop.example.com
+	page := body(t, resp)
+	if resp.StatusCode == http.StatusSeeOther {
+		t.Fatal("compose app created on a host another app routes")
+	}
+	if !strings.Contains(page, "already routed") {
+		t.Errorf("error page does not say the host is taken")
+	}
+	if _, err := e.store.GetAppByName(context.Background(), "shop"); err == nil {
+		t.Error("a half-created compose app (no domain) was left behind")
+	}
+}
