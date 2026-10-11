@@ -2,6 +2,8 @@ package previewmgr
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"log"
 	"time"
 )
@@ -22,7 +24,9 @@ func (m *Manager) Run(ctx context.Context) {
 }
 
 // SweepTick tears down previews whose newest deployment is older than the
-// parent's IdleTTLDays. now is passed in so tests are deterministic.
+// parent's IdleTTLDays, and previews whose parent no longer exists (left behind
+// by parent deletes from before those tore their previews down). now is passed
+// in so tests are deterministic.
 func (m *Manager) SweepTick(ctx context.Context, now time.Time) {
 	previews, err := m.store.ListPreviews(ctx)
 	if err != nil {
@@ -30,6 +34,16 @@ func (m *Manager) SweepTick(ctx context.Context, now time.Time) {
 		return
 	}
 	for _, p := range previews {
+		parent, err := m.store.GetApp(ctx, p.ParentID)
+		if errors.Is(err, sql.ErrNoRows) {
+			if err := m.destroyChild(ctx, p); err != nil {
+				log.Printf("previewmgr: sweep orphan %s: %v", p.Name, err)
+			}
+			continue
+		}
+		if err != nil {
+			continue
+		}
 		cfg, err := m.store.GetPreviewConfig(ctx, p.ParentID)
 		if err != nil || cfg.IdleTTLDays <= 0 {
 			continue
@@ -39,10 +53,6 @@ func (m *Manager) SweepTick(ctx context.Context, now time.Time) {
 			continue
 		}
 		if now.Sub(last) > time.Duration(cfg.IdleTTLDays)*24*time.Hour {
-			parent, err := m.store.GetApp(ctx, p.ParentID)
-			if err != nil {
-				continue
-			}
 			if err := m.teardown(ctx, parent, p.PRNumber, parent.GithubRepo, cfg); err != nil {
 				log.Printf("previewmgr: sweep teardown %s: %v", p.Name, err)
 			}

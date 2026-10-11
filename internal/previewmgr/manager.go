@@ -322,7 +322,22 @@ func (m *Manager) redeploy(ctx context.Context, parent core.App, ev webhook.Pull
 	return nil
 }
 
-// teardown removes a preview's containers, databases, domains, and app row.
+// teardown removes the preview for parent's PR pr and posts the destroyed
+// comment. A PR with no preview is a no-op.
+func (m *Manager) teardown(ctx context.Context, parent core.App, pr int, repo string, cfg core.PreviewConfig) error {
+	child, err := m.store.GetPreviewByPR(ctx, parent.ID, pr)
+	if err != nil {
+		return nil
+	}
+	if err := m.destroyChild(ctx, child); err != nil {
+		return err
+	}
+	m.comment(ctx, cfg, parent.GitSourceID, repo, pr, "Preview environment destroyed.")
+	return nil
+}
+
+// destroyChild removes a preview's containers, databases, domains, and app row.
+// It needs nothing from the parent, so it can also reap an orphan.
 //
 // Ordering matters: attachments.database_id references databases with no cascade,
 // so a database row can only be deleted once its attachment row is gone. We
@@ -331,12 +346,7 @@ func (m *Manager) redeploy(ctx context.Context, parent core.App, ev webhook.Pull
 // row intact and mark teardown_failed for a clean retry — and only then (3)
 // DeleteApp (which drops the attachment rows) before destroying the DB rows, so
 // each Destroy is FK-safe.
-func (m *Manager) teardown(ctx context.Context, parent core.App, pr int, repo string, cfg core.PreviewConfig) error {
-	child, err := m.store.GetPreviewByPR(ctx, parent.ID, pr)
-	if err != nil {
-		return nil
-	}
-
+func (m *Manager) destroyChild(ctx context.Context, child core.App) error {
 	failed := false
 	// Capture the databases to destroy while the attachment rows still exist.
 	atts, _ := m.store.ListAttachments(ctx, child.ID)
@@ -375,7 +385,6 @@ func (m *Manager) teardown(ctx context.Context, parent core.App, pr int, repo st
 			log.Printf("previewmgr: destroy db %s after app delete: %v", db.Name, err)
 		}
 	}
-	m.comment(ctx, cfg, parent.GitSourceID, repo, pr, "Preview environment destroyed.")
 	return nil
 }
 
