@@ -5,6 +5,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"path/filepath"
@@ -41,6 +42,8 @@ type Config struct {
 
 	PublicURL string // externally reachable base URL of the admin UI (for GitHub callbacks/webhooks); empty disables GitHub App setup
 	ServerIP  string // public IP used in generated sslip.io template domains; empty means auto-detect
+
+	problems []error // malformed OUTHAUL_* values; reported by Validate
 }
 
 // Getenv matches os.Getenv; injected so Load is testable without touching the
@@ -48,26 +51,31 @@ type Config struct {
 type Getenv func(string) string
 
 // Load resolves configuration from defaults overlaid with OUTHAUL_* env vars.
+// A malformed value falls back to its default here, so commands that only
+// need paths keep working; Validate reports it, and serve refuses to start.
 func Load(getenv Getenv) Config {
-	return Config{
+	p := parser{getenv: getenv}
+	c := Config{
 		DataDir:          or(getenv("OUTHAUL_DATA_DIR"), "/var/lib/outhaul"),
-		ListenAddr:       or(getenv("OUTHAUL_LISTEN_ADDR"), ":8080"),
-		SSHAddr:          or(getenv("OUTHAUL_SSH_ADDR"), ":2222"),
+		ListenAddr:       p.addr("OUTHAUL_LISTEN_ADDR", ":8080"),
+		SSHAddr:          p.addr("OUTHAUL_SSH_ADDR", ":2222"),
 		DockerHost:       getenv("OUTHAUL_DOCKER_HOST"), // empty is a valid value: defer to SDK
 		TraefikImage:     or(getenv("OUTHAUL_TRAEFIK_IMAGE"), DefaultTraefikImage),
 		CloudflaredImage: or(getenv("OUTHAUL_CLOUDFLARED_IMAGE"), DefaultCloudflaredImage),
 		Network:          or(getenv("OUTHAUL_NETWORK"), "outhaul"),
 
 		ACMEEmail:     firstField(getenv("OUTHAUL_ACME_EMAIL")),
-		ACMEStaging:   truthy(getenv("OUTHAUL_ACME_STAGING")),
-		LocalCA:       truthy(getenv("OUTHAUL_LOCAL_CA")),
-		HTTPSPort:     or(getenv("OUTHAUL_HTTPS_PORT"), "443"),
-		HealthTimeout: durationOr(getenv("OUTHAUL_HEALTH_TIMEOUT"), 60*time.Second),
-		ImageKeep:     intOr(getenv("OUTHAUL_IMAGE_KEEP"), 5),
+		ACMEStaging:   p.bool("OUTHAUL_ACME_STAGING"),
+		LocalCA:       p.bool("OUTHAUL_LOCAL_CA"),
+		HTTPSPort:     p.port("OUTHAUL_HTTPS_PORT", "443"),
+		HealthTimeout: p.duration("OUTHAUL_HEALTH_TIMEOUT", 60*time.Second),
+		ImageKeep:     p.count("OUTHAUL_IMAGE_KEEP", 5),
 
-		PublicURL: getenv("OUTHAUL_PUBLIC_URL"),
-		ServerIP:  getenv("OUTHAUL_SERVER_IP"),
+		PublicURL: p.url("OUTHAUL_PUBLIC_URL"),
+		ServerIP:  p.ip("OUTHAUL_SERVER_IP"),
 	}
+	c.problems = p.problems
+	return c
 }
 
 // DBPath is the SQLite database file path, derived from DataDir.
@@ -125,12 +133,14 @@ func (c Config) CertResolver() string {
 	return ""
 }
 
-// Validate rejects impossible combinations before any infrastructure moves.
+// Validate rejects malformed values and impossible combinations before any
+// infrastructure moves.
 func (c Config) Validate() error {
+	errs := append([]error(nil), c.problems...)
 	if c.LocalCAEnabled() && c.ACMEEnabled() {
-		return errors.New("OUTHAUL_LOCAL_CA and OUTHAUL_ACME_EMAIL are mutually exclusive: choose local-CA or Let's Encrypt HTTPS")
+		errs = append(errs, errors.New("OUTHAUL_LOCAL_CA and OUTHAUL_ACME_EMAIL are mutually exclusive: choose local-CA or Let's Encrypt HTTPS"))
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // PublicURLSet reports whether an externally reachable base URL is configured.
@@ -195,34 +205,107 @@ func firstField(v string) string {
 	return ""
 }
 
-func truthy(v string) bool {
-	switch v {
-	case "1", "true", "TRUE", "yes", "on":
+// parser reads OUTHAUL_* values, keeping a default for each malformed one
+// and recording why it was rejected.
+type parser struct {
+	getenv   Getenv
+	problems []error
+}
+
+func (p *parser) reject(key, v, want string) {
+	p.problems = append(p.problems, fmt.Errorf("%s=%q: want %s", key, v, want))
+}
+
+// bool accepts 1/0, true/false, yes/no and on/off in any case; empty is false.
+func (p *parser) bool(key string) bool {
+	v := p.getenv(key)
+	switch strings.ToLower(v) {
+	case "":
+		return false
+	case "1", "true", "yes", "on":
 		return true
+	case "0", "false", "no", "off":
+		return false
 	}
+	p.reject(key, v, "true or false")
 	return false
 }
 
-// intOr parses v as a non-negative integer, falling back on empty, invalid,
-// or negative input.
-func intOr(v string, fallback int) int {
+// count parses a non-negative integer.
+func (p *parser) count(key string, fallback int) int {
+	v := p.getenv(key)
 	if v == "" {
 		return fallback
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil || n < 0 {
+		p.reject(key, v, "a whole number, 0 or more")
 		return fallback
 	}
 	return n
 }
 
-func durationOr(v string, fallback time.Duration) time.Duration {
+// duration parses a positive Go duration such as 90s or 2m.
+func (p *parser) duration(key string, fallback time.Duration) time.Duration {
+	v := p.getenv(key)
 	if v == "" {
 		return fallback
 	}
 	d, err := time.ParseDuration(v)
-	if err != nil {
+	if err != nil || d <= 0 {
+		p.reject(key, v, "a positive duration with a unit, such as 90s or 2m")
 		return fallback
 	}
 	return d
+}
+
+// port parses a TCP port number.
+func (p *parser) port(key, fallback string) string {
+	v := p.getenv(key)
+	if v == "" {
+		return fallback
+	}
+	if n, err := strconv.Atoi(v); err != nil || n < 1 || n > 65535 {
+		p.reject(key, v, "a port number from 1 to 65535")
+		return fallback
+	}
+	return v
+}
+
+// addr parses a listen address, host:port with the host optional (":8080").
+func (p *parser) addr(key, fallback string) string {
+	v := p.getenv(key)
+	if v == "" {
+		return fallback
+	}
+	_, port, err := net.SplitHostPort(v)
+	if n, perr := strconv.Atoi(port); err != nil || perr != nil || n < 1 || n > 65535 {
+		p.reject(key, v, "host:port, such as :8080 or 127.0.0.1:8080")
+		return fallback
+	}
+	return v
+}
+
+// url parses an absolute http(s) URL; empty stays empty.
+func (p *parser) url(key string) string {
+	v := p.getenv(key)
+	if v == "" {
+		return ""
+	}
+	u, err := url.Parse(v)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		p.reject(key, v, "an absolute URL such as https://paas.example.com")
+		return ""
+	}
+	return v
+}
+
+// ip parses an IP address; empty stays empty.
+func (p *parser) ip(key string) string {
+	v := p.getenv(key)
+	if v != "" && net.ParseIP(v) == nil {
+		p.reject(key, v, "an IP address")
+		return ""
+	}
+	return v
 }

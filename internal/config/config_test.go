@@ -2,6 +2,7 @@ package config
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -245,5 +246,68 @@ func TestCADirs(t *testing.T) {
 	}
 	if got, want := cfg.CertsDir(), filepath.Join(cfg.DataDir, "traefik", "certs"); got != want {
 		t.Errorf("CertsDir = %q; want %q", got, want)
+	}
+}
+
+// Bad values used to fall back to defaults silently: OUTHAUL_HEALTH_TIMEOUT=120
+// (no unit) meant 60s, "0" failed every deploy at once, a typo'd boolean read
+// as off. Load still falls back (so `outhaul ca root` works), but Validate,
+// which serve runs first, names each bad variable.
+func TestValidateRejectsMalformedValues(t *testing.T) {
+	cases := []struct{ key, val string }{
+		{"OUTHAUL_HEALTH_TIMEOUT", "120"},
+		{"OUTHAUL_HEALTH_TIMEOUT", "0"},
+		{"OUTHAUL_HEALTH_TIMEOUT", "-5s"},
+		{"OUTHAUL_IMAGE_KEEP", "lots"},
+		{"OUTHAUL_IMAGE_KEEP", "-3"},
+		{"OUTHAUL_ACME_STAGING", "maybe"},
+		{"OUTHAUL_LOCAL_CA", "enabled"},
+		{"OUTHAUL_HTTPS_PORT", "https"},
+		{"OUTHAUL_HTTPS_PORT", "70000"},
+		{"OUTHAUL_LISTEN_ADDR", "8080"},
+		{"OUTHAUL_SSH_ADDR", "2222"},
+		{"OUTHAUL_PUBLIC_URL", "paas.example.com"},
+		{"OUTHAUL_PUBLIC_URL", "ftp://paas.example.com"},
+		{"OUTHAUL_SERVER_IP", "my-server"},
+	}
+	for _, tc := range cases {
+		cfg := Load(func(k string) string {
+			if k == tc.key {
+				return tc.val
+			}
+			return ""
+		})
+		err := cfg.Validate()
+		if err == nil {
+			t.Errorf("%s=%q: Validate accepted it", tc.key, tc.val)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.key) {
+			t.Errorf("%s=%q: error %q does not name the variable", tc.key, tc.val, err)
+		}
+	}
+}
+
+func TestValidateAcceptsWellFormedValues(t *testing.T) {
+	env := map[string]string{
+		"OUTHAUL_HEALTH_TIMEOUT": "2m",
+		"OUTHAUL_IMAGE_KEEP":     "0",
+		"OUTHAUL_ACME_STAGING":   "Yes",
+		"OUTHAUL_LOCAL_CA":       "off",
+		"OUTHAUL_HTTPS_PORT":     "8443",
+		"OUTHAUL_LISTEN_ADDR":    "127.0.0.1:9090",
+		"OUTHAUL_SSH_ADDR":       ":2222",
+		"OUTHAUL_PUBLIC_URL":     "https://paas.example.com",
+		"OUTHAUL_SERVER_IP":      "203.0.113.7",
+	}
+	cfg := Load(func(k string) string { return env[k] })
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if !cfg.ACMEStaging || cfg.LocalCA {
+		t.Errorf("ACMEStaging=%v LocalCA=%v, want true,false", cfg.ACMEStaging, cfg.LocalCA)
+	}
+	if err := Load(func(string) string { return "" }).Validate(); err != nil {
+		t.Errorf("defaults: Validate: %v", err)
 	}
 }
