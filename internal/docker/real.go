@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"path"
@@ -66,9 +67,41 @@ func (r *real) PullImage(ctx context.Context, ref string, out io.Writer) error {
 	if out == nil {
 		out = io.Discard
 	}
-	// The stream must be drained for the pull to complete.
-	_, err = io.Copy(out, rc)
-	return err
+	return drainPull(rc, out)
+}
+
+// drainPull reads a pull's JSON progress stream to the end (the pull only
+// completes once it is drained), mirroring it to out, and returns the first
+// error the daemon reports inside the stream. The HTTP status is already 200
+// by then, so an in-stream error — no space left, a failed layer download —
+// is the only signal that the image never arrived.
+func drainPull(stream io.Reader, out io.Writer) error {
+	dec := json.NewDecoder(io.TeeReader(stream, out))
+	for {
+		var msg struct {
+			Error       string `json:"error"`
+			ErrorDetail struct {
+				Message string `json:"message"`
+			} `json:"errorDetail"`
+		}
+		if err := dec.Decode(&msg); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			var syn *json.SyntaxError
+			if errors.As(err, &syn) { // not JSON after all: just drain it (read bytes are already mirrored)
+				_, err = io.Copy(out, stream)
+				return err
+			}
+			return err
+		}
+		if m := msg.ErrorDetail.Message; m != "" {
+			return fmt.Errorf("pull failed: %s", m)
+		}
+		if msg.Error != "" {
+			return fmt.Errorf("pull failed: %s", msg.Error)
+		}
+	}
 }
 
 func (r *real) EnsureNetwork(ctx context.Context, name string) error {
