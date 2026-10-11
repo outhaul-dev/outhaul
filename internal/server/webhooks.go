@@ -92,7 +92,7 @@ func (s *Server) handleGithubWebhook(w http.ResponseWriter, r *http.Request) {
 		// redelivered by hand rather than being silently lost.
 		if err := s.previews.Enqueue(src.ID, ev); err != nil {
 			log.Printf("webhook: preview event for %s#%d: %v", ev.BaseRepoFullName, ev.Number, err)
-			http.Error(w, "preview queue full, retry later", http.StatusServiceUnavailable)
+			http.Error(w, "preview events unavailable, retry later", http.StatusServiceUnavailable)
 			return
 		}
 		w.WriteHeader(http.StatusOK)

@@ -74,14 +74,15 @@ type Manager struct {
 	gh       GithubAPI
 	token    TokenSource
 	serverIP string
-	events   chan prJob // pull_request events waiting for Run (see Enqueue)
+	events   chan prJob    // pull_request events waiting for Run (see Enqueue)
+	stopped  chan struct{} // closed when Run returns
 
 	jobTimeout time.Duration // bound on handling one event (see handleJob)
 }
 
 func New(st Store, n Notifier, db DBProvisioner, dk Docker, gh GithubAPI, ts TokenSource, serverIP string) *Manager {
 	return &Manager{store: st, notifier: n, dbprov: db, docker: dk, gh: gh, token: ts, serverIP: serverIP,
-		events: make(chan prJob, queueSize), jobTimeout: defaultJobTimeout}
+		events: make(chan prJob, queueSize), stopped: make(chan struct{}), jobTimeout: defaultJobTimeout}
 }
 
 // Handle routes one pull_request event to the right lifecycle action for every

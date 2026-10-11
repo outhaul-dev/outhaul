@@ -97,3 +97,19 @@ func TestHungSpawnDoesNotStallTheQueue(t *testing.T) {
 		t.Error("the timed-out spawn left its half-built preview behind")
 	}
 }
+
+// During shutdown Run stops before the HTTP server does. An event accepted in
+// that window would be acknowledged to GitHub and never handled; refusing it
+// fails the delivery so it shows as failed and can be redelivered.
+func TestEnqueueRefusesAfterRunStops(t *testing.T) {
+	h := newHarness(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { h.mgr.Run(ctx); close(done) }()
+	cancel()
+	<-done
+
+	if err := h.mgr.Enqueue(h.sourceID, prEvent("closed", 1, "b", "acme/web", false)); err == nil {
+		t.Fatal("Enqueue accepted an event after Run returned; nothing will ever handle it")
+	}
+}

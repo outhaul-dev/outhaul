@@ -28,6 +28,10 @@ var handledActions = map[string]bool{"opened": true, "reopened": true, "synchron
 // errQueueFull is returned by Enqueue when Run has fallen queueSize events behind.
 var errQueueFull = errors.New("preview event queue is full")
 
+// errStopped is returned by Enqueue once Run has returned: during shutdown the
+// HTTP server outlives Run, and an event accepted then would never be handled.
+var errStopped = errors.New("preview manager is shutting down")
+
 type prJob struct {
 	sourceID int64
 	ev       webhook.PullRequestEvent
@@ -41,6 +45,11 @@ type prJob struct {
 func (m *Manager) Enqueue(sourceID int64, ev webhook.PullRequestEvent) error {
 	if !handledActions[ev.Action] {
 		return nil
+	}
+	select {
+	case <-m.stopped:
+		return errStopped
+	default:
 	}
 	select {
 	case m.events <- prJob{sourceID: sourceID, ev: ev}:

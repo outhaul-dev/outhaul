@@ -15,6 +15,7 @@ import (
 // parent's IdleTTLDays. Events and sweeps share this one goroutine, so they
 // never touch the same preview concurrently.
 func (m *Manager) Run(ctx context.Context) {
+	defer close(m.stopped)
 	t := time.NewTicker(time.Hour)
 	defer t.Stop()
 	// Sweep once up front: previews orphaned before an upgrade, or whose PR
