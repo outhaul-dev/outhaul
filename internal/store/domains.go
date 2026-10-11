@@ -66,7 +66,9 @@ func addDomainTx(ctx context.Context, tx *sql.Tx, d core.Domain) (core.Domain, e
 
 // checkRouteFreeTx returns ErrDomainTaken when an app other than d.AppID already
 // routes d's host (case-insensitively) and path. The same host on a different
-// path is a legitimate split (e.g. /api served by another app).
+// path is a legitimate split (e.g. /api served by another app). The check runs
+// in the writing transaction and the store holds a single connection, so two
+// concurrent writes cannot both pass it.
 func checkRouteFreeTx(ctx context.Context, tx *sql.Tx, d core.Domain) error {
 	var owner string
 	err := tx.QueryRowContext(ctx,
@@ -89,8 +91,18 @@ func (s *Store) UpdateDomain(ctx context.Context, d core.Domain) error {
 		return err
 	}
 	defer tx.Rollback()
-	if err := checkRouteFreeTx(ctx, tx, d); err != nil {
+	// Only a move onto a new host+path is checked: rows that already shared a
+	// route with another app before the check existed stay editable in place.
+	var moved bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT lower(host) != lower(?) OR path != ? FROM domains WHERE id = ? AND app_id = ?`,
+		d.Host, d.Path, d.ID, d.AppID).Scan(&moved); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
+	}
+	if moved {
+		if err := checkRouteFreeTx(ctx, tx, d); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE domains SET host = ?, service = ?, port = ?, path = ?, internal_path = ?, tls = ?

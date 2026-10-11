@@ -71,3 +71,29 @@ func TestUpdateDomainRejectsHostRoutedByAnotherApp(t *testing.T) {
 		t.Fatalf("UpdateDomain err = %v, want ErrDomainTaken", err)
 	}
 }
+
+// Installs from before the check may already hold a host+path two apps share.
+// Those rows must stay editable (TLS, port, service) as long as the edit keeps
+// their host and path; only moving onto another app's route is refused.
+func TestUpdateDomainKeepsPreexistingDuplicateEditable(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	testApp(t, st, "shop", core.KindNixpacks, "shop.example.com")
+	blog := testApp(t, st, "blog", core.KindCompose, "")
+	if _, err := st.db.ExecContext(ctx,
+		`INSERT INTO domains (app_id, host, service, port, path, internal_path, tls, created_at)
+		 VALUES (?, 'shop.example.com', 'web', 80, '', '', 0, '2026-07-04T00:00:00Z')`, blog.ID); err != nil {
+		t.Fatalf("seed legacy duplicate: %v", err)
+	}
+	doms, _ := st.ListDomains(ctx, blog.ID)
+
+	d := doms[0]
+	d.TLS = true
+	if err := st.UpdateDomain(ctx, d); err != nil {
+		t.Fatalf("editing a legacy duplicate without moving it: %v", err)
+	}
+	d.Host = "SHOP.example.com" // a case-only change is not a move
+	if err := st.UpdateDomain(ctx, d); err != nil {
+		t.Fatalf("case-only host edit on a legacy duplicate: %v", err)
+	}
+}
