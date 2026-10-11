@@ -102,12 +102,18 @@ func (c *HTTPClient) ExchangeManifest(ctx context.Context, code string) (Manifes
 	}, nil
 }
 
-func (c *HTTPClient) InstallationToken(ctx context.Context, appJWT string, installationID int64) (string, error) {
+func (c *HTTPClient) InstallationToken(ctx context.Context, appJWT string, installationID int64, permissions map[string]string) (string, error) {
 	var r struct {
 		Token string `json:"token"`
 	}
 	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", c.BaseURL, installationID)
-	if err := c.do(ctx, http.MethodPost, url, "Bearer "+appJWT, &r); err != nil {
+	var err error
+	if permissions != nil {
+		err = c.doJSON(ctx, http.MethodPost, url, "Bearer "+appJWT, map[string]any{"permissions": permissions}, &r)
+	} else {
+		err = c.do(ctx, http.MethodPost, url, "Bearer "+appJWT, &r)
+	}
+	if err != nil {
 		return "", err
 	}
 	return r.Token, nil

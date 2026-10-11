@@ -20,14 +20,26 @@ func NewGithubApp(c github.Client) *GithubApp { return &GithubApp{gh: c} }
 
 func (p *GithubApp) Kind() string { return core.GitSourceGithubApp }
 
-// Token mints a fresh installation access token. Tokens are short-lived and
-// minted per use; caching them is a deliberate seam, not an oversight.
+// Token mints a fresh installation access token with all of the App's
+// permissions. Tokens are short-lived and minted per use; caching them is a
+// deliberate seam, not an oversight.
 func (p *GithubApp) Token(ctx context.Context, src core.GitSource) (string, error) {
+	return p.mint(ctx, src, nil)
+}
+
+// CloneToken mints an installation token narrowed to contents:read. The App
+// also holds pull_requests:write for preview comments; a clone needs neither
+// that nor anything else.
+func (p *GithubApp) CloneToken(ctx context.Context, src core.GitSource) (string, error) {
+	return p.mint(ctx, src, map[string]string{"contents": "read"})
+}
+
+func (p *GithubApp) mint(ctx context.Context, src core.GitSource, permissions map[string]string) (string, error) {
 	jwt, err := p.appJWT(src)
 	if err != nil {
 		return "", err
 	}
-	tok, err := p.gh.InstallationToken(ctx, jwt, src.GithubApp.InstallationID)
+	tok, err := p.gh.InstallationToken(ctx, jwt, src.GithubApp.InstallationID, permissions)
 	if err != nil {
 		return "", fmt.Errorf("mint installation token for %s: %w", src.Display(), err)
 	}

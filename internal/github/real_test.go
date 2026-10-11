@@ -54,12 +54,36 @@ func TestHTTPClientInstallationToken(t *testing.T) {
 
 	c := New()
 	c.BaseURL = srv.URL
-	tok, err := c.InstallationToken(context.Background(), "thejwt", 99)
+	tok, err := c.InstallationToken(context.Background(), "thejwt", 99, nil)
 	if err != nil {
 		t.Fatalf("InstallationToken: %v", err)
 	}
 	if tok != "ghs_tok" {
 		t.Errorf("token = %q", tok)
+	}
+}
+
+// A token minted with permissions carries only those (a subset of the App's),
+// so a clone token can't also write to pull requests.
+func TestHTTPClientInstallationTokenScoped(t *testing.T) {
+	var got struct {
+		Permissions map[string]string `json:"permissions"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"token": "ghs_tok"})
+	}))
+	defer srv.Close()
+
+	c := New()
+	c.BaseURL = srv.URL
+	if _, err := c.InstallationToken(context.Background(), "thejwt", 99, map[string]string{"contents": "read"}); err != nil {
+		t.Fatalf("InstallationToken: %v", err)
+	}
+	if len(got.Permissions) != 1 || got.Permissions["contents"] != "read" {
+		t.Errorf("requested permissions = %v, want {contents: read}", got.Permissions)
 	}
 }
 

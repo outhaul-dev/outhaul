@@ -29,7 +29,9 @@ type Installation struct {
 // Client talks to the GitHub App API. Implemented by *HTTPClient and *Fake.
 type Client interface {
 	ExchangeManifest(ctx context.Context, code string) (ManifestResult, error)
-	InstallationToken(ctx context.Context, appJWT string, installationID int64) (string, error)
+	// InstallationToken mints an installation access token. permissions, when
+	// non-nil, narrows it to that subset of the App's permissions.
+	InstallationToken(ctx context.Context, appJWT string, installationID int64, permissions map[string]string) (string, error)
 	ListRepos(ctx context.Context, token string) ([]Repo, error)
 	// UpsertPRComment creates or updates the single Outhaul preview comment on a
 	// PR, identified by a hidden marker in the body.

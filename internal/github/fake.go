@@ -25,6 +25,7 @@ type Fake struct {
 	LastCode           string
 	LastJWT            string
 	LastInstallationID int64
+	LastPermissions    map[string]string // permissions the last InstallationToken was narrowed to (nil = all)
 	LastToken          string
 
 	ReposCalls        int // number of ListRepos invocations, for cache tests
@@ -41,9 +42,10 @@ func (f *Fake) ExchangeManifest(ctx context.Context, code string) (ManifestResul
 	return f.ManifestResult, f.ManifestErr
 }
 
-func (f *Fake) InstallationToken(ctx context.Context, appJWT string, installationID int64) (string, error) {
+func (f *Fake) InstallationToken(ctx context.Context, appJWT string, installationID int64, permissions map[string]string) (string, error) {
 	f.LastJWT = appJWT
 	f.LastInstallationID = installationID
+	f.LastPermissions = permissions
 	return f.Token, f.TokenErr
 }
 

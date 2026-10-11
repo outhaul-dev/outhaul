@@ -27,6 +27,9 @@ type Provider interface {
 	// Token returns a short-lived credential valid for both HTTPS clone and
 	// API calls. For GitHub these are one object — an installation token.
 	Token(ctx context.Context, src core.GitSource) (string, error)
+	// CloneToken returns a short-lived credential that can only read
+	// repository contents — what a clone needs, and nothing more.
+	CloneToken(ctx context.Context, src core.GitSource) (string, error)
 	// VerifyWebhook reports whether body carries a valid signature for src.
 	VerifyWebhook(src core.GitSource, h http.Header, body []byte) bool
 }
@@ -50,6 +53,15 @@ func (r *Registry) For(kind string) (Provider, error) {
 		return nil, fmt.Errorf("gitsource: no provider for kind %q", kind)
 	}
 	return p, nil
+}
+
+// CloneTokenFor mints a read-only clone credential for a source in one step.
+func (r *Registry) CloneTokenFor(ctx context.Context, src core.GitSource) (string, error) {
+	p, err := r.For(src.Kind)
+	if err != nil {
+		return "", err
+	}
+	return p.CloneToken(ctx, src)
 }
 
 // TokenFor mints a credential for a source in one step. Callers that only need

@@ -508,7 +508,7 @@ func (w *Worker) sourceToken(ctx context.Context, app core.App) (string, error) 
 	if !ok {
 		return "", fmt.Errorf("app %s references git source %d, which no longer exists", app.Name, app.GitSourceID)
 	}
-	return w.sources.TokenFor(ctx, src)
+	return w.sources.CloneTokenFor(ctx, src)
 }
 
 // containerName is the deterministic name of an app's running container.

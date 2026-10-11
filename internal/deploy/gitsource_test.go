@@ -88,6 +88,11 @@ func TestCloneSpecUsesTheAppsOwnGitSource(t *testing.T) {
 		t.Errorf("minted token for installation %d, want source B's installation 9001 (app.GitSourceID=%d, not A's %d)",
 			gh.LastInstallationID, srcB.ID, srcA.ID)
 	}
+	// The App can write pull requests (preview comments); a clone needs only to
+	// read contents, so its token is minted with just that.
+	if len(gh.LastPermissions) != 1 || gh.LastPermissions["contents"] != "read" {
+		t.Errorf("clone token permissions = %v, want {contents: read}", gh.LastPermissions)
+	}
 }
 
 func TestCloneSpecFailsClearlyWithoutASource(t *testing.T) {
