@@ -15,8 +15,9 @@ type ManifestParams struct {
 }
 
 // BuildManifest returns the GitHub App manifest JSON POSTed to
-// github.com/settings/apps/new. Permissions are read-only contents + metadata;
-// the App subscribes to push events only.
+// github.com/settings/apps/new. Permissions are read-only contents + metadata,
+// plus pull_requests:write for PR previews (pull_request deliveries and the
+// sticky PR comment); the App subscribes to push and pull_request events.
 func BuildManifest(p ManifestParams) (string, error) {
 	base := strings.TrimRight(p.PublicURL, "/")
 	m := map[string]any{
@@ -30,10 +31,11 @@ func BuildManifest(p ManifestParams) (string, error) {
 		},
 		"public": false,
 		"default_permissions": map[string]any{
-			"contents": "read",
-			"metadata": "read",
+			"contents":      "read",
+			"metadata":      "read",
+			"pull_requests": "write",
 		},
-		"default_events": []string{"push"},
+		"default_events": []string{"push", "pull_request"},
 	}
 	b, err := json.Marshal(m)
 	if err != nil {

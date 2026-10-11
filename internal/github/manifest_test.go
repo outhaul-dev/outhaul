@@ -40,9 +40,14 @@ func TestBuildManifest(t *testing.T) {
 	if perms["contents"] != "read" || perms["metadata"] != "read" {
 		t.Errorf("permissions = %v", perms)
 	}
+	// PR previews need pull_request deliveries (pull_requests:read) and post a
+	// sticky comment through the issues-comments API (pull_requests:write).
+	if perms["pull_requests"] != "write" {
+		t.Errorf("pull_requests permission = %v, want write", perms["pull_requests"])
+	}
 	events := m["default_events"].([]any)
-	if len(events) != 1 || events[0] != "push" {
-		t.Errorf("events = %v", events)
+	if len(events) != 2 || events[0] != "push" || events[1] != "pull_request" {
+		t.Errorf("events = %v, want [push pull_request]", events)
 	}
 }
 

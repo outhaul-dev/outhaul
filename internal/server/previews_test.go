@@ -25,6 +25,26 @@ func TestPreviewsSectionRendersForGithubApp(t *testing.T) {
 	}
 }
 
+// GitHub never upgrades an existing App from its manifest: Apps connected before
+// previews needed pull_request deliveries must be edited by hand, so the panel
+// has to say what to grant.
+func TestPreviewsSectionNamesRequiredGithubPermission(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, err := e.store.CreateApp(context.Background(), core.App{
+		Name: "web", Source: core.SourceGithub, GithubRepo: "me/app", Kind: core.KindNixpacks, Branch: "main",
+	})
+	if err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+	page := body(t, e.get(t, "/apps/"+itoa(app.ID)))
+	for _, want := range []string{"Pull requests", "Read and write", "Pull request</strong> event"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("preview panel does not mention %q", want)
+		}
+	}
+}
+
 func TestPreviewsSectionHiddenForNonGithub(t *testing.T) {
 	e := newTestEnv(t)
 	e.completeSetup(t)

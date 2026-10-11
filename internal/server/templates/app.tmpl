@@ -378,6 +378,7 @@ git push outhaul {{.PushBranch}}</pre>{{template "copybtn" .}}</div>
     <button type="submit" class="btn btn-primary">Save</button>
   </form>
   <p class="muted env-note">Leave the base domain blank to use generated sslip.io hostnames.</p>
+  <p class="muted env-note">Previews need the GitHub App to have the <strong>Pull requests: Read and write</strong> permission and the <strong>Pull request</strong> event. Apps connected before previews existed don't have them: add both under the App's <em>Permissions &amp; events</em> settings on GitHub, then accept the updated permissions on its installation.</p>
   {{if .Previews}}
   <table class="table">
     <thead><tr><th>PR</th><th>Status</th><th>URL</th><th></th></tr></thead>
