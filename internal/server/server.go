@@ -116,6 +116,9 @@ type Server struct {
 
 	backfillMu        sync.Mutex
 	backfillAttempted map[int64]bool // git source ids already probed for a missing account name, this process lifetime
+
+	streams     context.Context // cancelled by CloseStreams; ends every open log stream
+	stopStreams context.CancelFunc
 }
 
 // New constructs a Server, parsing the embedded templates. setupToken guards the
@@ -142,10 +145,25 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 		stateTokens:       map[string]time.Time{},
 		backfillAttempted: map[int64]bool{},
 	}
+	s.streams, s.stopStreams = context.WithCancel(context.Background())
 	if err := s.parseTemplates(); err != nil {
 		return nil, err
 	}
 	return s, nil
+}
+
+// CloseStreams ends every open log stream. A stream otherwise lasts until its
+// deployment finishes, its container stops or the browser goes away, so one
+// open log page kept http.Server.Shutdown waiting out its whole timeout.
+// Register it with http.Server.RegisterOnShutdown.
+func (s *Server) CloseStreams() { s.stopStreams() }
+
+// streamContext is r's context, also cancelled by CloseStreams. Long-lived
+// handlers (SSE) wait on it instead of r.Context().
+func (s *Server) streamContext(r *http.Request) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(r.Context())
+	stop := context.AfterFunc(s.streams, cancel)
+	return ctx, func() { stop(); cancel() }
 }
 
 // SetCertSync installs the hook that refreshes local-CA certs after domain

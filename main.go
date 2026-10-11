@@ -267,11 +267,7 @@ func serve() error {
 	}
 	printSetupHint(srv, cfg, setupToken)
 
-	httpServer := &http.Server{
-		Addr:              cfg.ListenAddr,
-		Handler:           srv.Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	httpServer := newHTTPServer(cfg.ListenAddr, srv.Handler(), srv.CloseStreams)
 
 	serverErr := make(chan error, 1)
 	go func() {
@@ -450,9 +446,22 @@ func (ic *infraController) Disable(_ context.Context) error {
 	return nil
 }
 
+// newHTTPServer builds the admin UI's server. onShutdown runs as Shutdown
+// begins: it ends the long-lived log streams, which never go idle on their own.
+func newHTTPServer(addr string, h http.Handler, onShutdown func()) *http.Server {
+	s := &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	s.RegisterOnShutdown(onShutdown)
+	return s
+}
+
 // shutdown performs graceful shutdown: stop the worker first so in-flight
-// pipelines abort (and are marked failed) and their log streams close, which
-// lets long-lived SSE connections end, then drain the HTTP server.
+// pipelines abort (and are marked failed) and their log streams close, then
+// drain the HTTP server, which ends any log streams still open (see
+// newHTTPServer).
 func shutdown(httpServer *http.Server, stopWorker context.CancelFunc, workerDone <-chan struct{}) error {
 	stopWorker()
 	select {

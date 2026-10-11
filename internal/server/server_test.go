@@ -113,6 +113,7 @@ type fakeRuntime struct {
 	stopped   []string
 	removed   []string
 	logs      map[string]string       // container ID -> content for ContainerLogs
+	follow    io.ReadCloser           // when set, ContainerLogs returns it (a follow stream)
 	logTails  []int                   // tail values passed to ContainerLogs
 	stats     map[string]docker.Stats // container ID -> sample for ContainerStats
 
@@ -143,6 +144,9 @@ func (f *fakeRuntime) RemoveContainer(_ context.Context, id string, _ bool) erro
 }
 func (f *fakeRuntime) ContainerLogs(_ context.Context, id string, tail int) (io.ReadCloser, error) {
 	f.logTails = append(f.logTails, tail)
+	if f.follow != nil {
+		return f.follow, nil
+	}
 	content, ok := f.logs[id]
 	if !ok {
 		return nil, fmt.Errorf("no such container: %s", id)

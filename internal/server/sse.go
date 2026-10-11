@@ -57,6 +57,8 @@ func (s *Server) handleLogsSSE(w http.ResponseWriter, r *http.Request) {
 		history, lines, cancel = s.broker.Subscribe(id)
 	}
 	defer cancel()
+	ctx, stop := s.streamContext(r)
+	defer stop()
 
 	for _, line := range history {
 		writeSSE(w, "log", line)
@@ -65,7 +67,7 @@ func (s *Server) handleLogsSSE(w http.ResponseWriter, r *http.Request) {
 
 	for {
 		select {
-		case <-r.Context().Done():
+		case <-ctx.Done():
 			return
 		case line, open := <-lines:
 			if !open {
@@ -141,7 +143,9 @@ func (s *Server) streamContainerLogs(w http.ResponseWriter, r *http.Request, res
 		flusher.Flush()
 		return
 	}
-	logs, err := s.runtime.ContainerLogs(r.Context(), cid, tail)
+	ctx, stop := s.streamContext(r)
+	defer stop()
+	logs, err := s.runtime.ContainerLogs(ctx, cid, tail)
 	if err != nil {
 		writeSSE(w, "err", "Could not open the container's logs: "+err.Error())
 		flusher.Flush()
@@ -149,9 +153,9 @@ func (s *Server) streamContainerLogs(w http.ResponseWriter, r *http.Request, res
 	}
 	defer logs.Close()
 	// A follow stream only ends when the container stops; close it when the
-	// browser disconnects so the scanner below unblocks.
+	// browser disconnects or the server shuts down so the scanner unblocks.
 	go func() {
-		<-r.Context().Done()
+		<-ctx.Done()
 		logs.Close()
 	}()
 
@@ -161,8 +165,8 @@ func (s *Server) streamContainerLogs(w http.ResponseWriter, r *http.Request, res
 		writeSSE(w, "log", sc.Text())
 		flusher.Flush()
 	}
-	if r.Context().Err() != nil {
-		return // client went away; nothing to tell it
+	if ctx.Err() != nil {
+		return // client went away or the server is stopping; nothing to tell it
 	}
 	// Stream EOF: the container stopped (or was never running).
 	writeSSE(w, "done", "")
