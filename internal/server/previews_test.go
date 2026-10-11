@@ -45,6 +45,32 @@ func TestPreviewsSectionNamesRequiredGithubPermission(t *testing.T) {
 	}
 }
 
+// The fork toggle must say what a fork preview actually gets now that it runs
+// the fork's code: Preview-only variables, no compose apps, and the reach the
+// code still has on the server's internal network.
+func TestForkToggleExplainsWhatForksReceive(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, err := e.store.CreateApp(context.Background(), core.App{
+		Name: "web", Source: core.SourceGithub, GithubRepo: "me/app", Kind: core.KindNixpacks, Branch: "main",
+	})
+	if err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+	page := body(t, e.get(t, "/apps/"+itoa(app.ID)))
+	start := strings.Index(page, `name="allow_fork_prs"`)
+	if start < 0 {
+		t.Fatal("fork toggle not on the page")
+	}
+	label := page[start:]
+	label = label[:strings.Index(label, "</label>")]
+	for _, want := range []string{"Preview only", "Docker Compose", "internal network"} {
+		if !strings.Contains(label, want) {
+			t.Errorf("fork toggle hint does not mention %q", want)
+		}
+	}
+}
+
 func TestPreviewsSectionHiddenForNonGithub(t *testing.T) {
 	e := newTestEnv(t)
 	e.completeSetup(t)
