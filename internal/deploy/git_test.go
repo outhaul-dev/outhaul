@@ -2,7 +2,10 @@ package deploy
 
 import (
 	"context"
+	"encoding/base64"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -22,15 +25,48 @@ func TestCloneArgsWithBranch(t *testing.T) {
 	}
 }
 
-func TestTokenURL(t *testing.T) {
-	got := tokenURL("https://github.com/o/r.git", "ghs_abc")
-	want := "https://x-access-token:ghs_abc@github.com/o/r.git"
-	if got != want {
-		t.Errorf("tokenURL = %q, want %q", got, want)
+func TestTokenEnvScopesBasicAuthHeaderToGitHub(t *testing.T) {
+	env := tokenEnv("https://github.com/o/r.git", "ghs_abc")
+	want := []string{
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=http.https://github.com/.extraheader",
+		"GIT_CONFIG_VALUE_0=Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:ghs_abc")),
 	}
-	// Non-github or non-https URLs are returned unchanged (defensive).
-	if u := tokenURL("git@github.com:o/r.git", "t"); u != "git@github.com:o/r.git" {
-		t.Errorf("tokenURL mutated ssh url: %q", u)
+	if strings.Join(env, "\n") != strings.Join(want, "\n") {
+		t.Errorf("tokenEnv = %q, want %q", env, want)
+	}
+	// Non-github or non-https URLs get no credentials (defensive).
+	if env := tokenEnv("git@github.com:o/r.git", "t"); len(env) != 0 {
+		t.Errorf("tokenEnv for an ssh url = %q, want none", env)
+	}
+}
+
+// The installation token must never be part of the clone URL: git writes the
+// URL into the work tree's .git/config, the work tree is the build context,
+// and a plain COPY . . would bake an installation-wide token into the image.
+func TestCloneKeepsTokenOutOfURL(t *testing.T) {
+	dir := t.TempDir()
+	record := filepath.Join(dir, "record")
+	fake := filepath.Join(dir, "git")
+	script := "#!/bin/sh\n{ printf 'ARGS:%s\\n' \"$*\"; env | grep '^GIT_CONFIG_'; } > " + record + "\nexit 0\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	g := &Git{Bin: fake}
+	spec := CloneSpec{URL: "https://github.com/o/r.git", Branch: "main", Auth: Auth{Kind: AuthToken, Token: "ghs_secret"}}
+	if err := g.Clone(context.Background(), spec, filepath.Join(dir, "work"), io.Discard); err != nil {
+		t.Fatalf("Clone: %v", err)
+	}
+	got, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.SplitN(string(got), "\n", 2)[0]
+	if strings.Contains(args, "ghs_secret") || !strings.Contains(args, "https://github.com/o/r.git") {
+		t.Errorf("clone args = %q; want the plain URL and no token", args)
+	}
+	if !strings.Contains(string(got), "GIT_CONFIG_KEY_0=http.https://github.com/.extraheader") {
+		t.Errorf("auth header config not passed via env:\n%s", got)
 	}
 }
 

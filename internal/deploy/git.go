@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"os"
@@ -56,12 +57,11 @@ func (g *Git) Clone(ctx context.Context, spec CloneSpec, dir string, out io.Writ
 		return fmt.Errorf("git binary %q not found on PATH: %w", bin, err)
 	}
 
-	url := spec.URL
 	env := os.Environ()
 
 	switch spec.Auth.Kind {
 	case AuthToken:
-		url = tokenURL(url, spec.Auth.Token)
+		env = append(env, tokenEnv(spec.URL, spec.Auth.Token)...)
 	case AuthSSH:
 		sshVars, cleanup, err := sshEnv(spec.Auth.SSHKey)
 		if err != nil {
@@ -71,13 +71,11 @@ func (g *Git) Clone(ctx context.Context, spec CloneSpec, dir string, out io.Writ
 		env = append(env, sshVars...)
 	}
 
-	spec.URL = url
 	cmd := exec.CommandContext(ctx, bin, cloneArgs(spec, dir)...)
 	cmd.Env = env
 	cmd.Stdout = out
 	cmd.Stderr = out
 	if err := cmd.Run(); err != nil {
-		// Never echo the credentialed URL in errors.
 		return fmt.Errorf("git clone failed: %w", err)
 	}
 	return nil
@@ -92,14 +90,22 @@ func cloneArgs(spec CloneSpec, dir string) []string {
 	return append(args, "--", spec.URL, dir)
 }
 
-// tokenURL rewrites an https GitHub URL to embed an installation token. Other
-// URLs are returned unchanged.
-func tokenURL(url, token string) string {
-	const p = "https://github.com/"
-	if !strings.HasPrefix(url, p) {
-		return url
+// tokenEnv authenticates an https GitHub clone with an installation token,
+// passed as an Authorization header through git's environment config
+// (GIT_CONFIG_COUNT, git 2.31+) and scoped to github.com. Unlike a token in
+// the URL it is never written to the work tree's .git/config — which sits in
+// the build context and could be COPY'd into the image — nor shown in ps.
+// Other URLs get no credentials.
+func tokenEnv(url, token string) []string {
+	if !strings.HasPrefix(url, "https://github.com/") {
+		return nil
 	}
-	return "https://x-access-token:" + token + "@github.com/" + strings.TrimPrefix(url, p)
+	basic := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
+	return []string{
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=http.https://github.com/.extraheader",
+		"GIT_CONFIG_VALUE_0=Authorization: Basic " + basic,
+	}
 }
 
 // sshEnv writes the private key to a temp 0600 file and returns env vars setting
