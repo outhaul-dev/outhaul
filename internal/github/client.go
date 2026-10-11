@@ -34,6 +34,8 @@ type Client interface {
 	// UpsertPRComment creates or updates the single Outhaul preview comment on a
 	// PR, identified by a hidden marker in the body.
 	UpsertPRComment(ctx context.Context, token, repoFullName string, pr int, body string) error
+	// PullRequestState returns a PR's current state, "open" or "closed".
+	PullRequestState(ctx context.Context, token, repoFullName string, pr int) (string, error)
 	// Installation describes one installation. GitHub scopes this to the App
 	// the JWT authenticates as, so a 404 means "this App does not own it" —
 	// which is how an installation is matched back to its source.

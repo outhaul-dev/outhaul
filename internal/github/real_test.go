@@ -211,3 +211,27 @@ func TestHTTPClientErrorStatus(t *testing.T) {
 		t.Errorf("error = %q, want it to contain 500 and boom", err)
 	}
 }
+
+func TestHTTPClientPullRequestState(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/repos/me/app/pulls/42" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "token tok" {
+			t.Errorf("auth = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"number":42,"state":"closed","merged":true}`))
+	}))
+	defer srv.Close()
+
+	c := New()
+	c.BaseURL = srv.URL
+	state, err := c.PullRequestState(context.Background(), "tok", "me/app", 42)
+	if err != nil {
+		t.Fatalf("PullRequestState: %v", err)
+	}
+	if state != "closed" {
+		t.Errorf("state = %q, want closed", state)
+	}
+}

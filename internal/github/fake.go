@@ -31,6 +31,9 @@ type Fake struct {
 	InstallationCalls int // number of Installation invocations, for backfill-retry tests
 
 	Comments map[string]string
+
+	// PRStates maps "repo#pr" -> state; a PR not listed is "open".
+	PRStates map[string]string
 }
 
 func (f *Fake) ExchangeManifest(ctx context.Context, code string) (ManifestResult, error) {
@@ -56,6 +59,13 @@ func (f *Fake) UpsertPRComment(ctx context.Context, token, repoFullName string, 
 	}
 	f.Comments[fmt.Sprintf("%s#%d", repoFullName, pr)] = body
 	return nil
+}
+
+func (f *Fake) PullRequestState(ctx context.Context, token, repoFullName string, pr int) (string, error) {
+	if st, ok := f.PRStates[fmt.Sprintf("%s#%d", repoFullName, pr)]; ok {
+		return st, nil
+	}
+	return "open", nil
 }
 
 // LastComment returns the latest upserted comment body for repo + pr.

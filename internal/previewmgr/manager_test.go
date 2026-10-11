@@ -82,9 +82,22 @@ func (p *fakeDBProvisioner) Destroy(ctx context.Context, db core.Database) error
 	return nil
 }
 
-// fakeCommenter records every PR comment posted, keyed by "repo#pr".
+// fakeCommenter records every PR comment posted, keyed by "repo#pr", and
+// answers PR-state lookups from prStates ("open" when unlisted, stateErr if set).
 type fakeCommenter struct {
 	comments map[string][]string
+	prStates map[string]string
+	stateErr error
+}
+
+func (c *fakeCommenter) PullRequestState(_ context.Context, _, repo string, pr int) (string, error) {
+	if c.stateErr != nil {
+		return "", c.stateErr
+	}
+	if st, ok := c.prStates[repo+"#"+strconv.Itoa(pr)]; ok {
+		return st, nil
+	}
+	return "open", nil
 }
 
 func (c *fakeCommenter) UpsertPRComment(_ context.Context, _, repo string, pr int, body string) error {

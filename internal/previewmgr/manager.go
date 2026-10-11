@@ -51,9 +51,10 @@ type DBProvisioner interface {
 	Destroy(ctx context.Context, d core.Database) error
 }
 
-// GithubCommenter posts the sticky PR comment.
-type GithubCommenter interface {
+// GithubAPI posts the sticky PR comment and reads a PR's state for the sweeper.
+type GithubAPI interface {
 	UpsertPRComment(ctx context.Context, token, repo string, pr int, body string) error
+	PullRequestState(ctx context.Context, token, repo string, pr int) (string, error)
 }
 
 // TokenSource yields an API credential for one git source (nil disables comments).
@@ -70,7 +71,7 @@ type Manager struct {
 	notifier Notifier
 	dbprov   DBProvisioner
 	docker   Docker
-	gh       GithubCommenter
+	gh       GithubAPI
 	token    TokenSource
 	serverIP string
 	events   chan prJob // pull_request events waiting for Run (see Enqueue)
@@ -78,7 +79,7 @@ type Manager struct {
 	jobTimeout time.Duration // bound on handling one event (see handleJob)
 }
 
-func New(st Store, n Notifier, db DBProvisioner, dk Docker, gh GithubCommenter, ts TokenSource, serverIP string) *Manager {
+func New(st Store, n Notifier, db DBProvisioner, dk Docker, gh GithubAPI, ts TokenSource, serverIP string) *Manager {
 	return &Manager{store: st, notifier: n, dbprov: db, docker: dk, gh: gh, token: ts, serverIP: serverIP,
 		events: make(chan prJob, queueSize), jobTimeout: defaultJobTimeout}
 }

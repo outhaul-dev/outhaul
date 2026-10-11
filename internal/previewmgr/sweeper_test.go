@@ -2,6 +2,7 @@ package previewmgr
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -76,5 +77,69 @@ func TestSweeperReapsOrphanedPreview(t *testing.T) {
 	}
 	if h.dbprov.destroyed != 1 {
 		t.Errorf("preview databases destroyed = %d, want 1", h.dbprov.destroyed)
+	}
+}
+
+// A closed PR whose close event never landed — lost in a restart, refused by a
+// full queue, or overtaken by a late synchronize that respawned the preview —
+// kept a public preview, with copies of the parent's secrets, until IdleTTL.
+// The sweep checks each preview's PR on GitHub and tears down closed ones.
+func TestSweeperReapsPreviewOfClosedPR(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	parent := h.seedGithubApp(t, "web", "acme/web", nil)
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 42, "feature-x", "acme/web", false)); err != nil {
+		t.Fatal(err)
+	}
+	h.gh.prStates = map[string]string{"acme/web#42": "closed"}
+
+	h.mgr.SweepTick(ctx, time.Now()) // fresh deployment: only the PR state can reap it
+
+	if _, err := h.st.GetPreviewByPR(ctx, parent.ID, 42); err == nil {
+		t.Fatal("preview of a closed PR survived the sweep")
+	}
+}
+
+func TestSweeperKeepsPreviewWhenPRStateUnknown(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	parent := h.seedGithubApp(t, "web", "acme/web", nil)
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 42, "feature-x", "acme/web", false)); err != nil {
+		t.Fatal(err)
+	}
+	h.gh.stateErr = errors.New("github unavailable")
+
+	h.mgr.SweepTick(ctx, time.Now())
+
+	if _, err := h.st.GetPreviewByPR(ctx, parent.ID, 42); err != nil {
+		t.Fatal("a failed PR-state lookup must not tear the preview down")
+	}
+}
+
+// The first sweep used to wait an hour after boot, so previews orphaned before
+// an upgrade (or closed while the server was down) lingered that long.
+func TestRunSweepsOnStart(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	parent := h.seedGithubApp(t, "web", "acme/web", nil)
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 42, "feature-x", "acme/web", false)); err != nil {
+		t.Fatal(err)
+	}
+	h.gh.prStates = map[string]string{"acme/web#42": "closed"}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { h.mgr.Run(runCtx); close(done) }()
+	defer func() { cancel(); <-done }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := h.st.GetPreviewByPR(ctx, parent.ID, 42); err != nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Run did not sweep on start")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

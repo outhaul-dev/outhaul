@@ -165,3 +165,15 @@ func (c *HTTPClient) UpsertPRComment(ctx context.Context, token, repo string, pr
 	create := fmt.Sprintf("%s/repos/%s/issues/%d/comments", c.BaseURL, repo, pr)
 	return c.doJSON(ctx, http.MethodPost, create, "token "+token, map[string]string{"body": full}, nil)
 }
+
+// PullRequestState returns a PR's current state, "open" or "closed".
+func (c *HTTPClient) PullRequestState(ctx context.Context, token, repo string, pr int) (string, error) {
+	var r struct {
+		State string `json:"state"`
+	}
+	url := fmt.Sprintf("%s/repos/%s/pulls/%d", c.BaseURL, repo, pr)
+	if err := c.do(ctx, http.MethodGet, url, "token "+token, &r); err != nil {
+		return "", err
+	}
+	return r.State, nil
+}
