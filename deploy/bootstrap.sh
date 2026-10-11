@@ -81,7 +81,18 @@ write_env_file() { # dest mode url email sshaddr localca
 normalize_git_port() { # answer
 	case "$1" in
 		[Nn][Oo][Nn][Ee] | [Nn][Oo] | [Nn] | 0 | -) printf '\n' ;;
-		*) printf '%s\n' "$1" ;;
+		'' | *[!0-9]*) printf '  ! %s is not a port number; using 2222\n' "$1" >&2; printf '2222\n' ;;
+		*) if [ "$1" -le 65535 ]; then printf '%s\n' "$1"; else
+			printf '  ! %s is not a port number; using 2222\n' "$1" >&2; printf '2222\n'; fi ;;
+	esac
+}
+
+# outhaul serve refuses a public URL without a scheme; a bare host means
+# HTTPS (it is asked for in the Let's Encrypt mode).
+normalize_public_url() { # answer
+	case "$1" in
+		'' | http://* | https://*) printf '%s\n' "$1" ;;
+		*) printf 'https://%s\n' "$1" ;;
 	esac
 }
 
@@ -636,6 +647,7 @@ main() {
 	preflight
 
 	choose_ingress
+	PUBLIC_URL=$(normalize_public_url "$PUBLIC_URL")
 
 	GITPORT=$(normalize_git_port "$(ask_value "  Git-push-to-deploy port ('none' to disable):" 2222)")
 	if [ -n "$GITPORT" ]; then SSH_ADDR=":$GITPORT"; else SSH_ADDR=''; fi
