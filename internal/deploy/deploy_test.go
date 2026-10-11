@@ -45,6 +45,7 @@ type fakeCloner struct {
 	err    error
 	cloned []string
 	files  map[string]string // repo files to materialize in the clone dir
+	links  map[string]string // repo symlinks to materialize: name -> target
 }
 
 func (f *fakeCloner) Clone(_ context.Context, spec CloneSpec, dir string, out io.Writer) error {
@@ -58,6 +59,11 @@ func (f *fakeCloner) Clone(_ context.Context, spec CloneSpec, dir string, out io
 			return err
 		}
 		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			return err
+		}
+	}
+	for name, target := range f.links {
+		if err := os.Symlink(target, filepath.Join(dir, filepath.FromSlash(name))); err != nil {
 			return err
 		}
 	}
