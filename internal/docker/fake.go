@@ -49,6 +49,10 @@ type Fake struct {
 
 	FailCreate func(spec ContainerSpec) error
 	FailRemove func(id string) error
+	// FailStop, when set, makes StopContainer return its error after the
+	// container has stopped: the daemon finished the stop, but the call
+	// reported failure (say, its context was cancelled mid-wait).
+	FailStop func(id string) error
 
 	// FailRemoveImage, when set, makes RemoveImage return an error for
 	// matching refs (models "image is in use by a container").
@@ -176,6 +180,9 @@ func (f *Fake) StopContainer(_ context.Context, id string, _ time.Duration) erro
 		return fmt.Errorf("no such container: %s", id)
 	}
 	c.State = "exited"
+	if f.FailStop != nil {
+		return f.FailStop(id)
+	}
 	return nil
 }
 

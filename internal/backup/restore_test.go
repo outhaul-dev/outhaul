@@ -390,3 +390,68 @@ func TestListRestoreObjectsNewestFirstOwnDirectoryOnly(t *testing.T) {
 		t.Errorf("RestoreDir = %q (%v), want prod/shop", dir, err)
 	}
 }
+
+// Once the untar helper has started, the volume has been emptied: any
+// failure from then on (a bad archive, the run timeout, a shutdown killing
+// the helper) leaves it partly restored. "interrupted: … context canceled"
+// read as if the old data were intact.
+func TestVolumeRestoreFailureSaysPartlyRestored(t *testing.T) {
+	h := newHarness(t)
+	dest := h.destination(t)
+	app := h.seedComposeWithVolume(t)
+	b := h.backup(t, core.BackupTargetApp, app.ID, dest.ID, 0)
+	const key = "prod/wiki/outhaul-wiki_data/20260101T000000Z.tar.gz"
+	h.blob.objects[key] = []byte("tarball")
+	h.docker.OnRun = func(docker.ContainerSpec) (string, int, error) { return "", 0, context.Canceled }
+
+	h.m.RestoreNow(b, key)
+	h.waitRun(t)
+
+	if run := h.lastRun(t, b.ID); run.Status != core.RunFailed || !strings.Contains(run.Reason, "partly restored") {
+		t.Errorf("run = %q (%q), want a warning that the volume is partly restored", run.Status, run.Reason)
+	}
+}
+
+// pg_restore --clean drops objects before recreating them, so a failure once
+// it has started leaves the database partly restored too.
+func TestDatabaseRestoreFailureSaysPartlyRestored(t *testing.T) {
+	h := newHarness(t)
+	dest := h.destination(t)
+	db := h.seedRunningDatabase(t, "shop", core.EnginePostgres)
+	b := h.backup(t, core.BackupTargetDatabase, db.ID, dest.ID, 0)
+	const key = "prod/shop/20260101T000000Z.dump.gz"
+	h.blob.objects[key] = gzipped(t, "PGDMP")
+	h.docker.OnExec = func(string, []string, []string) (string, string, int, error) {
+		return "", "", 0, context.Canceled
+	}
+
+	h.m.RestoreNow(b, key)
+	h.waitRun(t)
+
+	if run := h.lastRun(t, b.ID); run.Status != core.RunFailed || !strings.Contains(run.Reason, "partly restored") {
+		t.Errorf("run = %q (%q), want a warning that the database is partly restored", run.Status, run.Reason)
+	}
+}
+
+// A stop cut short by cancellation reports an error, but the daemon still
+// finishes it. The container was not yet on the restart list, so the app was
+// left down.
+func TestVolumeRestoreRestartsContainerWhoseStopFailed(t *testing.T) {
+	h := newHarness(t)
+	dest := h.destination(t)
+	app := h.seedComposeWithVolume(t)
+	b := h.backup(t, core.BackupTargetApp, app.ID, dest.ID, 0)
+	const key = "prod/wiki/outhaul-wiki_data/20260101T000000Z.tar.gz"
+	h.blob.objects[key] = []byte("tarball")
+	h.docker.FailStop = func(string) error { return context.Canceled }
+
+	h.m.RestoreNow(b, key)
+	h.waitRun(t)
+
+	if run := h.lastRun(t, b.ID); run.Status != core.RunFailed {
+		t.Errorf("run = %q (%q), want failed", run.Status, run.Reason)
+	}
+	if c, _ := h.docker.FindContainer(context.Background(), "wiki-web"); !c.Running() {
+		t.Error("the container whose stop failed was left stopped")
+	}
+}

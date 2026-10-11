@@ -170,15 +170,23 @@ func (m *Manager) restoreDatabase(ctx context.Context, b core.Backup, blob blobs
 		return f.size, fmt.Errorf("archive is not gzip: %w", err)
 	}
 
+	// From here the restore tool may already have changed the database (with
+	// --clean, pg_restore drops objects first), so a failure says so.
 	var stderr strings.Builder
 	exit, err := m.docker.ExecContainer(ctx, c.ID, cmd, env, gz, nil, limitWriter(&stderr))
 	if err != nil {
-		return f.size, fmt.Errorf("%s: %w", cmd[0], err)
+		return f.size, fmt.Errorf("%s: %w; %s", cmd[0], err, partlyRestored("database"))
 	}
 	if exit != 0 {
-		return f.size, fmt.Errorf("%s exited %d: %s", cmd[0], exit, strings.TrimSpace(stderr.String()))
+		return f.size, fmt.Errorf("%s exited %d: %s; %s", cmd[0], exit, strings.TrimSpace(stderr.String()), partlyRestored("database"))
 	}
 	return f.size, nil
+}
+
+// partlyRestored is appended to a failure that came after a restore began
+// replacing data: the old data is gone and the new is incomplete.
+func partlyRestored(what string) string {
+	return "the " + what + " may be partly restored; restore again"
 }
 
 // restoreCommand picks the engine's restore tool (Dokploy's commands, with
@@ -272,12 +280,17 @@ func (m *Manager) restoreVolume(ctx context.Context, b core.Backup, blob blobsto
 		if !c.Running() {
 			continue
 		}
+		// Listed before the stop: a stop that reports failure (its context
+		// cancelled mid-wait, say) may still complete in the daemon, and
+		// starting a container that is still running is a no-op.
+		stopped = append(stopped, c.ID)
 		if err := m.docker.StopContainer(ctx, c.ID, stopTimeout); err != nil {
 			return f.size, fmt.Errorf("stop %s: %w", c.Name, err)
 		}
-		stopped = append(stopped, c.ID)
 	}
 
+	// The helper empties the volume first, so any failure from here leaves
+	// it partly restored.
 	var stderr strings.Builder
 	exit, err := m.docker.RunContainer(ctx, docker.ContainerSpec{
 		Name:  fmt.Sprintf("outhaul-restore-%d", b.ID),
@@ -293,10 +306,10 @@ func (m *Manager) restoreVolume(ctx context.Context, b core.Backup, blob blobsto
 		},
 	}, nil, limitWriter(&stderr))
 	if err != nil {
-		return f.size, fmt.Errorf("untar into %s: %w", vol, err)
+		return f.size, fmt.Errorf("untar into %s: %w; %s", vol, err, partlyRestored("volume"))
 	}
 	if exit != 0 {
-		return f.size, fmt.Errorf("untar into %s exited %d: %s", vol, exit, strings.TrimSpace(stderr.String()))
+		return f.size, fmt.Errorf("untar into %s exited %d: %s; %s", vol, exit, strings.TrimSpace(stderr.String()), partlyRestored("volume"))
 	}
 	return f.size, nil
 }
