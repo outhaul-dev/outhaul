@@ -133,3 +133,23 @@ func TestAppLabelsPerRowTLS(t *testing.T) {
 		t.Error("row that opted out of TLS should get no secure router")
 	}
 }
+
+// Every domain row defines its own service on the same container. Traefik's
+// Docker provider cannot auto-link a router to "the" service when a container
+// defines several, and drops it — so on an HTTP-only or tunnel install (no
+// TLS routers) a multi-domain app 404s on every domain. Each plain router must
+// name its service explicitly.
+func TestAppLabelsMultiDomainRoutersNameTheirService(t *testing.T) {
+	app := core.App{Name: "minio"}
+	domains := []core.Domain{
+		{ID: 1, Host: "console.example.com"},
+		{ID: 2, Host: "api.example.com"},
+	}
+	got := AppLabels(app, domains, 9000, false, "")
+	for _, id := range []int64{1, 2} {
+		r := router("minio", id)
+		if svc := got["traefik.http.routers."+r+".service"]; svc != r {
+			t.Errorf("router %s service = %q, want %q", r, svc, r)
+		}
+	}
+}

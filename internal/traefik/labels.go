@@ -50,9 +50,13 @@ func RouteLabels(router, host string, port int, urlPath, internalPath string, tl
 	if urlPath != "" {
 		rule += fmt.Sprintf(" && PathPrefix(`%s`)", urlPath)
 	}
+	// The router names its service explicitly: a container with several
+	// domains defines several services, and Traefik's Docker provider drops
+	// any router it cannot link to exactly one.
 	labels := map[string]string{
 		"traefik.http.routers." + router + ".rule":                      rule,
 		"traefik.http.routers." + router + ".entrypoints":               "web",
+		"traefik.http.routers." + router + ".service":                   router,
 		"traefik.http.services." + router + ".loadbalancer.server.port": strconv.Itoa(port),
 	}
 	mws := rewriteMiddlewares(router, urlPath, internalPath, labels)
