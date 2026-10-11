@@ -47,9 +47,14 @@ type fakeDBProvisioner struct {
 	provisioned   int
 	destroyed     int
 	failProvision bool
+	hang          bool // Provision blocks until ctx is done, like a stalled image pull
 }
 
 func (p *fakeDBProvisioner) Provision(ctx context.Context, d core.Database) (core.Database, error) {
+	if p.hang {
+		<-ctx.Done()
+		return core.Database{}, ctx.Err()
+	}
 	if p.failProvision {
 		return core.Database{}, context.DeadlineExceeded
 	}

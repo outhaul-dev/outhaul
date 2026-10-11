@@ -88,7 +88,8 @@ func (s *Server) handleGithubWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 		// Acknowledge now and let the preview manager work at its own pace: a
 		// spawn can outlast GitHub's 10-second delivery timeout. A refused
-		// event fails the delivery so it can be redelivered, not lost.
+		// event fails the delivery, so it shows as failed on GitHub and can be
+		// redelivered by hand rather than being silently lost.
 		if err := s.previews.Enqueue(src.ID, ev); err != nil {
 			log.Printf("webhook: preview event for %s#%d: %v", ev.BaseRepoFullName, ev.Number, err)
 			http.Error(w, "preview queue full, retry later", http.StatusServiceUnavailable)

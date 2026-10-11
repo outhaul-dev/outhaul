@@ -74,11 +74,13 @@ type Manager struct {
 	token    TokenSource
 	serverIP string
 	events   chan prJob // pull_request events waiting for Run (see Enqueue)
+
+	jobTimeout time.Duration // bound on handling one event (see handleJob)
 }
 
 func New(st Store, n Notifier, db DBProvisioner, dk Docker, gh GithubCommenter, ts TokenSource, serverIP string) *Manager {
 	return &Manager{store: st, notifier: n, dbprov: db, docker: dk, gh: gh, token: ts, serverIP: serverIP,
-		events: make(chan prJob, queueSize)}
+		events: make(chan prJob, queueSize), jobTimeout: defaultJobTimeout}
 }
 
 // Handle routes one pull_request event to the right lifecycle action for every
@@ -155,8 +157,10 @@ func (m *Manager) spawn(ctx context.Context, parent core.App, cfg core.PreviewCo
 
 	// Any failure after the app row exists rolls the child back, so a later
 	// re-open (which routes to redeploy) never inherits a half-built preview.
+	// The rollback must outlive a timed-out or cancelled ctx — that is often
+	// why the build failed.
 	if err := m.buildPreview(ctx, parent, child, cfg, ev); err != nil {
-		m.cleanupChild(ctx, child)
+		m.cleanupChild(context.WithoutCancel(ctx), child)
 		return err
 	}
 
