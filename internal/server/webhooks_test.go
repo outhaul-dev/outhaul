@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,14 +15,19 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/webhook"
 )
 
-// fakePreviews records the last pull_request event routed to it.
+// fakePreviews records the last pull_request event enqueued on it; full makes
+// Enqueue refuse like a backed-up queue.
 type fakePreviews struct {
 	last     webhook.PullRequestEvent
 	sourceID int64
 	calls    int
+	full     bool
 }
 
-func (f *fakePreviews) Handle(_ context.Context, sourceID int64, ev webhook.PullRequestEvent) error {
+func (f *fakePreviews) Enqueue(sourceID int64, ev webhook.PullRequestEvent) error {
+	if f.full {
+		return errors.New("preview event queue is full")
+	}
 	f.calls++
 	f.sourceID = sourceID
 	f.last = ev
@@ -63,6 +69,21 @@ func TestGithubWebhookRoutesPullRequest(t *testing.T) {
 	}
 	if fake.last.Action != "opened" || fake.last.Number != 42 || fake.last.BaseRepoFullName != "me/app" {
 		t.Errorf("last event = %+v, want opened/42/me/app", fake.last)
+	}
+}
+
+// A refused event must fail the delivery so GitHub keeps it for redelivery,
+// rather than be acknowledged and lost.
+func TestGithubWebhookPullRequestFailsWhenQueueIsFull(t *testing.T) {
+	env := newTestEnv(t)
+	connectApp(t, env, 1, "s")
+	env.srv.previews = &fakePreviews{full: true}
+
+	body := `{"action":"opened","number":42,"pull_request":{"head":{"ref":"feature-x","sha":"abc123","repo":{"full_name":"me/app"}},"base":{"repo":{"full_name":"me/app"}}}}`
+	rec := postPullRequest(t, env, 1, "whs-s", body)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
 	}
 }
 

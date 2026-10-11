@@ -22,9 +22,7 @@ type destroyingPreviews struct {
 	fail      error
 }
 
-func (p *destroyingPreviews) Handle(context.Context, int64, webhook.PullRequestEvent) error {
-	return nil
-}
+func (p *destroyingPreviews) Enqueue(int64, webhook.PullRequestEvent) error { return nil }
 
 func (p *destroyingPreviews) DestroyByID(ctx context.Context, parentID, childID int64) error {
 	p.parentIDs = append(p.parentIDs, parentID)

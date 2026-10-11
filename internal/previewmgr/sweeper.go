@@ -8,8 +8,10 @@ import (
 	"time"
 )
 
-// Run sweeps once an hour until ctx is cancelled, tearing down previews whose
-// newest deployment is older than their parent's IdleTTLDays.
+// Run handles enqueued pull_request events and sweeps once an hour until ctx is
+// cancelled, tearing down previews whose newest deployment is older than their
+// parent's IdleTTLDays. Events and sweeps share this one goroutine, so they
+// never touch the same preview concurrently.
 func (m *Manager) Run(ctx context.Context) {
 	t := time.NewTicker(time.Hour)
 	defer t.Stop()
@@ -17,6 +19,8 @@ func (m *Manager) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
+		case j := <-m.events:
+			m.handleJob(ctx, j)
 		case now := <-t.C:
 			m.SweepTick(ctx, now)
 		}

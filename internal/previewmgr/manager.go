@@ -73,10 +73,12 @@ type Manager struct {
 	gh       GithubCommenter
 	token    TokenSource
 	serverIP string
+	events   chan prJob // pull_request events waiting for Run (see Enqueue)
 }
 
 func New(st Store, n Notifier, db DBProvisioner, dk Docker, gh GithubCommenter, ts TokenSource, serverIP string) *Manager {
-	return &Manager{store: st, notifier: n, dbprov: db, docker: dk, gh: gh, token: ts, serverIP: serverIP}
+	return &Manager{store: st, notifier: n, dbprov: db, docker: dk, gh: gh, token: ts, serverIP: serverIP,
+		events: make(chan prJob, queueSize)}
 }
 
 // Handle routes one pull_request event to the right lifecycle action for every
