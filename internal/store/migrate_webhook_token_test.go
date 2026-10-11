@@ -67,3 +67,33 @@ func TestWebhookTokenMigrationKeepsExistingValue(t *testing.T) {
 		t.Fatalf("token=%q secret=%q, want both abc123", token, secret)
 	}
 }
+
+// Preview children used to copy their parent's webhook value, so after the
+// split both rows would answer the parent's /webhooks/app/<token> URL and the
+// lookup could pick the preview. The migration strips children's credentials.
+func TestWebhookTokenMigrationClearsPreviewChildren(t *testing.T) {
+	db := openMigratedBefore(t, "0025")
+	if _, err := db.Exec(`INSERT INTO apps (id, name, repo_url, domain, created_at, webhook_secret)
+	                      VALUES (7, 'web', 'r', '', '2026-07-04T00:00:00Z', 'abc123')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO apps (id, name, repo_url, domain, created_at, webhook_secret, parent_id, pr_number, ephemeral)
+	                      VALUES (8, 'web-pr-1', 'r', '', '2026-07-04T00:00:00Z', 'abc123', 7, 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	var token, secret string
+	if err := db.QueryRow(`SELECT webhook_token, webhook_secret FROM apps WHERE id = 8`).Scan(&token, &secret); err != nil {
+		t.Fatal(err)
+	}
+	if token != "" || secret != "" {
+		t.Errorf("preview child token=%q secret=%q, want both empty", token, secret)
+	}
+	if err := db.QueryRow(`SELECT webhook_token FROM apps WHERE id = 7`).Scan(&token); err != nil || token != "abc123" {
+		t.Errorf("parent token = %q (err %v), want abc123", token, err)
+	}
+}
