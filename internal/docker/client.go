@@ -158,6 +158,8 @@ type Client interface {
 	// pruner to reconcile the outhaul/* namespace against the database.
 	ListImages(ctx context.Context, refPattern string) ([]string, error)
 
+	// ImageLabels returns the labels baked into a local image's config.
+	ImageLabels(ctx context.Context, ref string) (map[string]string, error)
 	// RemoveImage untags ref and deletes the underlying image when that was
 	// its last tag. A ref that does not exist is success (the desired state);
 	// an image in use by a container is an error — the pruner never forces.

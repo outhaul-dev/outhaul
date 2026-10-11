@@ -280,7 +280,7 @@ func previewOnly(vars []core.EnvVar) []core.EnvVar {
 // refs/pull/<n>/head.
 func previewRef(ev webhook.PullRequestEvent) string {
 	if ev.IsFork {
-		return fmt.Sprintf("refs/pull/%d/head", ev.Number)
+		return core.ForkPreviewRef(ev.Number)
 	}
 	return ev.HeadRef
 }

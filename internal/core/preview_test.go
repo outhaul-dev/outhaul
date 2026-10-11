@@ -94,3 +94,18 @@ func TestPreviewHostCapsLabelLength(t *testing.T) {
 		t.Errorf("host not deterministic: %q then %q", a, again)
 	}
 }
+
+func TestIsForkPreview(t *testing.T) {
+	for _, c := range []struct {
+		app  App
+		want bool
+	}{
+		{App{Ephemeral: true, Branch: ForkPreviewRef(3)}, true},
+		{App{Ephemeral: true, Branch: "feature-x"}, false},        // same-repo preview
+		{App{Ephemeral: false, Branch: ForkPreviewRef(3)}, false}, // not a preview at all
+	} {
+		if got := c.app.IsForkPreview(); got != c.want {
+			t.Errorf("%+v.IsForkPreview() = %v, want %v", c.app, got, c.want)
+		}
+	}
+}

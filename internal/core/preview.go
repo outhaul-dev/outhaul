@@ -39,6 +39,16 @@ func DefaultPreviewConfig(appID int64) PreviewConfig {
 	}
 }
 
+// ForkPreviewRef is what a fork PR's preview builds: the base repo's view of
+// the PR head, since the fork's commits are on none of the base repo's branches.
+func ForkPreviewRef(pr int) string { return fmt.Sprintf("refs/pull/%d/head", pr) }
+
+// IsForkPreview reports whether a is the preview of a pull request from a fork
+// — untrusted code. Only fork previews build a refs/pull/ ref.
+func (a App) IsForkPreview() bool {
+	return a.Ephemeral && strings.HasPrefix(a.Branch, "refs/pull/")
+}
+
 // PreviewAppName is the child app's unique name for a parent + PR number.
 func PreviewAppName(parentName string, pr int) string {
 	return fmt.Sprintf("%s-pr-%d", parentName, pr)

@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/builder"
@@ -90,6 +92,12 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 		if err := b.Build(ctx, req, out); err != nil {
 			w.fail(dep, core.StatusBuilding, "build failed: "+err.Error(), out)
 			return
+		}
+		if app.IsForkPreview() {
+			if err := w.refuseRoutingLabels(ctx, image); err != nil {
+				w.fail(dep, core.StatusBuilding, err.Error(), out)
+				return
+			}
 		}
 		if err := w.store.SetImage(context.Background(), dep.ID, image); err != nil {
 			w.fail(dep, core.StatusBuilding, "record image: "+err.Error(), out)
@@ -284,6 +292,28 @@ func (w *Worker) deployStopFirst(ctx context.Context, dep core.Deployment, app c
 		return false
 	}
 	return true
+}
+
+// refuseRoutingLabels fails when image carries traefik.* labels. Docker copies
+// an image's labels onto its containers and Traefik reads container labels, so
+// a fork preview's image (whose base image the fork author can choose) could
+// otherwise claim any host on the server, production included.
+func (w *Worker) refuseRoutingLabels(ctx context.Context, image string) error {
+	labels, err := w.docker.ImageLabels(ctx, image)
+	if err != nil {
+		return fmt.Errorf("inspect built image: %w", err)
+	}
+	var bad []string
+	for k := range labels {
+		if strings.HasPrefix(strings.ToLower(k), "traefik.") {
+			bad = append(bad, k)
+		}
+	}
+	if len(bad) > 0 {
+		sort.Strings(bad)
+		return fmt.Errorf("refusing a fork preview image that carries traefik labels: %s", strings.Join(bad, ", "))
+	}
+	return nil
 }
 
 // loadEnv loads an app's env vars with ${{project.KEY}} references resolved

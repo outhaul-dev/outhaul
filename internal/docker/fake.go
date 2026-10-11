@@ -30,10 +30,11 @@ type Fake struct {
 	Execs   []ExecCall                   // ExecContainer invocations, in order
 	Runs    []ContainerSpec              // RunContainer specs, in order
 
-	Images           map[string]bool // local image tags (test-settable)
-	RemovedImages    []string        // refs passed to RemoveImage, in order
-	ImagePrunes      int             // PruneImages invocations
-	BuildCachePrunes []time.Duration // olderThan values passed to PruneBuildCache
+	Images           map[string]bool              // local image tags (test-settable)
+	ImageLabelsByRef map[string]map[string]string // image ref -> labels baked into it (test-settable)
+	RemovedImages    []string                     // refs passed to RemoveImage, in order
+	ImagePrunes      int                          // PruneImages invocations
+	BuildCachePrunes []time.Duration              // olderThan values passed to PruneBuildCache
 
 	// OnExec, when set, supplies ExecContainer's output and exit code.
 	OnExec func(id string, cmd, env []string) (stdout, stderr string, exit int, err error)
@@ -363,6 +364,12 @@ func (f *Fake) RemoveImage(_ context.Context, ref string) error {
 	f.RemovedImages = append(f.RemovedImages, ref)
 	delete(f.Images, ref)
 	return nil
+}
+
+func (f *Fake) ImageLabels(_ context.Context, ref string) (map[string]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.ImageLabelsByRef[ref], nil
 }
 
 func (f *Fake) PruneImages(context.Context) (uint64, error) {

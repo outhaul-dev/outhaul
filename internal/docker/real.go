@@ -346,6 +346,17 @@ func (r *real) ListImages(ctx context.Context, refPattern string) ([]string, err
 	return tags, nil
 }
 
+func (r *real) ImageLabels(ctx context.Context, ref string) (map[string]string, error) {
+	img, err := r.cli.ImageInspect(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	if img.Config == nil {
+		return nil, nil
+	}
+	return img.Config.Labels, nil
+}
+
 func (r *real) RemoveImage(ctx context.Context, ref string) error {
 	_, err := r.cli.ImageRemove(ctx, ref, image.RemoveOptions{PruneChildren: true})
 	if client.IsErrNotFound(err) {
