@@ -99,3 +99,43 @@ func TestForkPreviewCheckoutWithEscapingSymlinkIsRefused(t *testing.T) {
 		t.Error("the checkout was built despite the escaping symlink")
 	}
 }
+
+// Nixpacks config can name the base images (buildImage, runImage). A fork could
+// name the parent's local production image (outhaul/<app>:<id>) and read its
+// code and baked-in build env, so a fork preview may not choose its images.
+func TestForkPreviewNixpacksImageOverrideIsRefused(t *testing.T) {
+	for file, content := range map[string]string{
+		"nixpacks.toml": "[start]\ncmd = \"./serve\"\nrunImage = \"outhaul/web:1\"\n",
+		"nixpacks.json": `{"buildImage": "outhaul/web:1"}`,
+	} {
+		t.Run(file, func(t *testing.T) {
+			h := newHarness(t)
+			app := forkPreview(t, h)
+			h.cloner.files = map[string]string{file: content}
+			dep := h.claimedDeployment(t, app.ID)
+
+			h.worker.runPipeline(context.Background(), dep)
+
+			got := h.status(t, dep.ID)
+			if got.Status != core.StatusFailed || !strings.Contains(got.Reason, "Image") {
+				t.Fatalf("status = %q (%q), want failed naming the image override", got.Status, got.Reason)
+			}
+			if h.builder.lastReq.ImageTag != "" {
+				t.Error("the checkout was built despite the image override")
+			}
+		})
+	}
+}
+
+func TestForkPreviewPlainNixpacksConfigIsBuilt(t *testing.T) {
+	h := newHarness(t)
+	app := forkPreview(t, h)
+	h.cloner.files = map[string]string{"nixpacks.toml": "[phases.build]\ncmds = [\"make\"]\n\n[start]\ncmd = \"./serve\"\n"}
+	dep := h.claimedDeployment(t, app.ID)
+
+	h.worker.runPipeline(context.Background(), dep)
+
+	if got := h.status(t, dep.ID); got.Status != core.StatusRunning {
+		t.Fatalf("status = %q (%q), want running", got.Status, got.Reason)
+	}
+}

@@ -77,7 +77,7 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 		}
 		defer cleanup()
 		if app.IsForkPreview() {
-			if err := symlinkEscape(workDir); err != nil {
+			if err := checkForkCheckout(workDir); err != nil {
 				w.fail(dep, core.StatusBuilding, "refusing a fork preview checkout: "+err.Error(), out)
 				return
 			}
