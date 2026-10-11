@@ -726,3 +726,60 @@ func testAppKeyPEM(t *testing.T) string {
 		Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key),
 	}))
 }
+
+// getWithin GETs path but gives up after d, so a handler that never returns
+// fails the test instead of hanging it.
+func (e *testEnv) getWithin(t *testing.T, path string, d time.Duration) (*http.Response, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	t.Cleanup(cancel)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.http.URL+path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return e.client.Do(req)
+}
+
+// A deployment that finished before the last restart (or whose log has aged
+// out of memory) has no topic. Subscribing used to create an empty one that
+// nothing would ever close, so the log view hung on "complete" forever.
+func TestSSEFinishedDeploymentWithoutLogEndsAtOnce(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	ctx := context.Background()
+	app, _ := e.store.CreateApp(ctx, core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	dep, _ := e.store.CreateDeployment(ctx, app.ID)
+	if ok, err := e.store.SetStatus(ctx, dep.ID, core.StatusQueued, core.StatusCancelled, "test"); err != nil || !ok {
+		t.Fatalf("cancel deployment: ok=%v err=%v", ok, err)
+	}
+
+	resp, err := e.getWithin(t, "/deployments/"+itoa(dep.ID)+"/logs", 2*time.Second)
+	if err != nil {
+		t.Fatalf("log stream for a finished deployment did not end: %v", err)
+	}
+	b, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("log stream for a finished deployment did not end: %v", err)
+	}
+	if !strings.Contains(string(b), "event: done") {
+		t.Errorf("stream = %q, want an immediate done event", b)
+	}
+	if _, _, _, ok := e.broker.SubscribeExisting(dep.ID); ok {
+		t.Error("viewing a finished deployment's log created a broker topic")
+	}
+}
+
+func TestSSEUnknownDeployment404(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+
+	resp, err := e.getWithin(t, "/deployments/9999/logs", 2*time.Second)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+}

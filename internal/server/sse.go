@@ -14,9 +14,16 @@ import (
 // handleLogsSSE streams a deployment's build/deploy log to the browser as
 // Server-Sent Events. It first replays history, then forwards live lines until
 // the deployment finishes (broker closes the topic) or the client disconnects.
+// A finished deployment whose log the broker no longer holds gets an
+// immediate done; the page explains that the log is gone.
 func (s *Server) handleLogsSSE(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(r.PathValue("id"))
 	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	dep, err := s.store.GetDeployment(r.Context(), id)
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -31,7 +38,24 @@ func (s *Server) handleLogsSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no") // disable proxy buffering
 
-	history, lines, cancel := s.broker.Subscribe(id)
+	var (
+		history []string
+		lines   <-chan string
+		cancel  func()
+	)
+	if dep.Status.IsTerminal() {
+		var held bool
+		history, lines, cancel, held = s.broker.SubscribeExisting(id)
+		if !held {
+			writeSSE(w, "done", "")
+			flusher.Flush()
+			return
+		}
+	} else {
+		// Queued or building: the topic may not exist yet, and the pipeline
+		// will close it when the deployment finishes.
+		history, lines, cancel = s.broker.Subscribe(id)
+	}
 	defer cancel()
 
 	for _, line := range history {
