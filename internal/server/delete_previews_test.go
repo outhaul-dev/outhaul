@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
 
@@ -20,13 +21,20 @@ type destroyingPreviews struct {
 	destroyed []int64 // child ids, in call order
 	parentIDs []int64
 	fail      error
+	onDestroy func() // runs at the start of each DestroyByID
 }
 
 func (p *destroyingPreviews) Enqueue(int64, webhook.PullRequestEvent) error { return nil }
 
 func (p *destroyingPreviews) DestroyByID(ctx context.Context, parentID, childID int64) error {
+	if p.onDestroy != nil {
+		p.onDestroy()
+	}
 	p.parentIDs = append(p.parentIDs, parentID)
 	p.destroyed = append(p.destroyed, childID)
+	if err := ctx.Err(); err != nil {
+		return err // like the real teardown's Docker and DB calls
+	}
 	if p.fail != nil {
 		return p.fail
 	}
@@ -110,5 +118,33 @@ func TestDeleteAppRefusesWhenPreviewsCannotBeTornDown(t *testing.T) {
 	}
 	if _, err := e.store.GetApp(context.Background(), parent.ID); err != nil {
 		t.Errorf("parent row deleted: %v", err)
+	}
+}
+
+// Deleting an app is several destructive steps. A browser that gives up mid-way
+// (closed tab, navigation) cancelled the request context and stopped the
+// delete half-done — a preview's database could be left behind. Once started,
+// the delete runs to completion.
+func TestDeleteAppCompletesWhenTheRequestIsCancelled(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	parent, child := seedParentWithPreview(t, e)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	e.srv.previews = &destroyingPreviews{st: e.store, onDestroy: cancel}
+
+	req := httptest.NewRequest("POST", "/apps/"+itoa(parent.ID)+"/delete", nil).WithContext(ctx)
+	base, _ := url.Parse(e.http.URL)
+	for _, c := range e.client.Jar.Cookies(base) {
+		req.AddCookie(c)
+	}
+	rec := httptest.NewRecorder()
+	e.srv.Handler().ServeHTTP(rec, req)
+
+	if _, err := e.store.GetApp(context.Background(), child.ID); err == nil {
+		t.Error("preview survived a delete whose request was cancelled mid-way")
+	}
+	if _, err := e.store.GetApp(context.Background(), parent.ID); err == nil {
+		t.Errorf("parent survived (status %d)", rec.Code)
 	}
 }

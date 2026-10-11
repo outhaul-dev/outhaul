@@ -1207,7 +1207,11 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if err := s.destroyPreviews(r.Context(), app); err != nil {
+	// Deletion is several destructive steps; once started it must finish even
+	// if the browser gives up, or it stops half-done (a preview's database
+	// destroyed only after its app row, say, is left behind).
+	ctx := context.WithoutCancel(r.Context())
+	if err := s.destroyPreviews(ctx, app); err != nil {
 		http.Error(w, "Could not delete app: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -1216,14 +1220,14 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 	// down whole (containers + networks; named volumes deliberately survive —
 	// they are data).
 	if app.Kind == core.KindCompose {
-		if derr := s.compose.Down(r.Context(), compose.ProjectName(app.Name), io.Discard); derr != nil {
+		if derr := s.compose.Down(ctx, compose.ProjectName(app.Name), io.Discard); derr != nil {
 			log.Printf("delete app %d: could not tear down compose stack (its containers may be orphaned): %v", id, derr)
 		}
-	} else if c, ferr := s.runtime.FindContainer(r.Context(), appContainerPrefix+app.Name); ferr != nil {
+	} else if c, ferr := s.runtime.FindContainer(ctx, appContainerPrefix+app.Name); ferr != nil {
 		log.Printf("delete app %d: could not inspect container (any container is now orphaned): %v", id, ferr)
 	} else if c != nil {
-		_ = s.runtime.StopContainer(r.Context(), c.ID, 10*time.Second)
-		if rerr := s.runtime.RemoveContainer(r.Context(), c.ID, true); rerr != nil {
+		_ = s.runtime.StopContainer(ctx, c.ID, 10*time.Second)
+		if rerr := s.runtime.RemoveContainer(ctx, c.ID, true); rerr != nil {
 			log.Printf("delete app %d: could not remove container %s: %v", id, c.ID, rerr)
 		}
 	}
@@ -1231,17 +1235,17 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 	// deleted are the only record of the tags). Best-effort like the container
 	// teardown: a leftover is reclaimed by the pruner's daily reconciliation.
 	if app.Kind != core.KindCompose {
-		if deps, derr := s.store.ListDeploymentsForApp(r.Context(), id); derr != nil {
+		if deps, derr := s.store.ListDeploymentsForApp(ctx, id); derr != nil {
 			log.Printf("delete app %d: could not list deployments (its images are now orphaned until the next sweep): %v", id, derr)
 		} else {
 			for _, tag := range distinctImages(deps) {
-				if rerr := s.runtime.RemoveImage(r.Context(), tag); rerr != nil {
+				if rerr := s.runtime.RemoveImage(ctx, tag); rerr != nil {
 					log.Printf("delete app %d: could not remove image %s: %v", id, tag, rerr)
 				}
 			}
 		}
 	}
-	if err := s.store.DeleteApp(r.Context(), id); err != nil {
+	if err := s.store.DeleteApp(ctx, id); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
