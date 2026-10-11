@@ -3,6 +3,8 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
@@ -13,6 +15,10 @@ import (
 const primaryDomainPort = 8080
 
 const domainCols = `id, app_id, host, service, port, path, internal_path, tls, created_at`
+
+// ErrDomainTaken means another app already routes the same host and path.
+// Traefik would get two routers with identical rules and pick one arbitrarily.
+var ErrDomainTaken = errors.New("domain is already routed by another app")
 
 // AddDomain inserts a route and returns it with its ID, then re-syncs the app's
 // primary-domain mirror. A duplicate (app_id, host, path) violates UNIQUE.
@@ -36,6 +42,9 @@ func (s *Store) AddDomain(ctx context.Context, d core.Domain) (core.Domain, erro
 // CreatedAt, and re-syncs the app's primary-domain mirror. Callers own the
 // commit, so CreateApp can seed a row in the same transaction as the app insert.
 func addDomainTx(ctx context.Context, tx *sql.Tx, d core.Domain) (core.Domain, error) {
+	if err := checkRouteFreeTx(ctx, tx, d); err != nil {
+		return core.Domain{}, err
+	}
 	d.CreatedAt = time.Now().UTC()
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO domains (app_id, host, service, port, path, internal_path, tls, created_at)
@@ -55,6 +64,24 @@ func addDomainTx(ctx context.Context, tx *sql.Tx, d core.Domain) (core.Domain, e
 	return d, nil
 }
 
+// checkRouteFreeTx returns ErrDomainTaken when an app other than d.AppID already
+// routes d's host (case-insensitively) and path. The same host on a different
+// path is a legitimate split (e.g. /api served by another app).
+func checkRouteFreeTx(ctx context.Context, tx *sql.Tx, d core.Domain) error {
+	var owner string
+	err := tx.QueryRowContext(ctx,
+		`SELECT a.name FROM domains d JOIN apps a ON a.id = d.app_id
+		 WHERE lower(d.host) = lower(?) AND d.path = ? AND d.app_id != ? LIMIT 1`,
+		d.Host, d.Path, d.AppID).Scan(&owner)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: %s%s is served by app %q", ErrDomainTaken, d.Host, d.Path, owner)
+}
+
 // UpdateDomain rewrites one route (scoped to app_id) and re-syncs the primary.
 func (s *Store) UpdateDomain(ctx context.Context, d core.Domain) error {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -62,6 +89,9 @@ func (s *Store) UpdateDomain(ctx context.Context, d core.Domain) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err := checkRouteFreeTx(ctx, tx, d); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE domains SET host = ?, service = ?, port = ?, path = ?, internal_path = ?, tls = ?
 		 WHERE id = ? AND app_id = ?`,
