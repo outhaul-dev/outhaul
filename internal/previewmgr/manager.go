@@ -128,13 +128,17 @@ func (m *Manager) spawn(ctx context.Context, parent core.App, cfg core.PreviewCo
 		if !cfg.AllowForkPRs {
 			return nil
 		}
-		// A compose app's runtime — host mounts, privileged mode, host
-		// networking — comes from its compose file, which a fork's author
-		// controls. Running it would hand them the host.
-		if parent.Kind == core.KindCompose {
+		// Fork previews are Nixpacks-only. A compose file (which the fork's
+		// author controls) sets host mounts, privileged mode and networking —
+		// running it would hand them the host. A Dockerfile sets image LABELs
+		// (which reach the container, where Traefik reads them — a fork could
+		// claim the production host), can FROM / COPY --from the parent's
+		// local production images, and shares BuildKit cache mounts with
+		// production builds.
+		if parent.Kind == core.KindCompose || parent.Kind == core.KindDockerfile {
 			if ev.Action != "synchronize" {
 				m.comment(ctx, cfg, parent.GitSourceID, ev.BaseRepoFullName, ev.Number,
-					"Preview skipped: pull requests from forks don't get previews on Docker Compose apps, because the fork's compose file would control how it runs on the server.")
+					"Preview skipped: pull requests from forks only get previews on Nixpacks apps. A fork's Dockerfile or Docker Compose file would control how it is built and run on the server.")
 			}
 			return nil
 		}

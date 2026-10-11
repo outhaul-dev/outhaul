@@ -117,3 +117,36 @@ func TestForkPreviewRefusedForComposeApp(t *testing.T) {
 		t.Errorf("PR comments = %v, want one notice explaining compose apps get no fork previews", got)
 	}
 }
+
+// A fork's Dockerfile decides its image: LABELs reach the container (Traefik
+// reads them, so a fork could claim the production host), FROM/COPY --from can
+// read the parent's local production images, and cache mounts are shared with
+// production builds. Dockerfile apps get no fork previews either.
+func TestForkPreviewRefusedForDockerfileApp(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	parent, err := h.st.CreateApp(ctx, core.App{
+		Name: "api", RepoURL: "https://github.com/acme/api.git", Domain: "api.example", Source: core.SourceGithub,
+		GithubRepo: "acme/api", GitSourceID: h.sourceID, Branch: "main", Kind: core.KindDockerfile,
+		DockerfilePath: "Dockerfile",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := core.DefaultPreviewConfig(parent.ID)
+	cfg.Enabled, cfg.AllowForkPRs = true, true
+	if err := h.st.SetPreviewConfig(ctx, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 7, "patch-1", "acme/api", true)); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if _, err := h.st.GetPreviewByPR(ctx, parent.ID, 7); err == nil {
+		t.Fatal("a fork preview was created for a Dockerfile app")
+	}
+	got := h.gh.comments["acme/api#7"]
+	if len(got) != 1 || !strings.Contains(got[0], "Nixpacks") {
+		t.Errorf("PR comments = %v, want one notice that fork previews are Nixpacks-only", got)
+	}
+}
