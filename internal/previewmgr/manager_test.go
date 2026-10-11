@@ -398,6 +398,29 @@ func TestSpawnRespectsMaxConcurrent(t *testing.T) {
 	}
 }
 
+// Since synchronize spawns a missing preview, a PR stuck behind the cap would
+// re-post the "skipped" notice on every push. Only opening the PR says so.
+func TestCapNoticeNotRepeatedOnPush(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	repo := "acme/web"
+	h.seedGithubApp(t, "web", repo, func(c *core.PreviewConfig) { c.MaxConcurrent = 1 })
+
+	for _, ev := range []webhook.PullRequestEvent{
+		prEvent("opened", 1, "b1", repo, false),
+		prEvent("opened", 2, "b2", repo, false),
+		prEvent("synchronize", 2, "b2", repo, false),
+		prEvent("synchronize", 2, "b2", repo, false),
+	} {
+		if err := h.mgr.Handle(ctx, h.sourceID, ev); err != nil {
+			t.Fatalf("Handle %s: %v", ev.Action, err)
+		}
+	}
+	if got := h.gh.comments[repo+"#2"]; len(got) != 1 {
+		t.Errorf("PR2 comments = %d (%v), want the single notice from opening", len(got), got)
+	}
+}
+
 func TestClosedTearsDown(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

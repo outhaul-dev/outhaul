@@ -135,8 +135,11 @@ func (m *Manager) spawn(ctx context.Context, parent core.App, cfg core.PreviewCo
 		return err
 	}
 	if len(live) >= cfg.MaxConcurrent {
-		m.comment(ctx, cfg, parent.GitSourceID, ev.BaseRepoFullName, ev.Number,
-			fmt.Sprintf("Preview skipped: max concurrent previews (%d) reached.", cfg.MaxConcurrent))
+		// Say so when the PR opens, not on every push while it waits for a slot.
+		if ev.Action != "synchronize" {
+			m.comment(ctx, cfg, parent.GitSourceID, ev.BaseRepoFullName, ev.Number,
+				fmt.Sprintf("Preview skipped: max concurrent previews (%d) reached.", cfg.MaxConcurrent))
+		}
 		return nil
 	}
 
