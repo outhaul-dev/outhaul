@@ -549,7 +549,10 @@ git push outhaul {{.PushBranch}}</pre>{{template "copybtn" .}}</div>
   <p class="env-note">Point a push webhook here to auto-deploy (content type <span class="mono">application/json</span>):</p>
   <div class="copywrap"><div class="cmd"><code>{{.WebhookURL}}</code></div>{{template "copybtn" .}}</div>
   <p class="env-note">and give it this secret — GitHub/Gitea: <em>Secret</em>; GitLab: <em>Secret token</em>. Deliveries without it are refused.</p>
-  <div class="copywrap"><div class="cmd"><code>{{.App.WebhookSecret}}</code></div>{{template "copybtn" .}}</div>
+  <details class="secret-reveal">
+    <summary>show secret</summary>
+    <div class="copywrap"><div class="cmd"><code>{{.App.WebhookSecret}}</code></div>{{template "copybtn" .}}</div>
+  </details>
   <form method="post" action="/apps/{{.App.ID}}/webhook/secret" class="inline" onsubmit="return confirm('Regenerate the webhook secret? Deliveries signed with the current one will be refused until the sender is updated.');">
     <button type="submit" class="linkbtn">regenerate secret</button>
   </form>

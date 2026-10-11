@@ -100,3 +100,23 @@ func TestEnableWebhookForAppWithoutToken(t *testing.T) {
 		t.Error("enabled webhook URL not shown")
 	}
 }
+
+// The secret was printed in full on every page load (screen shares, shoulder
+// surfing). It now sits in a collapsed <details> until the operator opens it.
+func TestWebhookSecretHiddenUntilRevealed(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app, _ := e.store.CreateApp(context.Background(), core.App{
+		Name: "web", RepoURL: "https://x/y.git", Domain: "web.test", Source: core.SourcePublic,
+		WebhookToken: "tok123", WebhookSecret: "sek456",
+	})
+	page := body(t, e.get(t, "/apps/"+itoa(app.ID)))
+	at := strings.Index(page, "<code>sek456</code>")
+	if at < 0 {
+		t.Fatal("secret not on the page at all")
+	}
+	open := strings.LastIndex(page[:at], "<details")
+	if open < 0 || strings.Contains(page[open:at], "</details>") || strings.Contains(page[open:at], "<details open") {
+		t.Error("webhook secret is displayed without being revealed")
+	}
+}

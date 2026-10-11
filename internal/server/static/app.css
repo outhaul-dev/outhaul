@@ -414,3 +414,7 @@ dialog.modal::backdrop { background: rgba(0,0,0,0.55); }
 .tabs a.active { color: var(--text-primary); border-bottom-color: var(--accent); }
 .tab[hidden] { display: none; }
 .danger-zone { border-color: var(--danger-bd); }
+
+/* A secret kept collapsed until the operator asks to see it. */
+.secret-reveal { margin: 0.25rem 0 0.5rem; }
+.secret-reveal summary { cursor: pointer; color: var(--link); font-size: 0.9em; }
