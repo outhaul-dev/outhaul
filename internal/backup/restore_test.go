@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"archive/tar"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -23,6 +24,32 @@ func gzipped(t *testing.T, s string) []byte {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// targz builds a real gzipped tar, the shape the backup helper writes for a
+// volume, so restore tests exercise the same validation a real archive gets.
+func targz(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for name, body := range files {
+		if err := tw.WriteHeader(&tar.Header{
+			Name: name, Mode: 0o644, Size: int64(len(body)), Typeflag: tar.TypeReg,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(tw, body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
 		t.Fatal(err)
 	}
 	return buf.Bytes()
@@ -184,7 +211,7 @@ func TestVolumeRestoreStopsUntarsAndRestarts(t *testing.T) {
 	b := h.backup(t, core.BackupTargetApp, app.ID, dest.ID, 0)
 
 	const key = "prod/wiki/outhaul-wiki_data/20260101T000000Z.tar.gz"
-	h.blob.objects[key] = []byte("tarball")
+	h.blob.objects[key] = targz(t, map[string]string{"index.html": "wiki"})
 
 	var stateDuringUntar string
 	h.docker.OnRun = func(spec docker.ContainerSpec) (string, int, error) {
@@ -241,7 +268,7 @@ func TestVolumeRestoreRestartsStackEvenWhenUntarFails(t *testing.T) {
 	app := h.seedComposeWithVolume(t)
 	b := h.backup(t, core.BackupTargetApp, app.ID, dest.ID, 0)
 	const key = "prod/wiki/outhaul-wiki_data/20260101T000000Z.tar.gz"
-	h.blob.objects[key] = []byte("tarball")
+	h.blob.objects[key] = targz(t, map[string]string{"index.html": "wiki"})
 	h.docker.OnRun = func(docker.ContainerSpec) (string, int, error) { return "", 1, nil }
 
 	h.m.RestoreNow(b, key)
@@ -277,6 +304,38 @@ func TestVolumeRestoreRejectsUnknownVolume(t *testing.T) {
 	}
 }
 
+// A corrupt archive must be rejected before the helper empties the volume:
+// the helper's delete runs first, so today a bad archive wipes the data it
+// was meant to restore.
+func TestVolumeRestoreRejectsCorruptArchiveBeforeEmptying(t *testing.T) {
+	h := newHarness(t)
+	dest := h.destination(t)
+	app := h.seedComposeWithVolume(t)
+	b := h.backup(t, core.BackupTargetApp, app.ID, dest.ID, 0)
+	const key = "prod/wiki/outhaul-wiki_data/20260101T000000Z.tar.gz"
+	h.blob.objects[key] = []byte("not a tarball")
+
+	h.m.RestoreNow(b, key)
+	h.waitRun(t)
+
+	run := h.lastRun(t, b.ID)
+	if run.Status != core.RunFailed {
+		t.Fatalf("run = %q (%s), want failed", run.Status, run.Reason)
+	}
+	if !strings.Contains(run.Reason, "archive") {
+		t.Errorf("reason = %q, want it to name the archive", run.Reason)
+	}
+	if strings.Contains(run.Reason, "partly restored") {
+		t.Errorf("reason = %q, want no partial-restore warning: nothing was touched", run.Reason)
+	}
+	if len(h.docker.Runs) != 0 {
+		t.Errorf("helper runs = %d, want 0: a corrupt archive must not empty the volume", len(h.docker.Runs))
+	}
+	if c, _ := h.docker.FindContainer(context.Background(), "wiki-web"); c == nil || !c.Running() {
+		t.Error("container must be left running when the archive is rejected")
+	}
+}
+
 // seedSingleContainerWithVolume creates a nixpacks app, its named volume
 // (labeled the way a real deploy would), and its running canonical container.
 func (h *harness) seedSingleContainerWithVolume(t *testing.T) core.App {
@@ -306,7 +365,7 @@ func TestRestoreVolumeSingleContainer(t *testing.T) {
 	b := h.backup(t, core.BackupTargetApp, app.ID, dest.ID, 0)
 
 	const key = "prod/web/outhaul-web-data/20260101T000000Z.tar.gz"
-	h.blob.objects[key] = []byte("tarball")
+	h.blob.objects[key] = targz(t, map[string]string{"app.db": "web"})
 
 	var stateDuringUntar string
 	h.docker.OnRun = func(spec docker.ContainerSpec) (string, int, error) {
@@ -401,7 +460,7 @@ func TestVolumeRestoreFailureSaysPartlyRestored(t *testing.T) {
 	app := h.seedComposeWithVolume(t)
 	b := h.backup(t, core.BackupTargetApp, app.ID, dest.ID, 0)
 	const key = "prod/wiki/outhaul-wiki_data/20260101T000000Z.tar.gz"
-	h.blob.objects[key] = []byte("tarball")
+	h.blob.objects[key] = targz(t, map[string]string{"index.html": "wiki"})
 	h.docker.OnRun = func(docker.ContainerSpec) (string, int, error) { return "", 0, context.Canceled }
 
 	h.m.RestoreNow(b, key)
@@ -442,7 +501,7 @@ func TestVolumeRestoreRestartsContainerWhoseStopFailed(t *testing.T) {
 	app := h.seedComposeWithVolume(t)
 	b := h.backup(t, core.BackupTargetApp, app.ID, dest.ID, 0)
 	const key = "prod/wiki/outhaul-wiki_data/20260101T000000Z.tar.gz"
-	h.blob.objects[key] = []byte("tarball")
+	h.blob.objects[key] = targz(t, map[string]string{"index.html": "wiki"})
 	h.docker.FailStop = func(string) error { return context.Canceled }
 
 	h.m.RestoreNow(b, key)

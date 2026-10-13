@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"archive/tar"
 	"compress/gzip"
 	"context"
 	"fmt"
@@ -206,6 +207,40 @@ func restoreCommand(db core.Database) (cmd, env []string, err error) {
 	}
 }
 
+// validateTarGz proves the staged archive is a readable gzipped tar before
+// the helper empties the target volume. The helper deletes first and untars
+// second, so without this a corrupt archive wipes the data it was meant to
+// restore. f is left rewound for the helper's reader.
+func validateTarGz(f io.ReadSeeker) error {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("not gzip: %w", err)
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	for {
+		switch _, err := tr.Next(); {
+		case err == io.EOF:
+			// Drain what tar left so gzip verifies its checksum too.
+			if _, err := io.Copy(io.Discard, gz); err != nil {
+				return fmt.Errorf("gzip stream: %w", err)
+			}
+			if _, err := f.Seek(0, io.SeekStart); err != nil {
+				return err
+			}
+			return nil
+		case err != nil:
+			return fmt.Errorf("not a tar: %w", err)
+		}
+		if _, err := io.Copy(io.Discard, tr); err != nil {
+			return err
+		}
+	}
+}
+
 // restoreVolume unpacks one volume archive back into the app's named
 // volume: stop the app's running container(s), empty the volume, untar the
 // staged archive into it with the helper container, restart what was
@@ -259,6 +294,12 @@ func (m *Manager) restoreVolume(ctx context.Context, b core.Backup, blob blobsto
 		return 0, err
 	}
 	defer f.close()
+	// Validate before pulling or stopping anything: the helper below deletes
+	// the volume's contents before it untars, so a bad archive would wipe the
+	// data it was meant to restore.
+	if err := validateTarGz(f.file); err != nil {
+		return f.size, fmt.Errorf("archive %s is not a valid tar.gz; volume %s was left unchanged: %w", key, vol, err)
+	}
 	if err := m.docker.PullImage(ctx, helperImage, io.Discard); err != nil {
 		return f.size, fmt.Errorf("pull %s: %w", helperImage, err)
 	}
