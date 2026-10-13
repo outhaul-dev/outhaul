@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -333,6 +334,30 @@ func TestVolumeRestoreRejectsCorruptArchiveBeforeEmptying(t *testing.T) {
 	}
 	if c, _ := h.docker.FindContainer(context.Background(), "wiki-web"); c == nil || !c.Running() {
 		t.Error("container must be left running when the archive is rejected")
+	}
+}
+
+// Same for a restore: a helper left by a killed attempt must not block the
+// next restore of that schedule.
+func TestVolumeRestoreDropsStaleHelperContainer(t *testing.T) {
+	h := newHarness(t)
+	dest := h.destination(t)
+	app := h.seedComposeWithVolume(t)
+	b := h.backup(t, core.BackupTargetApp, app.ID, dest.ID, 0)
+	const key = "prod/wiki/outhaul-wiki_data/20260101T000000Z.tar.gz"
+	h.blob.objects[key] = targz(t, map[string]string{"index.html": "wiki"})
+
+	name := fmt.Sprintf("outhaul-restore-%d", b.ID)
+	h.docker.Containers["stale"] = &docker.Container{ID: "stale", Name: name}
+
+	h.m.RestoreNow(b, key)
+	h.waitRun(t)
+
+	if run := h.lastRun(t, b.ID); run.Status != core.RunOK {
+		t.Fatalf("run = %q (%q), want ok", run.Status, run.Reason)
+	}
+	if c, _ := h.docker.FindContainer(context.Background(), name); c != nil {
+		t.Errorf("stale helper container was not removed: %+v", c)
 	}
 }
 

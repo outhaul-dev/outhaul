@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
@@ -192,6 +193,28 @@ func gunzip(t *testing.T, b []byte) string {
 		t.Fatal(err)
 	}
 	return string(out)
+}
+
+// An unclean kill leaves the tar helper behind. The next run of the same
+// schedule reuses the helper name, so it must clear the leftover first.
+func TestBackupDropsStaleHelperContainer(t *testing.T) {
+	h := newHarness(t)
+	dest := h.destination(t)
+	app := h.seedComposeWithVolume(t)
+	b := h.backup(t, core.BackupTargetApp, app.ID, dest.ID, 0)
+
+	name := fmt.Sprintf("outhaul-backup-%d-0", b.ID)
+	h.docker.Containers["stale"] = &docker.Container{ID: "stale", Name: name}
+
+	h.m.RunNow(b)
+	h.waitRun(t)
+
+	if run := h.lastRun(t, b.ID); run.Status != core.RunOK {
+		t.Fatalf("run = %q (%q), want ok", run.Status, run.Reason)
+	}
+	if c, _ := h.docker.FindContainer(context.Background(), name); c != nil {
+		t.Errorf("stale helper container was not removed: %+v", c)
+	}
 }
 
 func TestPostgresBackupUploadsDump(t *testing.T) {

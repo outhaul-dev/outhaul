@@ -313,6 +313,20 @@ func dumpCommand(db core.Database) (cmd, env []string, ext string, err error) {
 	}
 }
 
+// dropStaleHelper removes a helper container left behind by a run that was
+// killed before RunContainer's own cleanup. The next run of the same schedule
+// reuses the helper's name, so without this it would fail to create it.
+func (m *Manager) dropStaleHelper(ctx context.Context, name string) error {
+	c, err := m.docker.FindContainer(ctx, name)
+	if err != nil {
+		return err
+	}
+	if c == nil {
+		return nil
+	}
+	return m.docker.RemoveContainer(ctx, c.ID, true)
+}
+
 // backupAppVolumes tars each of an app's named volumes — a compose stack's
 // project volumes or a single-container app's labeled data volumes — with a
 // transient helper container and uploads one archive per volume.
@@ -342,10 +356,14 @@ func (m *Manager) backupAppVolumes(ctx context.Context, b core.Backup, blob blob
 	var lastKey string
 	var total int64
 	for i, vol := range vols {
+		helperName := fmt.Sprintf("outhaul-backup-%d-%d", b.ID, i)
+		if err := m.dropStaleHelper(ctx, helperName); err != nil {
+			return lastKey, total, fmt.Errorf("clear stale helper: %w", err)
+		}
 		f, err := m.stage(false, func(w io.Writer) error {
 			var stderr strings.Builder
 			exit, err := m.docker.RunContainer(ctx, docker.ContainerSpec{
-				Name:  fmt.Sprintf("outhaul-backup-%d-%d", b.ID, i),
+				Name:  helperName,
 				Image: helperImage,
 				Cmd:   []string{"tar", "czf", "-", "-C", "/src", "."},
 				Labels: map[string]string{

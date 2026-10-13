@@ -303,6 +303,12 @@ func (m *Manager) restoreVolume(ctx context.Context, b core.Backup, blob blobsto
 	if err := m.docker.PullImage(ctx, helperImage, io.Discard); err != nil {
 		return f.size, fmt.Errorf("pull %s: %w", helperImage, err)
 	}
+	// A helper left behind by a killed attempt holds the name this restore
+	// will use; clear it before stopping anything.
+	helperName := fmt.Sprintf("outhaul-restore-%d", b.ID)
+	if err := m.dropStaleHelper(ctx, helperName); err != nil {
+		return f.size, fmt.Errorf("clear stale helper: %w", err)
+	}
 
 	// Stop whatever is running while the data is replaced; restart is
 	// best-effort even when the untar failed — a broken volume with the app
@@ -334,7 +340,7 @@ func (m *Manager) restoreVolume(ctx context.Context, b core.Backup, blob blobsto
 	// it partly restored.
 	var stderr strings.Builder
 	exit, err := m.docker.RunContainer(ctx, docker.ContainerSpec{
-		Name:  fmt.Sprintf("outhaul-restore-%d", b.ID),
+		Name:  helperName,
 		Image: helperImage,
 		Cmd:   []string{"sh", "-c", "find /dst -mindepth 1 -delete && tar xzf /restore.tar.gz -C /dst"},
 		Labels: map[string]string{

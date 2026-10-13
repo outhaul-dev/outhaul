@@ -358,6 +358,13 @@ func (f *Fake) ListVolumesFull(_ context.Context, match map[string]string) ([]Vo
 
 func (f *Fake) RunContainer(_ context.Context, spec ContainerSpec, stdout, _ io.Writer) (int, error) {
 	f.mu.Lock()
+	// Mirror Docker: a real container with this name still exists, so creating
+	// the one-shot helper would fail. This is what a helper left behind by an
+	// unclean kill looks like to the next run.
+	if f.byName(spec.Name) != nil {
+		f.mu.Unlock()
+		return 0, fmt.Errorf("container name %q already in use", spec.Name)
+	}
 	f.Runs = append(f.Runs, spec)
 	hook := f.OnRun
 	f.mu.Unlock()
