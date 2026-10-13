@@ -320,6 +320,10 @@ func (r *real) RemoveContainer(ctx context.Context, id string, force bool) error
 	return r.cli.ContainerRemove(ctx, id, container.RemoveOptions{Force: force})
 }
 
+func (r *real) RenameContainer(ctx context.Context, id, name string) error {
+	return r.cli.ContainerRename(ctx, id, name)
+}
+
 func (r *real) ListImages(ctx context.Context, refPattern string) ([]string, error) {
 	list, err := r.cli.ImageList(ctx, image.ListOptions{
 		Filters: filters.NewArgs(filters.Arg("reference", refPattern)),

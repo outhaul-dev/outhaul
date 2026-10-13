@@ -62,10 +62,10 @@ func NewManager(st *store.Store, dc docker.Client, network, dataDir string) *Man
 func (m *Manager) DataPath(dbName string) string { return filepath.Join(m.dataDir, dbName) }
 
 // Provision (re)creates the database container in the background: pull the
-// image, remove any existing container, create and start a fresh one. The row
-// moves creating → running/failed. Reprovisioning is how a failed database is
-// retried and how a changed external port is applied — data survives in the
-// bind mount.
+// image, create and start a container. The row moves creating → running/failed.
+// Reprovisioning is how a failed database is retried and how a changed external
+// port is applied — data survives in the bind mount, and the previous container
+// is kept until the replacement runs.
 func (m *Manager) Provision(d core.Database) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
@@ -99,15 +99,6 @@ func (m *Manager) provision(ctx context.Context, d core.Database) error {
 	if err := os.MkdirAll(m.DataPath(d.Name), 0o700); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
 	}
-	// Remove any previous container (failed attempt or old config); the data
-	// dir carries the state, so recreation is safe.
-	if existing, err := m.docker.FindContainer(ctx, ContainerName(d.Name)); err != nil {
-		return err
-	} else if existing != nil {
-		if err := m.docker.RemoveContainer(ctx, existing.ID, true); err != nil {
-			return fmt.Errorf("remove old container: %w", err)
-		}
-	}
 	eng := engines[d.Engine]
 	spec := docker.ContainerSpec{
 		Name:  ContainerName(d.Name),
@@ -131,14 +122,74 @@ func (m *Manager) provision(ctx context.Context, d core.Database) error {
 			Proto:         "tcp",
 		}}
 	}
-	id, err := m.docker.CreateContainer(ctx, spec)
-	if err != nil {
-		return fmt.Errorf("create container: %w", err)
+
+	// A replacement a killed earlier provision left under the temporary name
+	// would block this one; drop it first.
+	tmpName := ContainerName(d.Name) + "-new"
+	if stale, err := m.docker.FindContainer(ctx, tmpName); err != nil {
+		return err
+	} else if stale != nil {
+		if err := m.docker.RemoveContainer(ctx, stale.ID, true); err != nil {
+			return fmt.Errorf("remove stale replacement: %w", err)
+		}
 	}
-	if err := m.docker.StartContainer(ctx, id); err != nil {
-		return fmt.Errorf("start container: %w", err)
+
+	existing, err := m.docker.FindContainer(ctx, ContainerName(d.Name))
+	if err != nil {
+		return err
+	}
+	if existing == nil {
+		id, err := m.docker.CreateContainer(ctx, spec)
+		if err != nil {
+			return fmt.Errorf("create container: %w", err)
+		}
+		if err := m.docker.StartContainer(ctx, id); err != nil {
+			return fmt.Errorf("start container: %w", err)
+		}
+		return m.store.SetDatabaseStatus(ctx, d.ID, core.DBRunning, "")
+	}
+
+	// Reprovisioning replaces a failed or reconfigured container. The data
+	// dir carries the state, so recreation is safe — but the old container is
+	// the rollback: it stays until the replacement is running, so a
+	// replacement that will not start cannot take a working database down.
+	replacement := spec
+	replacement.Name = tmpName
+	newID, err := m.docker.CreateContainer(ctx, replacement)
+	if err != nil {
+		// Nothing was stopped yet, so the old container is still serving.
+		return fmt.Errorf("create replacement: %w", err)
+	}
+	// Two engines cannot share the data dir, so the old one must stop before
+	// the replacement starts.
+	rollbackCtx := context.WithoutCancel(ctx)
+	if err := m.docker.StopContainer(ctx, existing.ID, stopTimeout); err != nil {
+		m.docker.RemoveContainer(rollbackCtx, newID, true)
+		m.restartOld(rollbackCtx, d.Name, existing.ID)
+		return fmt.Errorf("stop old container: %w", err)
+	}
+	if err := m.docker.StartContainer(ctx, newID); err != nil {
+		m.docker.RemoveContainer(rollbackCtx, newID, true)
+		m.restartOld(rollbackCtx, d.Name, existing.ID)
+		return fmt.Errorf("start replacement: %w", err)
+	}
+	// The replacement runs: drop the old container and take over its name.
+	if err := m.docker.RemoveContainer(ctx, existing.ID, true); err != nil {
+		return fmt.Errorf("remove old container: %w", err)
+	}
+	if err := m.docker.RenameContainer(ctx, newID, ContainerName(d.Name)); err != nil {
+		return fmt.Errorf("rename replacement: %w", err)
 	}
 	return m.store.SetDatabaseStatus(ctx, d.ID, core.DBRunning, "")
+}
+
+// restartOld brings the previous container back after a failed replacement.
+// The call is best-effort: if it fails, the row records the original failure
+// and the operator can retry.
+func (m *Manager) restartOld(ctx context.Context, name, id string) {
+	if err := m.docker.StartContainer(ctx, id); err != nil {
+		log.Printf("database %s: replacement failed and the old container could not be restarted: %v", name, err)
+	}
 }
 
 // Start starts a stopped database container.

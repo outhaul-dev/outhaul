@@ -172,6 +172,74 @@ func TestProvisionReplacesExistingContainer(t *testing.T) {
 	if !second.Running() {
 		t.Error("replacement container not started")
 	}
+	if c, _ := h.docker.FindContainer(ctx, "outhaul-db-shop-new"); c != nil {
+		t.Errorf("replacement kept its temporary name: %+v", c)
+	}
+}
+
+// The old container is the rollback: a replacement that will not start must
+// leave the database running on the config it already had, not take it down.
+func TestProvisionKeepsOldContainerWhenReplacementFailsToStart(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	d := h.database(t, "shop", core.EnginePostgres)
+	if err := h.m.provision(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := h.docker.FindContainer(ctx, "outhaul-db-shop")
+
+	h.docker.FailStart = func(id string) error {
+		if strings.HasSuffix(h.docker.Containers[id].Name, "-new") {
+			return errors.New("entrypoint exited")
+		}
+		return nil
+	}
+	d.ExtPort = 5433
+	if err := h.m.provision(ctx, d); err == nil {
+		t.Fatal("want an error when the replacement will not start")
+	}
+
+	cur, _ := h.docker.FindContainer(ctx, "outhaul-db-shop")
+	if cur == nil || cur.ID != old.ID {
+		t.Fatalf("old container should be kept, got %+v", cur)
+	}
+	if !cur.Running() {
+		t.Error("old container must be running again after the rollback")
+	}
+	if c, _ := h.docker.FindContainer(ctx, "outhaul-db-shop-new"); c != nil {
+		t.Errorf("failed replacement left behind: %+v", c)
+	}
+}
+
+// A replacement that cannot even be created must not stop the old container:
+// the new spec is built and created before anything is taken down.
+func TestProvisionKeepsOldContainerWhenReplacementCreateFails(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	d := h.database(t, "shop", core.EnginePostgres)
+	if err := h.m.provision(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	old, _ := h.docker.FindContainer(ctx, "outhaul-db-shop")
+
+	h.docker.FailCreate = func(spec docker.ContainerSpec) error {
+		if strings.HasSuffix(spec.Name, "-new") {
+			return errors.New("invalid mount")
+		}
+		return nil
+	}
+	d.ExtPort = 5433
+	if err := h.m.provision(ctx, d); err == nil {
+		t.Fatal("want an error when the replacement cannot be created")
+	}
+
+	cur, _ := h.docker.FindContainer(ctx, "outhaul-db-shop")
+	if cur == nil || cur.ID != old.ID || !cur.Running() {
+		t.Fatalf("old container should be untouched and running, got %+v", cur)
+	}
+	if c, _ := h.docker.FindContainer(ctx, "outhaul-db-shop-new"); c != nil {
+		t.Errorf("failed replacement left behind: %+v", c)
+	}
 }
 
 // Provision (the async entry point) records a pull failure on the row.

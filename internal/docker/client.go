@@ -122,6 +122,11 @@ type Client interface {
 	// RemoveContainer removes a container (force removes even if running).
 	RemoveContainer(ctx context.Context, id string, force bool) error
 
+	// RenameContainer gives a container a new name. A running container may be
+	// renamed. Used when a reprovisioned database's replacement takes over the
+	// canonical name once the old container is gone.
+	RenameContainer(ctx context.Context, id, name string) error
+
 	// ExecContainer runs cmd inside a running container with extra env vars,
 	// feeding stdin to the command when non-nil (closed once the reader
 	// drains) and streaming the command's stdout and stderr to the given

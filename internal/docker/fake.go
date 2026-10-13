@@ -49,6 +49,9 @@ type Fake struct {
 
 	FailCreate func(spec ContainerSpec) error
 	FailRemove func(id string) error
+	// FailStart, when set, makes StartContainer return its error before the
+	// container is marked running.
+	FailStart func(id string) error
 	// FailStop, when set, makes StopContainer return its error after the
 	// container has stopped: the daemon finished the stop, but the call
 	// reported failure (say, its context was cancelled mid-wait).
@@ -168,6 +171,11 @@ func (f *Fake) StartContainer(_ context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("no such container: %s", id)
 	}
+	if f.FailStart != nil {
+		if err := f.FailStart(id); err != nil {
+			return err
+		}
+	}
 	c.State = "running"
 	return nil
 }
@@ -198,6 +206,20 @@ func (f *Fake) RemoveContainer(_ context.Context, id string, _ bool) error {
 		return fmt.Errorf("no such container: %s", id)
 	}
 	delete(f.Containers, id)
+	return nil
+}
+
+func (f *Fake) RenameContainer(_ context.Context, id, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c, ok := f.Containers[id]
+	if !ok {
+		return fmt.Errorf("no such container: %s", id)
+	}
+	if f.byName(name) != nil {
+		return fmt.Errorf("container name %q already in use", name)
+	}
+	c.Name = name
 	return nil
 }
 
