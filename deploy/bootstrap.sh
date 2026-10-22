@@ -482,6 +482,33 @@ acme_preflight() { # domain
 	done
 }
 
+# Prints the distinct TCP ports listening on a non-loopback address, read
+# from `ss -ltn` output on stdin (a header line is tolerated), sorted and
+# space separated. These are what a freshly enabled ufw would block.
+ss_listen_ports() {
+	awk '$1=="LISTEN" {
+		a=$4; p=a; sub(/.*:/, "", p); sub(/:[^:]*$/, "", a); sub(/%.*/, "", a)
+		if (a ~ /^127\./ || a=="[::1]" || a=="::1") next
+		print p }' | sort -nu | paste -sd' ' -
+}
+
+# Prints the ports in $1 that do not appear in $2 (both space separated).
+ports_not_in() { # ports exclude
+	_out=''
+	# shellcheck disable=SC2086 # intentional word-splitting of the port list
+	for _p in $1; do
+		case " $2 " in *" $_p "*) ;; *) _out="$_out $_p";; esac
+	done
+	printf '%s' "${_out# }"
+}
+
+listening_ports() {
+	command -v ss >/dev/null 2>&1 || return 0
+	ss -ltn 2>/dev/null | ss_listen_ports
+}
+
+ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
+
 # Opens the given port set with ufw. CRITICAL: `ufw allow` every port
 # (especially SSH/22) BEFORE `ufw enable`, so the running session survives.
 apply_firewall() { # ports (space separated, must include 22)
@@ -699,7 +726,18 @@ main() {
 			case " $PORTS " in *" $assh "*) ;; *) [ -n "$assh" ] && PORTS="$PORTS $assh";; esac
 		fi
 		printf '  Firewall will open (SSH always preserved): %s\n' "$PORTS"
-		if ask_yes_no "  Proceed?" y; then apply_firewall "$PORTS"; else PORTS=''; fi
+		# On a host that already serves other things, enabling ufw would cut
+		# them off: say which ports, and default to leaving the firewall alone.
+		fw_default=y
+		if ! ufw_active; then
+			blocked=$(ports_not_in "$(listening_ports)" "$PORTS")
+			if [ -n "$blocked" ]; then
+				step_fail "ufw is inactive; enabling it would also block ports listening now: $blocked"
+				note "containers with published ports are not affected; open others with: ufw allow <port>"
+				fw_default=n
+			fi
+		fi
+		if ask_yes_no "  Proceed?" "$fw_default"; then apply_firewall "$PORTS"; else PORTS=''; fi
 	fi
 
 	HURL=$(admin_health_url "${OUTHAUL_LISTEN_ADDR:-:8080}")

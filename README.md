@@ -117,7 +117,9 @@ and restarts the service. It:
 - creates an `outhaul` **system user** (no login shell, home `/var/lib/outhaul`)
   in the `docker` group;
 - walks you through ingress — Let's Encrypt, Cloudflare Tunnel, or local-only —
-  and opens the right firewall ports, always keeping SSH reachable;
+  and opens the right firewall ports, always keeping SSH reachable (when ufw
+  is not yet active and other services are listening, it says which ports
+  enabling it would block, and defaults to leaving the firewall alone);
 - builds the binary from source and installs it to `/usr/local/bin/outhaul`;
 - writes `/etc/outhaul.env` (put `OUTHAUL_*` overrides there — ACME email,
   public URL) and installs and starts `outhaul.service`
