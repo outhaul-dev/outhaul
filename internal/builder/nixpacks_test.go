@@ -23,7 +23,7 @@ func TestBuildArgs(t *testing.T) {
 		{
 			name: "no env",
 			req:  BuildRequest{ContextDir: "/work/repo", ImageTag: "outhaul/web:5"},
-			want: []string{"build", "/work/repo", "--name", "outhaul/web:5"},
+			want: []string{"build", "/work/repo", "--name", "outhaul/web:5", "--label", ImageLabel},
 		},
 		{
 			name: "env sorted for determinism",
@@ -32,7 +32,7 @@ func TestBuildArgs(t *testing.T) {
 				ImageTag:   "img:1",
 				Env:        map[string]string{"PORT": "8080", "APP_ENV": "prod"},
 			},
-			want: []string{"build", "/work/repo", "--name", "img:1",
+			want: []string{"build", "/work/repo", "--name", "img:1", "--label", ImageLabel,
 				"--env", "APP_ENV=prod", "--env", "PORT=8080"},
 		},
 	}

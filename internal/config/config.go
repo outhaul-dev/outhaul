@@ -33,12 +33,13 @@ type Config struct {
 	CloudflaredImage string // image used for the managed cloudflared connector
 	Network          string // shared Docker network app containers + Traefik join
 
-	ACMEEmail     string        // Let's Encrypt account email; empty disables TLS
-	ACMEStaging   bool          // use the LE staging CA (avoid rate limits)
-	LocalCA       bool          // serve HTTPS from the built-in local CA (LAN installs; excludes ACME)
-	HTTPSPort     string        // host port for the websecure entrypoint
-	HealthTimeout time.Duration // deploy health-check deadline
-	ImageKeep     int           // built images kept per app; 0 disables pruning
+	ACMEEmail       string        // Let's Encrypt account email; empty disables TLS
+	ACMEStaging     bool          // use the LE staging CA (avoid rate limits)
+	LocalCA         bool          // serve HTTPS from the built-in local CA (LAN installs; excludes ACME)
+	HTTPSPort       string        // host port for the websecure entrypoint
+	HealthTimeout   time.Duration // deploy health-check deadline
+	ImageKeep       int           // built images kept per app; 0 disables pruning
+	PruneBuildCache bool          // nightly prune of the daemon-wide build cache; off for a shared host
 
 	PublicURL string // externally reachable base URL of the admin UI (for GitHub callbacks/webhooks); empty disables GitHub App setup
 	ServerIP  string // public IP used in generated sslip.io template domains; empty means auto-detect
@@ -64,12 +65,13 @@ func Load(getenv Getenv) Config {
 		CloudflaredImage: or(getenv("OUTHAUL_CLOUDFLARED_IMAGE"), DefaultCloudflaredImage),
 		Network:          or(getenv("OUTHAUL_NETWORK"), "outhaul"),
 
-		ACMEEmail:     firstField(getenv("OUTHAUL_ACME_EMAIL")),
-		ACMEStaging:   p.bool("OUTHAUL_ACME_STAGING"),
-		LocalCA:       p.bool("OUTHAUL_LOCAL_CA"),
-		HTTPSPort:     p.port("OUTHAUL_HTTPS_PORT", "443"),
-		HealthTimeout: p.duration("OUTHAUL_HEALTH_TIMEOUT", 60*time.Second),
-		ImageKeep:     p.count("OUTHAUL_IMAGE_KEEP", 5),
+		ACMEEmail:       firstField(getenv("OUTHAUL_ACME_EMAIL")),
+		ACMEStaging:     p.bool("OUTHAUL_ACME_STAGING"),
+		LocalCA:         p.bool("OUTHAUL_LOCAL_CA"),
+		HTTPSPort:       p.port("OUTHAUL_HTTPS_PORT", "443"),
+		HealthTimeout:   p.duration("OUTHAUL_HEALTH_TIMEOUT", 60*time.Second),
+		ImageKeep:       p.count("OUTHAUL_IMAGE_KEEP", 5),
+		PruneBuildCache: p.boolDefault("OUTHAUL_PRUNE_BUILD_CACHE", true),
 
 		PublicURL: p.url("OUTHAUL_PUBLIC_URL"),
 		ServerIP:  p.ip("OUTHAUL_SERVER_IP"),
@@ -217,18 +219,21 @@ func (p *parser) reject(key, v, want string) {
 }
 
 // bool accepts 1/0, true/false, yes/no and on/off in any case; empty is false.
-func (p *parser) bool(key string) bool {
+func (p *parser) bool(key string) bool { return p.boolDefault(key, false) }
+
+// boolDefault is bool with an explicit value for an unset variable.
+func (p *parser) boolDefault(key string, fallback bool) bool {
 	v := p.getenv(key)
 	switch strings.ToLower(v) {
 	case "":
-		return false
+		return fallback
 	case "1", "true", "yes", "on":
 		return true
 	case "0", "false", "no", "off":
 		return false
 	}
 	p.reject(key, v, "true or false")
-	return false
+	return fallback
 }
 
 // count parses a non-negative integer.

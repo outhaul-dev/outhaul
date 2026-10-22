@@ -5,6 +5,8 @@
 package builder
 
 import (
+	"github.com/outhaul-dev/outhaul/internal/docker"
+
 	"context"
 	"io"
 )
@@ -28,3 +30,6 @@ type Builder interface {
 	// Name identifies the strategy (e.g. "nixpacks").
 	Name() string
 }
+
+// ImageLabel is set on every built image so the pruner can recognise it.
+const ImageLabel = docker.ImageLabel

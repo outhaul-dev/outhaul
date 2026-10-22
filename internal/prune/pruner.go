@@ -43,15 +43,17 @@ const imagePattern = "outhaul/*"
 // Pruner owns disk cleanup. The deploy worker calls PruneApp after each
 // successful nixpacks deploy; Run sweeps daily.
 type Pruner struct {
-	store   *store.Store
-	docker  docker.Client
-	keep    int    // distinct image tags kept per app; 0 disables image pruning
-	workDir string // config.WorkDir(), for stale work-dir cleanup
+	store      *store.Store
+	docker     docker.Client
+	keep       int    // distinct image tags kept per app; 0 disables image pruning
+	workDir    string // config.WorkDir(), for stale work-dir cleanup
+	buildCache bool   // prune the daemon-wide build cache in the nightly sweep
 }
 
-// New wires a Pruner. keep is config.ImageKeep; workDir is config.WorkDir().
-func New(st *store.Store, dc docker.Client, keep int, workDir string) *Pruner {
-	return &Pruner{store: st, docker: dc, keep: keep, workDir: workDir}
+// New wires a Pruner. keep is config.ImageKeep; workDir is config.WorkDir();
+// buildCache is config.PruneBuildCache.
+func New(st *store.Store, dc docker.Client, keep int, workDir string, buildCache bool) *Pruner {
+	return &Pruner{store: st, docker: dc, keep: keep, workDir: workDir, buildCache: buildCache}
 }
 
 // Run ticks once a minute until ctx is cancelled and sweeps when the schedule
@@ -168,10 +170,14 @@ func (p *Pruner) Sweep(ctx context.Context) {
 	} else if reclaimed > 0 {
 		log.Printf("prune: dangling images reclaimed %s", formatBytes(reclaimed))
 	}
-	if reclaimed, err := p.docker.PruneBuildCache(ctx, buildCacheAge); err != nil {
-		log.Printf("prune: build cache: %v", err)
-	} else if reclaimed > 0 {
-		log.Printf("prune: build cache reclaimed %s", formatBytes(reclaimed))
+	// The build cache is shared by every build on the daemon and cannot be
+	// filtered to Outhaul's, so on a shared host this step can be turned off.
+	if p.buildCache {
+		if reclaimed, err := p.docker.PruneBuildCache(ctx, buildCacheAge); err != nil {
+			log.Printf("prune: build cache: %v", err)
+		} else if reclaimed > 0 {
+			log.Printf("prune: build cache reclaimed %s", formatBytes(reclaimed))
+		}
 	}
 	p.cleanWorkDir(ctx)
 	log.Print("prune: sweep done")

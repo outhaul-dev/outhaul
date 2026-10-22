@@ -65,7 +65,7 @@ func dockerBuildArgs(req BuildRequest) []string {
 	}
 	args := []string{"build", req.ContextDir,
 		"--file", filepath.Join(req.ContextDir, dockerfile),
-		"--tag", req.ImageTag}
+		"--tag", req.ImageTag, "--label", ImageLabel}
 
 	keys := make([]string, 0, len(req.Env))
 	for k := range req.Env {

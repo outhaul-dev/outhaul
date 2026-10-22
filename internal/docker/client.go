@@ -71,6 +71,11 @@ type VolumeInfo struct {
 }
 
 // Client is the container-runtime surface Outhaul depends on.
+// ImageLabel marks every image Outhaul builds, so the dangling-image prune
+// can tell its own leftovers from other images on a shared daemon. Docker
+// copies image labels onto containers, so containers carry it too.
+const ImageLabel = "outhaul.image=true"
+
 type Client interface {
 	// Ping verifies the daemon is reachable.
 	Ping(ctx context.Context) error
@@ -170,8 +175,9 @@ type Client interface {
 	// an image in use by a container is an error — the pruner never forces.
 	RemoveImage(ctx context.Context, ref string) error
 
-	// PruneImages removes dangling (untagged) images only — never tagged
-	// ones — and returns the bytes reclaimed.
+	// PruneImages removes dangling (untagged) images that Outhaul built
+	// (see ImageLabel) — never tagged ones, and never another user's — and
+	// returns the bytes reclaimed.
 	PruneImages(ctx context.Context) (uint64, error)
 
 	// PruneBuildCache removes build-cache entries unused for longer than

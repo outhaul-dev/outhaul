@@ -370,7 +370,10 @@ func (r *real) RemoveImage(ctx context.Context, ref string) error {
 }
 
 func (r *real) PruneImages(ctx context.Context) (uint64, error) {
-	report, err := r.cli.ImagesPrune(ctx, filters.NewArgs(filters.Arg("dangling", "true")))
+	report, err := r.cli.ImagesPrune(ctx, filters.NewArgs(
+		filters.Arg("dangling", "true"),
+		filters.Arg("label", ImageLabel),
+	))
 	if err != nil {
 		return 0, err
 	}

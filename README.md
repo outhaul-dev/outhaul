@@ -65,7 +65,7 @@ one-time setup URL. Developers with a local checkout can run
 ### See what's happening
 - **Live runtime logs** — tail container logs in the browser, per service for compose stacks.
 - **Live metrics** — CPU, memory, network, and uptime, aggregated across a stack.
-- **Automatic disk cleanup** — keeps the newest images per app for rollback (`OUTHAUL_IMAGE_KEEP`) while a nightly sweep reclaims old images, dangling layers, and stale build cache.
+- **Automatic disk cleanup** — keeps the newest images per app for rollback (`OUTHAUL_IMAGE_KEEP`) while a nightly sweep reclaims old images, dangling layers left by its own builds, and (unless `OUTHAUL_PRUNE_BUILD_CACHE=no`) stale build cache.
 
 > See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the design and what's
 > intentionally out of scope for now (multiple users, metrics history/alerts,
@@ -155,6 +155,7 @@ No config files — defaults with `OUTHAUL_*` environment overrides:
 | `OUTHAUL_HTTPS_PORT`    | `443`                | Host port for HTTPS                        |
 | `OUTHAUL_HEALTH_TIMEOUT`| `60s`                | Deploy health-check deadline               |
 | `OUTHAUL_IMAGE_KEEP`    | `5`                  | Built images kept per app for rollback (`0` keeps all) |
+| `OUTHAUL_PRUNE_BUILD_CACHE` | `yes`            | Nightly prune of build cache unused for 7 days; it is daemon-wide, so set `no` on a host shared with other builds |
 | `OUTHAUL_PUBLIC_URL`    | (empty)              | Public base URL of the admin UI; enables GitHub App + webhook URLs |
 | `OUTHAUL_SERVER_IP`     | (auto-detected)      | Public IP embedded in generated `sslip.io` template domains |
 

@@ -26,7 +26,7 @@ func TestDockerBuildArgs(t *testing.T) {
 			name: "default Dockerfile at the repo root",
 			req:  BuildRequest{ContextDir: "/work/repo", ImageTag: "outhaul/web:5"},
 			want: []string{"build", "/work/repo",
-				"--file", "/work/repo/Dockerfile", "--tag", "outhaul/web:5"},
+				"--file", "/work/repo/Dockerfile", "--tag", "outhaul/web:5", "--label", ImageLabel},
 		},
 		{
 			name: "custom path joined to the context, env sorted for determinism",
@@ -37,7 +37,7 @@ func TestDockerBuildArgs(t *testing.T) {
 				Env:        map[string]string{"PORT": "8080", "APP_ENV": "prod"},
 			},
 			want: []string{"build", "/work/repo",
-				"--file", "/work/repo/build/Dockerfile.prod", "--tag", "img:1",
+				"--file", "/work/repo/build/Dockerfile.prod", "--tag", "img:1", "--label", ImageLabel,
 				"--build-arg", "APP_ENV=prod", "--build-arg", "PORT=8080"},
 		},
 	}

@@ -184,7 +184,7 @@ func serve() error {
 		compose.NewDocker(), deploy.NewGit(), broker, sources, cfg)
 
 	// Image pruner: after-deploy retention hook + daily sweep.
-	pruner := prune.New(st, dc, cfg.ImageKeep, cfg.WorkDir())
+	pruner := prune.New(st, dc, cfg.ImageKeep, cfg.WorkDir(), cfg.PruneBuildCache)
 	worker.SetPruner(pruner)
 
 	workerCtx, stopWorker := context.WithCancel(context.Background())

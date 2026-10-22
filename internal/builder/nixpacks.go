@@ -21,7 +21,7 @@ func NewNixpacks() *Nixpacks { return &Nixpacks{Bin: "nixpacks"} }
 
 func (n *Nixpacks) Name() string { return "nixpacks" }
 
-// Build runs `nixpacks build <ctx> --name <tag> [--env K=V ...]`, streaming
+// Build runs `nixpacks build <ctx> --name <tag> --label ... [--env K=V ...]`, streaming
 // output to out. A missing binary is reported as a clear, actionable error
 // rather than a crash.
 func (n *Nixpacks) Build(ctx context.Context, req BuildRequest, out io.Writer) error {
@@ -45,7 +45,7 @@ func (n *Nixpacks) Build(ctx context.Context, req BuildRequest, out io.Writer) e
 // buildArgs assembles the nixpacks CLI arguments. Env keys are sorted so the
 // command line is deterministic (and testable).
 func buildArgs(req BuildRequest) []string {
-	args := []string{"build", req.ContextDir, "--name", req.ImageTag}
+	args := []string{"build", req.ContextDir, "--name", req.ImageTag, "--label", ImageLabel}
 
 	keys := make([]string, 0, len(req.Env))
 	for k := range req.Env {

@@ -33,7 +33,7 @@ func newHarness(t *testing.T) *harness {
 }
 
 func (h *harness) pruner(keep int) *Pruner {
-	return New(h.store, h.docker, keep, h.workDir)
+	return New(h.store, h.docker, keep, h.workDir, true)
 }
 
 func (h *harness) app(t *testing.T, name string) core.App {
@@ -341,5 +341,18 @@ func TestSweepCleansStaleWorkDirs(t *testing.T) {
 		if _, err := os.Stat(keep); err != nil {
 			t.Errorf("%s should have been kept: %v", filepath.Base(keep), err)
 		}
+	}
+}
+
+func TestSweepSkipsBuildCacheWhenDisabled(t *testing.T) {
+	h := newHarness(t)
+
+	New(h.store, h.docker, 5, h.workDir, false).Sweep(context.Background())
+
+	if h.docker.ImagePrunes != 1 {
+		t.Errorf("dangling-image prune calls = %d, want 1", h.docker.ImagePrunes)
+	}
+	if len(h.docker.BuildCachePrunes) != 0 {
+		t.Errorf("build-cache prunes = %v, want none when disabled", h.docker.BuildCachePrunes)
 	}
 }

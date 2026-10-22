@@ -261,6 +261,7 @@ func TestValidateRejectsMalformedValues(t *testing.T) {
 		{"OUTHAUL_IMAGE_KEEP", "lots"},
 		{"OUTHAUL_IMAGE_KEEP", "-3"},
 		{"OUTHAUL_ACME_STAGING", "maybe"},
+		{"OUTHAUL_PRUNE_BUILD_CACHE", "maybe"},
 		{"OUTHAUL_LOCAL_CA", "enabled"},
 		{"OUTHAUL_HTTPS_PORT", "https"},
 		{"OUTHAUL_HTTPS_PORT", "70000"},
@@ -309,5 +310,24 @@ func TestValidateAcceptsWellFormedValues(t *testing.T) {
 	}
 	if err := Load(func(string) string { return "" }).Validate(); err != nil {
 		t.Errorf("defaults: Validate: %v", err)
+	}
+}
+
+func TestPruneBuildCacheDefaultsOn(t *testing.T) {
+	cfg := Load(func(string) string { return "" })
+	if !cfg.PruneBuildCache {
+		t.Error("PruneBuildCache should default to true")
+	}
+	cfg = Load(func(k string) string {
+		if k == "OUTHAUL_PRUNE_BUILD_CACHE" {
+			return "No"
+		}
+		return ""
+	})
+	if cfg.PruneBuildCache {
+		t.Error("OUTHAUL_PRUNE_BUILD_CACHE=No should turn the build-cache prune off")
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate: %v", err)
 	}
 }
