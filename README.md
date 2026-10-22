@@ -27,7 +27,7 @@ go build -o outhaul . && ./outhaul serve
 # → open the one-time setup URL it prints, create the admin account, deploy.
 ```
 
-## Install on a fresh Debian VPS
+## Install on a fresh Debian or Ubuntu VPS
 
     curl -fsSL https://outhaul.sh/install | sh
 
@@ -108,10 +108,10 @@ That fetches [`deploy/bootstrap.sh`](deploy/bootstrap.sh) and runs it under
 instead — useful for testing local changes to the installer or app. Prefer to
 run every step by hand? See [docs/MANUAL-DEPLOY.md](docs/MANUAL-DEPLOY.md).
 
-The installer needs root once (systemd required; V1 targets Debian, prompting
-before continuing on anything else). Each step is skipped when already
-done, so it is safe to re-run — and a re-run upgrades the binary and restarts
-the service. It:
+The installer needs root once (systemd required; V1 targets Debian and
+Ubuntu, prompting before continuing on anything else). Each step is skipped
+when already done, so it is safe to re-run — and a re-run upgrades the binary
+and restarts the service. It:
 
 - installs **Docker** (via get.docker.com), **git**, and **nixpacks** if missing;
 - creates an `outhaul` **system user** (no login shell, home `/var/lib/outhaul`)

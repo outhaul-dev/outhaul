@@ -263,16 +263,22 @@ detect_distro() { # file?
 	awk -F= '$1=="ID"{gsub(/"/,"",$2); print $2; exit}' "${1:-/etc/os-release}"
 }
 
+# True for the distros the installer is tested on. Both use apt, ufw,
+# systemd and get.docker.com, so the rest of the script is the same.
+distro_supported() { # id
+	case "$1" in debian|ubuntu) return 0;; *) return 1;; esac
+}
+
 # Full preflight. Aborts on hard failures; warns (via fd 3 confirm) on soft ones.
 preflight() {
 	[ "$(id -u)" -eq 0 ] || die "run as root (curl -fsSL https://outhaul.sh/install | sudo sh)"
 	command -v systemctl >/dev/null 2>&1 || die "systemd is required (no systemctl found)"
 	distro=$(detect_distro)
-	if [ "$distro" != debian ]; then
-		step_fail "unsupported distro: ${distro:-unknown} (V1 targets Debian)"
-		ask_yes_no "  Continue anyway?" n || die "aborted on unsupported distro"
+	if distro_supported "$distro"; then
+		step_ok "$distro detected"
 	else
-		step_ok "Debian detected"
+		step_fail "unsupported distro: ${distro:-unknown} (V1 targets Debian and Ubuntu)"
+		ask_yes_no "  Continue anyway?" n || die "aborted on unsupported distro"
 	fi
 	arch=$(uname -m)
 	case "$arch" in x86_64|amd64|aarch64|arm64) step_ok "architecture $arch";;

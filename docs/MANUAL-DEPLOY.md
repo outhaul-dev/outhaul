@@ -12,8 +12,8 @@ re-run will recognize the install and simply upgrade it.
 > root-equivalent, so treat the box as fully entrusted to Outhaul. See the
 > warning in the [README](../README.md).
 
-Target: a fresh **Debian** server (x86_64 or arm64) with **systemd**. Other
-distros likely work but are untested for V1. All commands below run as root
+Target: a fresh **Debian** or **Ubuntu** server (x86_64 or arm64) with
+**systemd**. Other distros likely work but are untested for V1. All commands below run as root
 (`sudo -i`) unless noted.
 
 ## Resulting layout
