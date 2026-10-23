@@ -206,9 +206,11 @@ Keep the admin port (8080) closed to the outside, but allow it from the
 `outhaul` bridge. Traefik serves the admin UI at your public URL by connecting
 to that port on the host, from its container on the `outhaul` Docker network,
 and ufw drops that like any other inbound traffic: the public URL then times
-out. Outhaul names the network's bridge `outhaul` when it creates the network.
-A network created by an older version has Docker's `br-<id>` name instead;
-find it with:
+out. Outhaul names the network's bridge after the network (`outhaul`, unless
+you changed `OUTHAUL_NETWORK`; names over 15 bytes keep Docker's default) when
+it creates the network. A network created by an older version has Docker's
+`br-<id>` name instead, and the rule goes stale if that network is ever
+recreated, so check the name with:
 
 ```sh
 docker network inspect outhaul -f '{{.Id}} {{index .Options "com.docker.network.bridge.name"}}'

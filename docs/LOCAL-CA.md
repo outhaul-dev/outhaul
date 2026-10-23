@@ -15,8 +15,10 @@ Get the root, either way:
 
 - from the server: `sudo outhaul ca root > outhaul-ca.pem` (the CA dir is
   `0700` and owned by the service user, so this needs root)
-- from any browser: `http://<server>:8080/ca.pem` (also linked from
-  Settings)
+- from a browser: `/ca.pem` on the admin UI (also linked from Settings).
+  With the firewall on, the admin port is closed to the outside, so open it
+  over an SSH tunnel (`ssh -L 8080:127.0.0.1:8080 you@server`, then
+  `http://127.0.0.1:8080/ca.pem`) or under your public URL if you set one
 
 Then trust it:
 
