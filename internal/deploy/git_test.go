@@ -3,11 +3,16 @@ package deploy
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // recordingGit runs the real arg/env construction but captures instead of exec.
@@ -116,3 +121,34 @@ func TestSSHEnvWritesKeyFile(t *testing.T) {
 }
 
 var _ = context.Background
+
+// GitHub answers a credential-less clone of a private or missing repository
+// with 401. Run by systemd, git then failed asking for a username with no
+// terminal ("could not read Username ...: No such device or address"); from
+// a terminal it would wait for one. The clone must fail at once and say why.
+func TestCloneReportsCredentialsRequired(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("WWW-Authenticate", `Basic realm="GitHub"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	// No credential helper or askpass program on this machine may answer.
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_ASKPASS", "")
+	t.Setenv("SSH_ASKPASS", "")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var out strings.Builder
+	err := NewGit().Clone(ctx, CloneSpec{URL: srv.URL + "/o/r.git"}, filepath.Join(t.TempDir(), "work"), &out)
+	if !errors.Is(err, ErrCredentialsRequired) {
+		t.Fatalf("Clone = %v, want ErrCredentialsRequired; output:\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "fatal: could not read Username") {
+		t.Errorf("git's own error should still reach the log:\n%s", out.String())
+	}
+}

@@ -227,6 +227,28 @@ func TestPipelineCloneFailureMarksFailed(t *testing.T) {
 	}
 }
 
+// A public app's repository that asks for credentials is private or missing.
+// The failure must say so, and which sources can clone it, instead of git's
+// "could not read Username".
+func TestPipelineCloneNeedingCredentialsExplains(t *testing.T) {
+	h := newHarness(t)
+	h.cloner.err = fmt.Errorf("git clone failed: %w", ErrCredentialsRequired)
+	app := h.app(t, "web")
+	dep := h.claimedDeployment(t, app.ID)
+
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed {
+		t.Fatalf("status = %q, want failed", got.Status)
+	}
+	for _, want := range []string{"private or does not exist", "GitHub App", "SSH deploy key"} {
+		if !strings.Contains(got.Reason, want) {
+			t.Errorf("reason = %q, want it to mention %q", got.Reason, want)
+		}
+	}
+}
+
 func TestPipelineBuildFailureMarksFailed(t *testing.T) {
 	h := newHarness(t)
 	h.builder.err = errors.New("nixpacks exploded")

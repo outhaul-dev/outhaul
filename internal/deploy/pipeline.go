@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -399,6 +400,10 @@ func (w *Worker) cloneWorkDir(ctx context.Context, dep core.Deployment, app core
 	}
 	if err := w.cloner.Clone(ctx, spec, workDir, out); err != nil {
 		cleanup()
+		if errors.Is(err, ErrCredentialsRequired) && app.Source == core.SourcePublic {
+			return "", nil, errors.New("clone failed: the repository needs credentials, so it is private or does not exist. " +
+				"A Public Git URL clones without any: check the URL, or switch the app's source to GitHub App or SSH deploy key under Source & build")
+		}
 		return "", nil, fmt.Errorf("clone failed: %w", err)
 	}
 	return workDir, cleanup, nil

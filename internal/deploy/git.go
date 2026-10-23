@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -33,6 +34,11 @@ type CloneSpec struct {
 	Auth   Auth
 }
 
+// ErrCredentialsRequired reports that the git server asked for credentials
+// the clone did not supply. Over https, GitHub answers that way both for a
+// private repository and for one that does not exist.
+var ErrCredentialsRequired = errors.New("the git server asked for credentials")
+
 // Cloner checks out a repository into a directory. Behind an interface so the
 // pipeline can be tested with a fake.
 type Cloner interface {
@@ -57,7 +63,10 @@ func (g *Git) Clone(ctx context.Context, spec CloneSpec, dir string, out io.Writ
 		return fmt.Errorf("git binary %q not found on PATH: %w", bin, err)
 	}
 
-	env := os.Environ()
+	// Nothing can answer a prompt here, so git must never ask: a server that
+	// wants credentials then fails the clone at once, with an error line git
+	// does not translate (see credentialsMissing).
+	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 
 	switch spec.Auth.Kind {
 	case AuthToken:
@@ -74,9 +83,16 @@ func (g *Git) Clone(ctx context.Context, spec CloneSpec, dir string, out io.Writ
 	run := func(args ...string) error {
 		cmd := exec.CommandContext(ctx, bin, args...)
 		cmd.Env = env
-		cmd.Stdout = out
-		cmd.Stderr = out
-		return cmd.Run()
+		output := &tailWriter{w: out}
+		cmd.Stdout = output
+		cmd.Stderr = output
+		if err := cmd.Run(); err != nil {
+			if strings.Contains(string(output.tail), credentialsMissing) {
+				return ErrCredentialsRequired
+			}
+			return err
+		}
+		return nil
 	}
 	if isRef(spec.Branch) {
 		// `clone --branch` takes only branch and tag names. A full ref (a fork
@@ -92,6 +108,26 @@ func (g *Git) Clone(ctx context.Context, spec CloneSpec, dir string, out io.Writ
 		return fmt.Errorf("git clone failed: %w", err)
 	}
 	return nil
+}
+
+// credentialsMissing ends git's error when, with GIT_TERMINAL_PROMPT=0, a
+// server asks for credentials: "fatal: could not read Username for
+// 'https://github.com': terminal prompts disabled".
+const credentialsMissing = "terminal prompts disabled"
+
+// tailWriter passes git's output on to the log, keeping the last of it to
+// read the error line from.
+type tailWriter struct {
+	w    io.Writer
+	tail []byte
+}
+
+func (t *tailWriter) Write(p []byte) (int, error) {
+	t.tail = append(t.tail, p...)
+	if over := len(t.tail) - 1024; over > 0 {
+		t.tail = t.tail[over:]
+	}
+	return t.w.Write(p)
 }
 
 // isRef reports whether branch is a full ref (refs/...) rather than a branch name.
