@@ -148,9 +148,9 @@ listed here, because this repository is public. Ask the maintainer.
 - Local-CA leaf certificates are not re-issued when the CA changes.
 - Reinstalling a GitHub App breaks its git source. `ListRepos` ignores
   pagination, so only the first 100 repositories appear.
-- Installer, tunnel and local-only modes: the firewall never opens the admin
-  port, and no admin route is published. `deploy/test/integration.sh` is out
-  of date and not run in CI.
+- Installer, tunnel and local-only modes: no admin route is published, so
+  the admin UI needs an SSH tunnel. `deploy/test/integration.sh` is out of
+  date and not run in CI.
 - The blobstore client's 15-minute timeout includes the upload itself, so a
   large backup on a slow uplink fails.
 - The build-log bound counts lines, not bytes, so output that redraws itself

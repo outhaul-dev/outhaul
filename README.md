@@ -119,17 +119,24 @@ and restarts the service. It:
 - walks you through ingress — Let's Encrypt, Cloudflare Tunnel, or local-only —
   and opens the right firewall ports, always keeping SSH reachable (when ufw
   is not yet active and other services are listening, it says which ports
-  enabling it would block, and defaults to leaving the firewall alone);
+  enabling it would block, and defaults to leaving the firewall alone). The
+  admin port stays closed to the outside, but is allowed from Outhaul's Docker
+  bridge, so Traefik can serve the admin UI at your public URL;
 - builds the binary from source and installs it to `/usr/local/bin/outhaul`;
 - writes `/etc/outhaul.env` (put `OUTHAUL_*` overrides there — ACME email,
   public URL) and installs and starts `outhaul.service`
   ([deploy/outhaul.service](deploy/outhaul.service)).
 
-The one-time setup URL lands in the journal:
+The installer prints the one-time setup URL, and it also lands in the
+journal:
 
 ```sh
 journalctl -u outhaul | grep -i setup
 ```
+
+With Let's Encrypt (or the local CA and a public URL), it is under your public
+URL. Otherwise it is on `localhost:8080`: reach it over an SSH tunnel,
+`ssh -L 8080:127.0.0.1:8080 you@server`.
 
 **Why a dedicated user and not root?** The process needs exactly the Docker
 socket, the `git`/`nixpacks`/`docker` CLIs, and its data dir. It never binds

@@ -194,12 +194,26 @@ ufw allow 22/tcp          # SSH — always. If sshd listens elsewhere, allow tha
 ufw allow 80/tcp          # Let's Encrypt and local-CA modes
 ufw allow 443/tcp         # Let's Encrypt and local-CA modes
 ufw allow 2222/tcp        # only if git-push-to-deploy is enabled
+ufw allow in on outhaul to any port 8080 proto tcp   # Traefik → admin UI
 ufw --force enable
 ```
 
 Cloudflare Tunnel and plain local-only modes need no inbound app ports — just
 SSH (and the git port, if enabled). The local CA needs 80/443 like Let's
 Encrypt mode: Traefik serves the HTTPS redirect and the certificates there.
+
+Keep the admin port (8080) closed to the outside, but allow it from the
+`outhaul` bridge. Traefik serves the admin UI at your public URL by connecting
+to that port on the host, from its container on the `outhaul` Docker network,
+and ufw drops that like any other inbound traffic: the public URL then times
+out. Outhaul names the network's bridge `outhaul` when it creates the network.
+A network created by an older version has Docker's `br-<id>` name instead;
+find it with:
+
+```sh
+docker network inspect outhaul -f '{{.Id}} {{index .Options "com.docker.network.bridge.name"}}'
+# "<id> outhaul" → outhaul; "<id> <no value>" → br-<first 12 characters of id>
+```
 
 ## 7. First-run setup
 
@@ -211,9 +225,11 @@ curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/   # any HTTP an
 journalctl -u outhaul -b | grep -i setup
 ```
 
-Open the printed `http://…/setup?token=…` URL to create the admin account.
-For a local-only install, reach it over an SSH tunnel:
-`ssh -L 8080:127.0.0.1:8080 you@server`, then browse `http://127.0.0.1:8080`.
+Open the printed `open: …/setup?token=…` URL to create the admin account.
+With a public URL and HTTPS (Let's Encrypt, or the local CA), it is under the
+public URL. Otherwise, or while that does not answer yet, use the
+`http://localhost:8080/setup?token=…` URL over an SSH tunnel:
+`ssh -L 8080:127.0.0.1:8080 you@server`.
 
 ## Upgrading
 
