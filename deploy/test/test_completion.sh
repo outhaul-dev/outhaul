@@ -20,4 +20,16 @@ case "$(completion_screen c '' '' '' 0 0)" in
 	*) _pass "no firewall: no ssh hint" ;;
 esac
 
+setup='https://paas.example.com/setup?token=abc'
+ok=$(completion_screen a 'https://paas.example.com' '22 80 443' "$setup" 0 0 0)
+assert_contains "LE mode: reachable through Traefik" "$ok" "admin UI reachable at https://paas.example.com"
+case "$ok" in
+	*"$hint"*) _fail "LE mode, public route works: no ssh hint" ;;
+	*) _pass "LE mode, public route works: no ssh hint" ;;
+esac
+bad=$(completion_screen a 'https://paas.example.com' '22 80 443' "$setup" 0 0 1)
+assert_contains "LE mode, public route down: says so" "$bad" "admin UI not answering at https://paas.example.com"
+assert_contains "LE mode, public route down: ssh hint" "$bad" "$hint"
+assert_contains "LE mode, public route down: local setup url" "$bad" "http://127.0.0.1:8080/setup?token=abc"
+
 [ "${TESTS_FAIL:-0}" -eq 0 ]

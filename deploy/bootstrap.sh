@@ -507,12 +507,41 @@ listening_ports() {
 	ss -ltn 2>/dev/null | ss_listen_ports
 }
 
+# Prints the listening ports that enabling ufw would newly block. The admin
+# port is left out: it is meant to be firewalled, and Traefik reaches it
+# over Outhaul's bridge (see apply_firewall).
+ufw_would_block() { # listening opening adminport
+	ports_not_in "$1" "$2 $3"
+}
+
+# Prints the host interface of a Docker network from
+# `docker network inspect -f '{{.Id}} {{index .Options "com.docker.network.bridge.name"}}'`
+# on stdin. Outhaul names its network's bridge after the network; an older
+# network has Docker's default br-<first 12 of the id>. With no network yet,
+# prints the name Outhaul will give it.
+bridge_from_inspect() { # network
+	read -r _id _bridge || { printf '%s\n' "$1"; return 0; }
+	case "$_bridge" in
+		''|'<no value>') printf 'br-%.12s\n' "$_id";;
+		*) printf '%s\n' "$_bridge";;
+	esac
+}
+
+network_bridge() { # network
+	docker network inspect "$1" -f '{{.Id}} {{index .Options "com.docker.network.bridge.name"}}' 2>/dev/null |
+		bridge_from_inspect "$1"
+}
+
 ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
 
 # Opens the given port set with ufw. CRITICAL: `ufw allow` every port
 # (especially SSH/22) BEFORE `ufw enable`, so the running session survives.
-apply_firewall() { # ports (space separated, must include 22)
-	ports=$1
+# Traefik reaches the admin UI on the host, arriving over Outhaul's Docker
+# bridge, and ufw drops that like any other inbound traffic: allow the admin
+# port from that bridge only. It is allowed in every mode, so publishing the
+# admin UI later (a public URL, a tunnel) needs no firewall change.
+apply_firewall() { # ports (space separated, must include 22) bridge adminport
+	ports=$1; bridge=$2; adminport=$3
 	if ! command -v ufw >/dev/null 2>&1; then
 		spinner_start "installing ufw"
 		set +e; { apt-get update -qq && apt-get install -y -qq ufw; } >>"${LOGFILE:-/dev/null}" 2>&1; rc=$?; set -e
@@ -524,9 +553,11 @@ apply_firewall() { # ports (space separated, must include 22)
 	for p in $ports; do
 		ufw allow "$p"/tcp >>"${LOGFILE:-/dev/null}" 2>&1 || true
 	done
+	ufw allow in on "$bridge" to any port "$adminport" proto tcp >>"${LOGFILE:-/dev/null}" 2>&1 || true
 	# --force avoids the interactive "proceed?" prompt; SSH is already allowed above.
 	ufw --force enable >>"${LOGFILE:-/dev/null}" 2>&1 || true
 	step_ok "firewall: opened $ports (SSH preserved)"
+	note "admin port $adminport: allowed from Outhaul's Docker bridge ($bridge) only, so Traefik can serve it"
 	note "open more later with: ufw allow <port>"
 }
 
@@ -564,17 +595,33 @@ install_service() {
 	step_ok "outhaul service started"
 }
 
-# Local admin URL to probe. Accepts OUTHAUL_LISTEN_ADDR-style ":8080".
+# The admin UI's port, from an OUTHAUL_LISTEN_ADDR-style ":8080".
+admin_port() { # listen_addr
+	addr=${1:-:8080}
+	printf '%s\n' "${addr##*:}"
+}
+
+# Local admin URL to probe.
 admin_health_url() { # listen_addr
-	addr=${1:-:8080}; [ -n "$addr" ] || addr=:8080
-	port=${addr##*:}
-	printf 'http://127.0.0.1:%s/\n' "$port"
+	printf 'http://127.0.0.1:%s/\n' "$(admin_port "$1")"
+}
+
+# The host part of a URL: no scheme, port or path.
+url_host() { # url
+	h=${1#*://}; h=${h%%/*}
+	printf '%s\n' "${h%%:*}"
 }
 
 # Extracts the one-time setup URL from a stream of journald lines.
-# Matches the binary's "open: http://HOST:PORT/setup?token=TOKEN" hint.
+# Matches the binary's "open: http://HOST:PORT/setup?token=TOKEN" hint; with
+# a public URL, the binary prints that one first.
 extract_setup_url() {
 	grep -oE 'https?://[^ ]+/setup\?token=[A-Za-z0-9_-]+' | head -1
+}
+
+# The setup URL to open over an SSH tunnel to the admin port.
+local_setup_url() { # setup_url adminport
+	printf 'http://127.0.0.1:%s/setup?token=%s\n' "$2" "${1##*token=}"
 }
 
 # Polls the admin endpoint up to ~30s. Returns 0 when it answers with ANY
@@ -589,16 +636,44 @@ wait_healthy() { # url
 	spinner_stop 1; return 1
 }
 
-# Final boxed summary + confetti. Args passed as positional data.
-completion_screen() { # mode url ports setup_url healthy(0/1) localca(0/1)
-	mode=$1; url=$2; ports=$3; setup=$4; healthy=$5; localca=${6:-0}
+# Polls the admin UI's /healthz through Traefik, the way a browser reaches it
+# under the public URL, for up to ~60s: Traefik may still be starting. Only a
+# 200 counts (-f): a 404 is Traefik without the admin route, a 502/504 is
+# Traefik unable to reach the admin port. -k: the certificate may not be
+# issued yet.
+wait_public_healthy() { # host
+	host=$1; i=0
+	spinner_start "checking the admin UI at https://$host"
+	while [ "$i" -lt 20 ]; do
+		if curl -fsSk --max-time 2 -o /dev/null --resolve "$host:443:127.0.0.1" "https://$host/healthz" 2>/dev/null; then
+			spinner_stop 0; return 0
+		fi
+		sleep 1; i=$((i+1))
+	done
+	spinner_stop 1; return 1
+}
+
+# Final boxed summary + confetti. Args passed as positional data. public is
+# the check through Traefik (Let's Encrypt mode): 0 ok, 1 failed, '' not run.
+completion_screen() { # mode url ports setup_url healthy(0/1) localca(0/1) public(0/1/'')
+	mode=$1; url=$2; ports=$3; setup=$4; healthy=$5; localca=${6:-0}; public=${7:-}
 	printf '\n'; hr
 	_c '1;32'; printf '  Outhaul is installed\n'; _c 0
-	[ "$healthy" = 0 ] && step_ok "admin UI reachable" || step_fail "admin UI did not answer yet (check: journalctl -u outhaul)"
+	if [ "$healthy" != 0 ]; then
+		step_fail "admin UI did not answer yet (check: journalctl -u outhaul)"
+	elif [ "$public" = 0 ]; then
+		step_ok "admin UI reachable at $url"
+	elif [ "$public" = 1 ]; then
+		step_fail "admin UI not answering at $url yet"
+		note "Traefik may still be starting or getting a certificate (check: docker logs outhaul-traefik)"
+	else
+		step_ok "admin UI reachable"
+	fi
 	[ -n "$ports" ] && note "firewall: $ports open"
 	# The firewall never opens the admin port, and only Let's Encrypt mode
-	# routes the admin UI through Traefik — everyone else needs a tunnel.
-	if [ -n "$ports" ] && [ "$mode" != a ]; then
+	# routes the admin UI through Traefik — everyone else needs a tunnel, as
+	# does Let's Encrypt mode while that route is not answering.
+	if { [ -n "$ports" ] && [ "$mode" != a ]; } || [ "$public" = 1 ]; then
 		note "admin UI (:8080) is firewalled — reach it over SSH: ssh -L 8080:127.0.0.1:8080 you@this-server, then open http://127.0.0.1:8080"
 	fi
 	case "$mode" in
@@ -613,6 +688,7 @@ completion_screen() { # mode url ports setup_url healthy(0/1) localca(0/1)
 	if [ -n "$setup" ]; then
 		printf '\n  Open this one-time setup URL to create your admin account:\n'
 		_c '1;36'; printf '    %s\n' "$setup"; _c 0
+		[ "$public" = 1 ] && note "over the SSH tunnel: $(local_setup_url "$setup" 8080)"
 	else
 		note "find the setup URL with: journalctl -u outhaul | grep -i setup"
 	fi
@@ -717,6 +793,7 @@ main() {
 	fi
 
 	PORTS=''
+	ADMIN_PORT=$(admin_port "${OUTHAUL_LISTEN_ADDR:-:8080}")
 	if [ "$WANT_FW" = 1 ]; then
 		PORTS=$(derive_firewall_ports "$MODE" "$GITPORT" "${LOCAL_CA:-0}")
 		# Preserve the port of the admin's LIVE SSH session too, in case sshd
@@ -730,22 +807,30 @@ main() {
 		# them off: say which ports, and default to leaving the firewall alone.
 		fw_default=y
 		if ! ufw_active; then
-			blocked=$(ports_not_in "$(listening_ports)" "$PORTS")
+			blocked=$(ufw_would_block "$(listening_ports)" "$PORTS" "$ADMIN_PORT")
 			if [ -n "$blocked" ]; then
 				step_fail "ufw is inactive; enabling it would also block ports listening now: $blocked"
 				note "containers with published ports are not affected; open others with: ufw allow <port>"
 				fw_default=n
 			fi
 		fi
-		if ask_yes_no "  Proceed?" "$fw_default"; then apply_firewall "$PORTS"; else PORTS=''; fi
+		if ask_yes_no "  Proceed?" "$fw_default"; then
+			apply_firewall "$PORTS" "$(network_bridge outhaul)" "$ADMIN_PORT"
+		else PORTS=''; fi
 	fi
 
 	HURL=$(admin_health_url "${OUTHAUL_LISTEN_ADDR:-:8080}")
 	if wait_healthy "$HURL"; then HEALTHY=0; else HEALTHY=1; fi
+	# Let's Encrypt mode serves the admin UI through Traefik, with the
+	# firewall in between: check the way a browser reaches it too.
+	PUBLIC=''
+	if [ "$MODE" = a ] && [ "$HEALTHY" = 0 ]; then
+		if wait_public_healthy "$(url_host "$PUBLIC_URL")"; then PUBLIC=0; else PUBLIC=1; fi
+	fi
 	# -b: current boot only, so a re-run doesn't surface a stale first-boot token.
 	SETUP=$(journalctl -u outhaul -b --no-pager 2>/dev/null | extract_setup_url)
 
-	completion_screen "$MODE" "$PUBLIC_URL" "$PORTS" "$SETUP" "$HEALTHY" "${LOCAL_CA:-0}"
+	completion_screen "$MODE" "$PUBLIC_URL" "$PORTS" "$SETUP" "$HEALTHY" "${LOCAL_CA:-0}" "$PUBLIC"
 }
 
 # Run main only when executed, not when sourced by the test suite.

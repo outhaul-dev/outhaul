@@ -33,4 +33,30 @@ assert_eq "ports the firewall would block" "3000 9100" "$(ports_not_in "22 3000 
 assert_eq "nothing blocked" "" "$(ports_not_in "22" "22 80 443")"
 assert_eq "no listeners, nothing blocked" "" "$(ports_not_in "" "22 80 443")"
 
+# Enabling ufw blocks the admin port on purpose: it is not one to warn about.
+assert_eq "admin port is not 'would block'" "3000" "$(ufw_would_block "22 3000 8080" "22 80 443" 8080)"
+
+# The interface Traefik's traffic to the admin port arrives on, from
+# `docker network inspect -f '{{.Id}} {{index .Options "com.docker.network.bridge.name"}}'`.
+id=0123456789abcdef0123456789abcdef
+assert_eq "named bridge" "outhaul" "$(printf '%s outhaul\n' "$id" | bridge_from_inspect outhaul)"
+assert_eq "older network: Docker's br-<id>" "br-0123456789ab" "$(printf '%s <no value>\n' "$id" | bridge_from_inspect outhaul)"
+assert_eq "empty bridge option" "br-0123456789ab" "$(printf '%s \n' "$id" | bridge_from_inspect outhaul)"
+assert_eq "no network yet: the name Outhaul gives it" "outhaul" "$(printf '' | bridge_from_inspect outhaul)"
+
+# apply_firewall lets the bridge reach the admin port, before ufw is enabled:
+# Traefik serves the admin UI from there, and ufw drops it otherwise.
+calls=$(mktemp)
+ufw() { printf '%s\n' "$*" >> "$calls"; }
+LOGFILE=/dev/null apply_firewall "22 80 443" outhaul 8080 >/dev/null
+rule=$(grep -n '^allow in on outhaul to any port 8080 proto tcp$' "$calls" | cut -d: -f1)
+enable=$(grep -n '^--force enable$' "$calls" | cut -d: -f1)
+if [ -n "$rule" ] && [ -n "$enable" ] && [ "$rule" -lt "$enable" ]; then
+	_pass "bridge may reach the admin port, before enable"
+else
+	_fail "bridge may reach the admin port, before enable (ufw calls: $(paste -sd'|' "$calls"))"
+fi
+rm -f "$calls"
+unset -f ufw
+
 [ "${TESTS_FAIL:-0}" -eq 0 ]
