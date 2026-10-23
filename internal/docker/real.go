@@ -116,8 +116,19 @@ func (r *real) EnsureNetwork(ctx context.Context, name string) error {
 			return nil // already exists
 		}
 	}
-	_, err = r.cli.NetworkCreate(ctx, name, network.CreateOptions{Driver: "bridge"})
+	_, err = r.cli.NetworkCreate(ctx, name, network.CreateOptions{Driver: "bridge", Options: bridgeOptions(name)})
 	return err
+}
+
+// bridgeOptions names the host bridge interface after the network, so a
+// firewall rule can name it: Docker's default br-<id> changes whenever the
+// network is recreated. Linux interface names are at most 15 bytes, so a
+// longer network name keeps Docker's default.
+func bridgeOptions(name string) map[string]string {
+	if len(name) > 15 {
+		return nil
+	}
+	return map[string]string{"com.docker.network.bridge.name": name}
 }
 
 func (r *real) FindContainer(ctx context.Context, name string) (*Container, error) {

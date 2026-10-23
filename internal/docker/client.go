@@ -90,6 +90,7 @@ type Client interface {
 	PullImage(ctx context.Context, ref string, out io.Writer) error
 
 	// EnsureNetwork creates the named bridge network if it does not exist.
+	// A network it creates gets a host bridge interface of the same name.
 	EnsureNetwork(ctx context.Context, name string) error
 
 	// FindContainer returns the container with the given name, or nil if none.
