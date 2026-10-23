@@ -119,3 +119,34 @@ func TestOpenStoreGeneratesKeyWhenNothingIsSealed(t *testing.T) {
 		t.Errorf("no key file after open: %v", err)
 	}
 }
+
+// The first-boot hint is how an installer (or a person reading the journal)
+// finds the setup page. When Traefik publishes the admin UI under the public
+// URL, that is the address to open: the listen port itself is firewalled.
+func TestSetupURLs(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		cfg           config.Config
+		public, local string
+	}{
+		{"Let's Encrypt",
+			config.Config{ListenAddr: ":8080", PublicURL: "https://paas.example.com", ACMEEmail: "a@example.com"},
+			"https://paas.example.com/setup?token=t", "http://localhost:8080/setup?token=t"},
+		{"local CA, path dropped (the admin route matches the host only)",
+			config.Config{ListenAddr: ":9000", PublicURL: "https://paas.lan/admin/", LocalCA: true},
+			"https://paas.lan/setup?token=t", "http://localhost:9000/setup?token=t"},
+		{"public URL without TLS publishes no admin route",
+			config.Config{ListenAddr: ":8080", PublicURL: "https://paas.example.com"},
+			"", "http://localhost:8080/setup?token=t"},
+		{"no public URL",
+			config.Config{ListenAddr: "127.0.0.1:8080", ACMEEmail: "a@example.com"},
+			"", "http://127.0.0.1:8080/setup?token=t"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			public, local := setupURLs(tc.cfg, "t")
+			if public != tc.public || local != tc.local {
+				t.Fatalf("setupURLs = %q, %q; want %q, %q", public, local, tc.public, tc.local)
+			}
+		})
+	}
+}

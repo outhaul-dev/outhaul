@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"sync"
@@ -583,17 +584,39 @@ func resolveSSHAddr(st *store.Store, cfg config.Config) string {
 	return cfg.SSHAddr
 }
 
-// printSetupHint prints the one-time setup URL on first boot.
+// printSetupHint prints the one-time setup URL on first boot. The first
+// "open:" line is the one the installer shows.
 func printSetupHint(srv *server.Server, cfg config.Config, token string) {
 	needs, err := srv.NeedsSetup(context.Background())
 	if err != nil || !needs {
 		return
 	}
-	host := "localhost"
+	public, local := setupURLs(cfg, token)
+	log.Printf("first-boot setup required")
+	if public != "" {
+		log.Printf("  open: %s", public)
+		log.Printf("  or, over an SSH tunnel to port %s: %s", cfg.AdminPort(), local)
+		return
+	}
+	log.Printf("  open: %s", local)
+}
+
+// setupURLs returns the setup page under the public URL, when Traefik
+// publishes the admin UI there (HTTPS and an admin host), and on the listen
+// address itself.
+func setupURLs(cfg config.Config, token string) (public, local string) {
 	addr := cfg.ListenAddr
 	if len(addr) > 0 && addr[0] == ':' {
-		addr = host + addr
+		addr = "localhost" + addr
 	}
-	log.Printf("first-boot setup required")
-	log.Printf("  open: http://%s/setup?token=%s", addr, token)
+	local = "http://" + addr + "/setup?token=" + token
+	if !cfg.TLSEnabled() || cfg.AdminHost() == "" {
+		return "", local
+	}
+	u, err := url.Parse(cfg.PublicURL)
+	if err != nil {
+		return "", local
+	}
+	// The admin router matches the host only, so any path is dropped.
+	return (&url.URL{Scheme: u.Scheme, Host: u.Host, Path: "/setup", RawQuery: "token=" + token}).String(), local
 }
