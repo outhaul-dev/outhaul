@@ -59,4 +59,12 @@ fi
 rm -f "$calls"
 unset -f ufw
 
+# Ports Docker publishes (Traefik's 80/443) bypass ufw, so they are not ones
+# enabling it would block. `ss -ltnp` names the docker-proxy behind them.
+ssp_out='LISTEN 0 4096 0.0.0.0:80 0.0.0.0:* users:(("docker-proxy",pid=812,fd=7))
+LISTEN 0 4096 [::]:80 [::]:* users:(("docker-proxy",pid=820,fd=7))
+LISTEN 0 4096 *:8080 *:* users:(("outhaul",pid=700,fd=9))
+LISTEN 0 511 0.0.0.0:3000 0.0.0.0:* users:(("node",pid=900,fd=20))'
+assert_eq "docker-published ports excluded" "3000 8080" "$(printf '%s\n' "$ssp_out" | ss_listen_ports)"
+
 [ "${TESTS_FAIL:-0}" -eq 0 ]

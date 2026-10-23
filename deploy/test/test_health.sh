@@ -37,4 +37,11 @@ assert_fail "public check fails while Traefik cannot answer" wait_public_healthy
 unset -f curl sleep
 rm -f "$args"
 
+# A re-run restarts the service, which prints a new token; the journal for
+# this boot still holds the old one, which no longer works.
+log='Jul 13 12:00:00 host outhaul[1]:   open: http://localhost:8080/setup?token=OLD
+Jul 13 12:05:00 host outhaul[2]:   open: https://paas.example.com/setup?token=NEW
+Jul 13 12:05:00 host outhaul[2]:   or, over an SSH tunnel to port 8080: http://localhost:8080/setup?token=NEW'
+assert_eq "re-run: the newest setup url" "https://paas.example.com/setup?token=NEW" "$(printf '%s\n' "$log" | extract_setup_url)"
+
 [ "${TESTS_FAIL:-0}" -eq 0 ]

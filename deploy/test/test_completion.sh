@@ -22,14 +22,15 @@ esac
 
 setup='https://paas.example.com/setup?token=abc'
 ok=$(completion_screen a 'https://paas.example.com' '22 80 443' "$setup" 0 0 0)
-assert_contains "LE mode: reachable through Traefik" "$ok" "admin UI reachable at https://paas.example.com"
-case "$ok" in
-	*"$hint"*) _fail "LE mode, public route works: no ssh hint" ;;
-	*) _pass "LE mode, public route works: no ssh hint" ;;
-esac
+# The check runs on this server: it cannot see DNS or a cloud firewall, so
+# say what it checked and always give the SSH-tunnel way in.
+assert_contains "LE mode: says what was checked" "$ok" "checked from this server"
+assert_contains "LE mode: ssh fallback even when the check passes" "$ok" "$hint"
+assert_contains "LE mode: local setup url even when the check passes" "$ok" "http://127.0.0.1:8080/setup?token=abc"
 bad=$(completion_screen a 'https://paas.example.com' '22 80 443' "$setup" 0 0 1)
 assert_contains "LE mode, public route down: says so" "$bad" "admin UI not answering at https://paas.example.com"
 assert_contains "LE mode, public route down: ssh hint" "$bad" "$hint"
 assert_contains "LE mode, public route down: local setup url" "$bad" "http://127.0.0.1:8080/setup?token=abc"
+assert_contains "LE mode, public route down: the ufw rule Traefik needs" "$bad" "ufw allow in on outhaul to any port 8080 proto tcp"
 
 [ "${TESTS_FAIL:-0}" -eq 0 ]
