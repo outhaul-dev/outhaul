@@ -110,7 +110,7 @@ func TestCreateAppErrorKeepsTheForm(t *testing.T) {
 	form := url.Values{
 		"name": {"tals"}, "source": {"github"}, "github_repo": {"o/tals"},
 		"git_source_id": {strconv.FormatInt(id, 10)}, "branch": {"release"},
-		"kind": {"compose"}, "compose_path": {"deploy/compose.yml"},
+		"kind": {"compose"}, "compose_path": {"deploy/compose.yml"}, "dockerfile_path": {"build/Dockerfile"},
 		"domain": {"tals.example.com"}, "compose_service": {"web"}, "compose_port": {"notaport"},
 		"auto_deploy": {"on"}, "project_id": {pid}, "return": {"/projects/" + pid},
 	}
@@ -124,12 +124,15 @@ func TestCreateAppErrorKeepsTheForm(t *testing.T) {
 	}
 	page := rec.Body.String()
 	for _, want := range []string{
+		`name="name" placeholder="web" value="tals"`,
 		`<option value="github" selected>`,
 		`<option value="o/tals" data-source-id="` + strconv.FormatInt(id, 10) + `" data-default-branch="main" selected>`,
 		`id="git-source-id" value="` + strconv.FormatInt(id, 10) + `"`,
 		`id="branch-input" placeholder="main" value="release"`,
 		`<option value="compose" selected>`,
+		`name="dockerfile_path" placeholder="Dockerfile" value="build/Dockerfile"`,
 		`name="compose_path" placeholder="docker-compose.yml" value="deploy/compose.yml"`,
+		`name="domain" id="domain-input" placeholder="web.example.com" value="tals.example.com"`,
 		`name="compose_service" placeholder="web" value="web"`,
 		`name="compose_port" placeholder="3000" inputmode="numeric" value="notaport"`,
 		`name="auto_deploy" checked`,
