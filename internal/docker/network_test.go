@@ -57,7 +57,10 @@ func TestEnsureNetworkNamesTheBridge(t *testing.T) {
 // Linux interface names are at most 15 bytes; a longer network name keeps
 // Docker's default bridge name rather than failing to create.
 func TestEnsureNetworkLeavesLongNamesToDocker(t *testing.T) {
-	if got, ok := createdNetworkOptions(t, "outhaul-network-long")["com.docker.network.bridge.name"]; ok {
-		t.Fatalf("bridge name = %q, want Docker's default", got)
+	if got := createdNetworkOptions(t, "outhaul-network")["com.docker.network.bridge.name"]; got != "outhaul-network" {
+		t.Fatalf("15-byte name: bridge name = %q, want %q", got, "outhaul-network")
+	}
+	if got, ok := createdNetworkOptions(t, "outhaul-networks")["com.docker.network.bridge.name"]; ok {
+		t.Fatalf("16-byte name: bridge name = %q, want Docker's default", got)
 	}
 }
