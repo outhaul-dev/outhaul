@@ -148,7 +148,21 @@ func TestCloneReportsCredentialsRequired(t *testing.T) {
 	if !errors.Is(err, ErrCredentialsRequired) {
 		t.Fatalf("Clone = %v, want ErrCredentialsRequired; output:\n%s", err, out.String())
 	}
-	if !strings.Contains(out.String(), "fatal: could not read Username") {
+	// "fatal: " is translated; the rest of the line is not.
+	if !strings.Contains(out.String(), "could not read Username") {
 		t.Errorf("git's own error should still reach the log:\n%s", out.String())
+	}
+}
+
+// exec discards the output of a command given no writer; Clone did too.
+func TestCloneWithoutAnOutputWriter(t *testing.T) {
+	dir := t.TempDir()
+	fake := filepath.Join(dir, "git")
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\necho \"Cloning into 'work'...\"\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	g := &Git{Bin: fake}
+	if err := g.Clone(context.Background(), CloneSpec{URL: "https://example.com/r.git"}, filepath.Join(dir, "work"), nil); err != nil {
+		t.Fatalf("Clone: %v", err)
 	}
 }

@@ -249,6 +249,31 @@ func TestPipelineCloneNeedingCredentialsExplains(t *testing.T) {
 	}
 }
 
+// The Public Git URL hint is for public apps only: an SSH app given an https
+// URL also clones without credentials, and gets the plain reason.
+func TestPipelineCloneNeedingCredentialsHintIsForPublicApps(t *testing.T) {
+	h := newHarness(t)
+	h.cloner.err = fmt.Errorf("git clone failed: %w", ErrCredentialsRequired)
+	app, err := h.store.CreateApp(context.Background(), core.App{
+		Name: "web", RepoURL: "https://example.com/web.git", Domain: "web.test",
+		Source: core.SourceSSH, SSHPrivateKey: "PRIVATE-KEY", SSHPublicKey: "ssh-ed25519 AAAA",
+	})
+	if err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+	dep := h.claimedDeployment(t, app.ID)
+
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed {
+		t.Fatalf("status = %q, want failed", got.Status)
+	}
+	if !strings.Contains(got.Reason, "asked for credentials") || strings.Contains(got.Reason, "Public Git URL") {
+		t.Errorf("reason = %q, want the plain credentials reason", got.Reason)
+	}
+}
+
 func TestPipelineBuildFailureMarksFailed(t *testing.T) {
 	h := newHarness(t)
 	h.builder.err = errors.New("nixpacks exploded")

@@ -80,6 +80,9 @@ func (g *Git) Clone(ctx context.Context, spec CloneSpec, dir string, out io.Writ
 		env = append(env, sshVars...)
 	}
 
+	if out == nil {
+		out = io.Discard
+	}
 	run := func(args ...string) error {
 		cmd := exec.CommandContext(ctx, bin, args...)
 		cmd.Env = env
