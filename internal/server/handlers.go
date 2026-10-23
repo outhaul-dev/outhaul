@@ -266,7 +266,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		id, _ := parseID(strings.TrimSpace(r.FormValue("git_source_id")))
 		resolved, verr := s.resolveRepoSource(r.Context(), id, githubRepo)
 		if verr != "" {
-			s.renderAppsWithError(w, r, verr, name, repo, domain)
+			s.renderAppsWithError(w, r, verr)
 			return
 		}
 		gitSourceID = resolved
@@ -277,14 +277,14 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	if v := strings.TrimSpace(r.FormValue("project_id")); v != "" {
 		id, ok := parseID(v)
 		if !ok {
-			s.renderAppsWithError(w, r, "Choose a project for the app.", name, repo, domain)
+			s.renderAppsWithError(w, r, "Choose a project for the app.")
 			return
 		}
 		projectID = id
 	}
 	// No DB-level FK on apps.project_id, so the reference is validated here.
 	if _, err := s.store.GetProject(r.Context(), projectID); err != nil {
-		s.renderAppsWithError(w, r, "Choose a project for the app.", name, repo, domain)
+		s.renderAppsWithError(w, r, "Choose a project for the app.")
 		return
 	}
 
@@ -300,7 +300,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	if kind == core.KindDockerfile {
 		verr := ""
 		if app.DockerfilePath, verr = parseDockerfilePath(r); verr != "" {
-			s.renderAppsWithError(w, r, verr, name, repo, domain)
+			s.renderAppsWithError(w, r, verr)
 			return
 		}
 	}
@@ -308,13 +308,13 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		app.Domain = ""
 		verr := ""
 		if app.ComposePath, verr = parseComposePath(r); verr != "" {
-			s.renderAppsWithError(w, r, verr, name, repo, domain)
+			s.renderAppsWithError(w, r, verr)
 			return
 		}
 		if domain != "" {
 			d, verr := parseDomainFields(domain, r.FormValue("compose_service"), r.FormValue("compose_port"))
 			if verr != "" {
-				s.renderAppsWithError(w, r, verr, name, repo, domain)
+				s.renderAppsWithError(w, r, verr)
 				return
 			}
 			firstDomain = &d
@@ -322,14 +322,14 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if verr := validateApp(app); verr != "" {
-		s.renderAppsWithError(w, r, verr, name, repo, domain)
+		s.renderAppsWithError(w, r, verr)
 		return
 	}
 
 	if source == core.SourceSSH {
 		priv, pub, err := sshkey.Generate()
 		if err != nil {
-			s.renderAppsWithError(w, r, "Could not generate SSH key: "+err.Error(), name, repo, domain)
+			s.renderAppsWithError(w, r, "Could not generate SSH key: "+err.Error())
 			return
 		}
 		app.SSHPrivateKey, app.SSHPublicKey = priv, pub
@@ -343,7 +343,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, err := s.store.CreateAppWithDomains(r.Context(), app, extra); err != nil {
 		// Most likely a duplicate name (UNIQUE constraint) or a taken host.
-		s.renderAppsWithError(w, r, "Could not create app: "+err.Error(), name, repo, domain)
+		s.renderAppsWithError(w, r, "Could not create app: "+err.Error())
 		return
 	}
 	// CreateApp itself seeds a primary domain row for non-compose apps (see
@@ -531,24 +531,57 @@ func (s *Server) handleUpdateAppSource(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }
 
+// createAppForm is the New app form as submitted. A refused create sends it back,
+// so the reopened form keeps every choice: with the source or the project
+// back at its default, a resubmit would save an app other than the one asked
+// for.
+type createAppForm struct {
+	Name, Source, RepoURL, GithubRepo, Branch, Kind string
+	DockerfilePath, ComposePath                     string
+	Domain, ComposeService, ComposePort             string
+	GitSourceID                                     int64
+	AutoDeploy                                      bool
+}
+
+func submittedAppForm(r *http.Request) createAppForm {
+	field := func(key string) string { return strings.TrimSpace(r.FormValue(key)) }
+	gitSourceID, _ := parseID(field("git_source_id"))
+	return createAppForm{
+		Name: field("name"), Source: field("source"), RepoURL: field("repo_url"),
+		GithubRepo: field("github_repo"), GitSourceID: gitSourceID,
+		Branch: field("branch"), Kind: field("kind"),
+		DockerfilePath: field("dockerfile_path"), ComposePath: field("compose_path"),
+		Domain: field("domain"), ComposeService: field("compose_service"),
+		ComposePort: field("compose_port"), AutoDeploy: r.FormValue("auto_deploy") != "",
+	}
+}
+
 // renderAppsWithError re-renders the apps list with the create form pre-filled
 // and an error message.
-func (s *Server) renderAppsWithError(w http.ResponseWriter, r *http.Request, msg, name, repo, domain string) {
+func (s *Server) renderAppsWithError(w http.ResponseWriter, r *http.Request, msg string) {
 	apps, _ := s.store.ListApps(r.Context())
 	projects, _ := s.store.ListProjects(r.Context())
 	projectNames := make(map[int64]string, len(projects))
+	selected := selectedProject(projects)
+	submitted, _ := parseID(strings.TrimSpace(r.FormValue("project_id")))
 	for _, p := range projects {
 		projectNames[p.ID] = p.Name
+		if p.ID == submitted {
+			selected = p.ID
+		}
 	}
 	// Errors are tolerated here: this page is already reporting a form error,
 	// so render it with whatever rows could be built.
 	rows, _ := s.appRows(r.Context(), apps, projectNames)
 	data := map[string]any{
 		"Title": "Apps", "Active": "apps", "Apps": rows,
-		"Projects": projects, "SelectedProject": selectedProject(projects),
+		"Projects": projects, "SelectedProject": selected,
 		"Error":      msg,
-		"Form":       map[string]string{"Name": name, "RepoURL": repo, "Domain": domain},
+		"Form":       submittedAppForm(r),
 		"OpenDialog": "app-dialog",
+	}
+	if ret := r.FormValue("return"); strings.HasPrefix(ret, "/projects/") {
+		data["Return"] = ret
 	}
 	for k, v := range s.gitSourceData(r) {
 		data[k] = v

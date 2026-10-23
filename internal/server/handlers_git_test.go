@@ -93,6 +93,60 @@ func TestCreateAppGithubUsesRepo(t *testing.T) {
 	}
 }
 
+// A refused create re-renders the form. It must come back as submitted: a
+// GitHub App choice that fell back to "Public Git URL", with the derived
+// https URL already in the Git URL box, was resubmitted and saved an app that
+// clones a private repository without credentials.
+func TestCreateAppErrorKeepsTheForm(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	id := installSource(t, env, 55, "outhaul-a", 9001, "o", "Organization")
+	env.gh.Repos = []github.Repo{{FullName: "o/tals", DefaultBranch: "main"}}
+	p, err := env.store.CreateProject(context.Background(), core.Project{Name: "acme"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid := strconv.FormatInt(p.ID, 10)
+	form := url.Values{
+		"name": {"tals"}, "source": {"github"}, "github_repo": {"o/tals"},
+		"git_source_id": {strconv.FormatInt(id, 10)}, "branch": {"release"},
+		"kind": {"compose"}, "compose_path": {"deploy/compose.yml"},
+		"domain": {"tals.example.com"}, "compose_service": {"web"}, "compose_port": {"notaport"},
+		"auto_deploy": {"on"}, "project_id": {pid}, "return": {"/projects/" + pid},
+	}
+	req := httptest.NewRequest("POST", "/apps", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	env.authed(req)
+	rec := httptest.NewRecorder()
+	env.srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	page := rec.Body.String()
+	for _, want := range []string{
+		`<option value="github" selected>`,
+		`<option value="o/tals" data-source-id="` + strconv.FormatInt(id, 10) + `" data-default-branch="main" selected>`,
+		`id="git-source-id" value="` + strconv.FormatInt(id, 10) + `"`,
+		`id="branch-input" placeholder="main" value="release"`,
+		`<option value="compose" selected>`,
+		`name="compose_path" placeholder="docker-compose.yml" value="deploy/compose.yml"`,
+		`name="compose_service" placeholder="web" value="web"`,
+		`name="compose_port" placeholder="3000" inputmode="numeric" value="notaport"`,
+		`name="auto_deploy" checked`,
+		`<option value="` + pid + `" selected>acme</option>`,
+		`name="return" value="/projects/` + pid + `"`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("re-rendered form lacks %s", want)
+		}
+	}
+	// The Git URL box is for public and SSH sources; it must not carry the
+	// URL derived from the GitHub repository.
+	if strings.Contains(page, `value="https://github.com/o/tals.git"`) {
+		t.Error("Git URL box pre-filled with the GitHub repository's URL")
+	}
+}
+
 func TestUpdateAppSettingsHandler(t *testing.T) {
 	env := newTestEnv(t)
 	env.login(t)
