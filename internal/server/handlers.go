@@ -355,11 +355,12 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	// store.CreateApp); compose apps seed one just above via firstDomain. Either
 	// way a new domain may now need a cert, so sync once here regardless of kind.
 	s.syncCerts(r.Context())
-	// The project-detail form asks to land back on its project; anything else
-	// (or a tampered value) falls back to the apps list.
-	ret := r.FormValue("return")
-	if !strings.HasPrefix(ret, "/projects/") {
-		ret = "/apps"
+	// The project-detail form asks to land back on a project: the one the app
+	// joined, which a form refused and reopened on the apps page may have
+	// changed. Anything else falls back to the apps list.
+	ret := "/apps"
+	if strings.HasPrefix(r.FormValue("return"), "/projects/") {
+		ret = "/projects/" + strconv.FormatInt(projectID, 10)
 	}
 	http.Redirect(w, r, ret, http.StatusSeeOther)
 }

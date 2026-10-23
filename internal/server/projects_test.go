@@ -127,6 +127,31 @@ func TestCreateAppIntoProject(t *testing.T) {
 	}
 }
 
+// A create refused on a project page reopens on the apps page, where the
+// operator can pick another project. The redirect must follow the app to the
+// project it joined, not the page the form first came from.
+func TestCreateAppReturnsToTheProjectItJoined(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	first, err := e.store.CreateProject(context.Background(), core.Project{Name: "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := e.store.CreateProject(context.Background(), core.Project{Name: "second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	form := appForm("web", "web.example.com")
+	form.Set("project_id", itoa(second.ID))
+	form.Set("return", "/projects/"+itoa(first.ID))
+	resp := e.postForm(t, "/apps", form)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/projects/"+itoa(second.ID) {
+		t.Fatalf("create app = %d -> %q, want 303 to the app's project", resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
 func TestCreateAppDefaultsToDefaultProject(t *testing.T) {
 	e := newTestEnv(t)
 	e.login(t)
