@@ -272,6 +272,11 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		gitSourceID = resolved
 		repo = "https://github.com/" + githubRepo + ".git"
 	}
+	if source == core.SourcePush {
+		// The Git URL box is only hidden for a push app, so it may still
+		// carry a URL typed before the source changed.
+		repo = ""
+	}
 
 	projectID := core.DefaultProjectID
 	if v := strings.TrimSpace(r.FormValue("project_id")); v != "" {

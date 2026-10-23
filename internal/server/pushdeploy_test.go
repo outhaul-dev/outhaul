@@ -39,6 +39,34 @@ func TestCreatePushApp(t *testing.T) {
 	}
 }
 
+// The Git URL box is hidden, not removed, for a push app: a URL typed before
+// switching the source to Push is still submitted. It must not refuse the
+// create — the reopened form would keep Push and the hidden URL, and refuse
+// every resubmit.
+func TestCreatePushAppIgnoresHiddenGitURL(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	form := url.Values{
+		"name": {"pushy"}, "domain": {"pushy.example.com"}, "source": {"push"},
+		"repo_url": {"https://github.com/o/r.git"}, "kind": {"nixpacks"}, "branch": {"main"},
+	}
+	req := httptest.NewRequest("POST", "/apps", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	env.authed(req)
+	rec := httptest.NewRecorder()
+	env.srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303; body=%s", rec.Code, rec.Body)
+	}
+	app, err := env.store.GetAppByName(context.Background(), "pushy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app.Source != core.SourcePush || app.RepoURL != "" {
+		t.Errorf("source = %q, repo = %q; want push with no repository URL", app.Source, app.RepoURL)
+	}
+}
+
 func TestPushAppDetailShowsRemote(t *testing.T) {
 	env := newTestEnv(t)
 	env.login(t)
@@ -62,23 +90,5 @@ func TestPushAppDetailShowsRemote(t *testing.T) {
 	}
 	if !strings.Contains(page, "git remote add outhaul ssh://git@") {
 		t.Error("push app page missing the ssh remote snippet")
-	}
-}
-
-func TestCreatePushAppRejectsRepoURL(t *testing.T) {
-	env := newTestEnv(t)
-	env.login(t)
-	form := url.Values{
-		"name": {"pushy2"}, "domain": {"pushy2.example.com"},
-		"source": {"push"}, "kind": {"nixpacks"}, "branch": {"main"},
-		"repo_url": {"https://github.com/o/r.git"},
-	}
-	req := httptest.NewRequest("POST", "/apps", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	env.authed(req)
-	rec := httptest.NewRecorder()
-	env.srv.Handler().ServeHTTP(rec, req)
-	if _, err := env.store.GetAppByName(context.Background(), "pushy2"); err == nil {
-		t.Fatal("push app with a repo_url should have been rejected")
 	}
 }
