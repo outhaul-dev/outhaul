@@ -189,6 +189,10 @@ func (c Config) AdminPort() string {
 	return port
 }
 
+// UpdateDir is where Outhaul and the root updater exchange the update request,
+// status and log files.
+func (c Config) UpdateDir() string { return filepath.Join(c.DataDir, "update") }
+
 // DatabasesDir is the root under which each managed database gets a
 // per-database data directory, bind-mounted into its container.
 func (c Config) DatabasesDir() string { return filepath.Join(c.DataDir, "databases") }
