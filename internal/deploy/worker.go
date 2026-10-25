@@ -61,8 +61,9 @@ type Worker struct {
 	cfg      config.Config
 
 	healthCheck HealthChecker
-	pruner      AppPruner  // nil disables after-deploy image pruning
-	deployHook  DeployHook // nil disables the after-deploy preview hook
+	pruner      AppPruner   // nil disables after-deploy image pruning
+	deployHook  DeployHook  // nil disables the after-deploy preview hook
+	hold        func() bool // when it returns true, dispatch claims nothing
 
 	notify chan struct{}
 	sem    chan struct{}
@@ -115,6 +116,11 @@ func (w *Worker) SetPruner(p AppPruner) { w.pruner = p }
 // SetDeployHook installs the after-deploy hook. Call before Run.
 func (w *Worker) SetDeployHook(h DeployHook) { w.deployHook = h }
 
+// SetHold installs a predicate that pauses dispatch: while it returns true,
+// no queued deployment is claimed (rows stay queued, running pipelines are
+// untouched). Used to hold work during an update. Call before Run.
+func (w *Worker) SetHold(hold func() bool) { w.hold = hold }
+
 // Notify wakes the dispatcher to look for claimable work. Non-blocking.
 func (w *Worker) Notify() {
 	select {
@@ -149,6 +155,9 @@ func (w *Worker) Run(ctx context.Context) {
 func (w *Worker) dispatch(ctx context.Context) {
 	for {
 		if ctx.Err() != nil {
+			return
+		}
+		if w.hold != nil && w.hold() {
 			return
 		}
 		// Acquire a slot before claiming so a claimed deployment never sits in

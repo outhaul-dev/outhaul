@@ -274,6 +274,15 @@ func (s *Store) FailRunningBackupRuns(ctx context.Context, kind, reason string) 
 	return res.RowsAffected()
 }
 
+// CountRunningBackupRuns returns how many runs, backups and restores alike,
+// are in status running.
+func (s *Store) CountRunningBackupRuns(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM backup_runs WHERE status = ?`, core.RunRunning).Scan(&n)
+	return n, err
+}
+
 // ListBackupRuns returns a backup's newest runs, most recent first.
 func (s *Store) ListBackupRuns(ctx context.Context, backupID int64, limit int) ([]core.BackupRun, error) {
 	rows, err := s.db.QueryContext(ctx,

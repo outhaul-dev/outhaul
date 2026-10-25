@@ -131,6 +131,16 @@ func (s *Store) CountDeployments(ctx context.Context) (int, error) {
 	return n, err
 }
 
+// CountActiveDeployments returns how many deployments are building or
+// deploying right now.
+func (s *Store) CountActiveDeployments(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM deployments WHERE status IN (?, ?)`,
+		core.StatusBuilding, core.StatusDeploying).Scan(&n)
+	return n, err
+}
+
 // ClaimDeployment atomically moves a deployment from queued -> building and
 // stamps StartedAt. Returns false if it was not queued (lost the race).
 func (s *Store) ClaimDeployment(ctx context.Context, id int64) (bool, error) {

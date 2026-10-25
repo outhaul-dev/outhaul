@@ -212,6 +212,13 @@ func serve() error {
 	pruner := prune.New(st, dc, cfg.ImageKeep, cfg.WorkDir(), cfg.PruneBuildCache)
 	worker.SetPruner(pruner)
 
+	// An update stops Outhaul, so while one is requested or running the worker
+	// and the backup scheduler start nothing new.
+	updates := update.NewDir(cfg.UpdateDir(), time.Now)
+	worker.SetHold(updates.InProgress)
+	checker := update.NewChecker(update.Current(),
+		&update.Comparer{Client: &http.Client{Timeout: 15 * time.Second}}, time.Now)
+
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	workerDone := make(chan struct{})
 	// worker.Run is launched below, after the preview manager is wired in as the
@@ -233,7 +240,9 @@ func serve() error {
 	} else if n > 0 {
 		log.Printf("recovered %d interrupted backup/restore run(s) as failed", n)
 	}
+	backups.SetHold(updates.InProgress)
 	go backups.Run(workerCtx)
+	go checker.Run(workerCtx)
 
 	// Daily disk-cleanup sweep (image retention, dangling images, build cache).
 	go pruner.Run(workerCtx)

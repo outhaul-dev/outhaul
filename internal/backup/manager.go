@@ -48,6 +48,8 @@ type Manager struct {
 	inFlight map[int64]bool // backup IDs currently running
 	stopped  bool           // set by Stop: no new runs start
 
+	hold func() bool // when it returns true, Tick starts nothing
+
 	timeout time.Duration      // bounds one run; runTimeout outside tests
 	base    context.Context    // parent of every run's context; cancelled by Stop
 	cancel  context.CancelFunc // cancels base
@@ -139,8 +141,16 @@ func (m *Manager) Run(ctx context.Context) {
 	}
 }
 
+// SetHold installs a predicate that pauses the scheduler: while it returns
+// true, Tick starts nothing and that minute is skipped, as when Outhaul is
+// down. RunNow and RestoreNow are unaffected. Call before Run.
+func (m *Manager) SetHold(hold func() bool) { m.hold = hold }
+
 // Tick starts every enabled backup whose schedule matches now (local time).
 func (m *Manager) Tick(ctx context.Context, now time.Time) {
+	if m.hold != nil && m.hold() {
+		return
+	}
 	backups, err := m.store.ListEnabledBackups(ctx)
 	if err != nil {
 		log.Printf("backup: list schedules: %v", err)
