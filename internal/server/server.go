@@ -107,6 +107,8 @@ type Server struct {
 	sshControl SSHControl       // git-push SSH server; nil disables the port setting
 	tunnel     TunnelControl    // Cloudflare Tunnel management; nil disables the tunnel card
 	build      update.Build     // the running binary's stamp; /healthz reports its commit
+	updates    *update.Dir      // shared with the root updater; nil hides the Updates panel
+	checker    *update.Checker  // the running build against main; set with updates
 	certSync   CertSyncer       // local-CA cert re-mint hook; nil disables cert re-sync
 	caFile     string           // path to the local CA root cert; "" disables /ca.pem and the settings card
 
@@ -307,6 +309,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /settings/tunnel/enable", s.requireAuth(s.handleEnableTunnel))
 	mux.HandleFunc("POST /settings/tunnel/disable", s.requireAuth(s.handleDisableTunnel))
 	mux.HandleFunc("POST /settings/git-sources/{id}/delete", s.requireAuth(s.handleDeleteGitSource))
+	mux.HandleFunc("POST /settings/update", s.requireAuth(s.handleRequestUpdate))
+	mux.HandleFunc("POST /settings/update/check", s.requireAuth(s.handleCheckForUpdate))
+	mux.HandleFunc("GET /settings/update/progress", s.requireAuth(s.handleUpdateProgress))
 
 	mux.HandleFunc("GET /github/connect", s.requireAuth(s.handleGithubConnect))
 	// callback and setup are called by GitHub directly (no session cookie); the
@@ -361,6 +366,10 @@ func (s *Server) render(w http.ResponseWriter, status int, page string, data map
 		http.Error(w, "unknown page: "+page, http.StatusInternalServerError)
 		return
 	}
+	if data == nil {
+		data = map[string]any{}
+	}
+	data["UpdateAvailable"] = s.updateAvailable() // the navigation badge
 	var buf bytes.Buffer
 	if err := t.ExecuteTemplate(&buf, "base", data); err != nil {
 		// Nothing has been written to w yet, so a real 500 still reaches the

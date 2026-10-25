@@ -148,6 +148,7 @@ input[type=checkbox] { accent-color: var(--accent); }
 .btn-primary:hover { background: var(--accent-hover); }
 .btn-danger { background: var(--danger-bg); color: var(--danger); border-color: var(--danger-bd); }
 .btn-danger:hover { border-color: var(--danger); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; pointer-events: none; }
 /* Quiet secondary action (e.g. per-deployment Rollback). */
 .btn-quiet { background: transparent; color: inherit; border-color: var(--border); }
 .btn-quiet:hover { border-color: var(--accent); color: var(--accent); }
@@ -159,6 +160,9 @@ input[type=checkbox] { accent-color: var(--accent); }
 .backup { margin-bottom: 20px; }
 .backup-head { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
 .backup-actions { display: flex; gap: 12px; align-items: center; margin-left: auto; }
+
+/* Settings → Updates: the check and Update rows. */
+.update-row { margin: 12px 0; }
 
 /* Badges */
 .badge {
@@ -179,6 +183,7 @@ input[type=checkbox] { accent-color: var(--accent); }
 .alert { padding: 10px 14px; border-radius: var(--radius); margin-bottom: 16px; font-size: 13px; }
 .alert-error { background: var(--danger-bg); border: 1px solid var(--danger-bd); color: var(--danger); }
 .alert-success { background: var(--state-running-bg); border: 1px solid var(--state-running-bd); color: var(--state-running-fg); }
+.alert-warn { background: var(--state-building-bg); border: 1px solid var(--state-building-bd); color: var(--state-building-fg); }
 
 /* Log stream */
 .log-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
@@ -258,6 +263,8 @@ input[type=checkbox] { accent-color: var(--accent); }
   color: var(--text-tertiary); border: 1px solid var(--border);
   border-radius: 999px; padding: 1px 6px;
 }
+/* "Update available" on the Settings item. */
+.nav-dot { margin-left: auto; flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
 .sidebar-foot { border-top: 1px solid var(--border); padding: 10px; display: flex; flex-direction: column; gap: 2px; }
 .sidebar-foot .linkbtn { width: 100%; text-align: left; }
 .shell-main { min-width: 0; }

@@ -299,6 +299,7 @@ func serve() error {
 	}
 	srv.SetTunnelControl(infra)
 	srv.SetBuild(update.Current())
+	srv.SetUpdates(updates, checker)
 	if certMgr != nil {
 		srv.SetCertSync(certMgr)
 		srv.SetLocalCAFile(localca.RootPath(cfg.CADir()))

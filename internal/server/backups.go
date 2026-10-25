@@ -186,6 +186,10 @@ func (s *Server) handleRunBackup(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if s.updateInProgress() {
+		http.Error(w, updateHeldCopy, http.StatusConflict)
+		return
+	}
 	s.backups.RunNow(b)
 	http.Redirect(w, r, returnPath, http.StatusSeeOther)
 }
@@ -235,6 +239,10 @@ func (s *Server) handleRestorePage(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	b, returnPath, ok := s.backupFromPath(w, r)
 	if !ok {
+		return
+	}
+	if s.updateInProgress() {
+		http.Error(w, updateHeldCopy, http.StatusConflict)
 		return
 	}
 	dir, err := s.backups.RestoreDir(r.Context(), b)

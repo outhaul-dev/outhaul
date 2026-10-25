@@ -58,6 +58,9 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, status i
 		data["TunnelEnabled"] = on
 	}
 	data["LocalCA"] = s.caFile != ""
+	if s.updatesWired() {
+		data["Updates"] = s.updatesPanel(r.Context())
+	}
 	s.render(w, status, "settings", data)
 }
 

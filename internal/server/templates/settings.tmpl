@@ -4,6 +4,80 @@
 {{if .Notice}}<div class="alert alert-success">{{.Notice}}</div>{{end}}
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 
+{{with .Updates}}
+<section class="panel" id="updates">
+  <h2 class="panel-title">Updates</h2>
+  <p>Running <span class="mono">{{.Build.Short}}</span>{{if .Build.Local}} <span class="muted">(local build)</span>{{end}}</p>
+  {{with .Last}}<p>Last update: <span class="badge {{.Class}}">{{.Label}}</span> {{.Message}} <span class="muted">{{fmtTime .At}}</span></p>{{end}}
+  {{if .Summary}}<p>{{.Summary}}</p>{{end}}
+  {{if .Commits}}
+  <div class="table-wrap update-row">
+    <table class="table">
+      <tbody>
+        {{range .Commits}}
+        <tr><td class="mono">{{.Short}}</td><td>{{.Subject}}</td><td class="mono muted">{{.Date.Format "2006-01-02"}}</td></tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{end}}
+  {{if .MoreURL}}<p><a href="{{.MoreURL}}">All {{.Behind}} commits on GitHub</a></p>{{end}}
+  {{range .Warnings}}<div class="alert alert-warn">{{.}}</div>{{end}}
+  {{if .Build.Known}}
+  <form method="post" action="/settings/update/check" class="row-actions update-row">
+    <span class="muted">Checked {{fmtTime .CheckedAt}}</span>
+    <button type="submit" class="btn btn-quiet">Check now</button>
+  </form>
+  {{end}}
+  {{if .InProgress}}
+  <div class="log-head update-row">
+    <span>Updating…</span>
+    <span class="log-status" id="update-status">running…</span>
+  </div>
+  <pre class="log" id="update-log"></pre>
+  <script>
+  // Follow the updater's log until the update is over. Outhaul restarts on the
+  // way, so failed requests are expected: keep asking, more slowly, until it
+  // answers again.
+  (function () {
+    var log = document.getElementById('update-log');
+    var status = document.getElementById('update-status');
+    var offset = 0;
+    // Show the result. A page that is the reply to a POST is replaced with a
+    // GET, so the browser does not offer to send the form again.
+    function finish() {
+      if (location.pathname === '/settings') { location.reload(); } else { location.replace('/settings#updates'); }
+    }
+    function poll() {
+      fetch('/settings/update/progress?offset=' + offset, {headers: {'Accept': 'application/json'}, cache: 'no-store'})
+        .then(function (r) { if (!r.ok) { throw new Error(r.status); } return r.json(); })
+        .then(function (p) {
+          if (p.log) {
+            var atBottom = (log.scrollTop + log.clientHeight) >= (log.scrollHeight - 4);
+            log.textContent += p.log;
+            if (atBottom) { log.scrollTop = log.scrollHeight; }
+          }
+          offset = p.offset;
+          if (p.state !== 'running') { finish(); return; }
+          status.textContent = 'running…';
+          setTimeout(poll, 1000);
+        }, function () {
+          status.textContent = 'Outhaul is restarting…';
+          setTimeout(poll, 2000);
+        });
+    }
+    poll();
+  })();
+  </script>
+  {{else}}
+  <form method="post" action="/settings/update" class="row-actions update-row" onsubmit="return confirm({{.Confirm}});">
+    <button type="submit" class="btn btn-primary" id="update-button"{{if .Blocked}} disabled{{end}}>Update</button>
+    {{if .Blocked}}<span class="muted">{{.Blocked}}</span>{{end}}
+  </form>
+  {{end}}
+</section>
+{{end}}
+
 <section class="panel">
   <h2 class="panel-title">Git sources {{template "hint" "The GitHub accounts and organizations Outhaul can deploy from. Each is its own GitHub App: a private App can only be installed on the account that owns it, so a second account means a second App."}}</h2>
   {{if .NeedsPublicURL}}
