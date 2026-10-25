@@ -418,6 +418,14 @@ fetch_source() {
 	[ "$rc" -eq 0 ] || die "could not clone $OUTHAUL_REPO — see ${LOGFILE:-the install log}"
 }
 
+# Pure: the -ldflags value that stamps the build for the in-app updater.
+build_ldflags() { # commit repo local(0|1)
+	pkg=github.com/outhaul-dev/outhaul/internal/update
+	out="-X $pkg.commit=$1 -X $pkg.repo=$2"
+	[ "$3" = 1 ] && out="$out -X $pkg.local=true"
+	printf '%s\n' "$out"
+}
+
 # Builds ./outhaul in SRC_DIR. Streams go build output to the log; shows a
 # spinner (progress bar is best-effort since `go build` has no clean %).
 build_binary() {
@@ -425,7 +433,10 @@ build_binary() {
 	# and set +e keeps a failed build from aborting before spinner_stop + die.
 	spinner_start "building outhaul (this can take a few minutes)"
 	set +e
-	( cd "$SRC_DIR" && GOFLAGS=-buildvcs=false go build -o outhaul . ) >>"${LOGFILE:-/dev/null}" 2>&1
+	c=$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null)
+	l=0
+	if [ "${FROM_CHECKOUT:-0}" = 1 ] && [ -n "$(git -C "$SRC_DIR" status --porcelain 2>/dev/null)" ]; then l=1; fi
+	( cd "$SRC_DIR" && GOFLAGS=-buildvcs=false go build -ldflags "$(build_ldflags "$c" "${OUTHAUL_REPO:-}" "$l")" -o outhaul . ) >>"${LOGFILE:-/dev/null}" 2>&1
 	rc=$?
 	set -e
 	spinner_stop "$rc"
