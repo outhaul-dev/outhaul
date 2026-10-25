@@ -68,6 +68,11 @@ func (k *Checker) Get(ctx context.Context, force bool) Check {
 	} else {
 		c.Comparison, c.Err = k.cmp.Compare(ctx, k.build.Repo, k.build.Commit)
 	}
+	if ctx.Err() != nil {
+		// The caller gave up; that says nothing about GitHub, so don't let it
+		// stand in for everyone else's answer.
+		return c
+	}
 	k.mu.Lock()
 	k.last = &c
 	k.mu.Unlock()

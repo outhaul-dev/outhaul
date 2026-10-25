@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -71,6 +72,47 @@ func TestCheckerCachesErrors(t *testing.T) {
 	}
 	if len(f.paths) != 1 {
 		t.Fatalf("requests = %d, want 1", len(f.paths))
+	}
+}
+
+func TestCheckerDoesNotCacheACancelledCheck(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	var mu sync.Mutex
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		first := calls == 1
+		mu.Unlock()
+		if first {
+			started <- struct{}{}
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"identical"}`))
+	}))
+	defer srv.Close()
+	defer close(release)
+
+	clk := &fakeClock{t: time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)}
+	k := NewChecker(Build{Commit: "abc", Repo: repoURL}, &Comparer{APIBase: srv.URL}, clk.now)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan Check)
+	go func() { done <- k.Get(ctx, false) }()
+	<-started
+	cancel()
+	if got := <-done; got.Err == nil {
+		t.Fatal("the cancelled caller should see an error")
+	}
+
+	got := k.Get(context.Background(), false)
+	if got.Err != nil || got.Comparison.Status != CompareUpToDate {
+		t.Fatalf("a later caller got %+v", got)
 	}
 }
 
