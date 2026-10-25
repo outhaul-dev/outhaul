@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -39,6 +40,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/store"
 	"github.com/outhaul-dev/outhaul/internal/traefik"
 	"github.com/outhaul-dev/outhaul/internal/tunnel"
+	"github.com/outhaul-dev/outhaul/internal/update"
 )
 
 func main() {
@@ -50,6 +52,12 @@ func main() {
 	}
 	if len(os.Args) >= 2 && os.Args[1] == "ca" {
 		os.Exit(runCA(os.Args[2:]))
+	}
+	if len(os.Args) >= 2 && os.Args[1] == "version" {
+		os.Exit(runVersion(os.Stdout, update.Current()))
+	}
+	if len(os.Args) >= 2 && os.Args[1] == "images" {
+		os.Exit(runImages(os.Stdout, config.Load(os.Getenv)))
 	}
 	if len(os.Args) < 2 || os.Args[1] != "serve" {
 		usage()
@@ -63,6 +71,8 @@ func main() {
 func usage() {
 	fmt.Fprintln(os.Stderr, "Usage: outhaul serve")
 	fmt.Fprintln(os.Stderr, "       outhaul ca root [--path]")
+	fmt.Fprintln(os.Stderr, "       outhaul version")
+	fmt.Fprintln(os.Stderr, "       outhaul images")
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "Starts the Outhaul admin UI and deploy worker.")
 	fmt.Fprintln(os.Stderr, "Configuration via OUTHAUL_* environment variables (see ARCHITECTURE.md).")
@@ -81,6 +91,20 @@ func runGitHook(args []string) int {
 		fmt.Fprintf(os.Stderr, "outhaul: %v\n", err)
 	}
 	return code
+}
+
+// runVersion implements `outhaul version`: the build stamp as key=value lines,
+// which the updater parses.
+func runVersion(w io.Writer, b update.Build) int {
+	fmt.Fprintf(w, "commit=%s\nrepo=%s\nlocal=%t\n", b.Commit, b.Repo, b.Local)
+	return 0
+}
+
+// runImages implements `outhaul images`: the container images Outhaul manages,
+// one `<name> <image>` per line, so the updater can pre-pull them.
+func runImages(w io.Writer, cfg config.Config) int {
+	fmt.Fprintf(w, "traefik %s\ncloudflared %s\n", cfg.TraefikImage, cfg.CloudflaredImage)
+	return 0
 }
 
 // runCA implements `outhaul ca root [--path]`: prints the local CA root
@@ -265,6 +289,7 @@ func serve() error {
 		srv.SetSSHControl(sshSrv)
 	}
 	srv.SetTunnelControl(infra)
+	srv.SetBuild(update.Current())
 	if certMgr != nil {
 		srv.SetCertSync(certMgr)
 		srv.SetLocalCAFile(localca.RootPath(cfg.CADir()))

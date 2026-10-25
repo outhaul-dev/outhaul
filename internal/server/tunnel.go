@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"strings"
+
+	"github.com/outhaul-dev/outhaul/internal/update"
 )
 
 // TunnelControl is the subset of infra management the Settings page needs to
@@ -16,6 +18,9 @@ type TunnelControl interface {
 
 // SetTunnelControl wires tunnel management so the Settings page can toggle it.
 func (s *Server) SetTunnelControl(c TunnelControl) { s.tunnel = c }
+
+// SetBuild records the running binary's build stamp, which /healthz reports.
+func (s *Server) SetBuild(b update.Build) { s.build = b }
 
 // handleEnableTunnel persists the pasted connector token and brings the tunnel
 // up. An empty token is rejected; a live reconcile failure re-renders the page.

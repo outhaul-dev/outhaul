@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/config"
+	"github.com/outhaul-dev/outhaul/internal/update"
 )
 
 // An SSE handler only returns when its stream ends, so http.Server.Shutdown
@@ -148,5 +149,28 @@ func TestSetupURLs(t *testing.T) {
 				t.Fatalf("setupURLs = %q, %q; want %q, %q", public, local, tc.public, tc.local)
 			}
 		})
+	}
+}
+
+func TestRunVersionPrintsTheBuild(t *testing.T) {
+	var buf strings.Builder
+	if code := runVersion(&buf, update.Build{Commit: "abc", Repo: "https://github.com/o/r.git"}); code != 0 {
+		t.Fatalf("exit %d, want 0", code)
+	}
+	want := "commit=abc\nrepo=https://github.com/o/r.git\nlocal=false\n"
+	if buf.String() != want {
+		t.Errorf("output = %q, want %q", buf.String(), want)
+	}
+}
+
+func TestRunImagesListsManagedImages(t *testing.T) {
+	var buf strings.Builder
+	cfg := config.Load(func(k string) string { return map[string]string{"OUTHAUL_TRAEFIK_IMAGE": "traefik:v9"}[k] })
+	if code := runImages(&buf, cfg); code != 0 {
+		t.Fatalf("exit %d, want 0", code)
+	}
+	want := "traefik traefik:v9\ncloudflared " + config.DefaultCloudflaredImage + "\n"
+	if buf.String() != want {
+		t.Errorf("output = %q, want %q", buf.String(), want)
 	}
 }

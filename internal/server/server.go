@@ -29,6 +29,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/hostmetrics"
 	"github.com/outhaul-dev/outhaul/internal/logstream"
 	"github.com/outhaul-dev/outhaul/internal/store"
+	"github.com/outhaul-dev/outhaul/internal/update"
 	"github.com/outhaul-dev/outhaul/internal/webhook"
 )
 
@@ -105,6 +106,7 @@ type Server struct {
 	repos      *gitrepo.Manager // push-app bare repos; nil disables push-repo cleanup
 	sshControl SSHControl       // git-push SSH server; nil disables the port setting
 	tunnel     TunnelControl    // Cloudflare Tunnel management; nil disables the tunnel card
+	build      update.Build     // the running binary's stamp; /healthz reports its commit
 	certSync   CertSyncer       // local-CA cert re-mint hook; nil disables cert re-sync
 	caFile     string           // path to the local CA root cert; "" disables /ca.pem and the settings card
 
@@ -212,6 +214,9 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		if s.build.Known() {
+			w.Header().Set("X-Outhaul-Commit", s.build.Commit)
+		}
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})

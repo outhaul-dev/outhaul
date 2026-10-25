@@ -29,6 +29,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/logstream"
 	"github.com/outhaul-dev/outhaul/internal/secret"
 	"github.com/outhaul-dev/outhaul/internal/store"
+	"github.com/outhaul-dev/outhaul/internal/update"
 )
 
 type fakeDeployer struct {
@@ -800,5 +801,20 @@ func TestDeploymentPageExplainsLogsAreKeptForRecentDeploymentsOnly(t *testing.T)
 	page := body(t, e.get(t, "/deployments/"+itoa(dep.ID)))
 	if !strings.Contains(page, "only for the most recent deployments") {
 		t.Errorf("deployment page does not say logs are kept for recent deployments only")
+	}
+}
+
+func TestHealthzNamesTheCommit(t *testing.T) {
+	env := newTestEnv(t)
+	resp := env.get(t, "/healthz")
+	resp.Body.Close()
+	if got := resp.Header.Get("X-Outhaul-Commit"); got != "" {
+		t.Errorf("X-Outhaul-Commit = %q with no build set, want absent", got)
+	}
+	env.srv.SetBuild(update.Build{Commit: "0123456789abcdef"})
+	resp = env.get(t, "/healthz")
+	resp.Body.Close()
+	if got := resp.Header.Get("X-Outhaul-Commit"); got != "0123456789abcdef" {
+		t.Errorf("X-Outhaul-Commit = %q, want 0123456789abcdef", got)
 	}
 }
