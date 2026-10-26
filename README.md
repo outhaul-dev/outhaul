@@ -158,6 +158,10 @@ installer itself are not part of this: they need an installer run. A server
 installed before the Updates panel existed gets it by re-running the installer
 once.
 
+An update that changes Traefik's image or configuration restarts Traefik, and
+every app is unreachable for a few seconds; the panel says so before you
+click Update.
+
 Each update's log is in `/var/lib/outhaul-updater/log` on the server
 (`sudo cat` it), and `journalctl -u outhaul-update` has each update's result.
 If an update leaves Outhaul down, the log says how to put the previous

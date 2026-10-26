@@ -26,6 +26,7 @@ Target: a fresh **Debian** or **Ubuntu** server (x86_64 or arm64) with
 | `/var/lib/outhaul` | Data dir: SQLite DB, build work dirs (owned by the `outhaul` user) |
 | `/usr/local/lib/outhaul`, `/var/lib/outhaul/update` | The updater (optional), and the directory it shares with Outhaul: see "Updating from the UI" |
 | `/var/lib/outhaul-updater` | The updater's own directory (root's, mode 0700): the copy of the running version it rolls back to, and its log |
+| `/var/cache/outhaul` | The Go toolchain the updater keeps between updates (root's) |
 
 ## 1. Install the runtime dependencies
 
@@ -237,11 +238,15 @@ public URL. Otherwise, or while that does not answer yet, use the
 
 ## Upgrading
 
-Rebuild and swap the binary; data and config are untouched:
+Rebuild and swap the binary; data and config are untouched. Stamp the build
+with its commit, as in "Updating from the UI" below, so the Updates panel
+can tell which commit is running:
 
 ```sh
 cd /path/to/outhaul && git pull
-GOFLAGS=-buildvcs=false go build -o outhaul .
+GOFLAGS=-buildvcs=false go build \
+  -ldflags "-X github.com/outhaul-dev/outhaul/internal/update.commit=$(git rev-parse HEAD) -X github.com/outhaul-dev/outhaul/internal/update.repo=<your clone URL>" \
+  -o outhaul .
 install -m 0755 outhaul /usr/local/bin/outhaul
 install -m 0644 deploy/outhaul.service /etc/systemd/system/outhaul.service
 systemctl daemon-reload
@@ -288,8 +293,12 @@ GOFLAGS=-buildvcs=false go build \
 
 ```sh
 systemctl disable --now outhaul
+systemctl disable --now outhaul-update.path   # if the updater is installed
 rm -f /etc/systemd/system/outhaul.service /usr/local/bin/outhaul /etc/outhaul.env
+rm -f /etc/systemd/system/outhaul-update.path /etc/systemd/system/outhaul-update.service
 systemctl daemon-reload
+rm -rf /usr/local/lib/outhaul /var/cache/outhaul
+rm -rf /var/lib/outhaul-updater   # the updater's log, and its copy of the database
 userdel outhaul
 rm -rf /var/lib/outhaul        # DESTROYS the database and all app state
 ```
