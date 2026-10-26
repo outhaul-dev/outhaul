@@ -18,7 +18,9 @@ type Version struct {
 // the minor and patch parts may be left out ("v2" is 2.0.0). It reports false
 // for anything else, so non-version tags such as "release-oct" never deploy.
 func ParseVersion(s string) (Version, bool) {
-	s = strings.TrimPrefix(strings.TrimPrefix(s, "v"), "V")
+	if s != "" && (s[0] == 'v' || s[0] == 'V') {
+		s = s[1:]
+	}
 	var v Version
 	if i := strings.IndexByte(s, '+'); i >= 0 {
 		if i == len(s)-1 {

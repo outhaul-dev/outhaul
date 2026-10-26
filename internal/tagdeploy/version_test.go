@@ -27,6 +27,8 @@ func TestParseVersion(t *testing.T) {
 		{"v-1", Version{}, false},
 		{"1..2", Version{}, false},
 		{"1.0.0+", Version{}, false},
+		{"vV1", Version{}, false},
+		{"vv1", Version{}, false},
 	}
 	for _, tc := range tests {
 		got, ok := ParseVersion(tc.in)
