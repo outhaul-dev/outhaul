@@ -6,7 +6,11 @@
 # and roll back when it does not. It asks no questions.
 #
 # The update directory is shared with Outhaul, which reads "status" and
-# "log" as user outhaul. The request carries nothing and is never read.
+# "log" as user outhaul. The request carries nothing and is never read. It
+# belongs to outhaul, so the updater keeps its own files in WORK_DIR, a
+# root-owned directory: the rollback copy, temp files and the log. In the
+# update directory it only renames the status in, links the log in and
+# removes the request, by names inside the directory itself (in_update_dir).
 #
 # Runs under Debian's dash: keep it POSIX. It reuses the installer's
 # functions; bootstrap.sh is installed next to this script.
@@ -20,20 +24,27 @@ BIN=/usr/local/bin/outhaul
 UNIT_DIR=/etc/systemd/system
 DATA_DIR=${OUTHAUL_DATA_DIR:-/var/lib/outhaul}
 UPDATE_DIR=$DATA_DIR/update
+WORK_DIR=/var/lib/outhaul-updater
 CACHE_DIR=/var/cache/outhaul
 
 # The installer mirrors errors into its log file; here stdout and stderr
 # already are the log.
 log_line() { :; }
 
-# Writes the status file Outhaul reads, by temp file and rename. finished is
-# only on final states.
+# Runs a command inside the update directory: see in_real_dir.
+in_update_dir() { # command...
+	in_real_dir "$UPDATE_DIR" "$@"
+}
+
+# Writes the status file Outhaul reads: made in WORK_DIR and renamed into the
+# update directory, replacing whatever has that name (rename does not follow
+# a link). It fails on a directory there. finished is only on final states.
 write_status() { # state from to message
-	_tmp=$(mktemp "$UPDATE_DIR/.status.XXXXXX") || return 1
+	_tmp=$(mktemp "$WORK_DIR/.status.XXXXXX") || return 1
 	if {
 		printf 'state=%s\nfrom=%s\nto=%s\nmessage=%s\nstarted=%s\n' "$1" "$2" "$3" "$4" "$STARTED"
 		if [ "$1" != running ]; then printf 'finished=%s\n' "$(date +%s)"; fi
-	} > "$_tmp" && chmod 0644 "$_tmp" && mv -f "$_tmp" "$UPDATE_DIR/status"; then
+	} > "$_tmp" && chmod 0644 "$_tmp" && in_update_dir mv -fT "$_tmp" status; then
 		return 0
 	fi
 	rm -f "$_tmp"
@@ -107,20 +118,21 @@ pull_images() { # binary
 # Copies src over dest by way of dest.new and a rename: a new inode, so a
 # running program, or the shell reading this script, keeps the old file.
 # cp -p keeps the owner and mode (the database belongs to outhaul). A
-# leftover dest.new goes first: in outhaul's data dir it could be a link.
+# leftover dest.new goes first, and -T replaces dest itself: in outhaul's
+# data dir either could be a link.
 replace_file() { # src dest [mode]
 	rm -f "$2.new" || return 1
 	cp -p "$1" "$2.new" || return 1
 	if [ -n "${3:-}" ]; then chmod "$3" "$2.new" || return 1; fi
-	mv -f "$2.new" "$2"
+	mv -fT "$2.new" "$2"
 }
 
-# Keeps the running version in UPDATE_DIR/previous: the binary,
+# Keeps the running version in WORK_DIR/previous: the binary,
 # outhaul.service, and the database with its -wal and -shm files when
 # present. Outhaul must be stopped. Built in previous.new, so previous/ is
 # always a whole copy. Every step is checked: callers test its status.
 snapshot() {
-	_new=$UPDATE_DIR/previous.new
+	_new=$WORK_DIR/previous.new
 	rm -rf "$_new" || return 1
 	mkdir -m 0700 "$_new" || return 1
 	cp -p "$BIN" "$_new/outhaul" || return 1
@@ -130,15 +142,15 @@ snapshot() {
 	for _f in outhaul.db outhaul.db-wal outhaul.db-shm; do
 		if [ -f "$DATA_DIR/$_f" ]; then cp -p "$DATA_DIR/$_f" "$_new/$_f" || return 1; fi
 	done
-	rm -rf "$UPDATE_DIR/previous" || return 1
-	mv "$_new" "$UPDATE_DIR/previous"
+	rm -rf "$WORK_DIR/previous" || return 1
+	mv "$_new" "$WORK_DIR/previous"
 }
 
 # Puts back what snapshot kept. A -wal or -shm file the snapshot does not
 # have is the new version's, and SQLite would replay it onto the old
 # database: it is removed. Every step is checked: callers test its status.
 restore_snapshot() {
-	_p=$UPDATE_DIR/previous
+	_p=$WORK_DIR/previous
 	[ -f "$_p/outhaul" ] || return 1
 	replace_file "$_p/outhaul" "$BIN" || return 1
 	if [ -f "$_p/outhaul.service" ]; then
@@ -193,7 +205,7 @@ new_version_healthy() { # commit port
 
 # The commands to put the previous version back by hand.
 recovery_help() {
-	_p=$UPDATE_DIR/previous
+	_p=$WORK_DIR/previous
 	printf 'To recover, run as root on the server:\n'
 	printf '  systemctl stop outhaul\n'
 	if [ "$SNAPSHOT_OK" = 1 ]; then
@@ -214,11 +226,14 @@ recovery_help() {
 	printf 'then check: journalctl -u outhaul -n 50 --no-pager\n'
 }
 
-# Logs the outcome and writes the final status.
+# Logs the outcome and writes the final status. Not being able to write it
+# does not change the outcome.
 finish() { # state message
 	STAGE=done
 	printf '%s\n' "$2"
-	write_status "$1" "$FROM" "$TO" "$2"
+	if ! write_status "$1" "$FROM" "$TO" "$2"; then
+		note "could not write $UPDATE_DIR/status: the admin UI does not show this result"
+	fi
 }
 
 # The new version is not running right: put the previous one back, start it,
@@ -236,7 +251,7 @@ roll_back() { # reason
 	_restored=1
 	if [ "$SNAPSHOT_OK" = 1 ] && ! restore_snapshot; then
 		_restored=0
-		note "could not put back every file from $UPDATE_DIR/previous"
+		note "could not put back every file from $WORK_DIR/previous"
 	fi
 	systemctl daemon-reload
 	systemctl start outhaul
@@ -272,11 +287,21 @@ update_exit() {
 update_main() {
 	# No questions: every installer prompt reads EOF and takes its default.
 	exec 3<>/dev/null
-	_log=$(mktemp "$UPDATE_DIR/.log.XXXXXX")
+	# An updater installed by an earlier installer has no directory of its own.
+	mkdir -p "$WORK_DIR"
+	chmod 0700 "$WORK_DIR"
+	# A fresh log: a new file, renamed into place.
+	_log=$(mktemp "$WORK_DIR/.log.XXXXXX")
 	chmod 0644 "$_log"
-	mv -f "$_log" "$UPDATE_DIR/log"
-	exec >>"$UPDATE_DIR/log" 2>&1
-	LOGFILE=$UPDATE_DIR/log
+	mv -fT "$_log" "$WORK_DIR/log"
+	exec >>"$WORK_DIR/log" 2>&1
+	LOGFILE=$WORK_DIR/log
+	# Outhaul reads it as the update directory's "log": a second name (a hard
+	# link) for the same file, so the updater never opens it by that name.
+	if ! in_update_dir ln -fT "$LOGFILE" log; then
+		in_update_dir rm -f log 2>/dev/null || true
+		note "could not show the log in $UPDATE_DIR"
+	fi
 
 	STARTED=$(date +%s)
 	FROM=$(build_field commit)
@@ -289,9 +314,15 @@ update_main() {
 	trap update_exit EXIT
 	trap 'exit 130' INT
 	trap 'exit 143' TERM
-	write_status running "$FROM" '' updating
+	if ! write_status running "$FROM" '' updating; then
+		# Outhaul would not know an update is running: start none.
+		STAGE=done
+		in_update_dir rm -f request 2>/dev/null || true
+		printf 'could not write %s/status; nothing changed\n' "$UPDATE_DIR"
+		exit 1
+	fi
 	# Only now: Outhaul holds work while the request exists or the status says running.
-	rm -f "$UPDATE_DIR/request"
+	in_update_dir rm -f request
 	printf 'Outhaul updater, %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 	printf 'running %s; updating to the newest main of %s\n' "$(short "$FROM")" "$OUTHAUL_REPO"
 
@@ -318,7 +349,9 @@ update_main() {
 	if ! systemctl stop outhaul; then roll_back "outhaul did not stop"; exit 1; fi
 	if ! snapshot; then roll_back "could not keep a copy of the running version"; exit 1; fi
 	SNAPSHOT_OK=1
-	step_ok "kept the running version in $UPDATE_DIR/previous"
+	step_ok "kept the running version in $WORK_DIR/previous"
+	# An earlier updater kept its copies in the update directory.
+	in_update_dir rm -rf previous || true
 	if ! install_new; then roll_back "could not install the new version"; exit 1; fi
 	if ! systemctl daemon-reload; then roll_back "systemctl daemon-reload failed"; exit 1; fi
 	printf '  .. starting %s\n' "$(short "$TO")"

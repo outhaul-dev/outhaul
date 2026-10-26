@@ -617,26 +617,64 @@ install_atomic() { # src dest mode
 	mv -f "$2.new" "$2"
 }
 
+# Runs a command inside dir, a directory the outhaul user owns, so that the
+# command's relative names land in it: in a subshell whose working directory
+# is dir itself, checked to be where it should be and not reached through a
+# symlink. Renaming the path afterwards does not move the command elsewhere.
+# Fails without running the command when dir is not that directory.
+in_real_dir() { # dir command...
+	(
+		_dir=$1
+		shift
+		cd "$_dir" 2>/dev/null || exit 1
+		[ "$(pwd -P)" = "$(cd "$(dirname "$_dir")" && pwd -P)/$(basename "$_dir")" ] || exit 1
+		"$@"
+	)
+}
+
 # Installs the root updater that Settings > Updates drives: the script and
-# the installer it reuses, the two systemd units, and the directory Outhaul
-# and the updater share. The paths are overridable for tests, and the
-# updater itself calls this from a new tree after a healthy update.
+# the installer it reuses, the two systemd units, the updater's own
+# directory, and the directory Outhaul and the updater share. The paths are
+# overridable for tests, and the updater itself calls this from a new tree
+# after a healthy update.
 install_updater() { # src_dir
 	_lib=${LIB_DIR:-/usr/local/lib/outhaul}
 	_units=${UNIT_DIR:-/etc/systemd/system}
 	_upd=${UPDATE_DIR:-/var/lib/outhaul/update}
+	_work=${WORK_DIR:-/var/lib/outhaul-updater}
 	mkdir -p "$_lib" "$_units" || return 1
 	install_atomic "$1/deploy/update.sh" "$_lib/update.sh" 0755 || return 1
 	install_atomic "$1/deploy/bootstrap.sh" "$_lib/bootstrap.sh" 0644 || return 1
 	install_atomic "$1/deploy/outhaul-update.path" "$_units/outhaul-update.path" 0644 || return 1
 	install_atomic "$1/deploy/outhaul-update.service" "$_units/outhaul-update.service" 0644 || return 1
-	mkdir -p "$_upd" || return 1
-	chmod 0700 "$_upd" || return 1
-	chown outhaul:outhaul "$_upd" || return 1
-	printf '1\n' > "$_upd/updater" || return 1
+	# The updater's own: its rollback copy, temp files and log.
+	mkdir -p "$_work" || return 1
+	chmod 0700 "$_work" || return 1
+	# The update directory is in outhaul's data dir: only a directory, not a
+	# symlink, is set up there.
+	if [ -L "$_upd" ] || { [ -e "$_upd" ] && [ ! -d "$_upd" ]; }; then
+		step_fail "$_upd is not a directory"
+		return 1
+	fi
+	if [ ! -d "$_upd" ]; then mkdir -p "$_upd" || return 1; fi
+	in_real_dir "$_upd" set_up_update_dir "$_work" || return 1
 	systemctl daemon-reload || return 1
 	systemctl enable --now outhaul-update.path || return 1
 	step_ok "installed the updater"
+}
+
+# Run by install_updater inside the update directory: makes it outhaul's,
+# 0700, with the marker that tells Outhaul the updater is installed, made in
+# the updater's directory and renamed in.
+set_up_update_dir() { # work_dir
+	chmod 0700 . || return 1
+	chown -h outhaul:outhaul . || return 1
+	_m=$(mktemp "$1/.updater.XXXXXX") || return 1
+	if printf '1\n' > "$_m" && chmod 0644 "$_m" && mv -fT "$_m" updater; then
+		return 0
+	fi
+	rm -f "$_m"
+	return 1
 }
 
 # The installer's call: the updater is optional, so a failure must not stop

@@ -3,8 +3,9 @@
 # outhaul-update.path when Outhaul asks for an update.
 #
 # Runs as root: it replaces /usr/local/bin/outhaul and restarts outhaul.service.
-# It writes its progress to /var/lib/outhaul/update/status and log, which the
-# admin UI shows.
+# It keeps its own files, the rollback copy and its log, in the root-owned
+# /var/lib/outhaul-updater, and shows its status and log to the admin UI in
+# /var/lib/outhaul/update.
 
 [Unit]
 Description=Outhaul updater: update to the newest main

@@ -15,8 +15,11 @@ umask 022 # systemd's default for a service
 ROOT=$(mktemp -d)
 OLD=aaaaaaa1111
 NEW=bbbbbbb2222
+OLDER=ccccccc3333
 
 exists() { if [ -e "$1" ]; then echo yes; else echo no; fi; }
+is_file() { [ -f "$1" ] && [ ! -L "$1" ]; }
+quiet() { "$@" 2>/dev/null; }
 wait_for() { # file: up to 10 s
 	_w=0
 	while [ ! -e "$1" ] && [ "$_w" -lt 100 ]; do command sleep 0.1; _w=$((_w + 1)); done
@@ -37,8 +40,8 @@ EOF
 
 # ---------------------------------------------------------- write_status --
 
-UPDATE_DIR=$ROOT/ws
-mkdir -p "$UPDATE_DIR"
+WORK_DIR=$ROOT/work UPDATE_DIR=$ROOT/ws
+mkdir -p "$WORK_DIR" "$UPDATE_DIR"
 # shellcheck disable=SC2034 # used by functions sourced from update.sh
 STARTED=1700000000
 write_status running "$OLD" '' updating
@@ -49,6 +52,25 @@ write_status updated "$OLD" "$NEW" 'updated from aaaaaaa to bbbbbbb'
 assert_eq "final status keeps started" 1700000000 "$(sed -n 's/^started=//p' "$st")"
 assert_eq "final status has finished" 1 "$(grep -c '^finished=[0-9][0-9]*$' "$st")"
 assert_eq "no temp files left" "status" "$(ls -A "$UPDATE_DIR")"
+assert_eq "no temp files left in the updater's directory" "" "$(ls -A "$WORK_DIR")"
+
+# The update directory belongs to outhaul: what is planted there is replaced
+# or refused, never written through.
+echo 'not yours' > "$ROOT/victim"
+rm "$st"; ln -s "$ROOT/victim" "$st"
+assert_ok "status: a planted link is replaced" write_status running "$OLD" '' updating
+assert_eq "status: ... not written through" "not yours" "$(cat "$ROOT/victim")"
+assert_ok "status: ... by a file" is_file "$st"
+rm "$st"; mkdir "$st"
+assert_fail "status: a planted directory is an error" quiet write_status running "$OLD" '' updating
+assert_eq "status: ... nothing lands in it" "" "$(ls -A "$st")"
+assert_eq "status: ... no temp file left" "" "$(ls -A "$WORK_DIR")"
+rm -rf "$st"
+mkdir "$ROOT/elsewhere"
+mv "$UPDATE_DIR" "$ROOT/ws.real"; ln -s "$ROOT/elsewhere" "$UPDATE_DIR"
+assert_fail "status: a link in place of the update directory is refused" write_status running "$OLD" '' updating
+assert_eq "status: ... nothing written where it leads" "" "$(ls -A "$ROOT/elsewhere")"
+rm "$UPDATE_DIR"; mv "$ROOT/ws.real" "$UPDATE_DIR"
 
 # ---------------------------------------------------- new_version_healthy --
 
@@ -125,8 +147,8 @@ unset -f install_go_toolchain fake_go
 # ------------------------------------------------ snapshot, restore_snapshot --
 
 T=$ROOT/snap
-BIN=$T/bin/outhaul UNIT_DIR=$T/units DATA_DIR=$T/data UPDATE_DIR=$T/data/update
-mkdir -p "$T/bin" "$UNIT_DIR" "$UPDATE_DIR"
+BIN=$T/bin/outhaul UNIT_DIR=$T/units DATA_DIR=$T/data UPDATE_DIR=$T/data/update WORK_DIR=$T/work
+mkdir -p "$T/bin" "$UNIT_DIR" "$UPDATE_DIR" "$WORK_DIR"
 fake_outhaul "$BIN" "$OLD" file:///srv/o.git traefik:v1
 echo 'old unit' > "$UNIT_DIR/outhaul.service"
 echo 'old data' > "$DATA_DIR/outhaul.db"
@@ -134,12 +156,13 @@ echo 'old wal' > "$DATA_DIR/outhaul.db-wal"
 echo 'old shm' > "$DATA_DIR/outhaul.db-shm"
 # A mode the umask would change: only a copy that keeps modes keeps it.
 chmod 0664 "$DATA_DIR/outhaul.db"
-mkdir -p "$UPDATE_DIR/previous" && echo stale > "$UPDATE_DIR/previous/outhaul.db-shm"
+mkdir -p "$WORK_DIR/previous" && echo stale > "$WORK_DIR/previous/outhaul.db-shm"
 assert_ok "snapshot" snapshot
 assert_eq "snapshot: binary, unit and database" "outhaul outhaul.db outhaul.db-shm outhaul.db-wal outhaul.service" \
-	"$(ls "$UPDATE_DIR/previous" | paste -sd' ' -)"
-assert_eq "snapshot: replaces the previous copies" "old shm" "$(cat "$UPDATE_DIR/previous/outhaul.db-shm")"
-assert_eq "snapshot: only previous/ is left" "previous" "$(ls -A "$UPDATE_DIR")"
+	"$(ls "$WORK_DIR/previous" | paste -sd' ' -)"
+assert_eq "snapshot: replaces the previous copies" "old shm" "$(cat "$WORK_DIR/previous/outhaul.db-shm")"
+assert_eq "snapshot: only previous/ is left, in the updater's directory" "previous" "$(ls -A "$WORK_DIR")"
+assert_eq "snapshot: nothing in the update directory" "" "$(ls -A "$UPDATE_DIR")"
 echo 'new data' > "$DATA_DIR/outhaul.db"
 echo 'new wal' > "$DATA_DIR/outhaul.db-wal"
 rm "$DATA_DIR/outhaul.db-shm"
@@ -154,6 +177,13 @@ assert_eq "restore: binary, unit and database" "commit=$OLD|old unit|old data|ol
 	"$("$BIN" version | head -1)|$(cat "$UNIT_DIR/outhaul.service" "$DATA_DIR/outhaul.db" "$DATA_DIR/outhaul.db-wal" "$DATA_DIR/outhaul.db-shm" | paste -sd'|' -)"
 assert_eq "restore: the database keeps its mode" 664 "$(stat -c %a "$DATA_DIR/outhaul.db")"
 assert_eq "restore: no temp files left" "outhaul.db outhaul.db-shm outhaul.db-wal update" "$(ls "$DATA_DIR" | paste -sd' ' -)"
+# Nor is a link to a directory, planted in place of a file, moved into. (GNU
+# mv replaces the link; busybox mv refuses.)
+mkdir "$T/elsewhere"
+echo new > "$T/new.db"
+ln -s "$T/elsewhere" "$T/planted.db"
+quiet replace_file "$T/new.db" "$T/planted.db" || true
+assert_eq "replace_file: a link to a directory is not moved into" "" "$(ls -A "$T/elsewhere")"
 
 # ------------------------------------------------------------- update_main --
 
@@ -162,11 +192,16 @@ assert_eq "restore: no temp files left" "outhaul.db outhaul.db-shm outhaul.db-wa
 setup() {
 	T=$(mktemp -d "$ROOT/run.XXXXXX")
 	BIN=$T/bin/outhaul UNIT_DIR=$T/units DATA_DIR=$T/data UPDATE_DIR=$T/data/update CACHE_DIR=$T/cache
-	mkdir -p "$T/bin" "$UNIT_DIR" "$UPDATE_DIR"
+	WORK_DIR=$T/work
+	mkdir -p "$T/bin" "$UNIT_DIR" "$UPDATE_DIR" "$WORK_DIR/previous"
+	chmod 0700 "$WORK_DIR"
 	fake_outhaul "$BIN" "$OLD" file:///srv/o.git traefik:v1
 	echo 'old unit' > "$UNIT_DIR/outhaul.service"
 	echo 'old data' > "$DATA_DIR/outhaul.db"
-	echo 'the previous update' > "$UPDATE_DIR/log"
+	# The last update's log and rollback copy, as this updater leaves them.
+	echo 'the previous update' > "$WORK_DIR/log"
+	ln "$WORK_DIR/log" "$UPDATE_DIR/log"
+	fake_outhaul "$WORK_DIR/previous/outhaul" "$OLDER" file:///srv/o.git traefik:v1
 	printf 'state=up_to_date\nfrom=%s\nto=%s\nmessage=\nstarted=1\nfinished=2\n' "$OLD" "$OLD" > "$UPDATE_DIR/status"
 	: > "$UPDATE_DIR/request"
 	: > "$T/calls"
@@ -185,7 +220,7 @@ run_update() {
 }
 
 field() { sed -n "s/^$1=//p" "$UPDATE_DIR/status"; }
-log() { cat "$UPDATE_DIR/log"; }
+log() { cat "$WORK_DIR/log"; }
 called() { grep -c -x "$1" "$T/calls" || true; }
 line_of() { grep -n "$1" "$T/calls" | tail -1 | cut -d: -f1; }
 systemctl_calls() { sed -n 's/^systemctl //p' "$T/calls" | paste -sd'|' -; }
@@ -272,10 +307,10 @@ assert_eq "updated: request removed" no "$(exists "$UPDATE_DIR/request")"
 assert_eq "clones the running build's repository" file:///srv/o.git "$(cat "$T/repo_seen")"
 assert_eq "updated: the new binary is installed" "$NEW" "$(commit_of "$BIN")"
 assert_fail "updated: the binary is a new inode (renamed into place)" [ "$before" = "$(inode "$BIN")" ]
-assert_eq "updated: the old binary is kept" "$OLD" "$(commit_of "$UPDATE_DIR/previous/outhaul")"
+assert_eq "updated: the old binary is kept" "$OLD" "$(commit_of "$WORK_DIR/previous/outhaul")"
 assert_eq "updated: the new unit is installed, the old kept" "new unit|old unit" \
-	"$(cat "$UNIT_DIR/outhaul.service")|$(cat "$UPDATE_DIR/previous/outhaul.service")"
-assert_eq "updated: the database is kept" "old data" "$(cat "$UPDATE_DIR/previous/outhaul.db")"
+	"$(cat "$UNIT_DIR/outhaul.service")|$(cat "$WORK_DIR/previous/outhaul.service")"
+assert_eq "updated: the database is kept" "old data" "$(cat "$WORK_DIR/previous/outhaul.db")"
 assert_eq "updated: stop, reload, start" "stop outhaul|daemon-reload|start outhaul" "$(systemctl_calls)"
 assert_eq "updated: Go toolchain from go.mod" 1 "$(called 'go 1.26.4')"
 assert_eq "updated: swap offered with MemTotal and SwapTotal" 1 "$(grep -c '^swap [0-9][0-9]* [0-9][0-9]*$' "$T/calls")"
@@ -288,10 +323,12 @@ assert_eq "updated: health checked on OUTHAUL_LISTEN_ADDR's port" 1 \
 assert_contains "updated: the log names the Traefik change" "$(log)" "traefik:v1 to traefik:v2"
 assert_contains "updated: ... and its effect" "$(log)" "This update restarts Traefik: every app is unreachable for a few seconds."
 assert_eq "updated: a fresh log" 0 "$(grep -c 'the previous update' "$UPDATE_DIR/log")"
-assert_eq "updated: no updater refresh attempted when the installer has none" 0 "$(grep -c 'could not refresh' "$UPDATE_DIR/log" || true)"
+assert_eq "updated: Outhaul's log is the updater's file" "$(inode "$WORK_DIR/log")" "$(inode "$UPDATE_DIR/log")"
+assert_eq "updated: no updater refresh attempted when the installer has none" 0 "$(grep -c 'could not refresh' "$WORK_DIR/log" || true)"
 assert_eq "updated: log readable by outhaul" 644 "$(stat -c %a "$UPDATE_DIR/log")"
 assert_eq "updated: the clone is removed" no "$(exists "$T/src")"
-assert_eq "updated: only status, log and previous/ are left" "log previous status" "$(ls -A "$UPDATE_DIR" | paste -sd' ' -)"
+assert_eq "updated: only status and log in the update directory" "log status" "$(ls -A "$UPDATE_DIR" | paste -sd' ' -)"
+assert_eq "updated: the log and previous/ in the updater's directory" "log previous" "$(ls -A "$WORK_DIR" | paste -sd' ' -)"
 
 # install_updater (from a later installer) runs once the new version is healthy.
 setup
@@ -344,8 +381,8 @@ assert_ok "build failed: status format" has_status_keys "$UPDATE_DIR/status" 1
 assert_ok "build failed: binary unchanged" cmp -s "$T/bin.orig" "$BIN"
 assert_eq "build failed: Outhaul never stopped" "" "$(systemctl_calls)"
 assert_eq "build failed: request removed" no "$(exists "$UPDATE_DIR/request")"
-assert_contains "build failed: the log has the error" "$(log)" "build failed — see $UPDATE_DIR/log"
-assert_eq "build failed: ... once" 1 "$(grep -c 'build failed — see' "$UPDATE_DIR/log")"
+assert_contains "build failed: the log has the error" "$(log)" "build failed — see $WORK_DIR/log"
+assert_eq "build failed: ... once" 1 "$(grep -c 'build failed — see' "$WORK_DIR/log")"
 assert_eq "build failed: the clone is removed" no "$(exists "$T/src")"
 
 # an image pull fails: nothing has changed yet
@@ -389,8 +426,8 @@ assert_ok "failed: status format" has_status_keys "$UPDATE_DIR/status" 1
 assert_contains "failed: the message points at the log" "$(field message)" "See the log"
 assert_eq "failed: the old binary is back" "$OLD" "$(commit_of "$BIN")"
 assert_contains "failed: recovery: stop" "$(log)" "  systemctl stop outhaul"
-assert_contains "failed: recovery: the binary" "$(log)" "  cp -p $UPDATE_DIR/previous/outhaul $BIN"
-assert_contains "failed: recovery: the database" "$(log)" "  cp -p $UPDATE_DIR/previous/outhaul.db $DATA_DIR/outhaul.db"
+assert_contains "failed: recovery: the binary" "$(log)" "  cp -p $WORK_DIR/previous/outhaul $BIN"
+assert_contains "failed: recovery: the database" "$(log)" "  cp -p $WORK_DIR/previous/outhaul.db $DATA_DIR/outhaul.db"
 assert_contains "failed: recovery: the new WAL" "$(log)" "  rm -f $DATA_DIR/outhaul.db-wal"
 assert_contains "failed: recovery: start" "$(log)" "  systemctl start outhaul"
 
@@ -471,8 +508,8 @@ assert_eq "stopped once healthy: no rollback" "stop outhaul|daemon-reload|start 
 setup
 rm() {
 	case $* in
-	*/request)
-		# The call that takes the request away.
+	'-f request')
+		# The call that takes the request away, inside the update directory.
 		[ -e "$UPDATE_DIR/request" ] || { command rm "$@"; return; }
 		{
 			sed -n 's/^state=//p' "$UPDATE_DIR/status" || true
@@ -487,9 +524,65 @@ assert_eq "request removed after the status says running, and the log is fresh" 
 assert_eq "fd 3 is open for the installer's prompts" 1 "$(called 'fd 3 open')"
 assert_eq "an installer prompt takes its default" 1 "$(called 'prompt: default')"
 
+# An earlier updater left its log and rollback copies in the update
+# directory, and made no directory of its own: they are not used.
+setup
+rm -rf "$WORK_DIR"
+rm "$UPDATE_DIR/log"; echo 'the previous update' > "$UPDATE_DIR/log"
+mkdir "$UPDATE_DIR/previous"
+fake_outhaul "$UPDATE_DIR/previous/outhaul" "$OLDER" file:///srv/o.git traefik:v1
+HEALTHY=$OLD
+run_update
+assert_eq "earlier layout: rolled back" rolled_back "$(field state)"
+assert_eq "earlier layout: the updater makes its directory, root's alone" 700 "$(stat -c %a "$WORK_DIR")"
+assert_eq "earlier layout: the binary comes from this update's copy" "$OLD" "$(commit_of "$BIN")"
+assert_eq "earlier layout: the old copies are removed" no "$(exists "$UPDATE_DIR/previous")"
+assert_eq "earlier layout: a fresh log" 0 "$(grep -c 'the previous update' "$UPDATE_DIR/log")"
+assert_eq "earlier layout: Outhaul's log is the updater's file" "$(inode "$WORK_DIR/log")" "$(inode "$UPDATE_DIR/log")"
+
+# The update directory belongs to outhaul. Links planted at "status" and
+# "log" are replaced, never written through.
+setup
+echo 'not yours' > "$T/victim"
+rm "$UPDATE_DIR/status" "$UPDATE_DIR/log"
+ln -s "$T/victim" "$UPDATE_DIR/status"
+ln -s "$T/victim" "$UPDATE_DIR/log"
+run_update
+assert_eq "planted links: updated" updated "$(field state)"
+assert_eq "planted links: not written through" "not yours" "$(cat "$T/victim")"
+assert_ok "planted links: the status is a file" is_file "$UPDATE_DIR/status"
+assert_eq "planted links: the log is the updater's file" "$(inode "$WORK_DIR/log")" "$(inode "$UPDATE_DIR/log")"
+
+# A directory planted at "status": nothing is changed, and the updater ends
+# cleanly.
+setup
+rm "$UPDATE_DIR/status"; mkdir "$UPDATE_DIR/status"
+cp "$BIN" "$T/bin.orig"
+run_update
+assert_fail "status is a directory: exit non-zero" [ "$RC" = 0 ]
+assert_ok "status is a directory: binary unchanged" cmp -s "$T/bin.orig" "$BIN"
+assert_eq "status is a directory: Outhaul never stopped" "" "$(systemctl_calls)"
+assert_eq "status is a directory: nothing lands in it" "" "$(ls -A "$UPDATE_DIR/status")"
+assert_eq "status is a directory: the request is removed" no "$(exists "$UPDATE_DIR/request")"
+assert_contains "status is a directory: the log says so" "$(log)" "could not write $UPDATE_DIR/status; nothing changed"
+assert_eq "status is a directory: the clone is removed" no "$(exists "$T/src")"
+
+# A link in place of the update directory: nothing is written where it leads.
+setup
+mv "$UPDATE_DIR" "$T/update.real"
+mkdir "$T/elsewhere"; : > "$T/elsewhere/request"
+ln -s "$T/elsewhere" "$UPDATE_DIR"
+cp "$BIN" "$T/bin.orig"
+run_update
+assert_fail "update directory is a link: exit non-zero" [ "$RC" = 0 ]
+assert_eq "update directory is a link: nothing written where it leads" request "$(ls -A "$T/elsewhere")"
+assert_ok "update directory is a link: binary unchanged" cmp -s "$T/bin.orig" "$BIN"
+assert_eq "update directory is a link: Outhaul never stopped" "" "$(systemctl_calls)"
+assert_contains "update directory is a link: the log says so" "$(log)" "could not write $UPDATE_DIR/status; nothing changed"
+
 # The real paths, and the data dir from /etc/outhaul.env.
-assert_eq "default paths" "/usr/local/bin/outhaul /etc/systemd/system /var/lib/outhaul /var/lib/outhaul/update /var/cache/outhaul" \
-	"$(unset OUTHAUL_DATA_DIR; OUTHAUL_UPDATER_LIB=1 . "$here/../update.sh"; echo "$BIN $UNIT_DIR $DATA_DIR $UPDATE_DIR $CACHE_DIR")"
+assert_eq "default paths" "/usr/local/bin/outhaul /etc/systemd/system /var/lib/outhaul /var/lib/outhaul/update /var/lib/outhaul-updater /var/cache/outhaul" \
+	"$(unset OUTHAUL_DATA_DIR; OUTHAUL_UPDATER_LIB=1 . "$here/../update.sh"; echo "$BIN $UNIT_DIR $DATA_DIR $UPDATE_DIR $WORK_DIR $CACHE_DIR")"
 assert_eq "OUTHAUL_DATA_DIR moves the data and update dirs" "/srv/o /srv/o/update" \
 	"$(OUTHAUL_DATA_DIR=/srv/o OUTHAUL_UPDATER_LIB=1 . "$here/../update.sh"; echo "$DATA_DIR $UPDATE_DIR")"
 
