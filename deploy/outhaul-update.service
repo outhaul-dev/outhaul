@@ -24,5 +24,7 @@ Environment=HOME=/root
 ExecStart=/bin/sh /usr/local/lib/outhaul/update.sh
 TimeoutStartSec=30min
 # Stopping the updater after Outhaul was stopped rolls back first: leave it
-# time to start the previous version and check it.
-TimeoutStopSec=3min
+# time to stop Outhaul (up to 90 s), put the previous version back, start it
+# and check it (up to 3 minutes). 30 + 6 minutes stays under the 40 after
+# which the admin UI calls an update interrupted.
+TimeoutStopSec=6min

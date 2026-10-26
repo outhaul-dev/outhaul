@@ -100,6 +100,17 @@ assert_contains "health check: the admin port's /healthz, headers to stdout" "$(
 	"curl -sS --max-time 2 -D - -o /dev/null http://127.0.0.1:9090/healthz"
 unset -f curl
 
+# Stopping the updater once Outhaul is stopped rolls back, so systemd's stop
+# timeout must cover outhaul's own stop (systemd's default, 90 s), the 60
+# health checks above (each up to 2 s and a 1 s pause), and a minute for the
+# rest. The whole run stays under the 40 minutes after which the admin UI
+# calls an update interrupted.
+unit_minutes() { sed -n "s/^$1=\([0-9][0-9]*\)min$/\1/p" "$here/../outhaul-update.service"; }
+stop_min=$(unit_minutes TimeoutStopSec)
+start_min=$(unit_minutes TimeoutStartSec)
+assert_ok "the stop timeout leaves a rollback time to finish" [ $(( ${stop_min:-0} * 60 )) -ge $(( 90 + 60 * (2 + 1) + 60 )) ]
+assert_ok "start and stop timeouts stay under 40 minutes" [ $(( ${start_min:-99} + ${stop_min:-99} )) -lt 40 ]
+
 # ---------------------------------------------------- cached_go_toolchain --
 
 CACHE_DIR=$ROOT/cache
