@@ -19,6 +19,7 @@
 set -eu
 
 INSTALLER=${INSTALLER:-$(dirname "$0")/bootstrap.sh}
+# shellcheck disable=SC1090 # the installer is found at run time, next to this script
 OUTHAUL_INSTALLER_LIB=1 . "$INSTALLER"
 
 # Paths (tests point them at a temp tree after sourcing this file).
@@ -242,7 +243,7 @@ recovery_help() {
 # Logs the outcome, in the log and the journal, and writes the final status.
 # Not being able to write it does not change the outcome.
 finish() { # state message
-	STAGE=done
+	STAGE='done'
 	printf '%s\n' "$2"
 	to_journal "$1: $2"
 	if ! write_status "$1" "$FROM" "$TO" "$2"; then
@@ -332,7 +333,7 @@ update_main() {
 	trap 'exit 143' TERM
 	if ! write_status running "$FROM" '' updating; then
 		# Outhaul would not know an update is running: start none.
-		STAGE=done
+		STAGE='done'
 		in_update_dir rm -f request 2>/dev/null || true
 		printf 'could not write %s/status; nothing changed\n' "$UPDATE_DIR"
 		to_journal "could not write $UPDATE_DIR/status; nothing changed"
