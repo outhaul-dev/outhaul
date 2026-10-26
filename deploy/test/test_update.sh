@@ -467,7 +467,9 @@ assert_contains "failed: ... and the result" "$(journal_lines)" \
 assert_eq "failed: the old binary is back" "$OLD" "$(commit_of "$BIN")"
 assert_contains "failed: recovery: stop" "$(log)" "  systemctl stop outhaul"
 assert_contains "failed: recovery: the binary" "$(log)" "  cp -p $WORK_DIR/previous/outhaul $BIN"
-assert_contains "failed: recovery: the database" "$(log)" "  cp -p $WORK_DIR/previous/outhaul.db $DATA_DIR/outhaul.db"
+assert_contains "failed: recovery: the database, copied in the updater's directory and renamed into place" "$(log)" \
+	"  cp -p $WORK_DIR/previous/outhaul.db $WORK_DIR/.restore && mv -fT $WORK_DIR/.restore $DATA_DIR/outhaul.db"
+assert_eq "failed: recovery: nothing is copied into the data dir" 0 "$(grep -c "^  cp -p [^ ]* $DATA_DIR/" "$WORK_DIR/log" || true)"
 assert_contains "failed: recovery: the new WAL" "$(log)" "  rm -f $DATA_DIR/outhaul.db-wal"
 assert_contains "failed: recovery: start" "$(log)" "  systemctl start outhaul"
 

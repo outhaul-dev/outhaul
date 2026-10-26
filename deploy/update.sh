@@ -227,7 +227,8 @@ recovery_help() {
 		fi
 		for _f in outhaul.db outhaul.db-wal outhaul.db-shm; do
 			if [ -f "$_p/$_f" ]; then
-				printf '  cp -p %s %s\n' "$_p/$_f" "$DATA_DIR/$_f"
+				# As restore_snapshot does it: copied here, renamed into the data dir.
+				printf '  cp -p %s %s && mv -fT %s %s\n' "$_p/$_f" "$WORK_DIR/.restore" "$WORK_DIR/.restore" "$DATA_DIR/$_f"
 			elif [ "$_f" != outhaul.db ]; then
 				printf '  rm -f %s\n' "$DATA_DIR/$_f"
 			fi

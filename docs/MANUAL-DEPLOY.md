@@ -267,8 +267,8 @@ install -m 0755 deploy/update.sh /usr/local/lib/outhaul/update.sh
 install -m 0644 deploy/bootstrap.sh /usr/local/lib/outhaul/bootstrap.sh
 install -m 0644 deploy/outhaul-update.path deploy/outhaul-update.service /etc/systemd/system/
 install -d -m 0710 -g outhaul /var/lib/outhaul-updater
-install -d -m 0700 -o outhaul -g outhaul /var/lib/outhaul/update
-echo 1 > /var/lib/outhaul/update/updater
+# The update directory is in Outhaul's data dir: make it as the outhaul user.
+runuser -u outhaul -- sh -c 'mkdir -p -m 0700 /var/lib/outhaul/update && echo 1 > /var/lib/outhaul/update/updater'
 systemctl daemon-reload
 systemctl enable --now outhaul-update.path
 ```
