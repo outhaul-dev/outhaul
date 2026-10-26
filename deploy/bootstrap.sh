@@ -647,9 +647,11 @@ install_updater() { # src_dir
 	install_atomic "$1/deploy/bootstrap.sh" "$_lib/bootstrap.sh" 0644 || return 1
 	install_atomic "$1/deploy/outhaul-update.path" "$_units/outhaul-update.path" 0644 || return 1
 	install_atomic "$1/deploy/outhaul-update.service" "$_units/outhaul-update.service" 0644 || return 1
-	# The updater's own: its rollback copy, temp files and log.
+	# The updater's own: its rollback copy, temp files and log. Outhaul may
+	# open the log in it, not list or change it.
 	mkdir -p "$_work" || return 1
-	chmod 0700 "$_work" || return 1
+	chgrp outhaul "$_work" || return 1
+	chmod 0710 "$_work" || return 1
 	# The update directory is in outhaul's data dir: only a directory, not a
 	# symlink, is set up there.
 	if [ -L "$_upd" ] || { [ -e "$_upd" ] && [ ! -d "$_upd" ]; }; then

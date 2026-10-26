@@ -122,7 +122,7 @@ func newUpdatesEnv(t *testing.T, b update.Build, installed bool) *updatesEnv {
 	}
 	gh := newFakeCompare(t)
 	e.srv.SetBuild(b)
-	e.srv.SetUpdates(update.NewDir(dir, time.Now),
+	e.srv.SetUpdates(update.NewDir(dir, filepath.Join(dir, "log"), time.Now),
 		update.NewChecker(b, &update.Comparer{APIBase: gh.URL}, time.Now))
 	return &updatesEnv{testEnv: e, dir: dir, gh: gh}
 }

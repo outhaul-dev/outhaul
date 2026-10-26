@@ -5,12 +5,14 @@
 # keep a copy of what ran, swap, start, check that the new commit answers,
 # and roll back when it does not. It asks no questions.
 #
-# The update directory is shared with Outhaul, which reads "status" and
-# "log" as user outhaul. The request carries nothing and is never read. It
-# belongs to outhaul, so the updater keeps its own files in WORK_DIR, a
-# root-owned directory: the rollback copy, temp files and the log. In the
-# update directory it only renames the status in, links the log in and
-# removes the request, by names inside the directory itself (in_update_dir).
+# The update directory is shared with Outhaul, which reads "status" there as
+# user outhaul. The request carries nothing and is never read. It belongs to
+# outhaul, so the updater keeps its own files in WORK_DIR, a root-owned
+# directory: the rollback copy, temp files and the log. Outhaul may open the
+# log there (group outhaul: the directory 0710, the log 0640) but not list or
+# change anything. In the update directory the updater only renames the
+# status in and removes names, by names inside the directory itself
+# (in_update_dir).
 #
 # Runs under Debian's dash: keep it POSIX. It reuses the installer's
 # functions; bootstrap.sh is installed next to this script.
@@ -302,20 +304,18 @@ update_main() {
 	exec 4>&2
 	# An updater installed by an earlier installer has no directory of its own.
 	mkdir -p "$WORK_DIR"
-	chmod 0700 "$WORK_DIR"
-	# A fresh log: a new file, renamed into place.
+	chgrp outhaul "$WORK_DIR"
+	chmod 0710 "$WORK_DIR"
+	# A fresh log: a new file, renamed into place, that Outhaul reads.
 	_log=$(mktemp "$WORK_DIR/.log.XXXXXX")
-	chmod 0644 "$_log"
+	chgrp outhaul "$_log"
+	chmod 0640 "$_log"
 	mv -fT "$_log" "$WORK_DIR/log"
 	exec >>"$WORK_DIR/log" 2>&1
 	LOGFILE=$WORK_DIR/log
 	to_journal "the log of this update: $LOGFILE"
-	# Outhaul reads it as the update directory's "log": a second name (a hard
-	# link) for the same file, so the updater never opens it by that name.
-	if ! in_update_dir ln -fT "$LOGFILE" log; then
-		in_update_dir rm -f log 2>/dev/null || true
-		note "could not show the log in $UPDATE_DIR"
-	fi
+	# An earlier updater kept its log in the update directory.
+	in_update_dir rm -f log 2>/dev/null || true
 
 	STARTED=$(date +%s)
 	FROM=$(build_field commit)

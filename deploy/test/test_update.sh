@@ -216,13 +216,12 @@ setup() {
 	BIN=$T/bin/outhaul UNIT_DIR=$T/units DATA_DIR=$T/data UPDATE_DIR=$T/data/update CACHE_DIR=$T/cache
 	WORK_DIR=$T/work
 	mkdir -p "$T/bin" "$UNIT_DIR" "$UPDATE_DIR" "$WORK_DIR/previous"
-	chmod 0700 "$WORK_DIR"
+	chmod 0710 "$WORK_DIR"
 	fake_outhaul "$BIN" "$OLD" file:///srv/o.git traefik:v1
 	echo 'old unit' > "$UNIT_DIR/outhaul.service"
 	echo 'old data' > "$DATA_DIR/outhaul.db"
 	# The last update's log and rollback copy, as this updater leaves them.
 	echo 'the previous update' > "$WORK_DIR/log"
-	ln "$WORK_DIR/log" "$UPDATE_DIR/log"
 	fake_outhaul "$WORK_DIR/previous/outhaul" "$OLDER" file:///srv/o.git traefik:v1
 	printf 'state=up_to_date\nfrom=%s\nto=%s\nmessage=\nstarted=1\nfinished=2\n' "$OLD" "$OLD" > "$UPDATE_DIR/status"
 	: > "$UPDATE_DIR/request"
@@ -312,6 +311,8 @@ docker() {
 	esac
 }
 journalctl() { echo "journalctl $*" >> "$T/calls"; echo 'outhaul: fatal: rollback test'; }
+# The tests cannot give files to the outhaul group: chgrp only records.
+chgrp() { echo "chgrp $*" >> "$T/calls"; }
 
 # updated
 setup
@@ -346,14 +347,17 @@ assert_eq "updated: health checked on OUTHAUL_LISTEN_ADDR's port" 1 \
 	"$(grep -c 'http://127.0.0.1:9090/healthz$' "$T/calls")"
 assert_contains "updated: the log names the Traefik change" "$(log)" "traefik:v1 to traefik:v2"
 assert_contains "updated: ... and its effect" "$(log)" "This update restarts Traefik: every app is unreachable for a few seconds."
-assert_eq "updated: a fresh log" 0 "$(grep -c 'the previous update' "$UPDATE_DIR/log")"
-assert_eq "updated: Outhaul's log is the updater's file" "$(inode "$WORK_DIR/log")" "$(inode "$UPDATE_DIR/log")"
+assert_eq "updated: a fresh log" 0 "$(grep -c 'the previous update' "$WORK_DIR/log")"
 assert_eq "updated: no updater refresh attempted when the installer has none" 0 "$(grep -c 'could not refresh' "$WORK_DIR/log" || true)"
-assert_eq "updated: log readable by outhaul" 644 "$(stat -c %a "$UPDATE_DIR/log")"
+assert_eq "updated: the log: readable by its group, outhaul" "640 1" \
+	"$(stat -c %a "$WORK_DIR/log") $(grep -c "^chgrp outhaul $WORK_DIR/\.log\.[^/]*$" "$T/calls")"
+assert_eq "updated: the updater's directory: outhaul may open the log in it, not list or change it" "710 1" \
+	"$(stat -c %a "$WORK_DIR") $(called "chgrp outhaul $WORK_DIR")"
+assert_eq "updated: previous/ is root's alone" 700 "$(stat -c %a "$WORK_DIR/previous")"
 assert_eq "updated: the clone is removed" no "$(exists "$T/src")"
 assert_eq "updated: the journal names the log, then the result" \
 	"the log of this update: $WORK_DIR/log|updated: updated from aaaaaaa to bbbbbbb" "$(journal_lines)"
-assert_eq "updated: only status and log in the update directory" "log status" "$(ls -A "$UPDATE_DIR" | paste -sd' ' -)"
+assert_eq "updated: only the status in the update directory" "status" "$(ls -A "$UPDATE_DIR" | paste -sd' ' -)"
 assert_eq "updated: the log and previous/ in the updater's directory" "log previous" "$(ls -A "$WORK_DIR" | paste -sd' ' -)"
 
 # install_updater (from a later installer) runs once the new version is healthy.
@@ -549,7 +553,7 @@ rm() {
 		[ -e "$UPDATE_DIR/request" ] || { command rm "$@"; return; }
 		{
 			sed -n 's/^state=//p' "$UPDATE_DIR/status" || true
-			grep -c 'the previous update' "$UPDATE_DIR/log" || true
+			grep -c 'the previous update' "$WORK_DIR/log" || true
 		} > "$T/at_rm" 2>&1 ;;
 	esac
 	command rm "$@"
@@ -564,30 +568,31 @@ assert_eq "an installer prompt takes its default" 1 "$(called 'prompt: default')
 # directory, and made no directory of its own: they are not used.
 setup
 rm -rf "$WORK_DIR"
-rm "$UPDATE_DIR/log"; echo 'the previous update' > "$UPDATE_DIR/log"
+echo 'the previous update' > "$UPDATE_DIR/log"
 mkdir "$UPDATE_DIR/previous"
 fake_outhaul "$UPDATE_DIR/previous/outhaul" "$OLDER" file:///srv/o.git traefik:v1
 HEALTHY=$OLD
 run_update
 assert_eq "earlier layout: rolled back" rolled_back "$(field state)"
-assert_eq "earlier layout: the updater makes its directory, root's alone" 700 "$(stat -c %a "$WORK_DIR")"
+assert_eq "earlier layout: the updater makes its directory" "710 1" \
+	"$(stat -c %a "$WORK_DIR") $(called "chgrp outhaul $WORK_DIR")"
 assert_eq "earlier layout: the binary comes from this update's copy" "$OLD" "$(commit_of "$BIN")"
 assert_eq "earlier layout: the old copies are removed" no "$(exists "$UPDATE_DIR/previous")"
-assert_eq "earlier layout: a fresh log" 0 "$(grep -c 'the previous update' "$UPDATE_DIR/log")"
-assert_eq "earlier layout: Outhaul's log is the updater's file" "$(inode "$WORK_DIR/log")" "$(inode "$UPDATE_DIR/log")"
+assert_eq "earlier layout: the old log is removed" no "$(exists "$UPDATE_DIR/log")"
+assert_eq "earlier layout: a fresh log" 0 "$(grep -c 'the previous update' "$WORK_DIR/log")"
 
 # The update directory belongs to outhaul. Links planted at "status" and
 # "log" are replaced, never written through.
 setup
 echo 'not yours' > "$T/victim"
-rm "$UPDATE_DIR/status" "$UPDATE_DIR/log"
+rm "$UPDATE_DIR/status"
 ln -s "$T/victim" "$UPDATE_DIR/status"
 ln -s "$T/victim" "$UPDATE_DIR/log"
 run_update
 assert_eq "planted links: updated" updated "$(field state)"
 assert_eq "planted links: not written through" "not yours" "$(cat "$T/victim")"
 assert_ok "planted links: the status is a file" is_file "$UPDATE_DIR/status"
-assert_eq "planted links: the log is the updater's file" "$(inode "$WORK_DIR/log")" "$(inode "$UPDATE_DIR/log")"
+assert_eq "planted links: the link at log is removed" no "$(exists "$UPDATE_DIR/log")"
 
 # A directory planted at "status": nothing is changed, and the updater ends
 # cleanly.

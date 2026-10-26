@@ -15,7 +15,7 @@ var t0 = time.Now().Truncate(time.Second)
 func newTestDir(t *testing.T) (*Dir, string) {
 	t.Helper()
 	p := t.TempDir()
-	return NewDir(p, func() time.Time { return t0 }), p
+	return NewDir(p, filepath.Join(p, "log"), func() time.Time { return t0 }), p
 }
 
 func write(t *testing.T, p, name, body string) {
@@ -200,5 +200,23 @@ func TestLogTail(t *testing.T) {
 	}
 	if start := len(whole) - len(c); whole[start-1] != '\n' {
 		t.Fatalf("tail starts mid-line: %q", c[:20])
+	}
+}
+
+// The updater keeps its log in its own directory, not the update directory:
+// both readers use the log path the Dir was given.
+func TestTheLogIsReadFromItsOwnPath(t *testing.T) {
+	p := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "log")
+	d := NewDir(p, logPath, func() time.Time { return t0 })
+	write(t, p, "log", "not this one\n")
+	if err := os.WriteFile(logPath, []byte("the updater's log\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if c, _, err := d.ReadLog(0); err != nil || string(c) != "the updater's log\n" {
+		t.Errorf("ReadLog = %q, %v", c, err)
+	}
+	if c, err := d.LogTail(); err != nil || string(c) != "the updater's log\n" {
+		t.Errorf("LogTail = %q, %v", c, err)
 	}
 }

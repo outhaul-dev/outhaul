@@ -15,6 +15,8 @@ CALLS=$ROOT/calls
 # chown records the directory it ran in: install_updater chowns ".".
 chown() { echo "chown $* in $(pwd -P)" >> "$CALLS"; }
 systemctl() { echo "systemctl $*" >> "$CALLS"; }
+# The tests cannot give files to the outhaul group: chgrp only records.
+chgrp() { echo "chgrp $*" >> "$ROOT/chgrp_calls"; }
 inode() { ls -i "$1" | awk '{ print $1 }'; }
 differs() { if [ "$1" != "$2" ]; then echo yes; else echo no; fi; }
 is_file() { [ -f "$1" ] && [ ! -L "$1" ]; }
@@ -51,7 +53,7 @@ assert_eq "update.sh content" "v1 update.sh" "$(cat "$LIB_DIR/update.sh")"
 assert_eq "bootstrap.sh content" "v1 bootstrap.sh" "$(cat "$LIB_DIR/bootstrap.sh")"
 assert_eq "service unit content" "v1 outhaul-update.service" "$(cat "$UNIT_DIR/outhaul-update.service")"
 assert_eq "update dir mode" 700 "$(stat -c %a "$UPDATE_DIR")"
-assert_eq "the updater's own directory, root's alone" 700 "$(stat -c %a "$WORK_DIR")"
+assert_eq "the updater's own directory: root's, outhaul may only open the log" "710 chgrp outhaul $WORK_DIR" "$(stat -c %a "$WORK_DIR") $(head -1 "$ROOT/chgrp_calls")"
 assert_eq "marker" 1 "$(cat "$UPDATE_DIR/updater")"
 assert_eq "marker readable by outhaul" 644 "$(stat -c %a "$UPDATE_DIR/updater")"
 assert_eq "no temp files left" "updater|" "$(ls -A "$UPDATE_DIR")|$(ls -A "$WORK_DIR")"

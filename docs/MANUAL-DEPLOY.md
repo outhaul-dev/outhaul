@@ -25,7 +25,7 @@ Target: a fresh **Debian** or **Ubuntu** server (x86_64 or arm64) with
 | `/etc/outhaul.env` | `OUTHAUL_*` configuration overrides |
 | `/var/lib/outhaul` | Data dir: SQLite DB, build work dirs (owned by the `outhaul` user) |
 | `/usr/local/lib/outhaul`, `/var/lib/outhaul/update` | The updater (optional), and the directory it shares with Outhaul: see "Updating from the UI" |
-| `/var/lib/outhaul-updater` | The updater's own directory (root's, mode 0700): the copy of the running version it rolls back to, and its log |
+| `/var/lib/outhaul-updater` | The updater's own directory (root's, group `outhaul`, mode 0710): the copy of the running version it rolls back to, and its log |
 | `/var/cache/outhaul` | The Go toolchain the updater keeps between updates (root's) |
 
 ## 1. Install the runtime dependencies
@@ -266,7 +266,7 @@ mkdir -p /usr/local/lib/outhaul
 install -m 0755 deploy/update.sh /usr/local/lib/outhaul/update.sh
 install -m 0644 deploy/bootstrap.sh /usr/local/lib/outhaul/bootstrap.sh
 install -m 0644 deploy/outhaul-update.path deploy/outhaul-update.service /etc/systemd/system/
-install -d -m 0700 /var/lib/outhaul-updater
+install -d -m 0710 -g outhaul /var/lib/outhaul-updater
 install -d -m 0700 -o outhaul -g outhaul /var/lib/outhaul/update
 echo 1 > /var/lib/outhaul/update/updater
 systemctl daemon-reload
@@ -274,12 +274,12 @@ systemctl enable --now outhaul-update.path
 ```
 
 The file `updater` tells Outhaul the updater is there. The updater keeps its
-own files in `/var/lib/outhaul-updater`, which only root can read: the copy
-of the running version it rolls back to, and its log,
-`/var/lib/outhaul-updater/log`. Outhaul's `/var/lib/outhaul/update` gets the
-status and a second name for the log, so the admin UI can show them. If an
-update leaves Outhaul down, `sudo cat /var/lib/outhaul-updater/log` says how
-to put the previous version back. Build the binary with
+own files in `/var/lib/outhaul-updater`, which only root can change: the
+copy of the running version it rolls back to, and its log,
+`/var/lib/outhaul-updater/log`, which Outhaul reads to show it in the admin
+UI. Outhaul's `/var/lib/outhaul/update` gets the status. If an update leaves
+Outhaul down, `sudo cat /var/lib/outhaul-updater/log` says how to put the
+previous version back. Build the binary with
 the version stamp too, or the panel cannot tell which commit is running. The
 installer's `build_ldflags` prints the flags:
 

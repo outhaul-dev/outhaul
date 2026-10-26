@@ -214,7 +214,7 @@ func serve() error {
 
 	// An update stops Outhaul, so while one is requested or running the worker
 	// and the backup scheduler start nothing new.
-	updates := update.NewDir(cfg.UpdateDir(), time.Now)
+	updates := update.NewDir(cfg.UpdateDir(), update.LogPath, time.Now)
 	worker.SetHold(updates.InProgress)
 	checker := update.NewChecker(update.Current(),
 		&update.Comparer{Client: &http.Client{Timeout: 15 * time.Second}}, time.Now)

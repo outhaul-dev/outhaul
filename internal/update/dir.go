@@ -15,7 +15,8 @@ import (
 
 // The update directory is the only channel between Outhaul and the root
 // updater: "updater" (marker, written by the installer), "request" (created by
-// Outhaul, contents never read), "status" and "log" (written by the updater).
+// Outhaul, contents never read) and "status" (written by the updater). The
+// updater's log stays in its own directory, where Outhaul only reads it.
 
 // Updater states, as written to the status file.
 const (
@@ -30,8 +31,7 @@ const (
 
 // LogPath is the updater's log on the server: root's own file, in the
 // updater's directory (WORK_DIR in deploy/update.sh), which is still there
-// when an update leaves Outhaul down. The update directory's "log" is a
-// second name for it.
+// when an update leaves Outhaul down. Outhaul can read it, not change it.
 const LogPath = "/var/lib/outhaul-updater/log"
 
 const (
@@ -56,15 +56,19 @@ func (s Status) Interrupted(now time.Time) bool {
 	return s.State == StateRunning && now.Sub(s.Started) > runningTTL
 }
 
-// Dir is the update directory. It is safe for concurrent use.
+// Dir is the update directory, and the updater's log. It is safe for
+// concurrent use.
 type Dir struct {
 	path string
+	log  string
 	now  func() time.Time
 	mu   sync.Mutex
 }
 
-func NewDir(path string, now func() time.Time) *Dir {
-	return &Dir{path: path, now: now}
+// NewDir reads and writes the update directory at path, and reads the
+// updater's log at logPath (LogPath on a server).
+func NewDir(path, logPath string, now func() time.Time) *Dir {
+	return &Dir{path: path, log: logPath, now: now}
 }
 
 func (d *Dir) file(name string) string { return filepath.Join(d.path, name) }
@@ -185,7 +189,7 @@ func (d *Dir) writeStatus(s Status) error {
 // offset to continue from. A missing log is empty; an offset past the end (a
 // new, shorter log) restarts from 0.
 func (d *Dir) ReadLog(offset int64) ([]byte, int64, error) {
-	f, err := os.Open(d.file("log"))
+	f, err := os.Open(d.log)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, 0, nil
 	}
@@ -211,7 +215,7 @@ func (d *Dir) ReadLog(offset int64) ([]byte, int64, error) {
 // LogTail returns the end of the updater's log: all of it up to 64 KiB, or
 // else the whole lines of its last 64 KiB. A missing log is empty.
 func (d *Dir) LogTail() ([]byte, error) {
-	f, err := os.Open(d.file("log"))
+	f, err := os.Open(d.log)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
