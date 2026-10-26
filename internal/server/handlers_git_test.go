@@ -647,7 +647,12 @@ func TestTagModePushHintFollowsPattern(t *testing.T) {
 	if strings.Contains(page, "git tag v1.0.0") {
 		t.Error("push hint hard-codes v1.0.0")
 	}
-	if !strings.Contains(page, "git tag <tag> && git push outhaul <tag>") || !strings.Contains(page, "a tag matching rel-*") {
+	// The placeholder must reach the page escaped: a raw <tag> is parsed as an
+	// HTML element, so the hint (and what the copy button copies) loses it.
+	if strings.Contains(page, "<tag>") {
+		t.Error("push hint writes a raw <tag> element; the placeholder renders blank")
+	}
+	if !strings.Contains(page, "git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;") || !strings.Contains(page, "a tag matching rel-*") {
 		t.Errorf("push hint lacks the pattern-tied placeholder:\n%s", page[strings.Index(page, "git remote add"):][:300])
 	}
 }
