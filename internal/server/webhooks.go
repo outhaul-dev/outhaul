@@ -6,8 +6,10 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/tagdeploy"
 	"github.com/outhaul-dev/outhaul/internal/webhook"
 )
 
@@ -71,10 +73,11 @@ func (s *Server) handleGithubWebhook(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
+		var outcomes []string
 		for _, app := range apps {
-			s.maybeDeploy(r.Context(), app, ev)
+			outcomes = append(outcomes, s.maybeDeploy(r.Context(), app, ev))
 		}
-		w.WriteHeader(http.StatusOK)
+		writeOutcomes(w, outcomes)
 		return
 	case "pull_request":
 		if s.previews == nil {
@@ -128,29 +131,83 @@ func (s *Server) handleAppWebhook(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad payload", http.StatusBadRequest)
 		return
 	}
-	s.maybeDeploy(r.Context(), app, ev)
+	writeOutcomes(w, []string{s.maybeDeploy(r.Context(), app, ev)})
+}
+
+// writeOutcomes answers a push delivery with 200 and, when any app had
+// something to say, one line per app. A skipped tag is never an error status:
+// senders would only retry it.
+func writeOutcomes(w http.ResponseWriter, outcomes []string) {
+	var lines []string
+	for _, o := range outcomes {
+		if o != "" {
+			lines = append(lines, o)
+		}
+	}
+	if len(lines) == 0 {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, strings.Join(lines, "\n")+"\n")
 }
 
 // maybeDeploy enqueues a deployment when every auto-deploy gate passes, in
-// order: the app's toggle, an exact branch match, and — when watch paths are
-// configured — a changed file matching one of them. A payload carrying no
+// order: the app's toggle, then the app's trigger.
+//
+// A branch-mode app needs an exact branch match and, when watch paths are
+// configured, a changed file matching one of them. A payload carrying no
 // file info at all (branch creation, thin webhook) fails open and deploys,
 // since "we don't know what changed" must never silently drop a release.
+//
+// A tag-mode app ignores branch pushes and deleted tags, and lets the tag
+// policy decide whether the pushed tag is newer than what is live or on its
+// way; watch paths do not apply. The returned line says what happened for a
+// tag push, for the response body; it is "" when there is nothing to say.
 // Errors are logged, not surfaced (webhook senders retry noisily).
-func (s *Server) maybeDeploy(ctx context.Context, app core.App, ev webhook.PushEvent) {
-	if !app.AutoDeploy || ev.Branch == "" || ev.Branch != app.Branch {
-		return
+func (s *Server) maybeDeploy(ctx context.Context, app core.App, ev webhook.PushEvent) string {
+	if !app.AutoDeploy {
+		return ""
+	}
+	if app.DeployTrigger == core.TriggerTag {
+		return s.maybeDeployTag(ctx, app, ev)
+	}
+	if ev.Branch == "" || ev.Branch != app.Branch {
+		return ""
 	}
 	if len(app.WatchPaths) > 0 && len(ev.Changed) > 0 && !webhook.MatchAny(app.WatchPaths, ev.Changed) {
 		log.Printf("webhook: app %d push to %s skipped: no changed file matches its watch paths", app.ID, ev.Branch)
-		return
+		return ""
 	}
 	if _, err := s.store.CreateDeployment(ctx, app.ID); err != nil {
 		log.Printf("webhook: could not enqueue deploy for app %d: %v", app.ID, err)
-		return
+		return ""
 	}
 	s.deployer.Notify()
+	return ""
+}
+
+func (s *Server) maybeDeployTag(ctx context.Context, app core.App, ev webhook.PushEvent) string {
+	if ev.Tag == "" || ev.Deleted {
+		return ""
+	}
+	var decision tagdeploy.Decision
+	_, ok, err := s.store.EnqueueTagDeployment(ctx, app.ID, func(inPlay []string) (string, bool) {
+		decision = tagdeploy.PolicyFor(app).Decide([]string{ev.Tag}, inPlay)
+		return decision.Tag, decision.Tag != ""
+	})
+	if err != nil {
+		log.Printf("webhook: could not enqueue deploy for app %d: %v", app.ID, err)
+		return ""
+	}
+	if !ok {
+		log.Printf("webhook: app %d tag %s not deployed: %s", app.ID, ev.Tag, decision.Reason)
+		return app.Name + ": not deployed: " + decision.Reason
+	}
+	s.deployer.Notify()
+	log.Printf("webhook: app %d deploying tag %s", app.ID, decision.Tag)
+	return app.Name + ": deploying " + decision.Tag
 }
 
 func readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
