@@ -8,7 +8,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
-const deploymentCols = `id, app_id, status, reason, image, rollback_of, image_pruned, created_at, started_at, finished_at`
+const deploymentCols = `id, app_id, status, reason, image, rollback_of, image_pruned, created_at, started_at, finished_at, tag, from_tag_event`
 
 // CreateDeployment inserts a new attempt in the queued state.
 func (s *Store) CreateDeployment(ctx context.Context, appID int64) (core.Deployment, error) {
@@ -32,8 +32,9 @@ func (s *Store) CreateDeployment(ctx context.Context, appID int64) (core.Deploym
 func (s *Store) CreateRollback(ctx context.Context, appID int64, image string, rollbackOf int64) (core.Deployment, error) {
 	now := time.Now().UTC()
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO deployments (app_id, status, image, rollback_of, created_at) VALUES (?, ?, ?, ?, ?)`,
-		appID, core.StatusQueued, image, rollbackOf, fmtTime(now))
+		`INSERT INTO deployments (app_id, status, image, rollback_of, created_at, tag)
+		 VALUES (?, ?, ?, ?, ?, COALESCE((SELECT tag FROM deployments WHERE id = ?), ''))`,
+		appID, core.StatusQueued, image, rollbackOf, fmtTime(now), rollbackOf)
 	if err != nil {
 		return core.Deployment{}, err
 	}
@@ -41,8 +42,97 @@ func (s *Store) CreateRollback(ctx context.Context, appID int64, image string, r
 	if err != nil {
 		return core.Deployment{}, err
 	}
+	var tag string
+	if err := s.db.QueryRowContext(ctx, `SELECT tag FROM deployments WHERE id = ?`, id).Scan(&tag); err != nil {
+		return core.Deployment{}, err
+	}
 	return core.Deployment{ID: id, AppID: appID, Status: core.StatusQueued,
-		Image: image, RollbackOf: rollbackOf, CreatedAt: now}, nil
+		Image: image, RollbackOf: rollbackOf, CreatedAt: now, Tag: tag}, nil
+}
+
+// EnqueueTagDeployment reads the app's in-play tags, asks choose whether and
+// which tag to deploy, and inserts a queued tag deployment, all in one
+// transaction. In play means the non-empty tags of the newest running row plus
+// every queued, building or deploying row.
+//
+// The store has a single connection, so the transaction serializes concurrent
+// callers, and choose must not call the store: it would deadlock. It returns
+// (dep, true, nil) when it inserts and (core.Deployment{}, false, nil) when
+// choose declines.
+func (s *Store) EnqueueTagDeployment(ctx context.Context, appID int64, choose func(inPlay []string) (tag string, ok bool)) (core.Deployment, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return core.Deployment{}, false, err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.QueryContext(ctx,
+		`SELECT tag FROM deployments
+		  WHERE app_id = ? AND tag != '' AND (
+		        status IN (?, ?, ?)
+		     OR id = (SELECT id FROM deployments WHERE app_id = ? AND status = ?
+		              ORDER BY created_at DESC, id DESC LIMIT 1))`,
+		appID, core.StatusQueued, core.StatusBuilding, core.StatusDeploying,
+		appID, core.StatusRunning)
+	if err != nil {
+		return core.Deployment{}, false, err
+	}
+	var inPlay []string
+	for rows.Next() {
+		var tag string
+		if err := rows.Scan(&tag); err != nil {
+			rows.Close()
+			return core.Deployment{}, false, err
+		}
+		inPlay = append(inPlay, tag)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return core.Deployment{}, false, err
+	}
+	rows.Close()
+
+	tag, ok := choose(inPlay)
+	if !ok {
+		return core.Deployment{}, false, nil
+	}
+	now := time.Now().UTC()
+	res, err := tx.ExecContext(ctx,
+		`INSERT INTO deployments (app_id, status, created_at, tag, from_tag_event) VALUES (?, ?, ?, ?, ?)`,
+		appID, core.StatusQueued, fmtTime(now), tag, boolToInt(true))
+	if err != nil {
+		return core.Deployment{}, false, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return core.Deployment{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return core.Deployment{}, false, err
+	}
+	return core.Deployment{ID: id, AppID: appID, Status: core.StatusQueued,
+		CreatedAt: now, Tag: tag, FromTagEvent: true}, true, nil
+}
+
+// LiveDeployment returns the app's newest running deployment, or nil.
+func (s *Store) LiveDeployment(ctx context.Context, appID int64) (*core.Deployment, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT `+deploymentCols+` FROM deployments WHERE app_id = ? AND status = ?
+		 ORDER BY created_at DESC, id DESC LIMIT 1`, appID, core.StatusRunning)
+	d, err := scanDeployment(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
+// SetDeploymentTag records the tag a deployment is building.
+func (s *Store) SetDeploymentTag(ctx context.Context, id int64, tag string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE deployments SET tag = ? WHERE id = ?`, tag, id)
+	return err
 }
 
 func (s *Store) GetDeployment(ctx context.Context, id int64) (core.Deployment, error) {
@@ -283,9 +373,11 @@ func scanDeployment(row scanner) (core.Deployment, error) {
 		createdAt  string
 		startedAt  sql.NullString
 		finishedAt sql.NullString
+		fromTag    int
 	)
 	if err := row.Scan(&d.ID, &d.AppID, &d.Status, &d.Reason, &d.Image,
-		&d.RollbackOf, &d.ImagePruned, &createdAt, &startedAt, &finishedAt); err != nil {
+		&d.RollbackOf, &d.ImagePruned, &createdAt, &startedAt, &finishedAt,
+		&d.Tag, &fromTag); err != nil {
 		return core.Deployment{}, err
 	}
 	t, err := parseTime(createdAt)
@@ -293,6 +385,7 @@ func scanDeployment(row scanner) (core.Deployment, error) {
 		return core.Deployment{}, err
 	}
 	d.CreatedAt = t
+	d.FromTagEvent = fromTag != 0
 	if d.StartedAt, err = scanTime(startedAt); err != nil {
 		return core.Deployment{}, err
 	}
