@@ -1,0 +1,16 @@
+# Outhaul's update trigger. Installed by deploy/bootstrap.sh to
+# /etc/systemd/system/outhaul-update.path.
+#
+# Outhaul (user outhaul) asks for an update by creating the request file in
+# its data dir; this starts the root updater. The request carries nothing:
+# the only thing Outhaul can ask for is "update to the newest main".
+
+[Unit]
+Description=Outhaul updater trigger
+
+[Path]
+PathExists=/var/lib/outhaul/update/request
+Unit=outhaul-update.service
+
+[Install]
+WantedBy=multi-user.target

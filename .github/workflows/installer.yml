@@ -12,6 +12,6 @@ jobs:
         with:
           persist-credentials: false
       - name: shellcheck
-        run: shellcheck -s sh --severity=warning deploy/bootstrap.sh deploy/test/*.sh
+        run: shellcheck -s sh --severity=warning deploy/bootstrap.sh deploy/update.sh deploy/test/*.sh
       - name: unit tests
         run: sh deploy/test/run.sh

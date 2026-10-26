@@ -1,0 +1,27 @@
+# Outhaul's updater. Installed by deploy/bootstrap.sh to
+# /etc/systemd/system/outhaul-update.service, and started by
+# outhaul-update.path when Outhaul asks for an update.
+#
+# Runs as root: it replaces /usr/local/bin/outhaul and restarts outhaul.service.
+# It writes its progress to /var/lib/outhaul/update/status and log, which the
+# admin UI shows.
+
+[Unit]
+Description=Outhaul updater: update to the newest main
+Documentation=https://github.com/outhaul-dev/outhaul
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# The service's own settings, so the listen address, data dir and image
+# overrides are the ones outhaul.service runs with. Absent file is fine.
+EnvironmentFile=-/etc/outhaul.env
+# Runs as root (no User=), for which systemd sets no HOME: the clone and the
+# Go build need one.
+Environment=HOME=/root
+ExecStart=/bin/sh /usr/local/lib/outhaul/update.sh
+TimeoutStartSec=30min
+# Stopping the updater after Outhaul was stopped rolls back first: leave it
+# time to start the previous version and check it.
+TimeoutStopSec=3min
