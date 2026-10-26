@@ -122,16 +122,16 @@ pull_images() { # binary
 	step_ok "images pulled"
 }
 
-# Copies src over dest by way of dest.new and a rename: a new inode, so a
+# Copies src over dest by way of a temp file and a rename: a new inode, so a
 # running program, or the shell reading this script, keeps the old file.
-# cp -p keeps the owner and mode (the database belongs to outhaul). A
-# leftover dest.new goes first, and -T replaces dest itself: in outhaul's
-# data dir either could be a link.
-replace_file() { # src dest [mode]
-	rm -f "$2.new" || return 1
-	cp -p "$1" "$2.new" || return 1
-	if [ -n "${3:-}" ]; then chmod "$3" "$2.new" || return 1; fi
-	mv -fT "$2.new" "$2"
+# The temp file is dest.new, or tmp when given. cp -p keeps the owner and
+# mode, and -T replaces dest itself, whatever it is.
+replace_file() { # src dest [mode [tmp]]
+	_rf=${4:-$2.new}
+	rm -f "$_rf" || return 1
+	cp -p "$1" "$_rf" || return 1
+	if [ -n "${3:-}" ]; then chmod "$3" "$_rf" || return 1; fi
+	mv -fT "$_rf" "$2"
 }
 
 # Keeps the running version in WORK_DIR/previous: the binary,
@@ -155,7 +155,9 @@ snapshot() {
 
 # Puts back what snapshot kept. A -wal or -shm file the snapshot does not
 # have is the new version's, and SQLite would replay it onto the old
-# database: it is removed. Every step is checked: callers test its status.
+# database: it is removed. The data dir belongs to outhaul, so the database
+# files are copied in WORK_DIR and renamed into it (cp -p keeps them
+# outhaul's). Every step is checked: callers test its status.
 restore_snapshot() {
 	_p=$WORK_DIR/previous
 	[ -f "$_p/outhaul" ] || return 1
@@ -167,7 +169,7 @@ restore_snapshot() {
 	fi
 	for _f in outhaul.db outhaul.db-wal outhaul.db-shm; do
 		if [ -f "$_p/$_f" ]; then
-			replace_file "$_p/$_f" "$DATA_DIR/$_f" || return 1
+			replace_file "$_p/$_f" "$DATA_DIR/$_f" '' "$WORK_DIR/.restore" || return 1
 		elif [ "$_f" != outhaul.db ]; then
 			rm -f "$DATA_DIR/$_f" || return 1
 		fi

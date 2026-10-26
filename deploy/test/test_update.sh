@@ -179,21 +179,32 @@ echo 'new wal' > "$DATA_DIR/outhaul.db-wal"
 rm "$DATA_DIR/outhaul.db-shm"
 fake_outhaul "$BIN" "$NEW" file:///srv/o.git traefik:v2
 echo 'new unit' > "$UNIT_DIR/outhaul.service"
-# The data dir belongs to outhaul: a planted dest.new link must not be followed.
+# The data dir belongs to outhaul. Nothing in it is opened for writing: the
+# database files are copied in the updater's directory and renamed into
+# place, so a link planted there is not followed.
 echo 'not yours' > "$T/victim"
 ln -s "$T/victim" "$DATA_DIR/outhaul.db.new"
+: > "$T/cp_calls"
+cp() { printf '%s\n' "$*" >> "$T/cp_calls"; command cp "$@"; }
 assert_ok "restore_snapshot" restore_snapshot
+unset -f cp
+assert_eq "restore: nothing copied into the data dir" "" "$(grep -F " $DATA_DIR/" "$T/cp_calls" || true)"
 assert_eq "restore: a planted link is not written through" "not yours" "$(cat "$T/victim")"
 assert_eq "restore: binary, unit and database" "commit=$OLD|old unit|old data|old wal|old shm" \
 	"$("$BIN" version | head -1)|$(cat "$UNIT_DIR/outhaul.service" "$DATA_DIR/outhaul.db" "$DATA_DIR/outhaul.db-wal" "$DATA_DIR/outhaul.db-shm" | paste -sd'|' -)"
 assert_eq "restore: the database keeps its mode" 664 "$(stat -c %a "$DATA_DIR/outhaul.db")"
-assert_eq "restore: no temp files left" "outhaul.db outhaul.db-shm outhaul.db-wal update" "$(ls "$DATA_DIR" | paste -sd' ' -)"
+assert_eq "restore: no temp files left, and the planted link left alone" "outhaul.db outhaul.db-shm outhaul.db-wal outhaul.db.new update" \
+	"$(ls "$DATA_DIR" | paste -sd' ' -)"
+assert_eq "restore: no temp files left in the updater's directory" previous "$(ls -A "$WORK_DIR")"
 # Nor is a link to a directory, planted in place of a file, moved into. (GNU
 # mv replaces the link; busybox mv refuses.)
 mkdir "$T/elsewhere"
-echo new > "$T/new.db"
-ln -s "$T/elsewhere" "$T/planted.db"
-quiet replace_file "$T/new.db" "$T/planted.db" || true
+rm "$DATA_DIR/outhaul.db-wal"; ln -s "$T/elsewhere" "$DATA_DIR/outhaul.db-wal"
+quiet restore_snapshot || true
+assert_eq "restore: a link to a directory is not moved into" "" "$(ls -A "$T/elsewhere")"
+echo new > "$T/new.bin"
+ln -s "$T/elsewhere" "$T/planted.bin"
+quiet replace_file "$T/new.bin" "$T/planted.bin" || true
 assert_eq "replace_file: a link to a directory is not moved into" "" "$(ls -A "$T/elsewhere")"
 
 # ------------------------------------------------------------- update_main --
