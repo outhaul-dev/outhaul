@@ -46,9 +46,23 @@ type fakeCloner struct {
 	cloned []string
 	files  map[string]string // repo files to materialize in the clone dir
 	links  map[string]string // repo symlinks to materialize: name -> target
+
+	tags     []string // what ListTags returns
+	tagsErr  error
+	listed   int      // ListTags call count
+	branches []string // spec.Branch of every Clone
+}
+
+func (f *fakeCloner) ListTags(_ context.Context, _ CloneSpec) ([]string, error) {
+	f.listed++
+	if f.tagsErr != nil {
+		return nil, f.tagsErr
+	}
+	return f.tags, nil
 }
 
 func (f *fakeCloner) Clone(_ context.Context, spec CloneSpec, dir string, out io.Writer) error {
+	f.branches = append(f.branches, spec.Branch)
 	if f.err != nil {
 		return f.err
 	}
