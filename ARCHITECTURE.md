@@ -438,9 +438,9 @@ secret authenticates the payload with a constant-time comparison, and
 the pushed branch independent of the Git host's payload shape. Auto-deploy is
 gated by two per-app settings — a target branch and an on/off toggle — so a
 push only enqueues a deploy when both match; branch-mode apps ignore tag
-pushes, and pushes to other branches no-op. `OUTHAUL_PUBLIC_URL` supplies the externally reachable base
-URL the GitHub App manifest and webhook URLs are built from; GitHub App setup
-is unavailable until it is configured.
+pushes, and pushes to other branches no-op. `OUTHAUL_PUBLIC_URL` supplies the
+externally reachable base URL the GitHub App manifest and webhook URLs are
+built from; GitHub App setup is unavailable until it is configured.
 
 ### Push-to-deploy (done)
 
@@ -472,14 +472,16 @@ The decision is a high-water rule: a tag deploys only if its version is newer
 than every tag that is live or in flight for the current pattern. It lives in
 `internal/tagdeploy` and all three sources share it through
 `store.EnqueueTagDeployment`, which reads the in-play tags and enqueues inside
-one transaction. When the worker claims a tag deployment it re-checks the rule
-against the app's current settings, and a deployment that no longer qualifies
-ends as `cancelled`. A Deploy click in tag mode resolves the newest matching
-tag with `git ls-remote`, then builds that tag by its full ref. Each
-deployment records its tag (`deployments.tag`), shown in the history and on
-its page. A skipped tag is not stored: the reason shows in the process log and
-in the webhook response body (status 200), and `git push` prints a
-`→ … so no deploy` line and exits 0. Template apps and preview children cannot
+one transaction. When the worker claims a tag deployment it re-checks the
+deployment's tag against the live deployment's tag, using the app's current
+pattern and pre-release setting, and a deployment that is no longer newer ends
+as `cancelled`. It does not re-check the trigger: a tag deployment queued
+before the app switched back to branch mode still builds. A Deploy click in
+tag mode resolves the newest matching tag with `git ls-remote`, then builds
+that tag by its full ref. Each deployment records its tag (`deployments.tag`),
+shown in the history and on its page. A skipped tag is not stored: the reason
+shows in the process log and in the webhook response body (status 200), and
+`git push` prints a `→ … so no deploy` line and exits 0. Template apps and preview children cannot
 use tag mode; a tag-mode app's previews still follow the PR head. The design
 is in `docs/superpowers/specs/2026-10-26-tag-deploys-design.md`.
 
