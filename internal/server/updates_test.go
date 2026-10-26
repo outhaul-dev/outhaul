@@ -474,6 +474,28 @@ func TestUpdatePollerSaysWhereTheLogIsWhenOuthaulStaysDown(t *testing.T) {
 	assertContains(t, page, `data-stuck="`+copyStuck+`"`, "180000", "Outhaul is restarting")
 }
 
+// When the session ends mid-update, a poll is redirected to the login page,
+// and fetch follows it to HTML. The poller then reloads the page, which
+// shows the login form, instead of saying "Outhaul is restarting…" for ever.
+func TestUpdatePollerReloadsOnALostSession(t *testing.T) {
+	e := newUpdatesEnv(t, testBuild, true)
+	e.login(t)
+	e.writeStatus(t, update.Status{State: update.StateRunning, Started: time.Now()})
+	page := body(t, e.get(t, "/settings"))
+	assertContains(t, page, "r.redirected", "'application/json'", "finish()")
+
+	// What the poller sees without a session: like fetch, follow redirects.
+	resp, err := http.Get(e.http.URL + "/settings/update/progress?offset=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.Request.URL.Path != "/login" || strings.HasPrefix(resp.Header.Get("Content-Type"), "application/json") {
+		t.Errorf("progress without a session ended at %s (%s), want the login page's HTML",
+			resp.Request.URL.Path, resp.Header.Get("Content-Type"))
+	}
+}
+
 // Once an update is over, the page that replaces the live log keeps the log:
 // collapsed when it went well, open when it did not. It is text, escaped.
 func TestUpdatePanelShowsTheLastUpdatesLog(t *testing.T) {

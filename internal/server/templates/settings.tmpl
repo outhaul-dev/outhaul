@@ -58,8 +58,15 @@
     }
     function poll() {
       fetch('/settings/update/progress?offset=' + offset, {headers: {'Accept': 'application/json'}, cache: 'no-store'})
-        .then(function (r) { if (!r.ok) { throw new Error(r.status); } return r.json(); })
+        .then(function (r) {
+          if (!r.ok) { throw new Error(r.status); }
+          // Anything but the progress JSON, such as the login page once the
+          // session has ended: reload, and that page says what to do.
+          if (r.redirected || (r.headers.get('Content-Type') || '').indexOf('application/json') !== 0) { return null; }
+          return r.json();
+        })
         .then(function (p) {
+          if (p === null) { finish(); return; }
           if (p.log) {
             var atBottom = (log.scrollTop + log.clientHeight) >= (log.scrollHeight - 4);
             log.textContent += p.log;
