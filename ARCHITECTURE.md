@@ -437,8 +437,8 @@ secret authenticates the payload with a constant-time comparison, and
 `webhook.ParsePush` extracts
 the pushed branch independent of the Git host's payload shape. Auto-deploy is
 gated by two per-app settings — a target branch and an on/off toggle — so a
-push only enqueues a deploy when both match; tag pushes and pushes to other
-branches no-op. `OUTHAUL_PUBLIC_URL` supplies the externally reachable base
+push only enqueues a deploy when both match; branch-mode apps ignore tag
+pushes, and pushes to other branches no-op. `OUTHAUL_PUBLIC_URL` supplies the externally reachable base
 URL the GitHub App manifest and webhook URLs are built from; GitHub App setup
 is unavailable until it is configured.
 
@@ -459,6 +459,29 @@ from the pushed tree and minting a `sslip.io` domain when the server IP is
 known. An app's page
 shows its `ssh://git@<server>:<port>/<app>` remote and the `git remote add` /
 `git push` incantation once it exists.
+
+### Tag deploys (done)
+
+An app's `deploy_trigger` is `branch` (the default) or `tag`. A tag-mode app
+deploys new tags that match its `tag_pattern` (a glob, default `v*`), and
+`tag_prereleases` decides whether versions like `v1.5.0-rc.1` count. Webhooks,
+`git push` and the Deploy button all take this path; the branch and watch
+paths are ignored in tag mode.
+
+The decision is a high-water rule: a tag deploys only if its version is newer
+than every tag that is live or in flight for the current pattern. It lives in
+`internal/tagdeploy` and all three sources share it through
+`store.EnqueueTagDeployment`, which reads the in-play tags and enqueues inside
+one transaction. When the worker claims a tag deployment it re-checks the rule
+against the app's current settings, and a deployment that no longer qualifies
+ends as `cancelled`. A Deploy click in tag mode resolves the newest matching
+tag with `git ls-remote`, then builds that tag by its full ref. Each
+deployment records its tag (`deployments.tag`), shown in the history and on
+its page. A skipped tag is not stored: the reason shows in the process log and
+in the webhook response body (status 200), and `git push` prints a
+`→ … so no deploy` line and exits 0. Template apps and preview children cannot
+use tag mode; a tag-mode app's previews still follow the PR head. The design
+is in `docs/superpowers/specs/2026-10-26-tag-deploys-design.md`.
 
 ---
 
@@ -548,6 +571,10 @@ outhaul/
 
     cron/                     # 5-field cron expression parsing + minute matching (no deps)
         cron.go
+
+    tagdeploy/                # tag-deploy policy: version parsing, high-water rule (pure, no deps)
+        version.go
+        policy.go
 
     blobstore/                # S3-compatible object storage via stdlib SigV4 (no SDK)
         blobstore.go          # Client interface (Put/List/Delete), path-style requests, Probe

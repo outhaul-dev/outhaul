@@ -20,6 +20,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/gitsource"
 	"github.com/outhaul-dev/outhaul/internal/sshkey"
 	"github.com/outhaul-dev/outhaul/internal/store"
+	"github.com/outhaul-dev/outhaul/internal/webhook"
 )
 
 // appContainerPrefix is prepended to an app's name to get its container name.
@@ -394,9 +395,38 @@ func (s *Server) handleAppSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	autoDeploy := r.FormValue("auto_deploy") != ""
 	watchPaths := parseWatchPaths(r.FormValue("watch_paths"))
+	trigger := strings.TrimSpace(r.FormValue("deploy_trigger"))
+	if trigger == "" {
+		trigger = core.TriggerBranch
+	}
+	tagPattern := strings.TrimSpace(r.FormValue("tag_pattern"))
+	switch trigger {
+	case core.TriggerBranch:
+		if tagPattern == "" {
+			tagPattern = core.DefaultTagPattern
+		}
+	case core.TriggerTag:
+		switch {
+		case app.Source == core.SourceTemplate || app.TemplateID != "" || app.ParentID != 0:
+			http.Error(w, "This app can't deploy on tags.", http.StatusBadRequest)
+			return
+		case tagPattern == "":
+			http.Error(w, "A tag pattern is required to deploy on tags.", http.StatusBadRequest)
+			return
+		case strings.ContainsAny(tagPattern, " \t\r\n"):
+			http.Error(w, "A tag pattern can't contain spaces.", http.StatusBadRequest)
+			return
+		case !webhook.ValidGlob(tagPattern):
+			http.Error(w, "The tag pattern has an unclosed [.", http.StatusBadRequest)
+			return
+		}
+	default:
+		http.Error(w, "unknown deploy trigger", http.StatusBadRequest)
+		return
+	}
 	if err := s.store.UpdateAppSettings(r.Context(), id, store.DeploySettings{
 		Branch: branch, AutoDeploy: autoDeploy, WatchPaths: watchPaths,
-		Trigger: app.DeployTrigger, TagPattern: app.TagPattern, TagPrereleases: app.TagPrereleases,
+		Trigger: trigger, TagPattern: tagPattern, TagPrereleases: r.FormValue("tag_prereleases") != "",
 	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

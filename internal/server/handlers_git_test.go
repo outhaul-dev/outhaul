@@ -372,3 +372,158 @@ func TestUpdateAppSourceAcceptsLegacyMixedCaseDomain(t *testing.T) {
 		t.Fatalf("source change status = %d, want 303", resp.StatusCode)
 	}
 }
+
+func postSettings(t *testing.T, env *testEnv, id int64, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest("POST", "/apps/"+itoa(id)+"/settings", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	env.authed(req)
+	rec := httptest.NewRecorder()
+	env.srv.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+func settingsApp(t *testing.T, env *testEnv) core.App {
+	t.Helper()
+	app, err := env.store.CreateApp(context.Background(), core.App{
+		Name: "web", RepoURL: "https://github.com/o/r.git", Domain: "web.example.com",
+		Source: core.SourcePublic, Branch: "main", WebhookSecret: "w",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return app
+}
+
+func TestUpdateAppSettingsTagMode(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	app := settingsApp(t, env)
+	rec := postSettings(t, env, app.ID, url.Values{
+		"deploy_trigger": {"tag"}, "tag_pattern": {"release-*"}, "tag_prereleases": {"on"},
+		"branch": {"main"}, "auto_deploy": {"on"},
+	})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	got, _ := env.store.GetApp(context.Background(), app.ID)
+	if got.DeployTrigger != core.TriggerTag || got.TagPattern != "release-*" || !got.TagPrereleases ||
+		got.Branch != "main" || !got.AutoDeploy {
+		t.Errorf("settings not stored: %+v", got)
+	}
+}
+
+func TestUpdateAppSettingsRejectsBadTagPattern(t *testing.T) {
+	for _, tt := range []struct{ trigger, pattern, want string }{
+		{"tag", "", "A tag pattern is required"},
+		{"tag", "v 1*", "can't contain spaces"},
+		{"tag", "v[0-9", "unclosed ["},
+		{"nightly", "v*", "unknown deploy trigger"},
+	} {
+		t.Run(tt.trigger+"/"+tt.pattern, func(t *testing.T) {
+			env := newTestEnv(t)
+			env.login(t)
+			app := settingsApp(t, env)
+			rec := postSettings(t, env, app.ID, url.Values{
+				"deploy_trigger": {tt.trigger}, "tag_pattern": {tt.pattern},
+				"branch": {"changed"}, "auto_deploy": {"on"},
+			})
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), tt.want) {
+				t.Fatalf("status = %d body = %q, want 400 containing %q", rec.Code, rec.Body.String(), tt.want)
+			}
+			got, _ := env.store.GetApp(context.Background(), app.ID)
+			if got.Branch != "main" || got.AutoDeploy || got.DeployTrigger != core.TriggerBranch {
+				t.Errorf("app changed despite the error: %+v", got)
+			}
+		})
+	}
+}
+
+func TestUpdateAppSettingsBranchModeKeepsDefaultPattern(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	app := settingsApp(t, env)
+	rec := postSettings(t, env, app.ID, url.Values{"deploy_trigger": {"branch"}, "tag_pattern": {""}, "branch": {"main"}})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	got, _ := env.store.GetApp(context.Background(), app.ID)
+	if got.DeployTrigger != core.TriggerBranch || got.TagPattern != "v*" {
+		t.Errorf("got trigger %q pattern %q", got.DeployTrigger, got.TagPattern)
+	}
+}
+
+func TestUpdateAppSettingsRefusesTagModeForTemplatesAndPreviews(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	ctx := context.Background()
+	parent := settingsApp(t, env)
+	tmpl, err := env.store.CreateApp(ctx, core.App{
+		Name: "tmpl", Source: core.SourceTemplate, TemplateID: "wordpress", Branch: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, err := env.store.CreateApp(ctx, core.App{
+		Name: "web-pr-7", RepoURL: parent.RepoURL, Source: core.SourcePublic, Branch: "feature",
+		ParentID: parent.ID, PRNumber: 7, Ephemeral: true, PreviewStatus: core.PreviewReady,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, app := range []core.App{tmpl, preview} {
+		rec := postSettings(t, env, app.ID, url.Values{
+			"deploy_trigger": {"tag"}, "tag_pattern": {"v*"}, "branch": {"changed"},
+		})
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "This app can't deploy on tags.") {
+			t.Errorf("%s: status = %d body = %q", app.Name, rec.Code, rec.Body.String())
+		}
+		got, _ := env.store.GetApp(ctx, app.ID)
+		if got.DeployTrigger != core.TriggerBranch || got.Branch == "changed" {
+			t.Errorf("%s changed: %+v", app.Name, got)
+		}
+	}
+}
+
+func TestAppPageShowsDeploymentTag(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	app := settingsApp(t, env)
+	dep, _ := env.store.CreateDeployment(context.Background(), app.ID)
+	if err := env.store.SetDeploymentTag(context.Background(), dep.ID, "v1.4.0"); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/apps/" + itoa(app.ID), "/deployments/" + itoa(dep.ID)} {
+		if page := body(t, env.get(t, p)); !strings.Contains(page, "v1.4.0") {
+			t.Errorf("%s does not show the tag", p)
+		}
+	}
+}
+
+func TestAppPageTagModeHints(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	ctx := context.Background()
+	pub, err := env.store.CreateApp(ctx, core.App{
+		Name: "pub", RepoURL: "https://github.com/o/p.git", Source: core.SourcePublic, Branch: "main",
+		WebhookToken: "tok", WebhookSecret: "sek",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setTagMode(t, env, pub.ID, "v*", false, true)
+	gh, err := env.store.CreateApp(ctx, core.App{
+		Name: "gh", RepoURL: "https://github.com/o/g.git", Source: core.SourceGithub, GithubRepo: "o/g", Branch: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setTagMode(t, env, gh.ID, "rel-*", false, true)
+
+	if page := body(t, env.get(t, "/apps/"+itoa(pub.ID))); !strings.Contains(page, "Tag push events") {
+		t.Error("public tag-mode app lacks the GitLab note")
+	}
+	if page := body(t, env.get(t, "/apps/"+itoa(gh.ID))); !strings.Contains(page, "more than three tags") {
+		t.Error("GitHub tag-mode app lacks the three-tag note")
+	}
+}
