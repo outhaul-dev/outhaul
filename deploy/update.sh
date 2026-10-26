@@ -87,7 +87,7 @@ cached_go_toolchain() { # version
 	# A matching go was already on PATH: nothing was downloaded.
 	if [ -z "${GOROOT_TMP:-}" ] || [ ! -d "$GOROOT_TMP/go" ]; then return 0; fi
 	mkdir -p "$CACHE_DIR"
-	rm -rf "$CACHE_DIR"/go[0-9]*
+	rm -rf "${CACHE_DIR:?}"/go[0-9]*
 	# By way of a temp name, so an interrupted move is never taken for a toolchain.
 	if mv "$GOROOT_TMP/go" "$_go.partial" && mv "$_go.partial" "$_go"; then
 		PATH=$_go/bin:$PATH
