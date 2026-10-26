@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/store"
 )
 
 func allowForks(c *core.PreviewConfig) { c.AllowForkPRs = true }
@@ -148,5 +149,33 @@ func TestForkPreviewRefusedForDockerfileApp(t *testing.T) {
 	got := h.gh.comments["acme/api#7"]
 	if len(got) != 1 || !strings.Contains(got[0], "Nixpacks") {
 		t.Errorf("PR comments = %v, want one notice that fork previews are Nixpacks-only", got)
+	}
+}
+
+// A tag-mode parent deploys release tags. Its previews are for pull requests,
+// so they must still build the PR's branch rather than inherit tag mode.
+func TestPreviewOfTagModeParentFollowsBranch(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	parent := h.seedGithubApp(t, "web", "acme/web", allowForks)
+	if err := h.st.UpdateAppSettings(ctx, parent.ID, store.DeploySettings{
+		Branch: parent.Branch, AutoDeploy: parent.AutoDeploy, WatchPaths: parent.WatchPaths,
+		Trigger: core.TriggerTag, TagPattern: "v*",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 9, "feature-x", "acme/web", false)); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	child, err := h.st.GetPreviewByPR(ctx, parent.ID, 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.DeployTrigger != core.TriggerBranch {
+		t.Errorf("preview DeployTrigger = %q, want %q", child.DeployTrigger, core.TriggerBranch)
+	}
+	if child.Branch != "feature-x" {
+		t.Errorf("preview builds %q, want feature-x", child.Branch)
 	}
 }
