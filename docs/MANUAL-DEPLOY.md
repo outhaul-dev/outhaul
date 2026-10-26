@@ -279,9 +279,15 @@ copy of the running version it rolls back to, and its log,
 `/var/lib/outhaul-updater/log`, which Outhaul reads to show it in the admin
 UI. Outhaul's `/var/lib/outhaul/update` gets the status. If an update leaves
 Outhaul down, `sudo cat /var/lib/outhaul-updater/log` says how to put the
-previous version back. Build the binary with
-the version stamp too, or the panel cannot tell which commit is running. The
-installer's `build_ldflags` prints the flags:
+previous version back.
+
+Keep `/var/lib/outhaul` and `/var/lib/outhaul-updater` on one filesystem, as
+they are by default. The updater writes the status, and puts the database
+back in a rollback, by renaming files from its directory into Outhaul's;
+across filesystems a rename becomes a copy, which can be seen half-written.
+
+Build the binary with the version stamp too, or the panel cannot tell which
+commit is running. The installer's `build_ldflags` prints the flags:
 
 ```sh
 GOFLAGS=-buildvcs=false go build \
