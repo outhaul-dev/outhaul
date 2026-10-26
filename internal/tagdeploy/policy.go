@@ -32,7 +32,7 @@ type Decision struct {
 // "api/v1.2.0" parses as 1.2.0. It reports false when the tag lacks the
 // prefix or the rest isn't a version.
 func (p Policy) Version(tag string) (Version, bool) {
-	prefix := p.Pattern
+	prefix := strings.TrimPrefix(p.Pattern, "/") // read the pattern as MatchGlob does
 	if i := strings.IndexAny(prefix, "*?["); i >= 0 {
 		prefix = prefix[:i]
 	}

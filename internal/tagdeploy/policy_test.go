@@ -15,6 +15,7 @@ func TestPolicyVersionStripsLiteralPrefix(t *testing.T) {
 		{"pkg@*", "pkg@1.2.3", "1.2.3", true},
 		{"*", "v1.0.0", "1.0.0", true},
 		{"v*", "vnext", "", false},
+		{"/v*", "v1.4.0", "1.4.0", true},
 	}
 	for _, tt := range tests {
 		got, ok := Policy{Pattern: tt.pattern}.Version(tt.tag)
@@ -76,6 +77,7 @@ func TestDecide(t *testing.T) {
 		{"pattern change", "api/v*", false, []string{"api/v1.1.0"}, []string{"v3.0.0"}, "api/v1.1.0", nil},
 		{"non-version in play ignored", "v*", false, []string{"v1.0.0"}, []string{"release-oct"}, "v1.0.0", nil},
 		{"empty in play ignored", "v*", false, []string{"v0.1.0"}, []string{""}, "v0.1.0", nil},
+		{"leading slash pattern", "/v*", false, []string{"v1.0.0"}, []string{"v3.0.0"}, "", []string{"not newer"}},
 		{"nothing pushed", "v*", false, nil, nil, "", []string{"no tag was pushed"}},
 	}
 	for _, tt := range tests {
