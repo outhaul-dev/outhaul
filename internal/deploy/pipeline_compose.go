@@ -45,8 +45,12 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 
 	composeFile := filepath.Join(workDir, filepath.FromSlash(app.ComposePath))
 	if _, err := os.Stat(composeFile); err != nil {
+		ref := fmt.Sprintf("branch %q", app.Branch)
+		if dep.Tag != "" {
+			ref = fmt.Sprintf("tag %q", dep.Tag)
+		}
 		w.fail(dep, core.StatusBuilding,
-			fmt.Sprintf("compose file %q not found on branch %q", app.ComposePath, app.Branch), out)
+			fmt.Sprintf("compose file %q not found on %s", app.ComposePath, ref), out)
 		return
 	}
 	stackDir := filepath.Dir(composeFile)

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/docker"
 	"github.com/outhaul-dev/outhaul/internal/tagdeploy"
 	"github.com/outhaul-dev/outhaul/internal/traefik"
+	"github.com/outhaul-dev/outhaul/internal/webhook"
 )
 
 // AppPort is the internal port Outhaul asks apps to listen on (via $PORT) and
@@ -424,7 +426,7 @@ func (w *Worker) prepareTag(ctx context.Context, dep *core.Deployment, app core.
 		}
 		tags, err := w.cloner.ListTags(ctx, spec)
 		if err != nil {
-			w.fail(*dep, core.StatusBuilding, "list tags: "+err.Error(), out)
+			w.fail(*dep, core.StatusBuilding, "list tags: "+publicCredentialsHint(err, app), out)
 			return false
 		}
 		tag, ok := policy.Newest(tags)
@@ -436,15 +438,8 @@ func (w *Worker) prepareTag(ctx context.Context, dep *core.Deployment, app core.
 				w.fail(*dep, core.StatusBuilding, "load live deployment: "+err.Error(), out)
 				return false
 			}
-			if live == nil || live.Tag == "" {
-				reason := fmt.Sprintf("no tag matches %q", app.TagPattern)
-				for _, t := range tags {
-					if policy.Eligible(t) {
-						reason = fmt.Sprintf("no tag matching %q looks like a version", app.TagPattern)
-						break
-					}
-				}
-				w.fail(*dep, core.StatusBuilding, reason, out)
+			if live == nil || !slices.Contains(tags, live.Tag) || !policy.Eligible(live.Tag) {
+				w.fail(*dep, core.StatusBuilding, noTagReason(policy, app.TagPattern, tags), out)
 				return false
 			}
 			tag = live.Tag
@@ -457,6 +452,33 @@ func (w *Worker) prepareTag(ctx context.Context, dep *core.Deployment, app core.
 		dep.Tag = tag
 	}
 	return true
+}
+
+// noTagReason explains why a Deploy click found no tag to build.
+func noTagReason(policy tagdeploy.Policy, pattern string, tags []string) string {
+	matched := false
+	for _, t := range tags {
+		if policy.Eligible(t) {
+			return fmt.Sprintf("no tag matching %q looks like a version", pattern)
+		}
+		if webhook.MatchGlob(pattern, t) {
+			matched = true
+		}
+	}
+	if matched {
+		return fmt.Sprintf("only pre-release tags match %q, and this app doesn't deploy pre-releases", pattern)
+	}
+	return fmt.Sprintf("no tag matches %q", pattern)
+}
+
+// publicCredentialsHint turns a credentials-required git error on a public
+// source into advice; any other error is returned as its text.
+func publicCredentialsHint(err error, app core.App) string {
+	if errors.Is(err, ErrCredentialsRequired) && app.Source == core.SourcePublic {
+		return "the repository needs credentials, so it is private or does not exist. " +
+			"A Public Git URL clones without any: check the URL, or switch the app's source to GitHub App or SSH deploy key under Source & build"
+	}
+	return err.Error()
 }
 
 // cloneWorkDir creates the per-deploy work dir and clones the app's repo into
@@ -484,11 +506,7 @@ func (w *Worker) cloneWorkDir(ctx context.Context, dep core.Deployment, app core
 	}
 	if err := w.cloner.Clone(ctx, spec, workDir, out); err != nil {
 		cleanup()
-		if errors.Is(err, ErrCredentialsRequired) && app.Source == core.SourcePublic {
-			return "", nil, errors.New("clone failed: the repository needs credentials, so it is private or does not exist. " +
-				"A Public Git URL clones without any: check the URL, or switch the app's source to GitHub App or SSH deploy key under Source & build")
-		}
-		return "", nil, fmt.Errorf("clone failed: %w", err)
+		return "", nil, errors.New("clone failed: " + publicCredentialsHint(err, app))
 	}
 	return workDir, cleanup, nil
 }

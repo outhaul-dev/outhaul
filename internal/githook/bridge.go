@@ -250,6 +250,11 @@ func (b *Bridge) finish(ctx context.Context, conn io.ReadWriter, depID int64, ap
 	if reason == "" {
 		reason = string(dep.Status)
 	}
+	if skip, ok := strings.CutPrefix(reason, "skipped: "); ok && dep.Status == core.StatusCancelled {
+		// A claim-time skip (an older tag, say) deploys nothing but isn't a failure.
+		fmt.Fprintf(conn, "→ %s, so no deploy\n", skip)
+		return 0
+	}
 	fmt.Fprintf(conn, "✗ deploy failed: %s\n", reason)
 	return 1
 }

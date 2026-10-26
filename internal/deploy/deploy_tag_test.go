@@ -140,7 +140,7 @@ func TestDeployClickFallsBackToLiveTag(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	app := h.tagApp(t, "web")
-	first := h.claimedTagDeployment(t, app.ID, "v1.0.0")
+	first := h.claimedTagDeployment(t, app.ID, "vnext")
 	h.worker.runPipeline(ctx, first)
 
 	h.cloner.tags = []string{"vnext"}
@@ -151,13 +151,13 @@ func TestDeployClickFallsBackToLiveTag(t *testing.T) {
 	if got.Status != core.StatusRunning {
 		t.Fatalf("status = %q (%q), want running", got.Status, got.Reason)
 	}
-	if n := len(h.cloner.branches); n != 2 || h.cloner.branches[1] != "refs/tags/v1.0.0" {
+	if n := len(h.cloner.branches); n != 2 || h.cloner.branches[1] != "refs/tags/vnext" {
 		t.Errorf("branches = %v", h.cloner.branches)
 	}
-	if got.Tag != "v1.0.0" {
+	if got.Tag != "vnext" {
 		t.Errorf("Tag = %q", got.Tag)
 	}
-	if log := h.logOf(dep); !strings.Contains(log, `No tag matching "v*" looks like a version; redeploying the live tag v1.0.0`) {
+	if log := h.logOf(dep); !strings.Contains(log, `No tag matching "v*" looks like a version; redeploying the live tag vnext`) {
 		t.Errorf("log:\n%s", log)
 	}
 }
@@ -229,5 +229,68 @@ func TestComposeTagAppClonesTag(t *testing.T) {
 	}
 	if len(h.cloner.branches) != 1 || h.cloner.branches[0] != "refs/tags/v1.4.0" {
 		t.Errorf("branches = %v", h.cloner.branches)
+	}
+}
+
+func TestDeployClickLiveTagGoneFromListFails(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	app := h.tagApp(t, "web")
+	h.worker.runPipeline(ctx, h.claimedTagDeployment(t, app.ID, "v1.0.0"))
+
+	h.cloner.tags = []string{"nightly"}
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(ctx, dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed || got.Reason != `no tag matches "v*"` {
+		t.Fatalf("status = %q reason = %q", got.Status, got.Reason)
+	}
+	if log := h.logOf(dep); strings.Contains(log, "redeploying the live tag") {
+		t.Errorf("fallback logged although not taken:\n%s", log)
+	}
+}
+
+func TestDeployClickPrereleaseOnlyFails(t *testing.T) {
+	h := newHarness(t)
+	app := h.tagApp(t, "web")
+	h.cloner.tags = []string{"v2.0.0-rc.1"}
+	dep := h.claimedDeployment(t, app.ID)
+
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	want := `only pre-release tags match "v*", and this app doesn't deploy pre-releases`
+	if got.Status != core.StatusFailed || got.Reason != want {
+		t.Fatalf("status = %q reason = %q", got.Status, got.Reason)
+	}
+}
+
+func TestDeployClickPublicCredentialsHint(t *testing.T) {
+	h := newHarness(t)
+	app := h.tagApp(t, "web")
+	h.cloner.tagsErr = ErrCredentialsRequired
+	dep := h.claimedDeployment(t, app.ID)
+
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed || !strings.Contains(got.Reason, "private or does not exist") {
+		t.Fatalf("status = %q reason = %q", got.Status, got.Reason)
+	}
+}
+
+func TestComposeTagAppMissingFileNamesTag(t *testing.T) {
+	h := newHarness(t)
+	app := h.composeApp(t, "shop", "missing.yml", "")
+	h.cloner.files = nil
+	h.tagMode(t, app.ID)
+	dep := h.claimedTagDeployment(t, app.ID, "v1.4.0")
+
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed || !strings.Contains(got.Reason, `tag "v1.4.0"`) || strings.Contains(got.Reason, "branch") {
+		t.Fatalf("status = %q reason = %q", got.Status, got.Reason)
 	}
 }

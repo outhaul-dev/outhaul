@@ -379,3 +379,32 @@ func TestBridgeTagAppIgnoresDeletedTag(t *testing.T) {
 		t.Fatalf("deployments = %d, want 0", n)
 	}
 }
+
+func TestBridgeClaimTimeSkipExitsZero(t *testing.T) {
+	b, st, br := bridgeEnv(t)
+	app := tagPushApp(t, st)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		dep := waitForDeployment(t, st, app.ID)
+		ctx := context.Background()
+		if _, err := st.SetStatus(ctx, dep.ID, core.StatusQueued, core.StatusBuilding, ""); err != nil {
+			t.Errorf("SetStatus: %v", err)
+		}
+		if _, err := st.SetStatus(ctx, dep.ID, core.StatusBuilding, core.StatusCancelled, "skipped: v1.3.1 is not newer than v1.4.0"); err != nil {
+			t.Errorf("SetStatus: %v", err)
+		}
+		br.Close(dep.ID)
+	}()
+	out := runHandle(t, b, request{App: "api", Refs: []RefUpdate{{"0", "abc", "refs/tags/v1.4.0"}}})
+	wg.Wait()
+	for _, want := range []string{"→ v1.3.1 is not newer than v1.4.0, so no deploy", "exit 0"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "deploy failed") {
+		t.Fatalf("a skip must not read as a failure:\n%s", out)
+	}
+}
