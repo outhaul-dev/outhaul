@@ -623,6 +623,21 @@ assert_eq "update directory is a link: Outhaul never stopped" "" "$(systemctl_ca
 assert_contains "update directory is a link: the log says so" "$(log)" "could not write $UPDATE_DIR/status; nothing changed"
 assert_contains "update directory is a link: ... and the journal" "$(journal_lines)" "|could not write $UPDATE_DIR/status; nothing changed"
 
+# The journal cannot be written to: the update and its status do not depend
+# on it. (/dev/full fails every write.)
+setup
+set +e
+(set -e; update_main) 2>/dev/full
+RC=$?
+set -e
+assert_eq "journal unwritable: updated" "0 updated" "$RC $(field state)"
+setup
+HEALTHY=''
+set +e
+(set -e; update_main) 2>/dev/full
+set -e
+assert_eq "journal unwritable: a failed rollback still reports" failed "$(field state)"
+
 # The real paths, and the data dir from /etc/outhaul.env.
 assert_eq "default paths" "/usr/local/bin/outhaul /etc/systemd/system /var/lib/outhaul /var/lib/outhaul/update /var/lib/outhaul-updater /var/cache/outhaul" \
 	"$(unset OUTHAUL_DATA_DIR; OUTHAUL_UPDATER_LIB=1 . "$here/../update.sh"; echo "$BIN $UNIT_DIR $DATA_DIR $UPDATE_DIR $WORK_DIR $CACHE_DIR")"

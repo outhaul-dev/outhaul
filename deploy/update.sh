@@ -36,8 +36,9 @@ log_line() { :; }
 # Writes a line to the journal: the stderr systemd started the updater with,
 # kept on fd 4 once stdout and stderr go to the log. The journal names the
 # log and has each update's result, so they can be found with Outhaul down.
+# The update does not depend on it: a failed write is ignored.
 to_journal() { # line
-	printf '%s\n' "$1" >&4
+	printf '%s\n' "$1" >&4 2>/dev/null || true
 }
 
 # Runs a command inside the update directory: see in_real_dir.
@@ -271,7 +272,7 @@ roll_back() { # reason
 		finish rolled_back "$1; rolled back to $(short "$FROM")"
 	else
 		recovery_help
-		recovery_help >&4
+		recovery_help >&4 2>/dev/null
 		finish failed "$1, and rolling back to $(short "$FROM") failed too. See $LOGFILE on the server for how to recover."
 	fi
 }
