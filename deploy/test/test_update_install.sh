@@ -74,13 +74,13 @@ assert_eq "second run: bootstrap.sh has a new inode" yes "$(differs "$bbefore" "
 assert_eq "second run: mode kept" 755 "$(stat -c %a "$LIB_DIR/update.sh")"
 assert_eq "second run: marker" 1 "$(cat "$UPDATE_DIR/updater")"
 
-# The update directory is in outhaul's data dir. What is planted there is
+# The update directory is in outhaul's data dir. What is left there is
 # replaced or refused, never written through.
-echo 'not yours' > "$ROOT/victim"
-rm "$UPDATE_DIR/updater"; ln -s "$ROOT/victim" "$UPDATE_DIR/updater"
+echo 'unchanged' > "$ROOT/target"
+rm "$UPDATE_DIR/updater"; ln -s "$ROOT/target" "$UPDATE_DIR/updater"
 install_updater "$SRC" >/dev/null
-assert_eq "planted marker link: not written through" "not yours" "$(cat "$ROOT/victim")"
-assert_ok "planted marker link: replaced by a file" is_file "$UPDATE_DIR/updater"
+assert_eq "a link at the marker: not written through" "unchanged" "$(cat "$ROOT/target")"
+assert_ok "a link at the marker: replaced by a file" is_file "$UPDATE_DIR/updater"
 
 rm "$UPDATE_DIR/updater"; mkdir "$UPDATE_DIR/updater"
 : > "$CALLS"

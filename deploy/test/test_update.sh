@@ -54,15 +54,15 @@ assert_eq "final status has finished" 1 "$(grep -c '^finished=[0-9][0-9]*$' "$st
 assert_eq "no temp files left" "status" "$(ls -A "$UPDATE_DIR")"
 assert_eq "no temp files left in the updater's directory" "" "$(ls -A "$WORK_DIR")"
 
-# The update directory belongs to outhaul: what is planted there is replaced
+# The update directory belongs to outhaul: what is left there is replaced
 # or refused, never written through.
-echo 'not yours' > "$ROOT/victim"
-rm "$st"; ln -s "$ROOT/victim" "$st"
-assert_ok "status: a planted link is replaced" write_status running "$OLD" '' updating
-assert_eq "status: ... not written through" "not yours" "$(cat "$ROOT/victim")"
+echo 'unchanged' > "$ROOT/target"
+rm "$st"; ln -s "$ROOT/target" "$st"
+assert_ok "status: a link there is replaced" write_status running "$OLD" '' updating
+assert_eq "status: ... not written through" "unchanged" "$(cat "$ROOT/target")"
 assert_ok "status: ... by a file" is_file "$st"
 rm "$st"; mkdir "$st"
-assert_fail "status: a planted directory is an error" quiet write_status running "$OLD" '' updating
+assert_fail "status: a directory there is an error" quiet write_status running "$OLD" '' updating
 assert_eq "status: ... nothing lands in it" "" "$(ls -A "$st")"
 assert_eq "status: ... no temp file left" "" "$(ls -A "$WORK_DIR")"
 rm -rf "$st"
@@ -181,30 +181,30 @@ fake_outhaul "$BIN" "$NEW" file:///srv/o.git traefik:v2
 echo 'new unit' > "$UNIT_DIR/outhaul.service"
 # The data dir belongs to outhaul. Nothing in it is opened for writing: the
 # database files are copied in the updater's directory and renamed into
-# place, so a link planted there is not followed.
-echo 'not yours' > "$T/victim"
-ln -s "$T/victim" "$DATA_DIR/outhaul.db.new"
+# place, so a link there is not followed.
+echo 'unchanged' > "$T/target"
+ln -s "$T/target" "$DATA_DIR/outhaul.db.new"
 : > "$T/cp_calls"
 cp() { printf '%s\n' "$*" >> "$T/cp_calls"; command cp "$@"; }
 assert_ok "restore_snapshot" restore_snapshot
 unset -f cp
 assert_eq "restore: nothing copied into the data dir" "" "$(grep -F " $DATA_DIR/" "$T/cp_calls" || true)"
-assert_eq "restore: a planted link is not written through" "not yours" "$(cat "$T/victim")"
+assert_eq "restore: a link there is not written through" "unchanged" "$(cat "$T/target")"
 assert_eq "restore: binary, unit and database" "commit=$OLD|old unit|old data|old wal|old shm" \
 	"$("$BIN" version | head -1)|$(cat "$UNIT_DIR/outhaul.service" "$DATA_DIR/outhaul.db" "$DATA_DIR/outhaul.db-wal" "$DATA_DIR/outhaul.db-shm" | paste -sd'|' -)"
 assert_eq "restore: the database keeps its mode" 664 "$(stat -c %a "$DATA_DIR/outhaul.db")"
-assert_eq "restore: no temp files left, and the planted link left alone" "outhaul.db outhaul.db-shm outhaul.db-wal outhaul.db.new update" \
+assert_eq "restore: no temp files left, and the link left alone" "outhaul.db outhaul.db-shm outhaul.db-wal outhaul.db.new update" \
 	"$(ls "$DATA_DIR" | paste -sd' ' -)"
 assert_eq "restore: no temp files left in the updater's directory" previous "$(ls -A "$WORK_DIR")"
-# Nor is a link to a directory, planted in place of a file, moved into. (GNU
+# Nor is a link to a directory, in place of a file, moved into. (GNU
 # mv replaces the link; busybox mv refuses.)
 mkdir "$T/elsewhere"
 rm "$DATA_DIR/outhaul.db-wal"; ln -s "$T/elsewhere" "$DATA_DIR/outhaul.db-wal"
 quiet restore_snapshot || true
 assert_eq "restore: a link to a directory is not moved into" "" "$(ls -A "$T/elsewhere")"
 echo new > "$T/new.bin"
-ln -s "$T/elsewhere" "$T/planted.bin"
-quiet replace_file "$T/new.bin" "$T/planted.bin" || true
+ln -s "$T/elsewhere" "$T/linked.bin"
+quiet replace_file "$T/new.bin" "$T/linked.bin" || true
 assert_eq "replace_file: a link to a directory is not moved into" "" "$(ls -A "$T/elsewhere")"
 
 # ------------------------------------------------------------- update_main --
@@ -583,20 +583,20 @@ assert_eq "earlier layout: the old copies are removed" no "$(exists "$UPDATE_DIR
 assert_eq "earlier layout: the old log is removed" no "$(exists "$UPDATE_DIR/log")"
 assert_eq "earlier layout: a fresh log" 0 "$(grep -c 'the previous update' "$WORK_DIR/log")"
 
-# The update directory belongs to outhaul. Links planted at "status" and
+# The update directory belongs to outhaul. Links at "status" and
 # "log" are replaced, never written through.
 setup
-echo 'not yours' > "$T/victim"
+echo 'unchanged' > "$T/target"
 rm "$UPDATE_DIR/status"
-ln -s "$T/victim" "$UPDATE_DIR/status"
-ln -s "$T/victim" "$UPDATE_DIR/log"
+ln -s "$T/target" "$UPDATE_DIR/status"
+ln -s "$T/target" "$UPDATE_DIR/log"
 run_update
-assert_eq "planted links: updated" updated "$(field state)"
-assert_eq "planted links: not written through" "not yours" "$(cat "$T/victim")"
-assert_ok "planted links: the status is a file" is_file "$UPDATE_DIR/status"
-assert_eq "planted links: the link at log is removed" no "$(exists "$UPDATE_DIR/log")"
+assert_eq "links there: updated" updated "$(field state)"
+assert_eq "links there: not written through" "unchanged" "$(cat "$T/target")"
+assert_ok "links there: the status is a file" is_file "$UPDATE_DIR/status"
+assert_eq "links there: the link at log is removed" no "$(exists "$UPDATE_DIR/log")"
 
-# A directory planted at "status": nothing is changed, and the updater ends
+# A directory at "status": nothing is changed, and the updater ends
 # cleanly.
 setup
 rm "$UPDATE_DIR/status"; mkdir "$UPDATE_DIR/status"
