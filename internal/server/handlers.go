@@ -19,6 +19,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/gitsource"
 	"github.com/outhaul-dev/outhaul/internal/sshkey"
+	"github.com/outhaul-dev/outhaul/internal/store"
 )
 
 // appContainerPrefix is prepended to an app's name to get its container name.
@@ -393,7 +394,10 @@ func (s *Server) handleAppSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	autoDeploy := r.FormValue("auto_deploy") != ""
 	watchPaths := parseWatchPaths(r.FormValue("watch_paths"))
-	if err := s.store.UpdateAppSettings(r.Context(), id, branch, autoDeploy, watchPaths); err != nil {
+	if err := s.store.UpdateAppSettings(r.Context(), id, store.DeploySettings{
+		Branch: branch, AutoDeploy: autoDeploy, WatchPaths: watchPaths,
+		Trigger: app.DeployTrigger, TagPattern: app.TagPattern, TagPrereleases: app.TagPrereleases,
+	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

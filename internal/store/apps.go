@@ -12,7 +12,7 @@ import (
 
 // appCols is the column list read into core.App by scanApp (excludes the
 // write-only ssh_private_key, which is fetched separately and decrypted).
-const appCols = `id, project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_token, webhook_secret, ssh_public_key, github_repo, git_source_id, kind, compose_path, dockerfile_path, watch_paths, template_id, compose_raw, parent_id, pr_number, ephemeral, preview_status`
+const appCols = `id, project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_token, webhook_secret, ssh_public_key, github_repo, git_source_id, kind, compose_path, dockerfile_path, watch_paths, template_id, compose_raw, parent_id, pr_number, ephemeral, preview_status, deploy_trigger, tag_pattern, tag_prereleases`
 
 // CreateApp inserts an app and returns it with ID and CreatedAt populated. The
 // SSH private key (if any) is encrypted at rest.
@@ -37,6 +37,12 @@ func (s *Store) CreateAppWithDomains(ctx context.Context, app core.App, domains 
 	if app.Kind == "" {
 		app.Kind = core.KindNixpacks
 	}
+	if app.DeployTrigger == "" {
+		app.DeployTrigger = core.TriggerBranch
+	}
+	if app.TagPattern == "" {
+		app.TagPattern = core.DefaultTagPattern
+	}
 	encKey, err := s.sealMaybe(app.SSHPrivateKey)
 	if err != nil {
 		return core.App{}, err
@@ -49,12 +55,13 @@ func (s *Store) CreateAppWithDomains(ctx context.Context, app core.App, domains 
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO apps
 		   (project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_token, webhook_secret, ssh_private_key, ssh_public_key, github_repo, git_source_id,
-		    kind, compose_path, dockerfile_path, watch_paths, template_id, compose_raw, parent_id, pr_number, ephemeral, preview_status)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		    kind, compose_path, dockerfile_path, watch_paths, template_id, compose_raw, parent_id, pr_number, ephemeral, preview_status, deploy_trigger, tag_pattern, tag_prereleases)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		app.ProjectID, app.Name, app.RepoURL, app.Domain, fmtTime(app.CreatedAt),
 		app.Branch, boolToInt(app.AutoDeploy), app.Source, app.WebhookToken, app.WebhookSecret, encKey, app.SSHPublicKey, app.GithubRepo, app.GitSourceID,
 		app.Kind, app.ComposePath, app.DockerfilePath, joinWatchPaths(app.WatchPaths), app.TemplateID, app.ComposeRaw,
-		app.ParentID, app.PRNumber, boolToInt(app.Ephemeral), app.PreviewStatus)
+		app.ParentID, app.PRNumber, boolToInt(app.Ephemeral), app.PreviewStatus,
+		app.DeployTrigger, app.TagPattern, boolToInt(app.TagPrereleases))
 	if err != nil {
 		return core.App{}, err
 	}
@@ -231,11 +238,23 @@ func (s *Store) SSHPrivateKey(ctx context.Context, appID int64) (string, error) 
 	return string(plain), nil
 }
 
+// DeploySettings are the mutable per-app settings that decide what deploys.
+type DeploySettings struct {
+	Branch         string
+	AutoDeploy     bool
+	WatchPaths     []string
+	Trigger        string // core.TriggerBranch or core.TriggerTag
+	TagPattern     string
+	TagPrereleases bool
+}
+
 // UpdateAppSettings updates the mutable per-app deploy settings.
-func (s *Store) UpdateAppSettings(ctx context.Context, id int64, branch string, autoDeploy bool, watchPaths []string) error {
+func (s *Store) UpdateAppSettings(ctx context.Context, id int64, set DeploySettings) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE apps SET branch = ?, auto_deploy = ?, watch_paths = ? WHERE id = ?`,
-		branch, boolToInt(autoDeploy), joinWatchPaths(watchPaths), id)
+		`UPDATE apps SET branch = ?, auto_deploy = ?, watch_paths = ?,
+		        deploy_trigger = ?, tag_pattern = ?, tag_prereleases = ? WHERE id = ?`,
+		set.Branch, boolToInt(set.AutoDeploy), joinWatchPaths(set.WatchPaths),
+		set.Trigger, set.TagPattern, boolToInt(set.TagPrereleases), id)
 	return err
 }
 
@@ -341,12 +360,14 @@ func scanApp(row scanner) (core.App, error) {
 		autoDeploy int
 		watchPaths string
 		ephemeral  int
+		tagPre     int
 	)
 	if err := row.Scan(&app.ID, &app.ProjectID, &app.Name, &app.RepoURL, &app.Domain, &createdAt,
 		&app.Branch, &autoDeploy, &app.Source, &app.WebhookToken, &app.WebhookSecret, &app.SSHPublicKey, &app.GithubRepo,
 		&app.GitSourceID,
 		&app.Kind, &app.ComposePath, &app.DockerfilePath, &watchPaths, &app.TemplateID, &app.ComposeRaw,
-		&app.ParentID, &app.PRNumber, &ephemeral, &app.PreviewStatus); err != nil {
+		&app.ParentID, &app.PRNumber, &ephemeral, &app.PreviewStatus,
+		&app.DeployTrigger, &app.TagPattern, &tagPre); err != nil {
 		return core.App{}, err
 	}
 	t, err := parseTime(createdAt)
@@ -357,6 +378,7 @@ func scanApp(row scanner) (core.App, error) {
 	app.AutoDeploy = autoDeploy != 0
 	app.WatchPaths = splitWatchPaths(watchPaths)
 	app.Ephemeral = ephemeral != 0
+	app.TagPrereleases = tagPre != 0
 	return app, nil
 }
 

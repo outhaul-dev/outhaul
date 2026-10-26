@@ -135,7 +135,10 @@ func TestUpdateAppSettings(t *testing.T) {
 		Name: "a", RepoURL: "https://github.com/o/r.git", Domain: "a.example.com",
 		Branch: "main", Source: core.SourcePublic, WebhookSecret: "w",
 	})
-	if err := st.UpdateAppSettings(ctx, app.ID, "develop", true, []string{"src/**", "package.json"}); err != nil {
+	if err := st.UpdateAppSettings(ctx, app.ID, DeploySettings{
+		Branch: "develop", AutoDeploy: true, WatchPaths: []string{"src/**", "package.json"},
+		Trigger: core.TriggerTag, TagPattern: "release-*", TagPrereleases: true,
+	}); err != nil {
 		t.Fatalf("UpdateAppSettings: %v", err)
 	}
 	got, _ := st.GetApp(ctx, app.ID)
@@ -145,12 +148,31 @@ func TestUpdateAppSettings(t *testing.T) {
 	if len(got.WatchPaths) != 2 || got.WatchPaths[0] != "src/**" || got.WatchPaths[1] != "package.json" {
 		t.Errorf("watch paths not round-tripped: %v", got.WatchPaths)
 	}
+	if got.DeployTrigger != core.TriggerTag || got.TagPattern != "release-*" || !got.TagPrereleases {
+		t.Errorf("tag settings not round-tripped: %q %q %v", got.DeployTrigger, got.TagPattern, got.TagPrereleases)
+	}
 
-	if err := st.UpdateAppSettings(ctx, app.ID, "develop", true, nil); err != nil {
+	if err := st.UpdateAppSettings(ctx, app.ID, DeploySettings{Branch: "develop", AutoDeploy: true}); err != nil {
 		t.Fatalf("UpdateAppSettings (clear watch paths): %v", err)
 	}
 	got, _ = st.GetApp(ctx, app.ID)
 	if len(got.WatchPaths) != 0 {
 		t.Errorf("watch paths not cleared: %v", got.WatchPaths)
+	}
+}
+
+func TestCreateAppDefaultsToBranchTrigger(t *testing.T) {
+	st := gitTestStore(t)
+	ctx := context.Background()
+	app, err := st.CreateApp(ctx, core.App{
+		Name: "a", RepoURL: "https://github.com/o/r.git", Domain: "a.example.com",
+		Source: core.SourcePublic, WebhookSecret: "w",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := st.GetApp(ctx, app.ID)
+	if got.DeployTrigger != core.TriggerBranch || got.TagPattern != core.DefaultTagPattern || got.TagPrereleases {
+		t.Errorf("defaults = %q %q %v", got.DeployTrigger, got.TagPattern, got.TagPrereleases)
 	}
 }

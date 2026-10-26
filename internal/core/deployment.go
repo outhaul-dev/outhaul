@@ -28,6 +28,14 @@ type Deployment struct {
 	// image pruner, so this attempt can no longer be rolled back to.
 	ImagePruned bool
 
+	// Tag is the git tag this attempt builds; empty for the branch, or not yet
+	// resolved.
+	Tag string
+
+	// FromTagEvent reports that a tag push queued this attempt, so the worker
+	// re-checks the tag at claim.
+	FromTagEvent bool
+
 	CreatedAt  time.Time
 	StartedAt  *time.Time // when a worker claimed it (queued -> building)
 	FinishedAt *time.Time // when it reached a terminal state
