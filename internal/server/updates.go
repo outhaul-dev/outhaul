@@ -74,7 +74,7 @@ type updatesPanel struct {
 	InProgress bool          // show the updater's log instead of the Update button
 	Blocked    string        // why Update cannot run now; "" if it can
 	Confirm    string
-	Stuck      string // what the log says once Outhaul has not answered for three minutes
+	Stuck      string // the status line once Outhaul has not answered for three minutes
 }
 
 type updateCommit struct {
