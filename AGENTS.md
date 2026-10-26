@@ -21,10 +21,13 @@ go vet ./...
 go test ./...          # what CI runs
 go test -race ./...    # run before calling a change done
 sh deploy/test/run.sh  # installer unit tests (CI: when deploy/** changes)
-shellcheck -s sh --severity=warning deploy/bootstrap.sh deploy/test/*.sh
+shellcheck -s sh --severity=warning deploy/bootstrap.sh deploy/update.sh deploy/test/*.sh
 
 sh deploy/dev/run.sh   # the full stack in a container, against the host Docker daemon
 ```
+
+CI's shellcheck is Ubuntu's 0.9.0, which reports some errors that newer
+versions don't. `koalaman/shellcheck:v0.9.0` runs the same version in Docker.
 
 `go build .` leaves an `outhaul` binary in the repository root. Don't commit
 it.

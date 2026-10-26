@@ -1,6 +1,7 @@
 #!/usr/bin/env sh
 # install_updater: puts the updater and its units in place. chown and
 # systemctl are recording stubs; every path points into a temp tree.
+# shellcheck disable=SC2218 # a later test stands in for install_updater; shellcheck 0.9 takes the earlier calls for that
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/assert.sh"
 OUTHAUL_INSTALLER_LIB=1 . "$here/../bootstrap.sh"

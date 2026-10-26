@@ -1,6 +1,7 @@
 #!/usr/bin/env sh
 # The updater (deploy/update.sh). systemd, Docker, curl, journalctl and the
 # build are shell-function stubs, and every path points into a temp tree.
+# shellcheck disable=SC2218 # later tests stand in for cp, rm and install_updater; shellcheck 0.9 takes the earlier calls for those
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/assert.sh"
 # shellcheck disable=SC2034 # read by update.sh, which sources it
