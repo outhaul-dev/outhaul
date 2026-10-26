@@ -148,9 +148,25 @@ func TestCompareAheadOrDiverged(t *testing.T) {
 
 func TestCompareOtherStatusIsAnError(t *testing.T) {
 	f := newFakeGitHub(t, ghReply{})
-	f.code = http.StatusForbidden
-	if _, err := f.comparer().Compare(context.Background(), repoURL, "abc"); err == nil {
-		t.Fatal("want an error for 403")
+	f.code = http.StatusInternalServerError
+	_, err := f.comparer().Compare(context.Background(), repoURL, "abc")
+	if err == nil {
+		t.Fatal("want an error for 500")
+	}
+	if errors.Is(err, ErrRefused) {
+		t.Errorf("500 is %v, want an error other than ErrRefused", err)
+	}
+}
+
+// GitHub answers 403 (or 429) when it refuses an anonymous caller, most
+// often for its rate limit.
+func TestCompareRefusedIsErrRefused(t *testing.T) {
+	for _, code := range []int{http.StatusForbidden, http.StatusTooManyRequests} {
+		f := newFakeGitHub(t, ghReply{})
+		f.code = code
+		if _, err := f.comparer().Compare(context.Background(), repoURL, "abc"); !errors.Is(err, ErrRefused) {
+			t.Errorf("%d: err = %v, want ErrRefused", code, err)
+		}
 	}
 }
 

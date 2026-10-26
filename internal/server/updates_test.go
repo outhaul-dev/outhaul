@@ -222,6 +222,16 @@ func TestUpdatesPanelCheckResults(t *testing.T) {
 		{"could not check", testBuild, func(f *fakeCompare) { f.fail(http.StatusInternalServerError) },
 			[]string{"Could not check for updates: github compare: 500 Internal Server Error: nope. Update still builds the newest main."},
 			[]string{updateButtonDisabled}},
+		// GitHub's reply to a refused request is JSON for programs: say what it means.
+		{"github refuses", testBuild, func(f *fakeCompare) { f.fail(http.StatusForbidden) },
+			[]string{"Could not check for updates: GitHub refused the request (rate limit?). Update still builds the newest main."},
+			[]string{"nope", "403", updateButtonDisabled}},
+		{"github limits", testBuild, func(f *fakeCompare) { f.fail(http.StatusTooManyRequests) },
+			[]string{"Could not check for updates: GitHub refused the request (rate limit?). Update still builds the newest main."},
+			[]string{"nope", "429"}},
+		{"not on github", update.Build{Commit: testCommit, Repo: "https://gitlab.com/o/r.git"}, func(*fakeCompare) {},
+			[]string{"Could not check for updates: the repository is not on GitHub. Update still builds the newest main."},
+			[]string{"update: ", updateButtonDisabled}},
 		{"traefik changes", testBuild, func(f *fakeCompare) {
 			f.answer("ahead", 1, [][2]string{{"ddddddd333333333333333333333333333333333", "Bump Traefik"}}, "internal/traefik/proxy.go")
 		}, []string{"1 commit behind", copyTraefik}, []string{"1 commits", copyInstaller}},

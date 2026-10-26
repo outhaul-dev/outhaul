@@ -30,6 +30,9 @@ var (
 	ErrNotGitHub = errors.New("update: repository is not on GitHub")
 	// ErrUnknownBuild means the binary does not know which commit it is.
 	ErrUnknownBuild = errors.New("update: this build does not know its commit")
+	// ErrRefused means GitHub refused the request (403 or 429), most often
+	// for the rate limit on anonymous callers.
+	ErrRefused = errors.New("update: GitHub refused the request")
 )
 
 // Commit is one commit on main that the running build lacks.
@@ -116,7 +119,11 @@ func (c *Comparer) Compare(ctx context.Context, repoURL, base string) (Compariso
 		return Comparison{Status: CompareAhead}, nil
 	case resp.StatusCode != http.StatusOK:
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return Comparison{}, fmt.Errorf("github compare: %s: %s", resp.Status, strings.TrimSpace(string(msg)))
+		err := fmt.Errorf("github compare: %s: %s", resp.Status, strings.TrimSpace(string(msg)))
+		if resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusTooManyRequests {
+			err = fmt.Errorf("%w: %w", ErrRefused, err)
+		}
+		return Comparison{}, err
 	}
 	var r compareReply
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxCompareBody)).Decode(&r); err != nil {

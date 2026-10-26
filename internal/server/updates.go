@@ -104,7 +104,7 @@ func (s *Server) updatesPanel(ctx context.Context) *updatesPanel {
 		cmp := c.Comparison
 		switch {
 		case c.Err != nil:
-			p.Summary = "Could not check for updates: " + strings.TrimRight(c.Err.Error(), ".") + ". Update still builds the newest main."
+			p.Summary = "Could not check for updates: " + checkFailure(c.Err) + ". Update still builds the newest main."
 		case cmp.Status == update.CompareUpToDate:
 			p.Summary = "Up to date with main."
 		case cmp.Status == update.CompareBehind:
@@ -151,6 +151,18 @@ func (s *Server) updatesPanel(ctx context.Context) *updatesPanel {
 		p.Warnings = append(p.Warnings, updateTraefikCopy)
 	}
 	return p
+}
+
+// checkFailure says why the check against main failed, in words for the
+// panel: GitHub's own reply to a refused request is JSON meant for programs.
+func checkFailure(err error) string {
+	switch {
+	case errors.Is(err, update.ErrNotGitHub):
+		return "the repository is not on GitHub"
+	case errors.Is(err, update.ErrRefused):
+		return "GitHub refused the request (rate limit?)"
+	}
+	return strings.TrimRight(err.Error(), ".")
 }
 
 func plural(n int, one, many string) string {
