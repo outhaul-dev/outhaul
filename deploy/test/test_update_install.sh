@@ -72,5 +72,15 @@ rm "$UNIT_DIR/outhaul-update.path"
 assert_fail "missing unit fails" install_updater "$SRC"
 assert_eq "missing unit: systemd untouched" "" "$(grep '^systemctl' "$CALLS" || true)"
 
+# setup_updater is what main calls: a failure must not stop the install.
+install_updater() { echo "install_updater $*" >> "$CALLS"; return 1; }
+: > "$CALLS"
+out=$(set -e; setup_updater "$SRC" 2>&1; echo "reached")
+assert_contains "setup_updater: a failure does not abort" "$out" reached
+assert_contains "setup_updater: names the updater" "$out" "could not install the updater"
+assert_contains "setup_updater: says what is unavailable" "$out" "re-run the installer"
+assert_eq "setup_updater: passes the source dir" "install_updater $SRC" "$(cat "$CALLS")"
+unset -f install_updater
+
 rm -rf "$ROOT"
 [ "${TESTS_FAIL:-0}" -eq 0 ]

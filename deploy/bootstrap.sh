@@ -639,6 +639,15 @@ install_updater() { # src_dir
 	step_ok "installed the updater"
 }
 
+# The installer's call: the updater is optional, so a failure must not stop
+# the firewall, ingress and setup steps that follow.
+setup_updater() { # src_dir
+	if ! install_updater "$1"; then
+		step_fail "could not install the updater"
+		note "updating from the UI stays unavailable; re-run the installer to try again"
+	fi
+}
+
 # The admin UI's port, from an OUTHAUL_LISTEN_ADDR-style ":8080".
 admin_port() { # listen_addr
 	addr=${1:-:8080}
@@ -835,7 +844,7 @@ main() {
 		note "/etc/outhaul.env exists — left unchanged"
 	fi
 	install_service
-	install_updater "$SRC_DIR"
+	setup_updater "$SRC_DIR"
 
 	if [ -n "${GOROOT_TMP:-}" ]; then
 		if ask_yes_no "  Remove the downloaded Go toolchain (~150 MB)?" y; then
