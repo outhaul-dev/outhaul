@@ -608,6 +608,37 @@ install_service() {
 	step_ok "outhaul service started"
 }
 
+# Copies src to dest by a temp file and rename, so a process that has dest
+# open or is running it keeps the old file: a new inode, never a rewrite.
+install_atomic() { # src dest mode
+	rm -f "$2.new" || return 1
+	cp "$1" "$2.new" || return 1
+	chmod "$3" "$2.new" || return 1
+	mv -f "$2.new" "$2"
+}
+
+# Installs the root updater that Settings > Updates drives: the script and
+# the installer it reuses, the two systemd units, and the directory Outhaul
+# and the updater share. The paths are overridable for tests, and the
+# updater itself calls this from a new tree after a healthy update.
+install_updater() { # src_dir
+	_lib=${LIB_DIR:-/usr/local/lib/outhaul}
+	_units=${UNIT_DIR:-/etc/systemd/system}
+	_upd=${UPDATE_DIR:-/var/lib/outhaul/update}
+	mkdir -p "$_lib" "$_units" || return 1
+	install_atomic "$1/deploy/update.sh" "$_lib/update.sh" 0755 || return 1
+	install_atomic "$1/deploy/bootstrap.sh" "$_lib/bootstrap.sh" 0644 || return 1
+	install_atomic "$1/deploy/outhaul-update.path" "$_units/outhaul-update.path" 0644 || return 1
+	install_atomic "$1/deploy/outhaul-update.service" "$_units/outhaul-update.service" 0644 || return 1
+	mkdir -p "$_upd" || return 1
+	chmod 0700 "$_upd" || return 1
+	chown outhaul:outhaul "$_upd" || return 1
+	printf '1\n' > "$_upd/updater" || return 1
+	systemctl daemon-reload || return 1
+	systemctl enable --now outhaul-update.path || return 1
+	step_ok "installed the updater"
+}
+
 # The admin UI's port, from an OUTHAUL_LISTEN_ADDR-style ":8080".
 admin_port() { # listen_addr
 	addr=${1:-:8080}
@@ -804,6 +835,7 @@ main() {
 		note "/etc/outhaul.env exists — left unchanged"
 	fi
 	install_service
+	install_updater "$SRC_DIR"
 
 	if [ -n "${GOROOT_TMP:-}" ]; then
 		if ask_yes_no "  Remove the downloaded Go toolchain (~150 MB)?" y; then

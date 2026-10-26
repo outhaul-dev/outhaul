@@ -125,7 +125,9 @@ and restarts the service. It:
 - builds the binary from source and installs it to `/usr/local/bin/outhaul`;
 - writes `/etc/outhaul.env` (put `OUTHAUL_*` overrides there — ACME email,
   public URL) and installs and starts `outhaul.service`
-  ([deploy/outhaul.service](deploy/outhaul.service)).
+  ([deploy/outhaul.service](deploy/outhaul.service));
+- installs the **updater**: a small root script and two systemd units
+  ([deploy/update.sh](deploy/update.sh)) that let Settings update Outhaul.
 
 The installer prints the one-time setup URL, and it also lands in the
 journal:
@@ -146,6 +148,15 @@ is still root-equivalent (socket access can mount the host filesystem into a
 container), so the dedicated user is least-privilege hygiene rather than a
 hard security boundary; the unit layers systemd sandboxing on top
 (`NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=full`, `ProtectHome`).
+
+### Updating
+
+Settings → Updates compares the server with `main` and updates it on a click.
+Your apps keep running while it builds. Outhaul restarts for a moment, and a
+failed update rolls back to the version that was running. Changes to the
+installer itself are not part of this: they need an installer run. A server
+installed before the Updates panel existed gets it by re-running the installer
+once.
 
 ## Configuration
 

@@ -7,6 +7,9 @@ here=$(cd "$(dirname "$0")" && pwd)
 INSTALLER=$here/../bootstrap.sh
 OUTHAUL_UPDATER_LIB=1 . "$here/../update.sh"
 default_repo=$OUTHAUL_REPO
+# The installer defines the real install_updater, which writes to system
+# paths. Scenarios that want one define their own recording stub.
+unset -f install_updater
 
 umask 022 # systemd's default for a service
 ROOT=$(mktemp -d)
@@ -285,6 +288,7 @@ assert_eq "updated: health checked on OUTHAUL_LISTEN_ADDR's port" 1 \
 assert_contains "updated: the log names the Traefik change" "$(log)" "traefik:v1 to traefik:v2"
 assert_contains "updated: ... and its effect" "$(log)" "This update restarts Traefik: every app is unreachable for a few seconds."
 assert_eq "updated: a fresh log" 0 "$(grep -c 'the previous update' "$UPDATE_DIR/log")"
+assert_eq "updated: no updater refresh attempted when the installer has none" 0 "$(grep -c 'could not refresh' "$UPDATE_DIR/log" || true)"
 assert_eq "updated: log readable by outhaul" 644 "$(stat -c %a "$UPDATE_DIR/log")"
 assert_eq "updated: the clone is removed" no "$(exists "$T/src")"
 assert_eq "updated: only status, log and previous/ are left" "log previous status" "$(ls -A "$UPDATE_DIR" | paste -sd' ' -)"
