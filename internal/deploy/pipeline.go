@@ -15,6 +15,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/dbaas"
 	"github.com/outhaul-dev/outhaul/internal/docker"
+	"github.com/outhaul-dev/outhaul/internal/tagdeploy"
 	"github.com/outhaul-dev/outhaul/internal/traefik"
 )
 
@@ -41,6 +42,10 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 	app, err := w.store.GetApp(ctx, dep.AppID)
 	if err != nil {
 		w.fail(dep, core.StatusBuilding, "load app: "+err.Error(), out)
+		return
+	}
+
+	if !w.prepareTag(ctx, &dep, app, out) {
 		return
 	}
 
@@ -379,6 +384,81 @@ func upsertEnv(vars []core.EnvVar, v core.EnvVar) []core.EnvVar {
 	return append(vars, v)
 }
 
+// prepareTag settles which tag a deployment builds, before anything is cloned.
+// It returns false when it has already settled the deployment (cancelled or
+// failed). Rollbacks reuse an image and need no tag.
+//
+//   - A tag-event deployment re-checks its tag against the live one: a push
+//     can slip in behind a newer tag that went live while it queued.
+//   - A Deploy click on a tag-mode app (no tag yet) builds the newest matching
+//     tag, or redeploys the live tag if none looks like a version.
+func (w *Worker) prepareTag(ctx context.Context, dep *core.Deployment, app core.App, out io.Writer) bool {
+	if dep.Image != "" {
+		return true
+	}
+	policy := tagdeploy.PolicyFor(app)
+	switch {
+	case dep.FromTagEvent:
+		live, err := w.store.LiveDeployment(ctx, app.ID)
+		if err != nil {
+			w.fail(*dep, core.StatusBuilding, "load live deployment: "+err.Error(), out)
+			return false
+		}
+		var inPlay []string
+		if live != nil && live.Tag != "" {
+			inPlay = []string{live.Tag}
+		}
+		if d := policy.Decide([]string{dep.Tag}, inPlay); d.Tag == "" {
+			logf(out, "Skipping: %s", d.Reason)
+			if _, err := w.store.SetStatus(context.WithoutCancel(ctx), dep.ID,
+				core.StatusBuilding, core.StatusCancelled, "skipped: "+d.Reason); err != nil {
+				logf(out, "WARNING: could not record the skip: %v", err)
+			}
+			return false
+		}
+	case app.DeployTrigger == core.TriggerTag && dep.Tag == "":
+		spec, err := w.cloneSpec(ctx, app)
+		if err != nil {
+			w.fail(*dep, core.StatusBuilding, "prepare clone: "+err.Error(), out)
+			return false
+		}
+		tags, err := w.cloner.ListTags(ctx, spec)
+		if err != nil {
+			w.fail(*dep, core.StatusBuilding, "list tags: "+err.Error(), out)
+			return false
+		}
+		tag, ok := policy.Newest(tags)
+		if ok {
+			logf(out, "Deploying the newest tag matching %q: %s", app.TagPattern, tag)
+		} else {
+			live, err := w.store.LiveDeployment(ctx, app.ID)
+			if err != nil {
+				w.fail(*dep, core.StatusBuilding, "load live deployment: "+err.Error(), out)
+				return false
+			}
+			if live == nil || live.Tag == "" {
+				reason := fmt.Sprintf("no tag matches %q", app.TagPattern)
+				for _, t := range tags {
+					if policy.Eligible(t) {
+						reason = fmt.Sprintf("no tag matching %q looks like a version", app.TagPattern)
+						break
+					}
+				}
+				w.fail(*dep, core.StatusBuilding, reason, out)
+				return false
+			}
+			tag = live.Tag
+			logf(out, "No tag matching %q looks like a version; redeploying the live tag %s", app.TagPattern, tag)
+		}
+		if err := w.store.SetDeploymentTag(ctx, dep.ID, tag); err != nil {
+			w.fail(*dep, core.StatusBuilding, "record tag: "+err.Error(), out)
+			return false
+		}
+		dep.Tag = tag
+	}
+	return true
+}
+
 // cloneWorkDir creates the per-deploy work dir and clones the app's repo into
 // it. The returned cleanup removes the dir and is non-nil exactly when err is
 // nil. Errors come back ready to be used as a failure reason.
@@ -397,6 +477,10 @@ func (w *Worker) cloneWorkDir(ctx context.Context, dep core.Deployment, app core
 	if err != nil {
 		cleanup()
 		return "", nil, fmt.Errorf("prepare clone: %w", err)
+	}
+	if dep.Tag != "" {
+		spec.Branch = "refs/tags/" + dep.Tag
+		logf(out, "Building tag %s", dep.Tag)
 	}
 	if err := w.cloner.Clone(ctx, spec, workDir, out); err != nil {
 		cleanup()
