@@ -1,0 +1,18 @@
+{
+  "name": "WordPress",
+  "description": "The world's most popular CMS for websites and blogs.",
+  "version": "7",
+  "tags": ["cms", "blog"],
+  "links": {
+    "website": "https://wordpress.org",
+    "docs": "https://wordpress.org/documentation/",
+    "github": "https://github.com/WordPress/WordPress"
+  },
+  "env": [
+    { "key": "MARIADB_PASSWORD", "value": "${password:24}", "secret": true },
+    { "key": "MARIADB_ROOT_PASSWORD", "value": "${password:24}", "secret": true }
+  ],
+  "domains": [
+    { "service": "wordpress", "port": 80 }
+  ]
+}

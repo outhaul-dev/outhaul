@@ -84,6 +84,30 @@ func TestRenderGeneratesFreshSecrets(t *testing.T) {
 	}
 }
 
+// WordPress routes its web service on Apache's port, and both of its
+// database passwords are stored as secrets.
+func TestWordPressTemplate(t *testing.T) {
+	tmpl, err := Get("wordpress")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if len(tmpl.Domains) != 1 || tmpl.Domains[0].Service != "wordpress" || tmpl.Domains[0].Port != 80 {
+		t.Errorf("domains = %+v, want the wordpress service on port 80", tmpl.Domains)
+	}
+	r, err := Render(tmpl, "blog", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Env) != 2 {
+		t.Errorf("env = %+v, want the database and root passwords", r.Env)
+	}
+	for _, e := range r.Env {
+		if !e.Secret {
+			t.Errorf("wordpress env %s should be marked secret", e.Key)
+		}
+	}
+}
+
 func TestExpandHelpers(t *testing.T) {
 	if v := expand("${password:20}", nil, "app", ""); len(v) != 20 || strings.ContainsAny(v, "${}") {
 		t.Errorf("password:20 = %q", v)

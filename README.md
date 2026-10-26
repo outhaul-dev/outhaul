@@ -59,7 +59,7 @@ one-time setup URL. Developers with a local checkout can run
 
 ### Batteries included
 - **Managed databases** — one click provisions PostgreSQL, MySQL, or Redis with generated credentials and persistent storage, reachable over the internal network (and optionally on a published host port).
-- **Template gallery** — deploy Uptime Kuma, Grafana, Umami, n8n, Vaultwarden, PocketBase, Ghost, or MinIO in one click, with generated credentials and zero-DNS `sslip.io` domains — fully editable afterward like any compose app.
+- **Template gallery** — deploy Uptime Kuma, Grafana, Umami, n8n, Vaultwarden, PocketBase, Ghost, WordPress, or MinIO in one click, with generated credentials and zero-DNS `sslip.io` domains — fully editable afterward like any compose app.
 - **Scheduled backups & restore** — ship database dumps and compose volumes to any S3-compatible bucket (AWS, MinIO, R2, B2, …) on cron schedules, with retention and run history; restore any archive from the same page.
 
 ### See what's happening

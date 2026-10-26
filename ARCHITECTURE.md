@@ -341,8 +341,8 @@ and Dockerfile autodetection at create time.
 ### One-click templates (done)
 
 `internal/catalog` is a built-in gallery of popular open-source apps (Uptime
-Kuma, Grafana, Umami, n8n, Vaultwarden, PocketBase, Ghost, MinIO) that deploy
-as compose stacks with one click (design in
+Kuma, Grafana, Umami, n8n, Vaultwarden, PocketBase, Ghost, WordPress, MinIO)
+that deploy as compose stacks with one click (design in
 `docs/superpowers/specs/2026-07-05-one-click-templates.md`, grounded in
 Dokploy's `Dokploy/templates` blueprints and its template processors). Where
 Dokploy fetches blueprints from GitHub at deploy time, Outhaul embeds the
