@@ -15,6 +15,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/gitrepo"
 	"github.com/outhaul-dev/outhaul/internal/logstream"
+	"github.com/outhaul-dev/outhaul/internal/tagdeploy"
 )
 
 // Store is the slice of the store the bridge needs.
@@ -22,6 +23,7 @@ type Store interface {
 	GetAppByName(ctx context.Context, name string) (core.App, error)
 	CreateApp(ctx context.Context, app core.App) (core.App, error)
 	CreateDeployment(ctx context.Context, appID int64) (core.Deployment, error)
+	EnqueueTagDeployment(ctx context.Context, appID int64, choose func(inPlay []string) (tag string, ok bool)) (core.Deployment, bool, error)
 	GetDeployment(ctx context.Context, id int64) (core.Deployment, error)
 }
 
@@ -80,6 +82,10 @@ func (b *Bridge) serve(ctx context.Context, conn io.ReadWriter) int {
 		return 1
 	}
 
+	if app.DeployTrigger == core.TriggerTag {
+		return b.serveTagPush(ctx, conn, app, req)
+	}
+
 	deployRef := "refs/heads/" + app.Branch
 	pushedDeployBranch := false
 	for _, u := range req.Refs {
@@ -92,7 +98,53 @@ func (b *Bridge) serve(ctx context.Context, conn io.ReadWriter) int {
 			len(req.Refs), app.Branch)
 		return 0
 	}
-	return b.runDeploy(ctx, conn, app)
+	dep, err := b.store.CreateDeployment(ctx, app.ID)
+	if err != nil {
+		fmt.Fprintf(conn, "✗ enqueue failed: %v\n", err)
+		return 1
+	}
+	return b.runDeploy(ctx, conn, app, dep)
+}
+
+// serveTagPush handles a push to a tag-mode app: branches are only stored, and
+// the highest eligible pushed tag is deployed when it is newer than what is
+// live or already queued.
+func (b *Bridge) serveTagPush(ctx context.Context, conn io.ReadWriter, app core.App, req request) int {
+	tags := tagRefs(req.Refs)
+	if len(tags) == 0 {
+		fmt.Fprintf(conn, "→ stored %d ref(s); this app deploys tags matching %q, and no tag was pushed, so no deploy\n",
+			len(req.Refs), app.TagPattern)
+		return 0
+	}
+	var decision tagdeploy.Decision
+	dep, ok, err := b.store.EnqueueTagDeployment(ctx, app.ID, func(inPlay []string) (string, bool) {
+		decision = tagdeploy.PolicyFor(app).Decide(tags, inPlay)
+		return decision.Tag, decision.Tag != ""
+	})
+	if err != nil {
+		fmt.Fprintf(conn, "✗ enqueue failed: %v\n", err)
+		return 1
+	}
+	if !ok {
+		fmt.Fprintf(conn, "→ stored %d ref(s); %s, so no deploy\n", len(req.Refs), decision.Reason)
+		return 0
+	}
+	fmt.Fprintf(conn, "→ deploying tag %s\n", dep.Tag)
+	return b.runDeploy(ctx, conn, app, dep)
+}
+
+// tagRefs returns the names of the refs/tags/* updates in push order,
+// skipping deletions (an all-zero new object id).
+func tagRefs(refs []RefUpdate) []string {
+	var tags []string
+	for _, u := range refs {
+		name, ok := strings.CutPrefix(u.Ref, "refs/tags/")
+		if !ok || name == "" || strings.Trim(u.New, "0") == "" {
+			continue
+		}
+		tags = append(tags, name)
+	}
+	return tags
 }
 
 // resolveOrCreate finds the push app by name, rejecting a non-push app, and
@@ -154,14 +206,9 @@ func (b *Bridge) coldCreate(ctx context.Context, req request) (core.App, error) 
 	return created, nil
 }
 
-// runDeploy enqueues a deployment, streams its log to conn, and returns the
+// runDeploy streams the enqueued deployment's log to conn and returns the
 // gated exit code.
-func (b *Bridge) runDeploy(ctx context.Context, conn io.ReadWriter, app core.App) int {
-	dep, err := b.store.CreateDeployment(ctx, app.ID)
-	if err != nil {
-		fmt.Fprintf(conn, "✗ enqueue failed: %v\n", err)
-		return 1
-	}
+func (b *Bridge) runDeploy(ctx context.Context, conn io.ReadWriter, app core.App, dep core.Deployment) int {
 	history, lines, cancel := b.broker.Subscribe(dep.ID)
 	defer cancel()
 	b.notifier.Notify()

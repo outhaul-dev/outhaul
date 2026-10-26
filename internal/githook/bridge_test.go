@@ -252,3 +252,130 @@ func TestRunHookOverUnixSocketDeploys(t *testing.T) {
 		t.Fatalf("client should have stripped the exit sentinel; output:\n%s", body)
 	}
 }
+
+func tagPushApp(t *testing.T, st *store.Store) core.App {
+	t.Helper()
+	ctx := context.Background()
+	app, err := st.CreateApp(ctx, core.App{Name: "api", Source: core.SourcePush, Branch: "main", Kind: core.KindNixpacks})
+	if err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+	err = st.UpdateAppSettings(ctx, app.ID, store.DeploySettings{
+		Branch: "main", AutoDeploy: app.AutoDeploy, Trigger: core.TriggerTag, TagPattern: "v*",
+	})
+	if err != nil {
+		t.Fatalf("UpdateAppSettings: %v", err)
+	}
+	app, err = st.GetAppByName(ctx, "api")
+	if err != nil {
+		t.Fatalf("GetAppByName: %v", err)
+	}
+	return app
+}
+
+func seedLiveTag(t *testing.T, st *store.Store, appID int64, tag string) {
+	t.Helper()
+	ctx := context.Background()
+	dep, ok, err := st.EnqueueTagDeployment(ctx, appID, func([]string) (string, bool) { return tag, true })
+	if err != nil || !ok {
+		t.Fatalf("seed tag %s: ok=%v err=%v", tag, ok, err)
+	}
+	markTerminal(t, st, dep, core.StatusRunning)
+}
+
+func countDeployments(t *testing.T, st *store.Store, appID int64) []core.Deployment {
+	t.Helper()
+	deps, err := st.ListDeploymentsForApp(context.Background(), appID)
+	if err != nil {
+		t.Fatalf("ListDeploymentsForApp: %v", err)
+	}
+	return deps
+}
+
+func TestBridgeTagAppBranchPushDoesNotDeploy(t *testing.T) {
+	b, st, _ := bridgeEnv(t)
+	app := tagPushApp(t, st)
+	out := runHandle(t, b, request{App: "api", Refs: []RefUpdate{{"0", "abc", "refs/heads/main"}}})
+	if !strings.Contains(out, "no deploy") || !strings.Contains(out, "exit 0") {
+		t.Fatalf("expected no deploy, exit 0:\n%s", out)
+	}
+	if n := len(countDeployments(t, st, app.ID)); n != 0 {
+		t.Fatalf("deployments = %d, want 0", n)
+	}
+}
+
+func TestBridgeTagAppDeploysPushedTag(t *testing.T) {
+	b, st, br := bridgeEnv(t)
+	app := tagPushApp(t, st)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		dep := waitForDeployment(t, st, app.ID)
+		br.Publish(dep.ID, "→ building image")
+		markTerminal(t, st, dep, core.StatusRunning)
+		br.Close(dep.ID)
+	}()
+	out := runHandle(t, b, request{App: "api", Refs: []RefUpdate{{"0", "abc", "refs/tags/v1.4.0"}}})
+	wg.Wait()
+	deps := countDeployments(t, st, app.ID)
+	if len(deps) != 1 || deps[0].Tag != "v1.4.0" {
+		t.Fatalf("deployments = %+v, want one for v1.4.0", deps)
+	}
+	for _, want := range []string{"deploying tag v1.4.0", "✓ deployed", "exit 0"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestBridgeTagAppPicksHighestOfSeveralTags(t *testing.T) {
+	b, st, br := bridgeEnv(t)
+	app := tagPushApp(t, st)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		dep := waitForDeployment(t, st, app.ID)
+		markTerminal(t, st, dep, core.StatusRunning)
+		br.Close(dep.ID)
+	}()
+	runHandle(t, b, request{App: "api", Refs: []RefUpdate{
+		{"0", "a", "refs/heads/main"},
+		{"0", "b", "refs/tags/v1.2.0"},
+		{"0", "c", "refs/tags/v1.4.0"},
+		{"0", "d", "refs/tags/v1.3.0"},
+	}})
+	wg.Wait()
+	deps := countDeployments(t, st, app.ID)
+	if len(deps) != 1 || deps[0].Tag != "v1.4.0" {
+		t.Fatalf("deployments = %+v, want exactly one for v1.4.0", deps)
+	}
+}
+
+func TestBridgeTagAppSkipsOlderTag(t *testing.T) {
+	b, st, _ := bridgeEnv(t)
+	app := tagPushApp(t, st)
+	seedLiveTag(t, st, app.ID, "v1.4.0")
+	out := runHandle(t, b, request{App: "api", Refs: []RefUpdate{{"0", "abc", "refs/tags/v1.3.1"}}})
+	for _, want := range []string{"v1.3.1 is not newer than v1.4.0", "no deploy", "exit 0"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q:\n%s", want, out)
+		}
+	}
+	if n := len(countDeployments(t, st, app.ID)); n != 1 {
+		t.Fatalf("deployments = %d, want only the seeded one", n)
+	}
+}
+
+func TestBridgeTagAppIgnoresDeletedTag(t *testing.T) {
+	b, st, _ := bridgeEnv(t)
+	app := tagPushApp(t, st)
+	out := runHandle(t, b, request{App: "api", Refs: []RefUpdate{{"abc", "0000000000000000000000000000000000000000", "refs/tags/v1.4.0"}}})
+	if !strings.Contains(out, "exit 0") {
+		t.Fatalf("expected exit 0:\n%s", out)
+	}
+	if n := len(countDeployments(t, st, app.ID)); n != 0 {
+		t.Fatalf("deployments = %d, want 0", n)
+	}
+}
