@@ -25,7 +25,7 @@
         <td><a href="/projects/{{.ProjectID}}" class="rowlink">{{.ProjectName}}</a></td>
         <td>{{if .Domains}}{{range .Domains}}<div><a href="http://{{.Host}}" target="_blank" rel="noreferrer" class="mono">{{.Host}}</a></div>{{end}}{{else if .Domain}}<a href="http://{{.Domain}}" target="_blank" rel="noreferrer" class="mono">{{.Domain}}</a>{{else}}<span class="muted">—</span>{{end}}</td>
         <td class="mono muted truncate">{{if .TemplateID}}template: {{.TemplateID}}{{else}}{{.RepoURL}}{{end}}</td>
-        <td class="mono muted">{{.Branch}}</td>
+        <td class="mono muted">{{if eq .DeployTrigger "tag"}}tags: {{.TagPattern}}{{else}}{{.Branch}}{{end}}</td>
         <td>
           {{if .Latest}}<span class="badge {{stateClass .Latest.Status}}">{{.Latest.Status}}</span>
           {{else}}<span class="badge state-stopped">never deployed</span>{{end}}

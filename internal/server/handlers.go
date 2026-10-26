@@ -1439,7 +1439,7 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if src.ImagePruned {
-		http.Error(w, "this deployment's image was pruned by image retention; deploy to rebuild from the branch instead", http.StatusBadRequest)
+		http.Error(w, "this deployment's image was pruned by image retention; deploy to rebuild instead", http.StatusBadRequest)
 		return
 	}
 	dep, err := s.store.CreateRollback(r.Context(), app.ID, src.Image, src.ID)

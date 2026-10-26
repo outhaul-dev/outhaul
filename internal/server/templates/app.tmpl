@@ -35,7 +35,7 @@
     {{if eq .App.Kind "compose"}}<div><dt>Compose file</dt><dd class="mono">{{.App.ComposePath}}</dd></div>{{end}}
     {{end}}
     <div><dt>Build type</dt><dd class="mono">{{.App.Kind}}</dd></div>
-    {{if not .App.TemplateID}}<div><dt>Branch</dt><dd class="mono">{{.App.Branch}}</dd></div>{{end}}
+    {{if not .App.TemplateID}}{{if eq .App.DeployTrigger "tag"}}<div><dt>Deploys</dt><dd>tags matching <span class="mono">{{.App.TagPattern}}</span></dd></div>{{else}}<div><dt>Branch</dt><dd class="mono">{{.App.Branch}}</dd></div>{{end}}{{end}}
     {{if .Deployments}}<div><dt>Last deployed</dt><dd class="mono muted">{{with index .Deployments 0}}<time datetime="{{.CreatedAt.Format "2006-01-02T15:04:05Z07:00"}}" title="{{fmtTime .CreatedAt}}">{{fmtTime .CreatedAt}}</time>{{end}}</dd></div>{{end}}
   </dl>
 </section>
@@ -162,7 +162,7 @@
   <p class="muted">Add this remote once, then push to deploy — the build streams into your terminal.</p>
   <div class="copywrap"><pre class="mono">git remote add outhaul {{.PushRemote}}
 git push outhaul {{.PushBranch}}{{if eq .App.DeployTrigger "tag"}}
-git tag v1.0.0 && git push outhaul v1.0.0{{end}}</pre>{{template "copybtn" .}}</div>
+git tag <tag> && git push outhaul <tag>   # a tag matching {{.App.TagPattern}}{{end}}</pre>{{template "copybtn" .}}</div>
   <p class="muted env-note">Your push key must be registered under <a href="/settings">Settings → Push keys</a>, and the SSH port must be reachable from your machine.</p>
 </section>
 {{end}}
@@ -191,7 +191,7 @@ git tag v1.0.0 && git push outhaul v1.0.0{{end}}</pre>{{template "copybtn" .}}</
         <td class="row-actions">
           {{if and .Status.IsTerminal .Image (ne $.App.Kind "compose")}}
           {{if .ImagePruned}}
-          <span class="muted" title="the built image was removed by image retention; deploy to rebuild from the branch">image pruned</span>
+          <span class="muted" title="the built image was removed by image retention; deploy to rebuild">image pruned</span>
           {{else}}
           <form method="post" action="/deployments/{{.ID}}/rollback" class="inline" onsubmit="return confirm('Roll back {{$.App.Name}} to the image built by deployment #{{.ID}}? Current env vars and domain settings will apply.');">
             <button type="submit" class="btn btn-quiet">Rollback</button>
@@ -438,9 +438,9 @@ git tag v1.0.0 && git push outhaul v1.0.0{{end}}</pre>{{template "copybtn" .}}</
   (function () {
     var sel = document.getElementById('deploy-trigger');
     if (!sel) return;
-    var form = sel.form;
+    var panel = sel.closest('section');
     function sync() {
-      form.querySelectorAll('[data-trigger]').forEach(function (el) {
+      panel.querySelectorAll('[data-trigger]').forEach(function (el) {
         el.hidden = el.getAttribute('data-trigger') !== sel.value;
       });
     }
@@ -448,7 +448,7 @@ git tag v1.0.0 && git push outhaul v1.0.0{{end}}</pre>{{template "copybtn" .}}</
     sync();
   })();
   </script>
-  <p class="muted env-note">Watch paths: one glob per line (<span class="mono">*</span> within a folder, <span class="mono">**</span> across folders). When set, a push only auto-deploys if it changed a matching file; leave empty to deploy on every push to the branch.</p>
+  <p class="muted env-note" data-trigger="branch">Watch paths: one glob per line (<span class="mono">*</span> within a folder, <span class="mono">**</span> across folders). When set, a push only auto-deploys if it changed a matching file; leave empty to deploy on every push to the branch.</p>
 </section>
 
 <section class="panel">
@@ -569,12 +569,12 @@ git tag v1.0.0 && git push outhaul v1.0.0{{end}}</pre>{{template "copybtn" .}}</
   <div class="copywrap"><div class="cmd"><code>{{.App.SSHPublicKey}}</code></div>{{template "copybtn" .}}</div>
   {{end}}
   {{if eq .App.Source "github"}}
-  <p class="env-note">Auto-deploy is handled by the connected GitHub App — {{if eq .App.DeployTrigger "tag"}}New tags matching <span class="mono">{{.App.TagPattern}}</span> deploy automatically. GitHub sends no push events when more than three tags are pushed at once.{{else}}pushes to <span class="mono">{{.App.Branch}}</span> deploy automatically when auto-deploy is enabled. No webhook setup needed.{{end}}</p>
+  <p class="env-note">Auto-deploy is handled by the connected GitHub App — {{if eq .App.DeployTrigger "tag"}}new tags matching <span class="mono">{{.App.TagPattern}}</span> deploy automatically when auto-deploy is enabled. No webhook setup needed. GitHub sends no push events when more than three tags are pushed at once.{{else}}pushes to <span class="mono">{{.App.Branch}}</span> deploy automatically when auto-deploy is enabled. No webhook setup needed.{{end}}</p>
   {{else if .WebhookURL}}
   <p class="env-note">Point a push webhook here to auto-deploy (content type <span class="mono">application/json</span>):</p>
   <div class="copywrap"><div class="cmd"><code>{{.WebhookURL}}</code></div>{{template "copybtn" .}}</div>
   <p class="env-note">and give it this secret — GitHub/Gitea: <em>Secret</em>; GitLab: <em>Secret token</em>. Deliveries without it are refused.</p>
-  {{if eq .App.DeployTrigger "tag"}}<p class="env-note">GitLab: also tick Tag push events.</p>{{end}}
+  {{if eq .App.DeployTrigger "tag"}}<p class="env-note">GitLab: also tick Tag push events. GitHub sends no push events when more than three tags are pushed at once.</p>{{end}}
   <details class="secret-reveal">
     <summary>show secret</summary>
     <div class="copywrap"><div class="cmd"><code>{{.App.WebhookSecret}}</code></div>{{template "copybtn" .}}</div>

@@ -527,3 +527,127 @@ func TestAppPageTagModeHints(t *testing.T) {
 		t.Error("GitHub tag-mode app lacks the three-tag note")
 	}
 }
+
+func TestTagModeShowsTriggerNotBranch(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	ctx := context.Background()
+	tagApp, err := env.store.CreateApp(ctx, core.App{
+		Name: "tagged", RepoURL: "https://github.com/o/t.git", Source: core.SourcePublic, Branch: "trunk-xyz",
+		WebhookToken: "tok", WebhookSecret: "sek",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setTagMode(t, env, tagApp.ID, "rel-*", false, true)
+	// setTagMode saves Branch "main"; give the branch a distinct marker.
+	branchApp, err := env.store.CreateApp(ctx, core.App{
+		Name: "plain", RepoURL: "https://github.com/o/p.git", Source: core.SourcePublic, Branch: "plainbranch",
+		WebhookToken: "tok2", WebhookSecret: "sek2",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	page := body(t, env.get(t, "/apps/"+itoa(tagApp.ID)))
+	if !strings.Contains(page, "<dt>Deploys</dt>") || !strings.Contains(page, "tags matching") || !strings.Contains(page, `<span class="mono">rel-*</span></dd>`) {
+		t.Error("tag-mode app page lacks the trigger summary")
+	}
+	if strings.Contains(page, "<dt>Branch</dt>") {
+		t.Error("tag-mode app page still shows a Branch summary row")
+	}
+	if page := body(t, env.get(t, "/apps/"+itoa(branchApp.ID))); !strings.Contains(page, "<dt>Branch</dt><dd class=\"mono\">plainbranch</dd>") {
+		t.Error("branch-mode app page lost its Branch row")
+	}
+
+	for _, path := range []string{"/apps", "/projects/" + itoa(tagApp.ProjectID)} {
+		list := body(t, env.get(t, path))
+		if !strings.Contains(list, "tags: rel-*") {
+			t.Errorf("%s lacks the tag trigger", path)
+		}
+		if !strings.Contains(list, ">plainbranch<") {
+			t.Errorf("%s lost the branch-mode branch", path)
+		}
+		if strings.Contains(list, ">main<") {
+			t.Errorf("%s shows the branch for a tag-mode app", path)
+		}
+	}
+}
+
+func TestTagModeCopy(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	ctx := context.Background()
+	pub, err := env.store.CreateApp(ctx, core.App{
+		Name: "pub", RepoURL: "https://github.com/o/p.git", Source: core.SourcePublic, Branch: "main",
+		WebhookToken: "tok", WebhookSecret: "sek",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setTagMode(t, env, pub.ID, "rel-*", false, true)
+	page := body(t, env.get(t, "/apps/"+itoa(pub.ID)))
+	if !strings.Contains(page, "more than three tags") || !strings.Contains(page, "GitLab: also tick Tag push events") {
+		t.Error("public tag-mode webhook panel lacks the GitHub three-tag note or the GitLab note")
+	}
+	if strings.Contains(page, "<p class=\"muted env-note\">Watch paths") {
+		t.Error("watch paths note must be tied to branch mode")
+	}
+	if !strings.Contains(page, `data-trigger="branch">Watch paths:`) && !strings.Contains(page, `data-trigger="branch" class="muted env-note">Watch paths`) {
+		t.Error("watch paths note lacks data-trigger=branch")
+	}
+
+	gh, err := env.store.CreateApp(ctx, core.App{
+		Name: "gh", RepoURL: "https://github.com/o/g.git", Source: core.SourceGithub, GithubRepo: "o/g", Branch: "main",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setTagMode(t, env, gh.ID, "rel-*", false, true)
+	page = body(t, env.get(t, "/apps/"+itoa(gh.ID)))
+	if !strings.Contains(page, "new tags matching") || !strings.Contains(page, "when auto-deploy is enabled. No webhook setup needed.") {
+		t.Error("GitHub App tag-mode copy wrong")
+	}
+	if strings.Contains(page, "— New tags") {
+		t.Error("capitalisation slip")
+	}
+}
+
+func TestPrunedImageTextIsModeNeutral(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	app := seedRunningApp(t, env, "")
+	setTagMode(t, env, app.ID, "v*", false, true)
+	dep := seedFinishedDeploy(t, env, app.ID, "outhaul/web:1")
+	if err := env.store.MarkImagePruned(context.Background(), dep.Image); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/apps/" + itoa(app.ID), "/deployments/" + itoa(dep.ID)} {
+		page := body(t, env.get(t, p))
+		if !strings.Contains(page, "image pruned") {
+			t.Fatalf("%s lacks the pruned marker", p)
+		}
+		if strings.Contains(page, "rebuild from the branch") {
+			t.Errorf("%s says branch for a tag-mode app", p)
+		}
+	}
+}
+
+func TestTagModePushHintFollowsPattern(t *testing.T) {
+	env := newTestEnv(t)
+	env.login(t)
+	app, err := env.store.CreateApp(context.Background(), core.App{
+		Name: "pushy", Source: core.SourcePush, Branch: "main", Kind: core.KindNixpacks,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setTagMode(t, env, app.ID, "rel-*", false, true)
+	page := body(t, env.get(t, "/apps/"+itoa(app.ID)))
+	if strings.Contains(page, "git tag v1.0.0") {
+		t.Error("push hint hard-codes v1.0.0")
+	}
+	if !strings.Contains(page, "git tag <tag> && git push outhaul <tag>") || !strings.Contains(page, "a tag matching rel-*") {
+		t.Errorf("push hint lacks the pattern-tied placeholder:\n%s", page[strings.Index(page, "git remote add"):][:300])
+	}
+}
