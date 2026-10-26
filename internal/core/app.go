@@ -17,6 +17,15 @@ const (
 	KindCompose    = "compose"    // docker compose stack, recreated in place
 )
 
+// App deploy triggers: which git event an auto-deploy app reacts to.
+const (
+	TriggerBranch = "branch" // a push to Branch deploys
+	TriggerTag    = "tag"    // a new version tag matching TagPattern deploys
+)
+
+// DefaultTagPattern is the tag glob a tag-mode app starts with.
+const DefaultTagPattern = "v*"
+
 // App is a deployable unit: a Git repo served on a domain.
 type App struct {
 	ID        int64
@@ -39,6 +48,10 @@ type App struct {
 	ComposePath    string   // compose file, relative to the repo root (Kind == KindCompose)
 	DockerfilePath string   // Dockerfile, relative to the repo root (Kind == KindDockerfile)
 	WatchPaths     []string // glob patterns gating auto-deploy; empty = every push deploys
+
+	DeployTrigger  string // TriggerBranch | TriggerTag — what auto-deploy reacts to
+	TagPattern     string // glob a pushed tag must match (DeployTrigger == TriggerTag)
+	TagPrereleases bool   // also deploy pre-release tags such as v1.5.0-rc.1
 
 	// Template apps (Source == SourceTemplate) carry their compose file with
 	// them instead of a repo: ComposeRaw is the snapshot taken from the

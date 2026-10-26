@@ -8,7 +8,7 @@ import "strings"
 func MatchAny(patterns, files []string) bool {
 	for _, p := range patterns {
 		for _, f := range files {
-			if matchGlob(p, f) {
+			if MatchGlob(p, f) {
 				return true
 			}
 		}
@@ -16,7 +16,7 @@ func MatchAny(patterns, files []string) bool {
 	return false
 }
 
-// matchGlob matches a slash-separated path against a glob pattern with the
+// MatchGlob matches a slash-separated path against a glob pattern with the
 // usual watch-path semantics (the micromatch subset Dokploy documents):
 //
 //	"*"      any run of characters within one path segment
@@ -28,9 +28,29 @@ func MatchAny(patterns, files []string) bool {
 //
 // Both sides are compared segment-wise, so "*" and "?" never cross a "/".
 // An invalid pattern (unclosed "[") matches nothing rather than erroring.
-func matchGlob(pattern, path string) bool {
+func MatchGlob(pattern, path string) bool {
 	pattern = strings.TrimPrefix(pattern, "/") // payload paths are repo-relative
 	return matchSegments(strings.Split(pattern, "/"), strings.Split(path, "/"))
+}
+
+// ValidGlob reports whether pattern is well formed: every "[" has a closing
+// "]" within the same path segment. MatchGlob treats an invalid pattern as
+// matching nothing, so callers that accept a pattern from an operator check
+// it first to reject the typo up front.
+func ValidGlob(pattern string) bool {
+	for _, seg := range strings.Split(pattern, "/") {
+		for i := 0; i < len(seg); i++ {
+			if seg[i] != '[' {
+				continue
+			}
+			end := strings.IndexByte(seg[i+1:], ']')
+			if end < 0 {
+				return false
+			}
+			i += end + 1
+		}
+	}
+	return true
 }
 
 func matchSegments(pat, path []string) bool {

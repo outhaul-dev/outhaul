@@ -47,8 +47,8 @@ func TestMatchGlob(t *testing.T) {
 		{"src/[unclosed", "src/u", false},
 	}
 	for _, tt := range tests {
-		if got := matchGlob(tt.pattern, tt.path); got != tt.want {
-			t.Errorf("matchGlob(%q, %q) = %v, want %v", tt.pattern, tt.path, got, tt.want)
+		if got := MatchGlob(tt.pattern, tt.path); got != tt.want {
+			t.Errorf("MatchGlob(%q, %q) = %v, want %v", tt.pattern, tt.path, got, tt.want)
 		}
 	}
 }
@@ -66,5 +66,21 @@ func TestMatchAny(t *testing.T) {
 	}
 	if MatchAny(patterns, nil) {
 		t.Error("no files must never match")
+	}
+}
+
+func TestValidGlob(t *testing.T) {
+	tests := []struct {
+		pattern string
+		want    bool
+	}{
+		{"v*", true},
+		{"release-[0-9]*", true},
+		{"v[0-9", false},
+	}
+	for _, tt := range tests {
+		if got := ValidGlob(tt.pattern); got != tt.want {
+			t.Errorf("ValidGlob(%q) = %v, want %v", tt.pattern, got, tt.want)
+		}
 	}
 }
