@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -29,9 +30,20 @@ const (
 	updateStuckCopy        = "Outhaul has not come back. On the server: sudo cat " + update.LogPath
 )
 
-// SetBuild records the running binary's build stamp, which /healthz and the
-// Updates panel report.
+// SetBuild records the running binary's build stamp, which /healthz (to
+// local callers) and the Updates panel report.
 func (s *Server) SetBuild(b update.Build) { s.build = b }
+
+// fromLoopback reports whether the request came from this host's loopback
+// address, as the updater's health check does.
+func fromLoopback(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
 
 // SetUpdates wires the Updates panel: the directory shared with the root
 // updater, and the check of the running build against main. Without it the

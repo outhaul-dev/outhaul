@@ -216,7 +216,10 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		if s.build.Known() {
+		// The commit is for the updater, which asks on 127.0.0.1. Traefik and
+		// cloudflared come from the Docker bridge, so the public URL never
+		// tells it.
+		if s.build.Known() && fromLoopback(r) {
 			w.Header().Set("X-Outhaul-Commit", s.build.Commit)
 		}
 		w.WriteHeader(http.StatusOK)

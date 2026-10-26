@@ -818,3 +818,31 @@ func TestHealthzNamesTheCommit(t *testing.T) {
 		t.Errorf("X-Outhaul-Commit = %q, want 0123456789abcdef", got)
 	}
 }
+
+// The updater asks on 127.0.0.1. Traefik and cloudflared reach Outhaul from
+// the Docker bridge, so a caller at the public URL is never told the commit.
+func TestHealthzNamesTheCommitOnlyToLocalCallers(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.SetBuild(update.Build{Commit: "0123456789abcdef"})
+	h := env.srv.Handler()
+	for _, c := range []struct {
+		remote, want string
+	}{
+		{"127.0.0.1:41234", "0123456789abcdef"},
+		{"[::1]:41234", "0123456789abcdef"},
+		{"172.18.0.2:41234", ""}, // Traefik, on the Docker bridge
+		{"203.0.113.9:41234", ""},
+		{"[2001:db8::1]:41234", ""},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+		req.RemoteAddr = c.remote
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s: status %d, want 200", c.remote, rec.Code)
+		}
+		if got := rec.Header().Get("X-Outhaul-Commit"); got != c.want {
+			t.Errorf("%s: X-Outhaul-Commit = %q, want %q", c.remote, got, c.want)
+		}
+	}
+}
