@@ -25,6 +25,8 @@ const (
 	updateBusyCopy         = "Wait for the running deploy, backup or restore to finish."
 	updateHeldCopy         = "An update is in progress. Try again when it finishes."
 	updateRunningCopy      = "An update is already running."
+	updateInterruptedCopy  = "The updater stopped without reporting a result. On the server, see " + update.LogPath + " and journalctl -u outhaul-update."
+	updateStuckCopy        = "Outhaul has not come back. On the server: sudo cat " + update.LogPath
 )
 
 // SetBuild records the running binary's build stamp, which /healthz and the
@@ -58,6 +60,7 @@ type updatesPanel struct {
 	InProgress bool          // show the updater's log instead of the Update button
 	Blocked    string        // why Update cannot run now; "" if it can
 	Confirm    string
+	Stuck      string // what the log says once Outhaul has not answered for three minutes
 }
 
 type updateCommit struct {
@@ -72,7 +75,7 @@ type updateResult struct {
 }
 
 func (s *Server) updatesPanel(ctx context.Context) *updatesPanel {
-	p := &updatesPanel{Build: s.build, Confirm: updateConfirmCopy, InProgress: s.updates.InProgress()}
+	p := &updatesPanel{Build: s.build, Confirm: updateConfirmCopy, Stuck: updateStuckCopy, InProgress: s.updates.InProgress()}
 	blocked, err := s.updateBlocked(ctx)
 	if err != nil {
 		// The POST checks again, and refuses with the error.
@@ -158,7 +161,7 @@ func lastUpdate(st update.Status, now time.Time) *updateResult {
 		}
 		r.Label = "interrupted"
 		if r.Message == "" {
-			r.Message = "The updater stopped without reporting a result. See journalctl -u outhaul-update on the server."
+			r.Message = updateInterruptedCopy
 		}
 	default:
 		r.Label, r.Class = st.State, "state-stopped"

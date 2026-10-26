@@ -28,6 +28,12 @@ const (
 	StateNotStarted  = "not_started"
 )
 
+// LogPath is the updater's log on the server: root's own file, in the
+// updater's directory (WORK_DIR in deploy/update.sh), which is still there
+// when an update leaves Outhaul down. The update directory's "log" is a
+// second name for it.
+const LogPath = "/var/lib/outhaul-updater/log"
+
 const (
 	requestTTL       = 2 * time.Minute
 	runningTTL       = 40 * time.Minute

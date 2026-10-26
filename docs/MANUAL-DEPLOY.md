@@ -270,9 +270,11 @@ systemctl enable --now outhaul-update.path
 
 The file `updater` tells Outhaul the updater is there. The updater keeps its
 own files in `/var/lib/outhaul-updater`, which only root can read: the copy
-of the running version it rolls back to, and its log. Outhaul's
-`/var/lib/outhaul/update` gets the status and a second name for the log, so
-the admin UI can show them. Build the binary with
+of the running version it rolls back to, and its log,
+`/var/lib/outhaul-updater/log`. Outhaul's `/var/lib/outhaul/update` gets the
+status and a second name for the log, so the admin UI can show them. If an
+update leaves Outhaul down, `sudo cat /var/lib/outhaul-updater/log` says how
+to put the previous version back. Build the binary with
 the version stamp too, or the panel cannot tell which commit is running. The
 installer's `build_ldflags` prints the flags:
 

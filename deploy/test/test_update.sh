@@ -212,15 +212,17 @@ setup() {
 }
 
 # update_main exits, so it runs in a subshell, with errexit as under systemd.
+# Its stderr is what systemd gives it: the journal.
 run_update() {
 	set +e
-	(set -e; update_main)
+	(set -e; update_main) 2>"$T/journal"
 	RC=$?
 	set -e
 }
 
 field() { sed -n "s/^$1=//p" "$UPDATE_DIR/status"; }
 log() { cat "$WORK_DIR/log"; }
+journal_lines() { paste -sd'|' "$T/journal"; }
 called() { grep -c -x "$1" "$T/calls" || true; }
 line_of() { grep -n "$1" "$T/calls" | tail -1 | cut -d: -f1; }
 systemctl_calls() { sed -n 's/^systemctl //p' "$T/calls" | paste -sd'|' -; }
@@ -327,6 +329,8 @@ assert_eq "updated: Outhaul's log is the updater's file" "$(inode "$WORK_DIR/log
 assert_eq "updated: no updater refresh attempted when the installer has none" 0 "$(grep -c 'could not refresh' "$WORK_DIR/log" || true)"
 assert_eq "updated: log readable by outhaul" 644 "$(stat -c %a "$UPDATE_DIR/log")"
 assert_eq "updated: the clone is removed" no "$(exists "$T/src")"
+assert_eq "updated: the journal names the log, then the result" \
+	"the log of this update: $WORK_DIR/log|updated: updated from aaaaaaa to bbbbbbb" "$(journal_lines)"
 assert_eq "updated: only status and log in the update directory" "log status" "$(ls -A "$UPDATE_DIR" | paste -sd' ' -)"
 assert_eq "updated: the log and previous/ in the updater's directory" "log previous" "$(ls -A "$WORK_DIR" | paste -sd' ' -)"
 
@@ -384,6 +388,8 @@ assert_eq "build failed: request removed" no "$(exists "$UPDATE_DIR/request")"
 assert_contains "build failed: the log has the error" "$(log)" "build failed — see $WORK_DIR/log"
 assert_eq "build failed: ... once" 1 "$(grep -c 'build failed — see' "$WORK_DIR/log")"
 assert_eq "build failed: the clone is removed" no "$(exists "$T/src")"
+assert_contains "build failed: the journal has the result" "$(journal_lines)" \
+	"|build_failed: the build failed; nothing changed. See the log."
 
 # an image pull fails: nothing has changed yet
 setup
@@ -416,6 +422,8 @@ assert_eq "rolled back: systemctl" "stop outhaul|daemon-reload|start outhaul|sto
 assert_eq "rolled back: 60 checks of the new version, then one of the old" 61 "$(grep -c '^curl ' "$T/calls")"
 assert_eq "rolled back: the journal is read" 1 "$(called 'journalctl -u outhaul -n 20 --no-pager')"
 assert_contains "rolled back: the journal is in the log" "$(log)" "outhaul: fatal: rollback test"
+assert_eq "rolled back: the updater's journal names the log, then the result" \
+	"the log of this update: $WORK_DIR/log|rolled_back: the new version did not become healthy; rolled back to aaaaaaa" "$(journal_lines)"
 
 # failed: the old version does not come back either
 setup
@@ -423,7 +431,13 @@ HEALTHY=''
 run_update
 assert_eq "failed: state" failed "$(field state)"
 assert_ok "failed: status format" has_status_keys "$UPDATE_DIR/status" 1
-assert_contains "failed: the message points at the log" "$(field message)" "See the log"
+assert_eq "failed: the message names the log" \
+	"the new version did not become healthy, and rolling back to aaaaaaa failed too. See $WORK_DIR/log on the server for how to recover." \
+	"$(field message)"
+assert_contains "failed: the journal has the recovery commands" "$(journal_lines)" \
+	"|To recover, run as root on the server:|  systemctl stop outhaul|  cp -p $WORK_DIR/previous/outhaul $BIN|"
+assert_contains "failed: ... and the result" "$(journal_lines)" \
+	"|failed: the new version did not become healthy, and rolling back to aaaaaaa failed too. See $WORK_DIR/log"
 assert_eq "failed: the old binary is back" "$OLD" "$(commit_of "$BIN")"
 assert_contains "failed: recovery: stop" "$(log)" "  systemctl stop outhaul"
 assert_contains "failed: recovery: the binary" "$(log)" "  cp -p $WORK_DIR/previous/outhaul $BIN"
@@ -452,7 +466,7 @@ assert_eq "snapshot failed: started again" "stop outhaul|stop outhaul|daemon-rel
 # stopped mid-build (systemctl stop, the 30-minute timeout): build_failed at once
 setup
 BUILD=block
-(set -e; update_main) &
+(set -e; update_main) 2>"$T/journal" &
 pid=$!
 wait_for "$T/building"
 kill -TERM "$pid" || true
@@ -464,7 +478,7 @@ assert_eq "stopped mid-build: the clone is removed" no "$(exists "$T/src")"
 # stopped while the new version is being checked: roll back
 setup
 : > "$T/block_curl"
-(set -e; update_main) &
+(set -e; update_main) 2>"$T/journal" &
 pid=$!
 wait_for "$T/curl_blocked"
 kill -TERM "$pid" || true
@@ -480,7 +494,7 @@ assert_eq "stopped mid-swap: message" \
 setup
 HEALTHY=$OLD
 journalctl() { : > "$T/in_rollback"; wait_for "$T/release"; }
-(set -e; update_main) &
+(set -e; update_main) 2>"$T/journal" &
 pid=$!
 wait_for "$T/in_rollback"
 kill -TERM "$pid" || true
@@ -493,7 +507,7 @@ journalctl() { echo "journalctl $*" >> "$T/calls"; echo 'outhaul: fatal: rollbac
 # stopped once the new version is healthy: it stays
 setup
 install_updater() { : > "$T/refreshing"; wait_for "$T/release"; }
-(set -e; update_main) &
+(set -e; update_main) 2>"$T/journal" &
 pid=$!
 wait_for "$T/refreshing"
 kill -TERM "$pid" || true
@@ -565,6 +579,7 @@ assert_eq "status is a directory: Outhaul never stopped" "" "$(systemctl_calls)"
 assert_eq "status is a directory: nothing lands in it" "" "$(ls -A "$UPDATE_DIR/status")"
 assert_eq "status is a directory: the request is removed" no "$(exists "$UPDATE_DIR/request")"
 assert_contains "status is a directory: the log says so" "$(log)" "could not write $UPDATE_DIR/status; nothing changed"
+assert_contains "status is a directory: ... and the journal" "$(journal_lines)" "|could not write $UPDATE_DIR/status; nothing changed"
 assert_eq "status is a directory: the clone is removed" no "$(exists "$T/src")"
 
 # A link in place of the update directory: nothing is written where it leads.
@@ -579,6 +594,7 @@ assert_eq "update directory is a link: nothing written where it leads" request "
 assert_ok "update directory is a link: binary unchanged" cmp -s "$T/bin.orig" "$BIN"
 assert_eq "update directory is a link: Outhaul never stopped" "" "$(systemctl_calls)"
 assert_contains "update directory is a link: the log says so" "$(log)" "could not write $UPDATE_DIR/status; nothing changed"
+assert_contains "update directory is a link: ... and the journal" "$(journal_lines)" "|could not write $UPDATE_DIR/status; nothing changed"
 
 # The real paths, and the data dir from /etc/outhaul.env.
 assert_eq "default paths" "/usr/local/bin/outhaul /etc/systemd/system /var/lib/outhaul /var/lib/outhaul/update /var/lib/outhaul-updater /var/cache/outhaul" \

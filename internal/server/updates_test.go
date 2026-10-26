@@ -30,6 +30,8 @@ const (
 	copyBusy         = "Wait for the running deploy, backup or restore to finish."
 	copyHeld         = "An update is in progress. Try again when it finishes."
 	copyRunning      = "An update is already running."
+	copyInterrupted  = "The updater stopped without reporting a result. On the server, see /var/lib/outhaul-updater/log and journalctl -u outhaul-update."
+	copyStuck        = "Outhaul has not come back. On the server: sudo cat /var/lib/outhaul-updater/log"
 
 	updateButtonDisabled = `id="update-button" disabled`
 )
@@ -451,7 +453,7 @@ func TestUpdatePanelShowsTheLastResult(t *testing.T) {
 
 	e.writeStatus(t, update.Status{State: update.StateRunning, Started: time.Now().Add(-41 * time.Minute)})
 	page = body(t, e.get(t, "/settings"))
-	assertContains(t, page, "interrupted", `id="update-button"`)
+	assertContains(t, page, "interrupted", copyInterrupted, `id="update-button"`)
 	assertLacks(t, page, `id="update-log"`, copyInstaller)
 
 	// Running for real: the log, not a result or the button.
@@ -459,6 +461,17 @@ func TestUpdatePanelShowsTheLastResult(t *testing.T) {
 	page = body(t, e.get(t, "/settings"))
 	assertContains(t, page, `id="update-log"`, "/settings/update/progress")
 	assertLacks(t, page, "interrupted", `id="update-button"`)
+}
+
+// Outhaul restarts during an update, so the poller expects failed requests.
+// When it has not answered for three minutes, the page says where the log is.
+func TestUpdatePollerSaysWhereTheLogIsWhenOuthaulStaysDown(t *testing.T) {
+	e := newUpdatesEnv(t, testBuild, true)
+	e.login(t)
+	e.writeStatus(t, update.Status{State: update.StateRunning, Started: time.Now()})
+
+	page := body(t, e.get(t, "/settings"))
+	assertContains(t, page, `data-stuck="`+copyStuck+`"`, "180000", "Outhaul is restarting")
 }
 
 func TestManualBackupHeldDuringUpdate(t *testing.T) {

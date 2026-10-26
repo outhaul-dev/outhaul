@@ -32,17 +32,19 @@
   {{if .InProgress}}
   <div class="log-head update-row">
     <span>Updating…</span>
-    <span class="log-status" id="update-status">running…</span>
+    <span class="log-status" id="update-status" data-stuck="{{.Stuck}}">running…</span>
   </div>
   <pre class="log" id="update-log"></pre>
   <script>
   // Follow the updater's log until the update is over. Outhaul restarts on the
   // way, so failed requests are expected: keep asking, more slowly, until it
-  // answers again.
+  // answers again. Three minutes without an answer is more than a restart:
+  // say where the log is on the server, and keep asking.
   (function () {
     var log = document.getElementById('update-log');
     var status = document.getElementById('update-status');
     var offset = 0;
+    var failingSince = 0;
     // Show the result. A page that is the reply to a POST is replaced with a
     // GET, so the browser does not offer to send the form again.
     function finish() {
@@ -58,11 +60,14 @@
             if (atBottom) { log.scrollTop = log.scrollHeight; }
           }
           offset = p.offset;
+          failingSince = 0;
           if (p.state !== 'running') { finish(); return; }
           status.textContent = 'running…';
           setTimeout(poll, 1000);
         }, function () {
-          status.textContent = 'Outhaul is restarting…';
+          var now = Date.now();
+          if (!failingSince) { failingSince = now; }
+          status.textContent = now - failingSince >= 180000 ? status.getAttribute('data-stuck') : 'Outhaul is restarting…';
           setTimeout(poll, 2000);
         });
     }

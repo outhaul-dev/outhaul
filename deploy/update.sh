@@ -31,6 +31,13 @@ CACHE_DIR=/var/cache/outhaul
 # already are the log.
 log_line() { :; }
 
+# Writes a line to the journal: the stderr systemd started the updater with,
+# kept on fd 4 once stdout and stderr go to the log. The journal names the
+# log and has each update's result, so they can be found with Outhaul down.
+to_journal() { # line
+	printf '%s\n' "$1" >&4
+}
+
 # Runs a command inside the update directory: see in_real_dir.
 in_update_dir() { # command...
 	in_real_dir "$UPDATE_DIR" "$@"
@@ -226,11 +233,12 @@ recovery_help() {
 	printf 'then check: journalctl -u outhaul -n 50 --no-pager\n'
 }
 
-# Logs the outcome and writes the final status. Not being able to write it
-# does not change the outcome.
+# Logs the outcome, in the log and the journal, and writes the final status.
+# Not being able to write it does not change the outcome.
 finish() { # state message
 	STAGE=done
 	printf '%s\n' "$2"
+	to_journal "$1: $2"
 	if ! write_status "$1" "$FROM" "$TO" "$2"; then
 		note "could not write $UPDATE_DIR/status: the admin UI does not show this result"
 	fi
@@ -259,7 +267,8 @@ roll_back() { # reason
 		finish rolled_back "$1; rolled back to $(short "$FROM")"
 	else
 		recovery_help
-		finish failed "$1, and rolling back to $(short "$FROM") failed too. See the log for how to recover over SSH."
+		recovery_help >&4
+		finish failed "$1, and rolling back to $(short "$FROM") failed too. See $LOGFILE on the server for how to recover."
 	fi
 }
 
@@ -287,6 +296,8 @@ update_exit() {
 update_main() {
 	# No questions: every installer prompt reads EOF and takes its default.
 	exec 3<>/dev/null
+	# The journal, for to_journal.
+	exec 4>&2
 	# An updater installed by an earlier installer has no directory of its own.
 	mkdir -p "$WORK_DIR"
 	chmod 0700 "$WORK_DIR"
@@ -296,6 +307,7 @@ update_main() {
 	mv -fT "$_log" "$WORK_DIR/log"
 	exec >>"$WORK_DIR/log" 2>&1
 	LOGFILE=$WORK_DIR/log
+	to_journal "the log of this update: $LOGFILE"
 	# Outhaul reads it as the update directory's "log": a second name (a hard
 	# link) for the same file, so the updater never opens it by that name.
 	if ! in_update_dir ln -fT "$LOGFILE" log; then
@@ -319,6 +331,7 @@ update_main() {
 		STAGE=done
 		in_update_dir rm -f request 2>/dev/null || true
 		printf 'could not write %s/status; nothing changed\n' "$UPDATE_DIR"
+		to_journal "could not write $UPDATE_DIR/status; nothing changed"
 		exit 1
 	fi
 	# Only now: Outhaul holds work while the request exists or the status says running.

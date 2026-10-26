@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -144,5 +145,26 @@ func TestInstalledNeedsTheMarker(t *testing.T) {
 	write(t, p, "updater", "1\n")
 	if !d.Installed() {
 		t.Fatal("marker")
+	}
+}
+
+// The admin UI names the updater's own log, which the updater keeps in its
+// directory: the two must agree.
+func TestLogPathIsTheUpdatersLog(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("..", "..", "deploy", "update.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var work string
+	for _, line := range strings.Split(string(b), "\n") {
+		if v, ok := strings.CutPrefix(line, "WORK_DIR="); ok {
+			work = v
+		}
+	}
+	if work == "" {
+		t.Fatal("no WORK_DIR= line in deploy/update.sh")
+	}
+	if want := work + "/log"; LogPath != want {
+		t.Errorf("LogPath = %q, want %q (deploy/update.sh's WORK_DIR)", LogPath, want)
 	}
 }
