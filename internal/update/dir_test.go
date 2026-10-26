@@ -168,3 +168,37 @@ func TestLogPathIsTheUpdatersLog(t *testing.T) {
 		t.Errorf("LogPath = %q, want %q (deploy/update.sh's WORK_DIR)", LogPath, want)
 	}
 }
+
+func TestLogTail(t *testing.T) {
+	d, p := newTestDir(t)
+	if c, err := d.LogTail(); err != nil || len(c) != 0 {
+		t.Fatalf("no log: %q %v", c, err)
+	}
+	write(t, p, "log", "one\ntwo\n")
+	if c, err := d.LogTail(); err != nil || string(c) != "one\ntwo\n" {
+		t.Fatalf("short log: %q %v", c, err)
+	}
+
+	// Longer than 64 KiB: the end, from the start of a line.
+	var b strings.Builder
+	b.WriteString("the first line\n")
+	for b.Len() < 100<<10 {
+		b.WriteString(strings.Repeat("x", 99) + "\n")
+	}
+	b.WriteString("the last line\n")
+	whole := b.String()
+	write(t, p, "log", whole)
+	c, err := d.LogTail()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c) == 0 || len(c) > 64<<10 {
+		t.Fatalf("tail is %d bytes, want 1..%d", len(c), 64<<10)
+	}
+	if !strings.HasSuffix(whole, string(c)) || !strings.HasSuffix(string(c), "the last line\n") {
+		t.Fatalf("tail is not the end of the log: %q", c[:20])
+	}
+	if start := len(whole) - len(c); whole[start-1] != '\n' {
+		t.Fatalf("tail starts mid-line: %q", c[:20])
+	}
+}

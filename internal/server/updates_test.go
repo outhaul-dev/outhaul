@@ -474,6 +474,60 @@ func TestUpdatePollerSaysWhereTheLogIsWhenOuthaulStaysDown(t *testing.T) {
 	assertContains(t, page, `data-stuck="`+copyStuck+`"`, "180000", "Outhaul is restarting")
 }
 
+// Once an update is over, the page that replaces the live log keeps the log:
+// collapsed when it went well, open when it did not. It is text, escaped.
+func TestUpdatePanelShowsTheLastUpdatesLog(t *testing.T) {
+	const (
+		closed = `<details class="update-row update-last-log">`
+		open   = `<details class="update-row update-last-log" open>`
+	)
+	finished := func(state string) update.Status {
+		return update.Status{State: state, Message: "m", Started: time.Now(), Finished: time.Now()}
+	}
+	for _, c := range []struct {
+		name   string
+		status update.Status
+		want   string // "" for no log
+	}{
+		{"updated", finished(update.StateUpdated), closed},
+		{"up to date", finished(update.StateUpToDate), closed},
+		{"build failed", finished(update.StateBuildFailed), open},
+		{"rolled back", finished(update.StateRolledBack), open},
+		{"failed", finished(update.StateFailed), open},
+		{"interrupted", update.Status{State: update.StateRunning, Started: time.Now().Add(-41 * time.Minute)}, open},
+		// The updater never ran: the log on disk is an earlier update's.
+		{"did not start", finished(update.StateNotStarted), ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e := newUpdatesEnv(t, testBuild, true)
+			e.login(t)
+			e.writeStatus(t, c.status)
+			e.writeFile(t, "log", "step 1\n<b>rolling back</b>\noutHaul: fatal: the journal\n")
+
+			page := body(t, e.get(t, "/settings"))
+			if c.want == "" {
+				assertLacks(t, page, "update-last-log", "step 1")
+				return
+			}
+			assertContains(t, page, c.want, "step 1\n&lt;b&gt;rolling back&lt;/b&gt;\noutHaul: fatal: the journal\n")
+			assertLacks(t, page, "<b>rolling back", `id="update-log"`)
+		})
+	}
+
+	// While an update runs, the live log replaces it.
+	e := newUpdatesEnv(t, testBuild, true)
+	e.login(t)
+	e.writeStatus(t, update.Status{State: update.StateRunning, Started: time.Now()})
+	e.writeFile(t, "log", "step 1\n")
+	assertLacks(t, body(t, e.get(t, "/settings")), "update-last-log")
+
+	// No log, no box.
+	e = newUpdatesEnv(t, testBuild, true)
+	e.login(t)
+	e.writeStatus(t, finished(update.StateFailed))
+	assertLacks(t, body(t, e.get(t, "/settings")), "update-last-log")
+}
+
 func TestManualBackupHeldDuringUpdate(t *testing.T) {
 	e := newUpdatesEnv(t, testBuild, true)
 	e.login(t)

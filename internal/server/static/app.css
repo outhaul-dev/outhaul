@@ -163,6 +163,7 @@ input[type=checkbox] { accent-color: var(--accent); }
 
 /* Settings → Updates: the check and Update rows. */
 .update-row { margin: 12px 0; }
+.update-last-log summary { cursor: pointer; color: var(--link); font-size: 0.9em; margin-bottom: 8px; }
 
 /* Badges */
 .badge {

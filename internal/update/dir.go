@@ -207,3 +207,39 @@ func (d *Dir) ReadLog(offset int64) ([]byte, int64, error) {
 	}
 	return buf[:n], offset + int64(n), nil
 }
+
+// LogTail returns the end of the updater's log: all of it up to 64 KiB, or
+// else the whole lines of its last 64 KiB. A missing log is empty.
+func (d *Dir) LogTail() ([]byte, error) {
+	f, err := os.Open(d.file("log"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if fi.Size() <= logChunk {
+		b, err := io.ReadAll(io.LimitReader(f, logChunk))
+		return b, err
+	}
+	// The last 64 KiB and the byte before them, which says whether they
+	// begin with a whole line.
+	buf := make([]byte, logChunk+1)
+	n, err := f.ReadAt(buf, fi.Size()-logChunk-1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	buf = buf[:n]
+	if i := bytes.IndexByte(buf, '\n'); i >= 0 {
+		return buf[i+1:], nil
+	}
+	if n == 0 {
+		return nil, nil // the log was replaced meanwhile
+	}
+	return buf[1:], nil // one line longer than 64 KiB
+}

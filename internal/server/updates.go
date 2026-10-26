@@ -57,6 +57,8 @@ type updatesPanel struct {
 	Behind     int
 	Warnings   []string
 	Last       *updateResult // the last update's outcome; nil if none, or one is in progress
+	LastLog    string        // the end of the last update's log
+	LastOpen   bool          // show LastLog unfolded: the update did not go well
 	InProgress bool          // show the updater's log instead of the Update button
 	Blocked    string        // why Update cannot run now; "" if it can
 	Confirm    string
@@ -115,6 +117,16 @@ func (s *Server) updatesPanel(ctx context.Context) *updatesPanel {
 		}
 		if ok {
 			p.Last = lastUpdate(st, time.Now())
+			// Its log, unless the updater never ran: the log on disk is then
+			// an earlier update's.
+			if p.Last != nil && st.State != update.StateNotStarted {
+				tail, err := s.updates.LogTail()
+				if err != nil {
+					log.Printf("updates panel: read log: %v", err)
+				}
+				p.LastLog = string(tail)
+				p.LastOpen = st.State != update.StateUpdated && st.State != update.StateUpToDate
+			}
 			// A version that needs an installer change may fail its health
 			// check until the installer has run.
 			installer = installer || st.State == update.StateRolledBack

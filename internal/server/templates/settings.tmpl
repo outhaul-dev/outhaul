@@ -9,6 +9,12 @@
   <h2 class="panel-title">Updates</h2>
   <p>Running <span class="mono">{{.Build.Short}}</span>{{if .Build.Local}} <span class="muted">(local build)</span>{{end}}</p>
   {{with .Last}}<p>Last update: <span class="badge {{.Class}}">{{.Label}}</span> {{.Message}} <span class="muted">{{fmtTime .At}}</span></p>{{end}}
+  {{if .LastLog}}
+  <details class="update-row update-last-log"{{if .LastOpen}} open{{end}}>
+    <summary>The last update's log</summary>
+    <pre class="log">{{.LastLog}}</pre>
+  </details>
+  {{end}}
   {{if .Summary}}<p>{{.Summary}}</p>{{end}}
   {{if .Commits}}
   <div class="table-wrap update-row">
