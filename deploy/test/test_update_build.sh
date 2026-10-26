@@ -14,7 +14,9 @@ assert_eq "local build is marked" "$base -X $pkg.local=true" "$(build_ldflags ab
 tmp=$(mktemp -d)
 SRC_DIR=$tmp/src; mkdir "$SRC_DIR"
 rec=$tmp/rec
+# shellcheck disable=SC2034 # read by build_binary, sourced from bootstrap.sh
 OUTHAUL_REPO=$repo
+# shellcheck disable=SC2034 # read by build_binary
 FROM_CHECKOUT=0
 go() { printf '%s\n' "$*" > "$rec"; : > "$SRC_DIR/outhaul"; chmod +x "$SRC_DIR/outhaul"; }
 git() { echo abc; }
@@ -25,6 +27,7 @@ case $(cat "$rec") in
 esac
 
 # A checkout with uncommitted changes is stamped local; a clean one is not.
+# shellcheck disable=SC2034 # read by build_binary
 FROM_CHECKOUT=1
 git() { case $* in *status*) echo ' M x' ;; *) echo abc ;; esac; }
 LOGFILE=/dev/null build_binary >/dev/null
@@ -39,3 +42,4 @@ case $(cat "$rec") in
 *) assert_eq "clean checkout is not local" ok ok ;;
 esac
 rm -rf "$tmp"
+[ "${TESTS_FAIL:-0}" -eq 0 ]
