@@ -20,11 +20,23 @@ go_version_from_gomod() {
 # Pure: decide color level from explicit inputs (testable).
 # 0=plain 1=16-color 2=256-color 3=truecolor
 _color_level() { # no_color is_tty colorterm tput_colors
-	[ -n "$1" ] && { echo 0; return; }
-	[ "$2" != 1 ] && { echo 0; return; }
-	case "$3" in *truecolor*|*24bit*) echo 3; return;; esac
-	if [ "${4:-0}" -ge 256 ]; then echo 2
-	elif [ "${4:-0}" -ge 8 ]; then echo 1
+	[ -n "$1" ] && {
+		echo 0
+		return
+	}
+	[ "$2" != 1 ] && {
+		echo 0
+		return
+	}
+	case "$3" in *truecolor* | *24bit*)
+		echo 3
+		return
+		;;
+	esac
+	if [ "${4:-0}" -ge 256 ]; then
+		echo 2
+	elif [ "${4:-0}" -ge 8 ]; then
+		echo 1
 	else echo 0; fi
 }
 
@@ -39,7 +51,9 @@ detect_color_level() {
 # SSH (22) is ALWAYS included. Mode a adds 80/443, as does mode c with the
 # local CA (HTTPS redirect needs :80 too). A non-empty git port is added.
 derive_firewall_ports() { # mode gitport localca
-	mode=$1; gitport=${2:-}; localca=${3:-0}
+	mode=$1
+	gitport=${2:-}
+	localca=${3:-0}
 	set -- 22
 	[ "$mode" = a ] && set -- "$@" 80 443
 	[ "$mode" = c ] && [ "$localca" = 1 ] && set -- "$@" 80 443
@@ -50,7 +64,7 @@ derive_firewall_ports() { # mode gitport localca
 # Returns success (0) when total RAM+swap is below 2 GiB and a build
 # swapfile should be offered. Inputs are in KiB (as /proc/meminfo reports).
 need_swap() { # mem_kb swap_kb
-	total=$(( ${1:-0} + ${2:-0} ))
+	total=$((${1:-0} + ${2:-0}))
 	[ "$total" -lt 2097152 ]
 }
 
@@ -72,7 +86,7 @@ write_env_file() { # dest mode url email sshaddr localca
 			printf 'OUTHAUL_LOCAL_CA=true\n'
 		fi
 		[ -n "$sshaddr" ] && printf 'OUTHAUL_SSH_ADDR=%s\n' "$sshaddr"
-	} > "$dest"
+	} >"$dest"
 	chmod 0600 "$dest"
 }
 
@@ -80,10 +94,15 @@ write_env_file() { # dest mode url email sshaddr localca
 # The prompt defaults to 2222, so an empty answer can never mean "disable".
 normalize_git_port() { # answer
 	case "$1" in
-		[Nn][Oo][Nn][Ee] | [Nn][Oo] | [Nn] | 0 | -) printf '\n' ;;
-		'' | *[!0-9]*) printf '  ! %s is not a port number; using 2222\n' "$1" >&2; printf '2222\n' ;;
-		*) if [ "$1" -le 65535 ]; then printf '%s\n' "$1"; else
-			printf '  ! %s is not a port number; using 2222\n' "$1" >&2; printf '2222\n'; fi ;;
+	[Nn][Oo][Nn][Ee] | [Nn][Oo] | [Nn] | 0 | -) printf '\n' ;;
+	'' | *[!0-9]*)
+		printf '  ! %s is not a port number; using 2222\n' "$1" >&2
+		printf '2222\n'
+		;;
+	*) if [ "$1" -le 65535 ]; then printf '%s\n' "$1"; else
+		printf '  ! %s is not a port number; using 2222\n' "$1" >&2
+		printf '2222\n'
+	fi ;;
 	esac
 }
 
@@ -91,8 +110,8 @@ normalize_git_port() { # answer
 # HTTPS (it is asked for in the Let's Encrypt mode).
 normalize_public_url() { # answer
 	case "$1" in
-		'' | http://* | https://*) printf '%s\n' "$1" ;;
-		*) printf 'https://%s\n' "$1" ;;
+	'' | http://* | https://*) printf '%s\n' "$1" ;;
+	*) printf 'https://%s\n' "$1" ;;
 	esac
 }
 
@@ -113,7 +132,7 @@ prompt_source() { # tty_openable(0/1) script_path
 # Probes /dev/tty in a subshell: `exec 3<>/dev/tty` on a headless run is a
 # failed redirection on a special builtin, which exits a POSIX shell outright
 # (dash, bash --posix, busybox) before any `||` fallback can run.
-tty_openable() { ( : <>/dev/tty ) 2>/dev/null; }
+tty_openable() { (: <>/dev/tty) 2>/dev/null; }
 
 # Opens fd 3 for BOTH prompt output and input. Under `curl | sh` stdin is the
 # pipe and stderr may be redirected away, so prompts written to stderr can go
@@ -124,25 +143,27 @@ tty_openable() { ( : <>/dev/tty ) 2>/dev/null; }
 open_prompt_fd() { # script_path
 	if tty_openable; then _t=1; else _t=0; fi
 	case $(prompt_source "$_t" "$1") in
-		tty) exec 3<>/dev/tty ;;
-		stdin) exec 3<&0 ;;
-		*) exec 3<>/dev/null ;;
+	tty) exec 3<>/dev/tty ;;
+	stdin) exec 3<&0 ;;
+	*) exec 3<>/dev/null ;;
 	esac
 }
 
 # Yes/no prompt: written to the tty on fd 3 (stderr fallback), read from fd 3. $2 is the default ('y' or 'n').
 ask_yes_no() { # prompt default
-	_p=$1; _d=$2
+	_p=$1
+	_d=$2
 	if [ "$_d" = y ]; then _h='Y/n'; else _h='y/N'; fi
 	printf '%s [%s] ' "$_p" "$_h" >&3 2>/dev/null || printf '%s [%s] ' "$_p" "$_h" >&2
 	read _a <&3 2>/dev/null || _a=''
 	[ -z "$_a" ] && _a=$_d
-	case "$_a" in [Yy]*) return 0;; *) return 1;; esac
+	case "$_a" in [Yy]*) return 0 ;; *) return 1 ;; esac
 }
 
 # Free-text prompt: written to the tty on fd 3 (stderr fallback), read from fd 3; prints the answer (or default) to stdout.
 ask_value() { # prompt default
-	_p=$1; _d=$2
+	_p=$1
+	_d=$2
 	if [ -n "$_d" ]; then _t="$_p [$_d] "; else _t="$_p "; fi
 	printf '%s' "$_t" >&3 2>/dev/null || printf '%s' "$_t" >&2
 	read _a <&3 2>/dev/null || _a=''
@@ -155,7 +176,7 @@ ask_value() { # prompt default
 # Sets COLOR, UNICODE, WIDTH globals. Call once at startup.
 init_ui() {
 	COLOR=$(detect_color_level)
-	case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) UNICODE=1;; *) UNICODE=0;; esac
+	case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in *[Uu][Tt][Ff]-8* | *[Uu][Tt][Ff]8*) UNICODE=1 ;; *) UNICODE=0 ;; esac
 	[ "$COLOR" = 0 ] && UNICODE=0
 	WIDTH=$(tput cols 2>/dev/null || echo 80)
 	[ -n "$WIDTH" ] || WIDTH=80
@@ -163,9 +184,14 @@ init_ui() {
 
 # Apply an RGB (truecolor) / bold-magenta (16+) / plain color to text.
 paint() { # r g b text...
-	_r=$1; _g=$2; _b=$3; shift 3
-	if [ "${COLOR:-0}" -ge 3 ]; then printf '\033[38;2;%d;%d;%dm%s\033[0m' "$_r" "$_g" "$_b" "$*"
-	elif [ "${COLOR:-0}" -ge 1 ]; then printf '\033[1;35m%s\033[0m' "$*"
+	_r=$1
+	_g=$2
+	_b=$3
+	shift 3
+	if [ "${COLOR:-0}" -ge 3 ]; then
+		printf '\033[38;2;%d;%d;%dm%s\033[0m' "$_r" "$_g" "$_b" "$*"
+	elif [ "${COLOR:-0}" -ge 1 ]; then
+		printf '\033[1;35m%s\033[0m' "$*"
 	else printf '%s' "$*"; fi
 }
 
@@ -175,39 +201,81 @@ _c() { # color-code-or-plain: emit ANSI SGR $1 only when COLOR>=1
 
 hr() {
 	[ "${UNICODE:-0}" = 1 ] && ch='─' || ch='-'
-	i=0; line=''
-	while [ "$i" -lt "$((WIDTH<80?WIDTH:60))" ]; do line="$line$ch"; i=$((i+1)); done
-	_c 90; printf '%s' "$line"; _c 0; printf '\n'
+	i=0
+	line=''
+	while [ "$i" -lt "$((WIDTH < 80 ? WIDTH : 60))" ]; do
+		line="$line$ch"
+		i=$((i + 1))
+	done
+	_c 90
+	printf '%s' "$line"
+	_c 0
+	printf '\n'
 }
 
-step_ok()   { [ "${UNICODE:-0}" = 1 ] && m='✔' || m='+'; _c '1;32'; printf '  %s ' "$m"; _c 0; printf '%s\n' "$1"; }
-step_fail() { [ "${UNICODE:-0}" = 1 ] && m='✖' || m='x'; _c '1;31'; printf '  %s ' "$m"; _c 0; printf '%s\n' "$1"; }
-note()      { _c 90; printf '    %s\n' "$1"; _c 0; }
+step_ok() {
+	[ "${UNICODE:-0}" = 1 ] && m='✔' || m='+'
+	_c '1;32'
+	printf '  %s ' "$m"
+	_c 0
+	printf '%s\n' "$1"
+}
+step_fail() {
+	[ "${UNICODE:-0}" = 1 ] && m='✖' || m='x'
+	_c '1;31'
+	printf '  %s ' "$m"
+	_c 0
+	printf '%s\n' "$1"
+}
+note() {
+	_c 90
+	printf '    %s\n' "$1"
+	_c 0
+}
 
 # Raw log mirror (Task 20 wires LOGFILE); safe if unset.
-log_line() { [ -n "${LOGFILE:-}" ] && printf '%s\n' "$*" >> "$LOGFILE" 2>/dev/null || true; }
+log_line() { [ -n "${LOGFILE:-}" ] && printf '%s\n' "$*" >>"$LOGFILE" 2>/dev/null || true; }
 
-die() { _c '1;31'; printf 'error: ' >&2; _c 0; printf '%s\n' "$1" >&2; log_line "ERROR: $1"; exit 1; }
+die() {
+	_c '1;31'
+	printf 'error: ' >&2
+	_c 0
+	printf '%s\n' "$1" >&2
+	log_line "ERROR: $1"
+	exit 1
+}
 
 _hero_rgb() { case $1 in
-	1) echo 247 120 186;; 2) echo 188 140 255;;
-	3) echo 88 166 255;;  4) echo 63 185 80;; esac; }
+	1) echo 247 120 186 ;; 2) echo 188 140 255 ;;
+	3) echo 88 166 255 ;; 4) echo 63 185 80 ;; esac }
 
 # Gradient ASCII wordmark; degrades to a single line when narrow or plain.
 hero() {
 	if [ "${WIDTH:-80}" -lt 62 ]; then
-		printf '\n'; _c '1;35'; printf '  Outhaul'; _c 0; printf ' — self-hosted PaaS\n\n'; return
+		printf '\n'
+		_c '1;35'
+		printf '  Outhaul'
+		_c 0
+		printf ' — self-hosted PaaS\n\n'
+		return
 	fi
 	printf '\n'
 	set -- \
-'  ██████  ██    ██ ████████ ██   ██  █████  ██    ██ ██     ' \
-'  ██   ██ ██    ██    ██    ██   ██ ██   ██ ██    ██ ██     ' \
-'  ██   ██ ██    ██    ██    ███████ ███████ ██    ██ ██     ' \
-'  ██████   ██████     ██    ██   ██ ██   ██  ██████  ███████'
+		'  ██████  ██    ██ ████████ ██   ██  █████  ██    ██ ██     ' \
+		'  ██   ██ ██    ██    ██    ██   ██ ██   ██ ██    ██ ██     ' \
+		'  ██   ██ ██    ██    ██    ███████ ███████ ██    ██ ██     ' \
+		'  ██████   ██████     ██    ██   ██ ██   ██  ██████  ███████'
 	i=0
 	# shellcheck disable=SC2046 # intentional: _hero_rgb's 3 numbers become 3 args to paint
-	for line in "$@"; do i=$((i+1)); paint $(_hero_rgb "$i") "$line"; printf '\n'; done
-	_c 90; printf '   self-hosted PaaS · one binary, zero sprawl\n'; _c 0; printf '\n'
+	for line in "$@"; do
+		i=$((i + 1))
+		paint $(_hero_rgb "$i") "$line"
+		printf '\n'
+	done
+	_c 90
+	printf '   self-hosted PaaS · one binary, zero sprawl\n'
+	_c 0
+	printf '\n'
 }
 
 # Braille spinner on a background PID while a long step runs.
@@ -215,16 +283,23 @@ hero() {
 SPIN_PID=''
 spinner_start() {
 	SPIN_MSG=$1
-	if [ "${COLOR:-0}" = 0 ] || [ ! -t 1 ]; then printf '  .. %s\n' "$SPIN_MSG"; return; fi
-	( frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'; [ "${UNICODE:-0}" = 1 ] || frames='|/-\\'
-	  while :; do
-		i=1
-		while [ "$i" -le ${#frames} ]; do
-			f=$(printf '%s' "$frames" | cut -c "$i")
-			printf '\r  \033[35m%s\033[0m %s' "$f" "$SPIN_MSG"
-			sleep 0.1; i=$((i+1))
+	if [ "${COLOR:-0}" = 0 ] || [ ! -t 1 ]; then
+		printf '  .. %s\n' "$SPIN_MSG"
+		return
+	fi
+	(
+		frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+		[ "${UNICODE:-0}" = 1 ] || frames='|/-\\'
+		while :; do
+			i=1
+			while [ "$i" -le ${#frames} ]; do
+				f=$(printf '%s' "$frames" | cut -c "$i")
+				printf '\r  \033[35m%s\033[0m %s' "$f" "$SPIN_MSG"
+				sleep 0.1
+				i=$((i + 1))
+			done
 		done
-	  done ) &
+	) &
 	SPIN_PID=$!
 }
 spinner_stop() { # exitcode
@@ -237,12 +312,21 @@ spinner_stop() { # exitcode
 
 # A single-line gradient progress bar: progress_bar PERCENT LABEL
 progress_bar() { # percent label
-	pct=$1; label=${2:-}
-	width=30; filled=$(( pct * width / 100 ))
+	pct=$1
+	label=${2:-}
+	width=30
+	filled=$((pct * width / 100))
 	[ "$filled" -gt "$width" ] && filled=$width
-	bar=''; i=0
-	while [ "$i" -lt "$filled" ]; do bar="$bar#"; i=$((i+1)); done
-	while [ "$i" -lt "$width" ]; do bar="$bar."; i=$((i+1)); done
+	bar=''
+	i=0
+	while [ "$i" -lt "$filled" ]; do
+		bar="$bar#"
+		i=$((i + 1))
+	done
+	while [ "$i" -lt "$width" ]; do
+		bar="$bar."
+		i=$((i + 1))
+	done
 	if [ "${COLOR:-0}" -ge 1 ]; then
 		printf '\r  \033[32m%s\033[0m %3d%% %s' "$bar" "$pct" "$label"
 	else
@@ -266,7 +350,7 @@ detect_distro() { # file?
 # True for the distros the installer is tested on. Both use apt, ufw,
 # systemd and get.docker.com, so the rest of the script is the same.
 distro_supported() { # id
-	case "$1" in debian|ubuntu) return 0;; *) return 1;; esac
+	case "$1" in debian | ubuntu) return 0 ;; *) return 1 ;; esac
 }
 
 # Full preflight. Aborts on hard failures; warns (via fd 3 confirm) on soft ones.
@@ -281,17 +365,21 @@ preflight() {
 		ask_yes_no "  Continue anyway?" n || die "aborted on unsupported distro"
 	fi
 	arch=$(uname -m)
-	case "$arch" in x86_64|amd64|aarch64|arm64) step_ok "architecture $arch";;
-		*) die "unsupported architecture: $arch";; esac
-	MEM_KB=$(read_meminfo_kb MemTotal); SWAP_KB=$(read_meminfo_kb SwapTotal)
-	note "memory: $((MEM_KB/1024)) MB RAM, $((SWAP_KB/1024)) MB swap"
+	case "$arch" in x86_64 | amd64 | aarch64 | arm64) step_ok "architecture $arch" ;;
+	*) die "unsupported architecture: $arch" ;; esac
+	MEM_KB=$(read_meminfo_kb MemTotal)
+	SWAP_KB=$(read_meminfo_kb SwapTotal)
+	note "memory: $((MEM_KB / 1024)) MB RAM, $((SWAP_KB / 1024)) MB swap"
 }
 
 ensure_docker() {
 	if command -v docker >/dev/null 2>&1; then step_ok "Docker present"; else
 		spinner_start "installing Docker (get.docker.com)"
 		# set +e so a failed install still reaches spinner_stop + die (see build_binary note).
-		set +e; curl -fsSL https://get.docker.com | sh >>"${LOGFILE:-/dev/null}" 2>&1; rc=$?; set -e
+		set +e
+		curl -fsSL https://get.docker.com | sh >>"${LOGFILE:-/dev/null}" 2>&1
+		rc=$?
+		set -e
 		spinner_stop "$rc"
 		[ "$rc" -eq 0 ] || die "Docker install failed — see ${LOGFILE:-the install log}"
 	fi
@@ -301,18 +389,30 @@ ensure_docker() {
 }
 
 ensure_git() {
-	if command -v git >/dev/null 2>&1; then step_ok "git present"; return; fi
+	if command -v git >/dev/null 2>&1; then
+		step_ok "git present"
+		return
+	fi
 	spinner_start "installing git"
-	set +e; { apt-get update -qq && apt-get install -y -qq git; } >>"${LOGFILE:-/dev/null}" 2>&1; rc=$?; set -e
+	set +e
+	{ apt-get update -qq && apt-get install -y -qq git; } >>"${LOGFILE:-/dev/null}" 2>&1
+	rc=$?
+	set -e
 	spinner_stop "$rc"
 	[ "$rc" -eq 0 ] || die "git install failed — see ${LOGFILE:-the install log}"
 }
 
 # Optional — caller gates on ask_yes_no.
 ensure_nixpacks() {
-	if command -v nixpacks >/dev/null 2>&1; then step_ok "nixpacks present"; return; fi
+	if command -v nixpacks >/dev/null 2>&1; then
+		step_ok "nixpacks present"
+		return
+	fi
 	spinner_start "installing nixpacks"
-	set +e; curl -fsSL https://nixpacks.com/install.sh | bash >>"${LOGFILE:-/dev/null}" 2>&1; rc=$?; set -e
+	set +e
+	curl -fsSL https://nixpacks.com/install.sh | bash >>"${LOGFILE:-/dev/null}" 2>&1
+	rc=$?
+	set -e
 	spinner_stop "$rc"
 	# Optional: a failure is not fatal — Dockerfile/compose apps still deploy.
 	[ "$rc" -eq 0 ] || note "nixpacks install failed — you can retry later; Dockerfile/compose apps work without it"
@@ -323,7 +423,7 @@ ensure_nixpacks() {
 # confusing "checksum mismatch" instead of "the sidecar was not a digest".
 is_sha256() { # candidate
 	case "$1" in
-		''|*[!0-9a-fA-F]*) return 1;;
+	'' | *[!0-9a-fA-F]*) return 1 ;;
 	esac
 	[ "${#1}" -eq 64 ]
 }
@@ -331,9 +431,9 @@ is_sha256() { # candidate
 # Maps uname -m to the go.dev download arch token.
 go_dl_arch() { # uname_m
 	case "$1" in
-		x86_64|amd64)  echo amd64;;
-		aarch64|arm64) echo arm64;;
-		*) return 1;;
+	x86_64 | amd64) echo amd64 ;;
+	aarch64 | arm64) echo arm64 ;;
+	*) return 1 ;;
 	esac
 }
 
@@ -343,7 +443,8 @@ go_dl_arch() { # uname_m
 install_go_toolchain() { # version
 	ver=$1
 	if command -v go >/dev/null 2>&1 && [ "$(go env GOVERSION 2>/dev/null)" = "go$ver" ]; then
-		step_ok "Go $ver present"; return
+		step_ok "Go $ver present"
+		return
 	fi
 	a=$(go_dl_arch "$(uname -m)") || die "unsupported arch for Go download"
 	GOROOT_TMP=$(mktemp -d)
@@ -356,19 +457,22 @@ install_go_toolchain() { # version
 	set +e
 	{
 		curl -fsSL "$url" -o "$GOROOT_TMP/$tarball" &&
-		curl -fsSL "$url.sha256" -o "$GOROOT_TMP/$tarball.sha256"
+			curl -fsSL "$url.sha256" -o "$GOROOT_TMP/$tarball.sha256"
 	} >>"${LOGFILE:-/dev/null}" 2>&1
 	rc=$?
 	set -e
-	spinner_stop "$rc"; [ "$rc" -eq 0 ] || die "could not download Go $ver from $url"
-	sum=$(tr -d '[:space:]' < "$GOROOT_TMP/$tarball.sha256")
+	spinner_stop "$rc"
+	[ "$rc" -eq 0 ] || die "could not download Go $ver from $url"
+	sum=$(tr -d '[:space:]' <"$GOROOT_TMP/$tarball.sha256")
 	is_sha256 "$sum" || die "bad checksum file from $url.sha256 — not a sha256 digest (got ${#sum} chars)"
-	echo "$sum  $GOROOT_TMP/$tarball" | sha256sum -c - >>"${LOGFILE:-/dev/null}" 2>&1 \
-		|| die "Go toolchain checksum mismatch — refusing to build"
+	echo "$sum  $GOROOT_TMP/$tarball" | sha256sum -c - >>"${LOGFILE:-/dev/null}" 2>&1 ||
+		die "Go toolchain checksum mismatch — refusing to build"
 	step_ok "Go $ver checksum verified"
 	tar -C "$GOROOT_TMP" -xzf "$GOROOT_TMP/$tarball"
-	PATH="$GOROOT_TMP/go/bin:$PATH"; export PATH
-	GOTOOLCHAIN=local; export GOTOOLCHAIN   # do not let go fetch a different one
+	PATH="$GOROOT_TMP/go/bin:$PATH"
+	export PATH
+	GOTOOLCHAIN=local
+	export GOTOOLCHAIN # do not let go fetch a different one
 	step_ok "Go $ver ready"
 }
 
@@ -413,7 +517,10 @@ fetch_source() {
 	fi
 	SRC_DIR=$(mktemp -d)
 	spinner_start "cloning outhaul"
-	set +e; git clone --depth 1 "$OUTHAUL_REPO" "$SRC_DIR" >>"${LOGFILE:-/dev/null}" 2>&1; rc=$?; set -e
+	set +e
+	git clone --depth 1 "$OUTHAUL_REPO" "$SRC_DIR" >>"${LOGFILE:-/dev/null}" 2>&1
+	rc=$?
+	set -e
 	spinner_stop "$rc"
 	[ "$rc" -eq 0 ] || die "could not clone $OUTHAUL_REPO — see ${LOGFILE:-the install log}"
 }
@@ -436,7 +543,7 @@ build_binary() {
 	c=$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null)
 	l=0
 	if [ "${FROM_CHECKOUT:-0}" = 1 ] && [ -n "$(git -C "$SRC_DIR" status --porcelain 2>/dev/null)" ]; then l=1; fi
-	( cd "$SRC_DIR" && GOFLAGS=-buildvcs=false go build -ldflags "$(build_ldflags "$c" "${OUTHAUL_REPO:-}" "$l")" -o outhaul . ) >>"${LOGFILE:-/dev/null}" 2>&1
+	(cd "$SRC_DIR" && GOFLAGS=-buildvcs=false go build -ldflags "$(build_ldflags "$c" "${OUTHAUL_REPO:-}" "$l")" -o outhaul .) >>"${LOGFILE:-/dev/null}" 2>&1
 	rc=$?
 	set -e
 	spinner_stop "$rc"
@@ -456,7 +563,7 @@ domain_ip_matches() { # public_ip resolved_ips
 
 host_public_ip() {
 	curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null ||
-	curl -fsS --max-time 5 https://ifconfig.me 2>/dev/null || true
+		curl -fsS --max-time 5 https://ifconfig.me 2>/dev/null || true
 }
 
 # Space-separated A records for a name, using whatever resolver tool exists.
@@ -469,7 +576,8 @@ resolve_a() { # name
 }
 
 port_in_use() { # port
-	if command -v ss >/dev/null 2>&1; then ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]$1\$"
+	if command -v ss >/dev/null 2>&1; then
+		ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]$1\$"
 	else netstat -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]$1\$"; fi
 }
 
@@ -510,7 +618,7 @@ ports_not_in() { # ports exclude
 	_out=''
 	# shellcheck disable=SC2086 # intentional word-splitting of the port list
 	for _p in $1; do
-		case " $2 " in *" $_p "*) ;; *) _out="$_out $_p";; esac
+		case " $2 " in *" $_p "*) ;; *) _out="$_out $_p" ;; esac
 	done
 	printf '%s' "${_out# }"
 }
@@ -533,10 +641,13 @@ ufw_would_block() { # listening opening adminport
 # network has Docker's default br-<first 12 of the id>. With no network yet,
 # prints the name Outhaul will give it.
 bridge_from_inspect() { # network
-	read -r _id _bridge || { printf '%s\n' "$1"; return 0; }
+	read -r _id _bridge || {
+		printf '%s\n' "$1"
+		return 0
+	}
 	case "$_bridge" in
-		''|'<no value>') printf 'br-%.12s\n' "$_id";;
-		*) printf '%s\n' "$_bridge";;
+	'' | '<no value>') printf 'br-%.12s\n' "$_id" ;;
+	*) printf '%s\n' "$_bridge" ;;
 	esac
 }
 
@@ -554,13 +665,21 @@ ufw_active() { ufw status 2>/dev/null | grep -q '^Status: active'; }
 # port from that bridge only. It is allowed in every mode, so publishing the
 # admin UI later (a public URL, a tunnel) needs no firewall change.
 apply_firewall() { # ports (space separated, must include 22) bridge adminport
-	ports=$1; bridge=$2; adminport=$3
+	ports=$1
+	bridge=$2
+	adminport=$3
 	if ! command -v ufw >/dev/null 2>&1; then
 		spinner_start "installing ufw"
-		set +e; { apt-get update -qq && apt-get install -y -qq ufw; } >>"${LOGFILE:-/dev/null}" 2>&1; rc=$?; set -e
+		set +e
+		{ apt-get update -qq && apt-get install -y -qq ufw; } >>"${LOGFILE:-/dev/null}" 2>&1
+		rc=$?
+		set -e
 		spinner_stop "$rc"
 		# Not fatal: skip firewalling rather than abort the whole install.
-		[ "$rc" -eq 0 ] || { note "could not install ufw — skipping firewall (open ports manually)"; return 0; }
+		[ "$rc" -eq 0 ] || {
+			note "could not install ufw — skipping firewall (open ports manually)"
+			return 0
+		}
 	fi
 	# shellcheck disable=SC2086 # intentional word-splitting of the space-separated port list
 	for p in $ports; do
@@ -603,7 +722,8 @@ install_binary() {
 install_service() {
 	install -m 0644 "$SRC_DIR/deploy/outhaul.service" /etc/systemd/system/outhaul.service
 	systemctl daemon-reload
-	if systemctl is-active --quiet outhaul; then systemctl restart outhaul
+	if systemctl is-active --quiet outhaul; then
+		systemctl restart outhaul
 	else systemctl enable --now outhaul; fi
 	step_ok "outhaul service started"
 }
@@ -672,7 +792,7 @@ set_up_update_dir() { # work_dir
 	chmod 0700 . || return 1
 	chown -h outhaul:outhaul . || return 1
 	_m=$(mktemp "$1/.updater.XXXXXX") || return 1
-	if printf '1\n' > "$_m" && chmod 0644 "$_m" && mv -fT "$_m" updater; then
+	if printf '1\n' >"$_m" && chmod 0644 "$_m" && mv -fT "$_m" updater; then
 		return 0
 	fi
 	rm -f "$_m"
@@ -701,7 +821,8 @@ admin_health_url() { # listen_addr
 
 # The host part of a URL: no scheme, port or path.
 url_host() { # url
-	h=${1#*://}; h=${h%%/*}
+	h=${1#*://}
+	h=${h%%/*}
 	printf '%s\n' "${h%%:*}"
 }
 
@@ -720,13 +841,19 @@ local_setup_url() { # setup_url adminport
 # Polls the admin endpoint up to ~30s. Returns 0 when it answers with ANY
 # HTTP response (no -f: a pre-setup redirect/403 still means "reachable").
 wait_healthy() { # url
-	url=$1; i=0
+	url=$1
+	i=0
 	spinner_start "waiting for outhaul to answer"
 	while [ "$i" -lt 30 ]; do
-		if curl -sS --max-time 2 -o /dev/null "$url" 2>/dev/null; then spinner_stop 0; return 0; fi
-		sleep 1; i=$((i+1))
+		if curl -sS --max-time 2 -o /dev/null "$url" 2>/dev/null; then
+			spinner_stop 0
+			return 0
+		fi
+		sleep 1
+		i=$((i + 1))
 	done
-	spinner_stop 1; return 1
+	spinner_stop 1
+	return 1
 }
 
 # Polls the admin UI's /healthz through Traefik, the way a browser reaches it
@@ -735,25 +862,39 @@ wait_healthy() { # url
 # Traefik unable to reach the admin port. -k: the certificate may not be
 # issued yet.
 wait_public_healthy() { # host
-	host=$1; i=0
+	host=$1
+	i=0
 	spinner_start "checking the admin UI at https://$host"
 	while [ "$i" -lt 20 ]; do
 		if curl -fsSk --max-time 2 -o /dev/null --resolve "$host:443:127.0.0.1" "https://$host/healthz" 2>/dev/null; then
-			spinner_stop 0; return 0
+			spinner_stop 0
+			return 0
 		fi
-		sleep 1; i=$((i+1))
+		sleep 1
+		i=$((i + 1))
 	done
-	spinner_stop 1; return 1
+	spinner_stop 1
+	return 1
 }
 
 # Final boxed summary + confetti. Args passed as positional data. public is
 # the check through Traefik (Let's Encrypt mode): 0 ok, 1 failed, '' not run.
 # ADMIN_PORT and BRIDGE come from main.
 completion_screen() { # mode url ports setup_url healthy(0/1) localca(0/1) public(0/1/'')
-	mode=$1; url=$2; ports=$3; setup=$4; healthy=$5; localca=${6:-0}; public=${7:-}
-	port=${ADMIN_PORT:-8080}; bridge=${BRIDGE:-outhaul}
-	printf '\n'; hr
-	_c '1;32'; printf '  Outhaul is installed\n'; _c 0
+	mode=$1
+	url=$2
+	ports=$3
+	setup=$4
+	healthy=$5
+	localca=${6:-0}
+	public=${7:-}
+	port=${ADMIN_PORT:-8080}
+	bridge=${BRIDGE:-outhaul}
+	printf '\n'
+	hr
+	_c '1;32'
+	printf '  Outhaul is installed\n'
+	_c 0
 	if [ "$healthy" != 0 ]; then
 		step_fail "admin UI did not answer yet (check: journalctl -u outhaul)"
 	elif [ "$public" = 0 ]; then
@@ -772,17 +913,23 @@ completion_screen() { # mode url ports setup_url healthy(0/1) localca(0/1) publi
 		note "admin UI (:$port) is firewalled — reach it over SSH: ssh -L $port:127.0.0.1:$port you@this-server, then open http://127.0.0.1:$port"
 	fi
 	case "$mode" in
-		a) note "HTTPS: Let's Encrypt configured for $url";;
-		b) _c '1;33'; printf '  → Finish Cloudflare Tunnel: log in, then paste your connector token in Settings → Tunnel\n'; _c 0;;
-		c) if [ "$localca" = 1 ]; then
-			note "HTTPS: built-in local CA — install the root on your devices: outhaul ca root > outhaul-ca.pem (or download /ca.pem from the admin UI). See docs/LOCAL-CA.md."
-		   else
-			note "admin UI on :8080 — set OUTHAUL_PUBLIC_URL + OUTHAUL_ACME_EMAIL later for HTTPS"
-		   fi;;
+	a) note "HTTPS: Let's Encrypt configured for $url" ;;
+	b)
+		_c '1;33'
+		printf '  → Finish Cloudflare Tunnel: log in, then paste your connector token in Settings → Tunnel\n'
+		_c 0
+		;;
+	c) if [ "$localca" = 1 ]; then
+		note "HTTPS: built-in local CA — install the root on your devices: outhaul ca root > outhaul-ca.pem (or download /ca.pem from the admin UI). See docs/LOCAL-CA.md."
+	else
+		note "admin UI on :8080 — set OUTHAUL_PUBLIC_URL + OUTHAUL_ACME_EMAIL later for HTTPS"
+	fi ;;
 	esac
 	if [ -n "$setup" ]; then
 		printf '\n  Open this one-time setup URL to create your admin account:\n'
-		_c '1;36'; printf '    %s\n' "$setup"; _c 0
+		_c '1;36'
+		printf '    %s\n' "$setup"
+		_c 0
 		# The public check runs on this server: DNS or a cloud firewall can
 		# still stand between a browser and Traefik.
 		if [ "$mode" = a ]; then
@@ -793,7 +940,9 @@ completion_screen() { # mode url ports setup_url healthy(0/1) localca(0/1) publi
 	fi
 	# Confetti flourish (skipped in plain mode).
 	if [ "${COLOR:-0}" -ge 1 ] && [ "${UNICODE:-0}" = 1 ]; then
-		printf '\n  '; for s in '✦' '✧' '·' '✦' '✧' '·' '✦' '✧'; do printf '%s ' "$s"; done; printf '\n'
+		printf '\n  '
+		for s in '✦' '✧' '·' '✦' '✧' '·' '✦' '✧'; do printf '%s ' "$s"; done
+		printf '\n'
 	fi
 	hr
 }
@@ -806,10 +955,17 @@ CHECKOUT_DIR=.
 parse_args() {
 	while [ "$#" -gt 0 ]; do
 		case "$1" in
-			--verbose) VERBOSE=1;;
-			--from-checkout) FROM_CHECKOUT=1; CHECKOUT_DIR=${2:-.}; shift;;
-			-h|--help) printf 'usage: bootstrap.sh [--verbose] [--from-checkout DIR]\n'; exit 0;;
-			*) die "unknown option: $1";;
+		--verbose) VERBOSE=1 ;;
+		--from-checkout)
+			FROM_CHECKOUT=1
+			CHECKOUT_DIR=${2:-.}
+			shift
+			;;
+		-h | --help)
+			printf 'usage: bootstrap.sh [--verbose] [--from-checkout DIR]\n'
+			exit 0
+			;;
+		*) die "unknown option: $1" ;;
 		esac
 		shift
 	done
@@ -831,21 +987,32 @@ choose_ingress() {
 	printf '    3) Local only (optional HTTPS from a built-in local CA)\n'
 	choice=$(ask_value "  Choose 1/2/3:" 1)
 	case "$choice" in
-		2) MODE=b; PUBLIC_URL=''; ACME_EMAIL='';;
-		3) MODE=c; PUBLIC_URL=''; ACME_EMAIL=''
-		   # || true: a "no" answer must not abort under set -e
-		   ask_yes_no "  Enable HTTPS with a local certificate authority?" y && LOCAL_CA=1 || true;;
-		*) MODE=a
-		   PUBLIC_URL=$(ask_value "  Public URL (e.g. https://paas.example.com):" '')
-		   dom=${PUBLIC_URL#*://}; dom=${dom%%/*}
-		   acme_preflight "$dom"
-		   ACME_EMAIL=$(ask_value "  Email for Let's Encrypt:" '');;
+	2)
+		MODE=b
+		PUBLIC_URL=''
+		ACME_EMAIL=''
+		;;
+	3)
+		MODE=c
+		PUBLIC_URL=''
+		ACME_EMAIL=''
+		# || true: a "no" answer must not abort under set -e
+		ask_yes_no "  Enable HTTPS with a local certificate authority?" y && LOCAL_CA=1 || true
+		;;
+	*)
+		MODE=a
+		PUBLIC_URL=$(ask_value "  Public URL (e.g. https://paas.example.com):" '')
+		dom=${PUBLIC_URL#*://}
+		dom=${dom%%/*}
+		acme_preflight "$dom"
+		ACME_EMAIL=$(ask_value "  Email for Let's Encrypt:" '')
+		;;
 	esac
 }
 
 main() {
 	parse_args "$@"
-	: > "$LOGFILE" 2>/dev/null || LOGFILE=/dev/null
+	: >"$LOGFILE" 2>/dev/null || LOGFILE=/dev/null
 	if [ "$VERBOSE" = 1 ]; then LOGFILE=/dev/stderr; fi
 	trap cleanup EXIT INT TERM
 	open_prompt_fd "$0"
@@ -888,7 +1055,9 @@ main() {
 
 	if [ -n "${GOROOT_TMP:-}" ]; then
 		if ask_yes_no "  Remove the downloaded Go toolchain (~150 MB)?" y; then
-			rm -rf "$GOROOT_TMP"; GOROOT_TMP=''; step_ok "removed Go toolchain"
+			rm -rf "$GOROOT_TMP"
+			GOROOT_TMP=''
+			step_ok "removed Go toolchain"
 		fi
 	fi
 
@@ -901,7 +1070,7 @@ main() {
 		# listens somewhere other than 22 — otherwise enabling ufw locks them out.
 		if [ -n "${SSH_CONNECTION:-}" ]; then
 			assh=${SSH_CONNECTION##* }
-			case " $PORTS " in *" $assh "*) ;; *) [ -n "$assh" ] && PORTS="$PORTS $assh";; esac
+			case " $PORTS " in *" $assh "*) ;; *) [ -n "$assh" ] && PORTS="$PORTS $assh" ;; esac
 		fi
 		printf '  Firewall will open (SSH always preserved): %s\n' "$PORTS"
 		# On a host that already serves other things, enabling ufw would cut
