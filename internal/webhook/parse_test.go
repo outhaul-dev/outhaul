@@ -1,6 +1,9 @@
 package webhook
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParsePush(t *testing.T) {
 	tests := []struct {
@@ -133,5 +136,37 @@ func TestParsePullRequestNonFork(t *testing.T) {
 	}
 	if ev.Action != "synchronize" || ev.Number != 7 {
 		t.Fatalf("parsed = %+v", ev)
+	}
+}
+
+func TestParsePushTags(t *testing.T) {
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	zero40 := strings.Repeat("0", 40)
+	zero64 := strings.Repeat("0", 64)
+	tests := []struct {
+		name    string
+		body    string
+		tag     string
+		deleted bool
+		branch  string
+	}{
+		{"github tag create", `{"ref":"refs/tags/v1.4.0","created":true,"deleted":false,"after":"` + sha + `","commits":[],"repository":{"full_name":"o/r"}}`, "v1.4.0", false, ""},
+		{"github tag delete", `{"ref":"refs/tags/v1.4.0","deleted":true,"after":"` + zero40 + `","commits":[],"repository":{"full_name":"o/r"}}`, "v1.4.0", true, ""},
+		{"gitlab tag_push create", `{"object_kind":"tag_push","ref":"refs/tags/v1.0.0","before":"` + zero40 + `","after":"` + sha + `","project":{"path_with_namespace":"g/p"}}`, "v1.0.0", false, ""},
+		{"gitlab tag_push delete", `{"object_kind":"tag_push","ref":"refs/tags/v1.0.0","before":"` + sha + `","after":"` + zero40 + `","project":{"path_with_namespace":"g/p"}}`, "v1.0.0", true, ""},
+		{"gitea tag push", `{"ref":"refs/tags/v2.0.0","after":"` + sha + `","repository":{"full_name":"o/r"}}`, "v2.0.0", false, ""},
+		{"sha-256 delete", `{"ref":"refs/tags/v3.0.0","after":"` + zero64 + `","repository":{"full_name":"o/r"}}`, "v3.0.0", true, ""},
+		{"branch push", `{"ref":"refs/heads/main","after":"` + sha + `","repository":{"full_name":"o/r"}}`, "", false, "main"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ev, err := ParsePush([]byte(tt.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if ev.Tag != tt.tag || ev.Deleted != tt.deleted || ev.Branch != tt.branch {
+				t.Errorf("got Tag=%q Deleted=%v Branch=%q; want %q %v %q", ev.Tag, ev.Deleted, ev.Branch, tt.tag, tt.deleted, tt.branch)
+			}
+		})
 	}
 }

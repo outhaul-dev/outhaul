@@ -11,16 +11,23 @@ type PushEvent struct {
 	RepoFullName string   // "owner/name"
 	Branch       string   // "main"; empty for non-branch refs (e.g. tags)
 	Changed      []string // files touched across the push's commits; may be empty (thin payloads)
+	Tag          string   // "v1.4.0" for refs/tags/v1.4.0; empty otherwise
+	Deleted      bool     // the push removes the ref
 }
 
 // ParsePush reads a GitHub/Gitea or GitLab push payload. GitHub/Gitea use
 // repository.full_name; GitLab uses project.path_with_namespace. A ref that is
-// not refs/heads/<branch> yields an empty Branch (so it never matches).
+// not refs/heads/<branch> yields an empty Branch (so it never matches); a ref
+// of refs/tags/<tag> sets Tag instead. Deleted is set when the payload says the
+// ref was deleted or its new SHA is all zeros (any length, so SHA-256
+// repositories work too).
 // Changed is the union of every commit's added/modified/removed lists — the
 // same shape across all three providers — deduplicated, order preserved.
 func ParsePush(body []byte) (PushEvent, error) {
 	var p struct {
 		Ref        string `json:"ref"`
+		After      string `json:"after"`
+		Deleted    bool   `json:"deleted"`
 		Repository struct {
 			FullName string `json:"full_name"`
 		} `json:"repository"`
@@ -44,6 +51,11 @@ func ParsePush(body []byte) (PushEvent, error) {
 	if strings.HasPrefix(p.Ref, "refs/heads/") {
 		branch = strings.TrimPrefix(p.Ref, "refs/heads/")
 	}
+	var tag string
+	if strings.HasPrefix(p.Ref, "refs/tags/") {
+		tag = strings.TrimPrefix(p.Ref, "refs/tags/")
+	}
+	deleted := p.Deleted || (p.After != "" && strings.Trim(p.After, "0") == "")
 	var changed []string
 	seen := map[string]bool{}
 	for _, c := range p.Commits {
@@ -56,7 +68,7 @@ func ParsePush(body []byte) (PushEvent, error) {
 			}
 		}
 	}
-	return PushEvent{RepoFullName: full, Branch: branch, Changed: changed}, nil
+	return PushEvent{RepoFullName: full, Branch: branch, Changed: changed, Tag: tag, Deleted: deleted}, nil
 }
 
 // PullRequestEvent is the subset of a pull_request webhook Outhaul acts on.
