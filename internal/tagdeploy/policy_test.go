@@ -74,6 +74,7 @@ func TestDecide(t *testing.T) {
 		{"pre-release on", "v*", true, []string{"v1.5.0-rc.1"}, []string{"v1.4.0"}, "v1.5.0-rc.1", nil},
 		{"release beats its rc", "v*", true, []string{"v1.5.0"}, []string{"v1.5.0-rc.2"}, "v1.5.0", nil},
 		{"no match", "v*", false, []string{"x1.0"}, nil, "", []string{`"v*"`}},
+		{"rc after non-matching tag", "v*", false, []string{"latest", "v2.0.0-rc.1"}, nil, "", []string{"pre-release", "v2.0.0-rc.1"}},
 		{"pattern change", "api/v*", false, []string{"api/v1.1.0"}, []string{"v3.0.0"}, "api/v1.1.0", nil},
 		{"non-version in play ignored", "v*", false, []string{"v1.0.0"}, []string{"release-oct"}, "v1.0.0", nil},
 		{"empty in play ignored", "v*", false, []string{"v0.1.0"}, []string{""}, "v0.1.0", nil},

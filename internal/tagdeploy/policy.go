@@ -57,11 +57,11 @@ func (p Policy) Eligible(tag string) bool {
 }
 
 // Decide picks the tag to deploy from those a push created. inPlay holds the
-// tags already live or on their way (queued or building); the highest of
-// them is the high-water mark, and a pushed tag deploys only if it is newer.
-// Of several eligible tags it takes the highest version. If none is
-// version-like it takes the last one, so a pattern such as "nightly-*" still
-// deploys.
+// tags already live or on their way (live, queued, building or deploying);
+// the highest of them is the high-water mark, and a pushed tag deploys only
+// if it is newer. Of several eligible tags it takes the highest version. If
+// none is version-like it takes the last one, so a pattern such as
+// "nightly-*" still deploys.
 func (p Policy) Decide(pushed, inPlay []string) Decision {
 	if len(pushed) == 0 {
 		return Decision{Reason: "no tag was pushed"}
@@ -73,6 +73,13 @@ func (p Policy) Decide(pushed, inPlay []string) Decision {
 		}
 	}
 	if len(eligible) == 0 {
+		// Explain the first tag that matched the pattern (it was held back as
+		// a pre-release); `git push --tags` order may put non-matching first.
+		for _, t := range pushed {
+			if webhook.MatchGlob(p.Pattern, t) {
+				return Decision{Reason: p.rejection(t)}
+			}
+		}
 		return Decision{Reason: p.rejection(pushed[0])}
 	}
 
