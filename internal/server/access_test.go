@@ -188,6 +188,50 @@ func TestEveryRouteStatesAnAccessLevel(t *testing.T) {
 	}
 }
 
+// A route made public by mistake is the worst way the table can fail, and no walk
+// can catch it, because a public route has nobody to refuse. So this list is kept
+// by hand: a new public route means adding a line here on purpose.
+func TestPublicRoutesAreExactlyThese(t *testing.T) {
+	want := []string{
+		"GET /ca.pem",
+		"GET /deployments",
+		"GET /github/callback",
+		"GET /github/setup",
+		"GET /healthz",
+		"GET /login",
+		"GET /setup",
+		"GET /static/",
+		"POST /login",
+		"POST /logout",
+		"POST /setup",
+		"POST /webhooks/app/{token}",
+		"POST /webhooks/github",
+	}
+	var got []string
+	for _, rt := range newTestEnv(t).srv.routes() {
+		if rt.level == levelPublic {
+			got = append(got, rt.pattern)
+		}
+	}
+	slices.Sort(got)
+	slices.Sort(want)
+	if slices.Equal(got, want) {
+		return
+	}
+	var added, removed []string
+	for _, p := range got {
+		if !slices.Contains(want, p) {
+			added = append(added, p)
+		}
+	}
+	for _, p := range want {
+		if !slices.Contains(got, p) {
+			removed = append(removed, p)
+		}
+	}
+	t.Errorf("the public routes changed\nadded, so anyone can use them without signing in: %q\nremoved: %q", added, removed)
+}
+
 // Walks every route in the table, substituting ids of seeded objects: a project
 // with an app, a database, a deployment, a domain, a volume, an attachment and a
 // backup. It only asserts refusals, so no handler with side effects runs.
