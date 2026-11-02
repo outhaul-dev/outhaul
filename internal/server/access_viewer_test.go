@@ -82,7 +82,7 @@ func TestViewerSeesNoSecrets(t *testing.T) {
 
 	// The keys and status are still shown.
 	html := body(t, e.getAs(t, viewer, paths[0]))
-	for _, want := range []string{"PLAIN", "HIDDEN", "••••••"} {
+	for _, want := range []string{"PLAIN", "HIDDEN", "••••••", string(sp.Deployment.Status)} {
 		if !strings.Contains(html, want) {
 			t.Errorf("viewer app page lacks %q", want)
 		}
@@ -92,8 +92,8 @@ func TestViewerSeesNoSecrets(t *testing.T) {
 		t.Error("viewer project page lacks the env key")
 	}
 	html = body(t, e.getAs(t, viewer, paths[2]))
-	if !strings.Contains(html, "secretdb") {
-		t.Error("viewer database page lacks the name")
+	if !strings.Contains(html, "secretdb") || !strings.Contains(html, string(db.Status)) {
+		t.Errorf("viewer database page lacks the name or status %q", db.Status)
 	}
 
 	// A member still gets the plain value and the webhook URL, never the secret value.
@@ -201,16 +201,30 @@ func TestViewerGetsNoChangeControls(t *testing.T) {
 	if strings.Contains(html, `action="/projects"`) {
 		t.Error("member sees the new project form")
 	}
-	html = body(t, e.getAs(t, member, fmt.Sprintf("/projects/%d", sp.Project.ID)))
-	if strings.Contains(html, fmt.Sprintf("/projects/%d/delete", sp.Project.ID)) {
-		t.Error("member sees project delete")
-	}
 	admin := e.signInAs(t, "pat", core.RoleProjectAdmin, sp.Project.ID)
 	if html := body(t, e.getAs(t, admin, "/projects")); !strings.Contains(html, `action="/projects"`) {
 		t.Error("project admin lacks the new project form")
 	}
-	if html := body(t, e.getAs(t, admin, fmt.Sprintf("/projects/%d", sp.Project.ID))); !strings.Contains(html, fmt.Sprintf("/projects/%d/delete", sp.Project.ID)) && !strings.Contains(html, "Delete them before") {
-		t.Error("project admin lacks project delete")
+
+	// An empty project is the only one with a delete form to show or hide.
+	empty, err := e.store.CreateProject(context.Background(), core.Project{Name: "empty"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	del := fmt.Sprintf(`action="/projects/%d/delete"`, empty.ID)
+	for name, tok := range map[string]string{
+		"viewer": e.signInAs(t, "v2", core.RoleProjectViewer, empty.ID),
+		"member": e.signInAs(t, "m2", core.RoleProjectMember, empty.ID),
+		"admin":  e.signInAs(t, "a2", core.RoleProjectAdmin, empty.ID),
+	} {
+		resp := e.getAs(t, tok, fmt.Sprintf("/projects/%d", empty.ID))
+		if resp.StatusCode != 200 {
+			t.Fatalf("%s GET empty project = %d", name, resp.StatusCode)
+		}
+		has := strings.Contains(body(t, resp), del)
+		if has != (name == "admin") {
+			t.Errorf("%s: project delete form present = %v", name, has)
+		}
 	}
 }
 
@@ -233,6 +247,15 @@ func TestSidebarMatchesRole(t *testing.T) {
 	for _, p := range []string{"/account", "/projects", "/apps", "/databases", "/domains", "/templates"} {
 		if !strings.Contains(html, href(p)) {
 			t.Errorf("member sidebar lacks %s", p)
+		}
+	}
+	// The GitHub connect prompt is offered to system admins only, who can open it.
+	for _, p := range []string{"/apps", fmt.Sprintf("/projects/%d", sp.Project.ID)} {
+		if strings.Contains(body(t, e.getAs(t, member, p)), href("/github/connect")) {
+			t.Errorf("member GET %s links /github/connect", p)
+		}
+		if !strings.Contains(body(t, e.getAs(t, admin, p)), href("/github/connect")) {
+			t.Errorf("system admin GET %s lacks the /github/connect prompt", p)
 		}
 	}
 	html = body(t, e.getAs(t, viewer, "/"))
