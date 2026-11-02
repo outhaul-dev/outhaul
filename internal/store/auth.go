@@ -17,12 +17,12 @@ func (s *Store) HasUser(ctx context.Context) (bool, error) {
 	return n > 0, nil
 }
 
-// CreateUser inserts the admin user.
+// CreateUser inserts a system admin with a password. It is the first-boot path.
 func (s *Store) CreateUser(ctx context.Context, username, passwordHash string) (core.User, error) {
 	now := time.Now().UTC()
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)`,
-		username, passwordHash, fmtTime(now))
+		`INSERT INTO users (username, password_hash, created_at, role) VALUES (?, ?, ?, ?)`,
+		username, passwordHash, fmtTime(now), string(core.RoleSystemAdmin))
 	if err != nil {
 		return core.User{}, err
 	}
@@ -30,40 +30,19 @@ func (s *Store) CreateUser(ctx context.Context, username, passwordHash string) (
 	if err != nil {
 		return core.User{}, err
 	}
-	return core.User{ID: id, Username: username, PasswordHash: passwordHash, CreatedAt: now}, nil
+	return s.GetUser(ctx, id)
 }
 
+// GetUserByName finds a password account; SSO accounts are never found by name.
 func (s *Store) GetUserByName(ctx context.Context, username string) (core.User, error) {
-	var (
-		u         core.User
-		createdAt string
-	)
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, username, password_hash, created_at FROM users WHERE username = ?`, username).
-		Scan(&u.ID, &u.Username, &u.PasswordHash, &createdAt)
-	if err != nil {
-		return core.User{}, err
-	}
-	if u.CreatedAt, err = parseTime(createdAt); err != nil {
-		return core.User{}, err
-	}
-	return u, nil
+	return scanUser(s.db.QueryRowContext(ctx,
+		`SELECT `+userCols+` FROM users WHERE username = ? AND sign_in = 'password'`, username))
 }
 
 // GetUser returns the user with the given id.
 func (s *Store) GetUser(ctx context.Context, id int64) (core.User, error) {
-	var u core.User
-	var createdAt string
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, username, password_hash, created_at FROM users WHERE id = ?`, id).
-		Scan(&u.ID, &u.Username, &u.PasswordHash, &createdAt)
-	if err != nil {
-		return core.User{}, err
-	}
-	if u.CreatedAt, err = parseTime(createdAt); err != nil {
-		return core.User{}, err
-	}
-	return u, nil
+	return scanUser(s.db.QueryRowContext(ctx,
+		`SELECT `+userCols+` FROM users WHERE id = ?`, id))
 }
 
 // UpdateUserPassword sets a new password hash for the user and, in the same
