@@ -95,8 +95,15 @@ func (s *Server) guard(rt route) http.HandlerFunc {
 			return
 		}
 		user, err := s.store.GetUser(r.Context(), sess.UserID)
-		if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
+			return
+		}
+		// Not a redirect: /login sends a valid session back here, so the browser
+		// would bounce between the two until the store recovered.
+		if err != nil {
+			log.Printf("server: access check for %s: %v", rt.pattern, err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
 		r = withUser(r, user)

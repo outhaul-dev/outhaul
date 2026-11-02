@@ -1,8 +1,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"database/sql"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -614,6 +617,83 @@ func TestGuardAnswers500WhenTheStoreFails(t *testing.T) {
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if _, _, err := e.srv.projectOfBackupForm(req); err == nil {
 		t.Error("projectOfBackupForm: no error from a failed lookup")
+	}
+}
+
+// rawDB is a second connection to the test database, for states the store's own
+// methods won't create. Foreign keys are off on it.
+func (e *testEnv) rawDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+url.PathEscape(e.dbPath)+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatalf("open second connection: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
+// The session loads and the account doesn't, because its row can't be read. That
+// stands in for any store failure. A cancelled context can't test this: it fails
+// the session lookup first, which is a different branch.
+//
+// A redirect here would loop: /login sends a valid session back to /.
+func TestGuardAnswers500WhenTheAccountCantBeLoaded(t *testing.T) {
+	e := newTestEnv(t)
+	token := e.signInAs(t, "mina", core.RoleProjectMember)
+	if _, err := e.rawDB(t).Exec(`UPDATE users SET created_at = 'not a time' WHERE username = 'mina'`); err != nil {
+		t.Fatal(err)
+	}
+
+	var logged bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	ran := false
+	h := e.srv.guard(route{
+		pattern: "GET /x",
+		level:   levelAnyRole,
+		handler: func(http.ResponseWriter, *http.Request) { ran = true },
+	})
+	req := httptest.NewRequest(http.MethodGet, "/x", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+	rec := httptest.NewRecorder()
+	h(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d (Location %q), want 500", rec.Code, rec.Header().Get("Location"))
+	}
+	if ran {
+		t.Error("the handler ran without an account")
+	}
+	if !strings.Contains(logged.String(), "GET /x") || !strings.Contains(logged.String(), "not a time") {
+		t.Errorf("the failure wasn't logged with its route and cause: %q", logged.String())
+	}
+	if strings.Contains(rec.Body.String(), "not a time") {
+		t.Errorf("the store's error reached the browser: %q", rec.Body.String())
+	}
+
+	// And through the real table, where the loop would start.
+	resp := e.getAs(t, token, "/")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("GET / = %d (Location %q), want 500", resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
+// An account that's really gone is someone signed out, not a failure. The foreign
+// key stops this happening today, so it takes a connection with foreign keys off.
+func TestGuardSendsASessionWithNoAccountToLogin(t *testing.T) {
+	e := newTestEnv(t)
+	token := e.signInAs(t, "mina", core.RoleProjectMember)
+	if _, err := e.rawDB(t).Exec(`DELETE FROM users WHERE username = 'mina'`); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := e.getAs(t, token, "/")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login" {
+		t.Errorf("GET / = %d to %q, want 303 to /login", resp.StatusCode, resp.Header.Get("Location"))
 	}
 }
 

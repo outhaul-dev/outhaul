@@ -211,6 +211,7 @@ type testEnv struct {
 	backups   *fakeBackups
 	broker    *logstream.Broker
 	store     *store.Store
+	dbPath    string // for rawDB
 	gh        *github.Fake
 	http      *httptest.Server
 	client    *http.Client
@@ -224,7 +225,8 @@ func newTestEnv(t *testing.T) *testEnv {
 	if err != nil {
 		t.Fatalf("secret.Load: %v", err)
 	}
-	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"), box)
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	st, err := store.Open(dbPath, box)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
@@ -252,7 +254,7 @@ func newTestEnv(t *testing.T) *testEnv {
 			return http.ErrUseLastResponse // don't follow; assert redirects ourselves
 		},
 	}
-	return &testEnv{srv: srv, deployer: dep, runtime: rt, compose: cp, databases: dbm, backups: bk, broker: br, store: st, gh: gh, http: ts, client: client}
+	return &testEnv{srv: srv, deployer: dep, runtime: rt, compose: cp, databases: dbm, backups: bk, broker: br, store: st, dbPath: dbPath, gh: gh, http: ts, client: client}
 }
 
 func (e *testEnv) get(t *testing.T, path string) *http.Response {
