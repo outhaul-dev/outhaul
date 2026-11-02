@@ -122,8 +122,10 @@ Rules that apply across these:
 
 - A project comes from the object: an app or database directly, a deployment
   through its app, a backup through `target_kind` and `target_id`.
-- Anything that references a second project must check both. This covers moving
-  an app (`project_id` on the settings form) and attaching a database.
+- Attaching a database already requires both to be in one project, enforced in the
+  store. Apps can't move between projects today, and this project doesn't add that.
+- A cold `git push` creates its app in the default project, so it counts as a push
+  to that project.
 - Non-admins have no implied default project. An empty `project_id` falls back
   to the default project only if they can change it, so the create-app form
   lists only their projects.
@@ -145,8 +147,9 @@ A banner counts people waiting for a role.
 
 - **Password accounts:** "New password account" takes a username and a role, then
   shows a one-time setup link to pass on. "Reset password" issues the same kind of
-  link and ends that account's sessions. Links last 7 days, work once, and are
-  stored hashed.
+  link, stops the old password working and ends that account's sessions. It can't be
+  used on your own account or on the last password system admin. Links last 7 days,
+  work once, and are stored hashed.
 - **SSO accounts:** these appear the first time someone signs in to Outhaul itself,
   with no role. Their role can't be set before that.
 - **Removing someone** takes effect at once and ends all of their sessions,
@@ -333,6 +336,9 @@ instead of restarting the container.
 
 The deploy works like this:
 
+- If a deploy is already queued or running, follow it: a rollback in flight queues the same image, and a
+  normal deploy in flight queues another normal deploy. Reusing the last image here would run after that
+  deploy and put the old code back.
 - A single-container app with a usable last image redeploys that image, through the same path as
   rollback (`CreateRollback`), without rebuilding.
 - A Compose app has no per-deployment image, and an app's image may have been pruned. Outhaul also keeps
@@ -426,6 +432,9 @@ HTTPS and public address requirements.
   labels don't match.
 - The last password system admin can't be removed or demoted.
 - `/gate/sign-out` lets people who only use protected routes sign out, and apps can link to it.
+- "Reset password" stops the old password working at once, and can't be used on yourself or the last
+  password system admin.
+- A protection redeploy that lands during another deploy follows that deploy, rather than reusing the last image.
 - Removing SSO settings, or changing the issuer or client ID, ends all SSO sessions.
 - Members can create apps and databases, rename projects, edit shared env vars, and run restores in their
   projects. Only project admins and above can delete or share a project.
