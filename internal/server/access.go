@@ -262,3 +262,80 @@ func (s *Server) projectOfTarget(ctx context.Context, kind string, id int64) (in
 	}
 	return projectID, true, nil
 }
+
+// projectScope is the projects a list page may show: all of them for a system
+// admin, otherwise the ones the person is on.
+type projectScope struct {
+	all bool
+	ids map[int64]bool
+}
+
+func (p projectScope) allows(id int64) bool { return p.all || p.ids[id] }
+
+// idList returns the project IDs of a limited scope. It is empty for an all
+// scope, which callers answer with the unfiltered store calls instead.
+func (p projectScope) idList() []int64 {
+	ids := make([]int64, 0, len(p.ids))
+	for id := range p.ids {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// scopeFor returns the projects the signed-in person may see. A request with
+// no account sees none.
+func (s *Server) scopeFor(r *http.Request) (projectScope, error) {
+	u, ok := userFrom(r)
+	if !ok {
+		return projectScope{ids: map[int64]bool{}}, nil
+	}
+	if u.Role == core.RoleSystemAdmin {
+		return projectScope{all: true}, nil
+	}
+	list, err := s.store.ProjectIDsForUser(r.Context(), u.ID)
+	if err != nil {
+		return projectScope{}, err
+	}
+	ids := make(map[int64]bool, len(list))
+	for _, id := range list {
+		ids[id] = true
+	}
+	return projectScope{ids: ids}, nil
+}
+
+// projectsFor lists the projects a page may show or offer.
+func (s *Server) projectsFor(r *http.Request) ([]core.Project, error) {
+	scope, err := s.scopeFor(r)
+	if err != nil {
+		return nil, err
+	}
+	return s.scopedProjects(r.Context(), scope)
+}
+
+func (s *Server) scopedProjects(ctx context.Context, scope projectScope) ([]core.Project, error) {
+	all, err := s.store.ListProjects(ctx)
+	if err != nil || scope.all {
+		return all, err
+	}
+	var out []core.Project
+	for _, p := range all {
+		if scope.allows(p.ID) {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+func (s *Server) scopedApps(ctx context.Context, scope projectScope) ([]core.App, error) {
+	all, err := s.store.ListApps(ctx)
+	if err != nil || scope.all {
+		return all, err
+	}
+	var out []core.App
+	for _, a := range all {
+		if scope.allows(a.ProjectID) {
+			out = append(out, a)
+		}
+	}
+	return out, nil
+}

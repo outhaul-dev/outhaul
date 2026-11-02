@@ -17,12 +17,23 @@ func databasePath(id int64) string { return "/databases/" + strconv.FormatInt(id
 // Databases section). Databases are created from their project's page; this
 // page answers "what is running where".
 func (s *Server) handleDatabasesList(w http.ResponseWriter, r *http.Request) {
-	dbs, err := s.store.ListDatabases(r.Context())
+	scope, err := s.scopeFor(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	projects, err := s.store.ListProjects(r.Context())
+	all, err := s.store.ListDatabases(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	var dbs []core.Database
+	for _, d := range all {
+		if scope.allows(d.ProjectID) {
+			dbs = append(dbs, d)
+		}
+	}
+	projects, err := s.scopedProjects(r.Context(), scope)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

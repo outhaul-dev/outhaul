@@ -52,13 +52,18 @@ var mountPathRe = regexp.MustCompile(`^/[A-Za-z0-9._/-]+$`)
 const deployAppPort = 8080
 
 func (s *Server) handleAppsList(w http.ResponseWriter, r *http.Request) {
-	apps, err := s.store.ListApps(r.Context())
+	scope, err := s.scopeFor(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	apps, err := s.scopedApps(r.Context(), scope)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	projects, err := s.store.ListProjects(r.Context())
+	projects, err := s.scopedProjects(r.Context(), scope)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -599,8 +604,10 @@ func submittedAppForm(r *http.Request) createAppForm {
 // renderAppsWithError re-renders the apps list with the create form pre-filled
 // and an error message.
 func (s *Server) renderAppsWithError(w http.ResponseWriter, r *http.Request, msg string) {
-	apps, _ := s.store.ListApps(r.Context())
-	projects, _ := s.store.ListProjects(r.Context())
+	// Errors are tolerated here: see below. A failed scope shows nothing.
+	scope, _ := s.scopeFor(r)
+	apps, _ := s.scopedApps(r.Context(), scope)
+	projects, _ := s.scopedProjects(r.Context(), scope)
 	projectNames := make(map[int64]string, len(projects))
 	selected := selectedProject(projects)
 	submitted, _ := parseID(strings.TrimSpace(r.FormValue("project_id")))

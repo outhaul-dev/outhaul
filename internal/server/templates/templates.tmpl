@@ -23,15 +23,17 @@ editable on the app page afterwards.</p>
       {{if .Links.Website}}· <a href="{{.Links.Website}}" target="_blank" rel="noopener">website</a>{{end}}
       {{if .Links.Github}}· <a href="{{.Links.Github}}" target="_blank" rel="noopener">github</a>{{end}}
     </div>
+    {{if $projects}}
     <form method="post" action="/templates/{{.ID}}" class="template-deploy">
       <input type="text" name="name" value="{{.ID}}" aria-label="App name">
-      {{if $projects}}
       <select name="project_id" aria-label="Project">
         {{range $projects}}<option value="{{.ID}}"{{if eq .ID $selected}} selected{{end}}>{{.Name}}</option>{{end}}
       </select>
-      {{end}}
       <button type="submit" class="btn btn-primary">Deploy</button>
     </form>
+    {{else}}
+    <p class="empty">You are not on a project yet, so there is nowhere to deploy this.</p>
+    {{end}}
   </div>
   {{end}}
 </div>

@@ -10,22 +10,36 @@ import (
 // recent deployments across all apps. Metric stat blocks are presentational
 // placeholders this pass (marked "not live").
 func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
-	apps, err := s.store.ListApps(r.Context())
+	scope, err := s.scopeFor(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	projects, err := s.store.ListProjects(r.Context())
+	apps, err := s.scopedApps(r.Context(), scope)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	deployCount, err := s.store.CountDeployments(r.Context())
+	projects, err := s.scopedProjects(r.Context(), scope)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	recent, err := s.store.ListRecentDeployments(r.Context(), 8)
+	var (
+		deployCount int
+		recent      []core.Deployment
+	)
+	if scope.all {
+		deployCount, err = s.store.CountDeployments(r.Context())
+		if err == nil {
+			recent, err = s.store.ListRecentDeployments(r.Context(), 8)
+		}
+	} else {
+		deployCount, err = s.store.CountDeploymentsInProjects(r.Context(), scope.idList())
+		if err == nil {
+			recent, err = s.store.ListRecentDeploymentsInProjects(r.Context(), scope.idList(), 8)
+		}
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

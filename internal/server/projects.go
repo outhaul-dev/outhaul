@@ -21,7 +21,11 @@ type projectRow struct {
 // projectRows assembles the Projects-page card data: every project with its
 // app count and how many of its apps currently have a running deployment.
 func (s *Server) projectRows(r *http.Request) ([]projectRow, error) {
-	projects, err := s.store.ListProjects(r.Context())
+	scope, err := s.scopeFor(r)
+	if err != nil {
+		return nil, err
+	}
+	projects, err := s.scopedProjects(r.Context(), scope)
 	if err != nil {
 		return nil, err
 	}
@@ -29,7 +33,7 @@ func (s *Server) projectRows(r *http.Request) ([]projectRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	apps, err := s.store.ListApps(r.Context())
+	apps, err := s.scopedApps(r.Context(), scope)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +85,14 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		s.renderProjectsWithError(w, r, "Name must be lowercase letters, digits and hyphens (2–40 chars).", name, description)
 		return
 	}
-	if _, err := s.store.CreateProject(r.Context(), core.Project{Name: name, Description: description}); err != nil {
+	var err error
+	if u, _ := userFrom(r); u.Role == core.RoleSystemAdmin {
+		_, err = s.store.CreateProject(r.Context(), core.Project{Name: name, Description: description})
+	} else {
+		// The creator is put on it, or they would never see what they made.
+		_, err = s.store.CreateProjectWithMember(r.Context(), core.Project{Name: name, Description: description}, u.ID)
+	}
+	if err != nil {
 		// Most likely a duplicate name (UNIQUE constraint).
 		s.renderProjectsWithError(w, r, "Could not create project: "+err.Error(), name, description)
 		return
@@ -105,7 +116,7 @@ func (s *Server) renderProject(w http.ResponseWriter, r *http.Request, status in
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	projects, err := s.store.ListProjects(r.Context())
+	projects, err := s.projectsFor(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

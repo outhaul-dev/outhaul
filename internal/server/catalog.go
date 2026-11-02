@@ -20,7 +20,7 @@ func (s *Server) renderTemplates(w http.ResponseWriter, r *http.Request, status 
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	projects, err := s.store.ListProjects(r.Context())
+	projects, err := s.projectsFor(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
