@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -58,6 +59,10 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, user core.User) e
 		ExpiresAt: time.Now().Add(sessionTTL),
 	}); err != nil {
 		return err
+	}
+	// Recording the time is for the Users page; it must not block signing in.
+	if err := s.store.TouchUserSignIn(r.Context(), user.ID); err != nil {
+		log.Printf("server: record sign-in for user %d: %v", user.ID, err)
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
@@ -171,6 +176,11 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	user, err := s.store.GetUserByName(r.Context(), username)
 	if err != nil {
 		s.loginFailed(w, r, err)
+		return
+	}
+	// An account whose password isn't set yet can never sign in.
+	if user.PasswordHash == "" {
+		s.loginFailed(w, r, errors.New("no password set"))
 		return
 	}
 	var ok bool

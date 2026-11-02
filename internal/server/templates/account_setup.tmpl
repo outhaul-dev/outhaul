@@ -1,0 +1,21 @@
+{{define "content"}}
+<div class="authcard">
+  <div class="authmark">{{template "brandmark" .}}</div>
+  <h1 class="authtitle">out<span class="haul">haul</span></h1>
+  {{if .Invalid}}
+    <p class="authsub">Set your password</p>
+    <div class="alert alert-error">{{.Message}} Ask a system admin for a new link.</div>
+  {{else}}
+    <p class="authsub">Set a password for <strong>{{.Username}}</strong></p>
+    {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+    <form method="post" action="/account/setup" class="stack">
+      <input type="hidden" name="token" value="{{.Token}}">
+      <label class="field">
+        <span>Password <em>(min 8 characters)</em></span>
+        <input type="password" name="password" autocomplete="new-password" autofocus required>
+      </label>
+      <button type="submit" class="btn btn-primary">Set password and sign in</button>
+    </form>
+  {{end}}
+</div>
+{{end}}

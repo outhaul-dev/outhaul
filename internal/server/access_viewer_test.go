@@ -266,7 +266,7 @@ func TestSidebarMatchesRole(t *testing.T) {
 		t.Error("viewer sidebar lacks /projects")
 	}
 	html = body(t, e.getAs(t, admin, "/"))
-	for _, p := range append(adminOnly, "/account", "/templates", "/projects") {
+	for _, p := range append(adminOnly, "/account", "/templates", "/projects", "/users") {
 		if !strings.Contains(html, href(p)) {
 			t.Errorf("system admin sidebar lacks %s", p)
 		}

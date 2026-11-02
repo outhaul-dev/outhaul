@@ -1,0 +1,106 @@
+{{define "content"}}
+<div class="pagehead">
+  <div>
+    <h1>Users</h1>
+    <p class="muted">"No role" means the person can't use Outhaul.</p>
+  </div>
+  <button type="button" class="btn btn-primary" onclick="openUserDialog()">+ New password account</button>
+</div>
+
+{{if and .Error (ne .OpenDialog "user-dialog")}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+
+{{if .NewLink}}
+<div class="alert alert-success">
+  <p>Send this link to <strong>{{.NewLinkFor}}</strong>. They set their password with it. It works once and expires in {{.SetupDays}} days. It is shown only now, so copy it before you leave this page.</p>
+  <div class="copywrap"><div class="cmd"><code>{{.NewLink}}</code></div>{{template "copybtn" .}}</div>
+</div>
+{{end}}
+
+{{if .Waiting}}<div class="alert alert-warn">{{if eq .Waiting 1}}1 person signed in and is waiting for a role.{{else}}{{.Waiting}} people signed in and are waiting for a role.{{end}}</div>{{end}}
+
+<section class="panel">
+  <table class="table">
+    <thead><tr><th>Person</th><th>Signs in with</th><th>Role</th><th>Projects</th><th>Last sign-in</th><th></th></tr></thead>
+    <tbody>
+      {{range .Users}}
+      <tr>
+        <td>{{.Name}}{{if .Self}} <span class="muted">(you)</span>{{end}}</td>
+        <td class="muted">{{if .Password}}Password{{else}}SSO{{end}}</td>
+        <td>
+          <form method="post" action="/users/{{.ID}}/role" class="inline" data-rolechange>
+            <select name="role" aria-label="Role for {{.Name}}">
+              {{$role := .Role}}
+              {{range $.AllRoles}}<option value="{{.}}"{{if eq . $role}} selected{{end}}>{{.Label}}</option>{{end}}
+            </select>
+            <button type="submit" class="linkbtn" data-save>Save</button>
+          </form>
+        </td>
+        <td class="mono muted">{{if .Admin}}all{{else}}{{.ProjectCount}}{{end}}</td>
+        <td class="mono muted">{{if .LastSignInAt}}{{fmtTimePtr .LastSignInAt}}{{else}}never{{end}}</td>
+        <td>
+          {{if and .Password (not .Self)}}
+          <form method="post" action="/users/{{.ID}}/reset" class="inline"
+                onsubmit="return confirm('Reset the password for {{.Name}}? Their password stops working and they are signed out now. You will get a new setup link to send them.')">
+            <button type="submit" class="linkbtn">Reset password</button>
+          </form>
+          {{end}}
+          <form method="post" action="/users/{{.ID}}/delete" class="inline"
+                onsubmit="return confirm('Remove {{.Name}}? They are signed out at once.{{if not .Password}} They would come back with no role if they sign in again, so also remove them at your single sign-on provider.{{end}}')">
+            <button type="submit" class="linkbtn">Remove</button>
+          </form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  <p class="muted">Removing someone signs them out at once and deletes their push keys. People who sign in with SSO come back with no role if they sign in again, so remove them at your single sign-on provider too.</p>
+</section>
+
+<dialog id="user-dialog" class="modal" open{{if eq .OpenDialog "user-dialog"}} data-reopen{{end}} aria-labelledby="user-dialog-title">
+  <form method="post" action="/users">
+    <div class="modal-head">
+      <h3 class="modal-title" id="user-dialog-title">New password account</h3>
+      <button type="button" class="modal-close" aria-label="Close" onclick="this.closest('dialog').close()">&times;</button>
+    </div>
+    <div class="modal-body stack">
+      {{if and .Error (eq .OpenDialog "user-dialog")}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+      <label class="field">
+        <span>Username <em>(min 3 characters)</em></span>
+        <input type="text" name="username" value="{{.FormUsername}}" autocomplete="off" required>
+      </label>
+      <label class="field">
+        <span>Role</span>
+        <select name="role">
+          {{$chosen := .FormRole}}
+          {{range .AllRoles}}<option value="{{.}}"{{if or (eq (printf "%s" .) $chosen) (and (eq $chosen "") (eq . $.NewRole))}} selected{{end}}>{{.Label}}</option>{{end}}
+        </select>
+      </label>
+      <p class="muted">You get a link to pass on. They use it to choose their own password.</p>
+    </div>
+    <div class="modal-foot">
+      <span class="spacer"></span>
+      <button type="submit" class="btn btn-primary">Create account</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+  (function () {
+    // Role changes save as soon as the choice changes; the Save buttons are for
+    // browsers without JavaScript.
+    document.querySelectorAll('form[data-rolechange]').forEach(function (f) {
+      var save = f.querySelector('[data-save]');
+      if (save) save.hidden = true;
+      f.querySelector('select').addEventListener('change', function () { f.submit(); });
+    });
+    // The dialog ships open so it works without JavaScript; close it unless the
+    // server sent it back with an error.
+    var dialog = document.getElementById('user-dialog');
+    if (!dialog) return;
+    if (dialog.open) dialog.close();
+    dialog.addEventListener('click', function (e) { if (e.target === dialog) dialog.close(); });
+    window.openUserDialog = function () { if (!dialog.open) dialog.showModal(); };
+    if (dialog.hasAttribute('data-reopen')) dialog.showModal();
+  })();
+</script>
+{{end}}

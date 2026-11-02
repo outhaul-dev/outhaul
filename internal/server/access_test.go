@@ -152,6 +152,7 @@ func (s seededProject) target(t *testing.T, pattern string) (method, path string
 		"backups":     itoa(s.Backup.ID),
 		"templates":   "any-template",
 		"settings":    "1",
+		"users":       "1",
 	}
 	if id, ok := ids[strings.Split(path, "/")[1]]; ok {
 		path = strings.ReplaceAll(path, "{id}", id)
@@ -196,6 +197,7 @@ func TestEveryRouteStatesAnAccessLevel(t *testing.T) {
 // by hand: a new public route means adding a line here on purpose.
 func TestPublicRoutesAreExactlyThese(t *testing.T) {
 	want := []string{
+		"GET /account/setup",
 		"GET /ca.pem",
 		"GET /deployments",
 		"GET /github/callback",
@@ -204,6 +206,7 @@ func TestPublicRoutesAreExactlyThese(t *testing.T) {
 		"GET /login",
 		"GET /setup",
 		"GET /static/",
+		"POST /account/setup",
 		"POST /login",
 		"POST /logout",
 		"POST /setup",

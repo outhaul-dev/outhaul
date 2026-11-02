@@ -195,7 +195,7 @@ func (s *Server) syncCerts(ctx context.Context) {
 // parseTemplates builds one template set per page, each combining base.tmpl with
 // the page template (so every page can define its own "content" block).
 func (s *Server) parseTemplates() error {
-	pages := []string{"login", "setup", "noaccess", "overview", "projects", "project", "apps", "app", "database", "databases", "deployment", "containers", "github_connect", "settings", "restore", "placeholder", "templates", "domains", "volumes", "metrics"}
+	pages := []string{"login", "setup", "noaccess", "overview", "projects", "project", "apps", "app", "database", "databases", "deployment", "containers", "github_connect", "settings", "restore", "placeholder", "templates", "domains", "volumes", "metrics", "users", "account_setup"}
 	s.pages = make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.New("base").Funcs(templateFuncs())

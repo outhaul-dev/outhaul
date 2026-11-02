@@ -30,6 +30,8 @@ func (s *Server) routes() []route {
 
 		{"GET /setup", levelPublic, nil, s.handleSetupForm},
 		{"POST /setup", levelPublic, nil, s.handleSetupSubmit},
+		{"GET /account/setup", levelPublic, nil, s.handleAccountSetupForm},
+		{"POST /account/setup", levelPublic, nil, s.handleAccountSetupSubmit},
 		{"GET /login", levelPublic, nil, s.handleLoginForm},
 		{"POST /login", levelPublic, nil, s.handleLoginSubmit},
 		{"POST /logout", levelPublic, nil, s.handleLogout},
@@ -103,6 +105,12 @@ func (s *Server) routes() []route {
 		{"POST /backups/{id}/delete", levelMember, s.projectOfBackup, s.handleDeleteBackup},
 		{"GET /backups/{id}/restore", levelMember, s.projectOfBackup, s.handleRestorePage},
 		{"POST /backups/{id}/restore", levelMember, s.projectOfBackup, s.handleRestoreBackup},
+
+		{"GET /users", levelSystemAdmin, nil, s.handleUsersList},
+		{"POST /users", levelSystemAdmin, nil, s.handleCreateUser},
+		{"POST /users/{id}/role", levelSystemAdmin, nil, s.handleSetUserRole},
+		{"POST /users/{id}/reset", levelSystemAdmin, nil, s.handleResetUserPassword},
+		{"POST /users/{id}/delete", levelSystemAdmin, nil, s.handleDeleteUser},
 
 		{"GET /settings", levelSystemAdmin, nil, s.handleSettings},
 		{"POST /settings/password", levelSystemAdmin, nil, s.handleChangePassword},
