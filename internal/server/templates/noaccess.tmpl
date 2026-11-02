@@ -1,0 +1,11 @@
+{{define "content"}}
+<div class="authcard">
+  <div class="authmark">{{template "brandmark" .}}</div>
+  <h1 class="authtitle">out<span class="haul">haul</span></h1>
+  <p class="authsub">You don't have access to Outhaul yet. Ask a system admin to give you a role.</p>
+  <form method="post" action="/logout" class="stack">
+    <button type="submit" class="btn btn-primary">Sign out</button>
+  </form>
+  {{if eq .Me.SignIn "password"}}<p class="authsub"><a href="/account">Your account</a></p>{{end}}
+</div>
+{{end}}

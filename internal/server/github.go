@@ -31,7 +31,7 @@ var orgLogin = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$`)
 // decides which account the resulting source covers.
 func (s *Server) handleGithubConnect(w http.ResponseWriter, r *http.Request) {
 	if !s.publicURLSet() {
-		s.render(w, http.StatusOK, "github_connect", map[string]any{
+		s.render(w, r, http.StatusOK, "github_connect", map[string]any{
 			"Title": "Connect GitHub", "Active": "settings", "NeedsPublicURL": true,
 		})
 		return
@@ -41,7 +41,7 @@ func (s *Server) handleGithubConnect(w http.ResponseWriter, r *http.Request) {
 
 	// No choice made yet: show the picker.
 	if owner == "" {
-		s.render(w, http.StatusOK, "github_connect", map[string]any{
+		s.render(w, r, http.StatusOK, "github_connect", map[string]any{
 			"Title": "Connect GitHub", "Active": "settings", "Choose": true,
 		})
 		return
@@ -62,7 +62,7 @@ func (s *Server) handleGithubConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.render(w, http.StatusOK, "github_connect", map[string]any{
+	s.render(w, r, http.StatusOK, "github_connect", map[string]any{
 		"Title":    "Connect GitHub",
 		"Active":   "settings",
 		"Action":   action + "?state=" + s.newGithubState(),

@@ -81,7 +81,7 @@ func (s *Server) handleAppsList(w http.ResponseWriter, r *http.Request) {
 	for k, v := range s.gitSourceData(r) {
 		data[k] = v
 	}
-	s.render(w, http.StatusOK, "apps", data)
+	s.render(w, r, http.StatusOK, "apps", data)
 }
 
 // appRow is one row of an app-list table: the app plus its display context.
@@ -626,7 +626,7 @@ func (s *Server) renderAppsWithError(w http.ResponseWriter, r *http.Request, msg
 	for k, v := range s.gitSourceData(r) {
 		data[k] = v
 	}
-	s.render(w, http.StatusBadRequest, "apps", data)
+	s.render(w, r, http.StatusBadRequest, "apps", data)
 }
 
 func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
@@ -849,7 +849,7 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 			data["CurrentRepoLabel"] = label
 		}
 	}
-	s.render(w, http.StatusOK, "app", data)
+	s.render(w, r, http.StatusOK, "app", data)
 }
 
 // handleAddDomain publishes a route on an app. Compose apps name a service and
@@ -1469,7 +1469,7 @@ func (s *Server) handleDeploymentDetail(w http.ResponseWriter, r *http.Request) 
 	}
 	// Project is for the breadcrumb only; a lookup failure just shortens it.
 	project, _ := s.store.GetProject(r.Context(), app.ProjectID)
-	s.render(w, http.StatusOK, "deployment", map[string]any{
+	s.render(w, r, http.StatusOK, "deployment", map[string]any{
 		"Title":      "Deployment #" + r.PathValue("id"),
 		"Active":     "apps",
 		"App":        app,

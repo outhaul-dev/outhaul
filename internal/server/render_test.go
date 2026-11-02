@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 // TestRenderTemplateErrorReturns500 reproduces the "superfluous WriteHeader"
@@ -19,7 +21,7 @@ func TestRenderTemplateErrorReturns500(t *testing.T) {
 		`{{define "base"}}partial-output{{index .Bad 5}}{{end}}`))
 
 	rec := httptest.NewRecorder()
-	e.srv.render(rec, http.StatusOK, "boom", map[string]any{"Bad": []int{1}})
+	e.srv.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), http.StatusOK, "boom", map[string]any{"Bad": []int{1}})
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("mid-render template error should yield 500, got %d (body=%q)", rec.Code, rec.Body.String())
@@ -37,7 +39,7 @@ func TestRenderSuccessWritesStatusAndBody(t *testing.T) {
 		`{{define "base"}}hello {{.Who}}{{end}}`))
 
 	rec := httptest.NewRecorder()
-	e.srv.render(rec, http.StatusTeapot, "okpage", map[string]any{"Who": "world"})
+	e.srv.render(rec, httptest.NewRequest(http.MethodGet, "/", nil), http.StatusTeapot, "okpage", map[string]any{"Who": "world"})
 
 	if rec.Code != http.StatusTeapot {
 		t.Errorf("status = %d, want 418", rec.Code)
@@ -47,5 +49,42 @@ func TestRenderSuccessWritesStatusAndBody(t *testing.T) {
 	}
 	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
 		t.Errorf("content-type = %q, want text/html", ct)
+	}
+}
+
+// Every page can ask what the person looking at it may do. A public page has no
+// person, so it gets the zero values, and a role nobody knows gets nothing.
+func TestRenderSetsWhatTheSignedInPersonMayDo(t *testing.T) {
+	e := newTestEnv(t)
+	e.srv.pages["who"] = template.Must(template.New("base").Parse(
+		`{{define "base"}}{{.Me.Username}} {{.IsSystemAdmin}} {{.CanManage}} {{.CanChange}} {{.HasRole}}{{end}}`))
+
+	public := httptest.NewRequest(http.MethodGet, "/", nil)
+	as := func(role core.Role) *http.Request {
+		return withUser(httptest.NewRequest(http.MethodGet, "/", nil), core.User{Username: "mina", Role: role})
+	}
+	tests := []struct {
+		name          string
+		r             *http.Request
+		want          string
+		wantCanChange bool
+	}{
+		{"public page", public, " false false false false", false},
+		{"unknown role", as(core.Role("bogus")), "mina false false false false", false},
+		{"no role", as(core.RoleNone), "mina false false false false", false},
+		{"viewer", as(core.RoleProjectViewer), "mina false false false true", false},
+		{"member", as(core.RoleProjectMember), "mina false false true true", true},
+		{"project admin", as(core.RoleProjectAdmin), "mina false true true true", true},
+		{"system admin", as(core.RoleSystemAdmin), "mina true true true true", true},
+	}
+	for _, tc := range tests {
+		rec := httptest.NewRecorder()
+		e.srv.render(rec, tc.r, http.StatusOK, "who", nil)
+		if rec.Body.String() != tc.want {
+			t.Errorf("%s: page = %q, want %q", tc.name, rec.Body.String(), tc.want)
+		}
+		if got := e.srv.canChange(tc.r); got != tc.wantCanChange {
+			t.Errorf("%s: canChange = %v, want %v", tc.name, got, tc.wantCanChange)
+		}
 	}
 }

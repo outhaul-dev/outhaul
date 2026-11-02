@@ -52,7 +52,7 @@ func (s *Server) handleContainers(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, containerRow{Name: c.Name, Kind: kind, Image: c.Image, State: c.State})
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Name < rows[j].Name })
-	s.render(w, http.StatusOK, "containers", map[string]any{
+	s.render(w, r, http.StatusOK, "containers", map[string]any{
 		"Title":      "Containers",
 		"Active":     "containers",
 		"Containers": rows,

@@ -61,7 +61,7 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, status i
 	if s.updatesWired() {
 		data["Updates"] = s.updatesPanel(r.Context())
 	}
-	s.render(w, status, "settings", data)
+	s.render(w, r, status, "settings", data)
 }
 
 // handleCARoot serves the local CA root certificate for device trust setup.

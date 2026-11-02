@@ -92,7 +92,7 @@ func (s *Server) handleVolumesList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.render(w, http.StatusOK, "volumes", map[string]any{
+	s.render(w, r, http.StatusOK, "volumes", map[string]any{
 		"Title":   "Volumes",
 		"Active":  "volumes",
 		"Volumes": rows,

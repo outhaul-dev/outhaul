@@ -56,7 +56,7 @@ func (s *Server) handleProjectsList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.render(w, http.StatusOK, "projects", map[string]any{
+	s.render(w, r, http.StatusOK, "projects", map[string]any{
 		"Title": "Projects", "Active": "projects", "Projects": rows,
 	})
 }
@@ -65,7 +65,7 @@ func (s *Server) handleProjectsList(w http.ResponseWriter, r *http.Request) {
 // pre-filled and an error message.
 func (s *Server) renderProjectsWithError(w http.ResponseWriter, r *http.Request, msg, name, description string) {
 	rows, _ := s.projectRows(r)
-	s.render(w, http.StatusBadRequest, "projects", map[string]any{
+	s.render(w, r, http.StatusBadRequest, "projects", map[string]any{
 		"Title": "Projects", "Active": "projects", "Projects": rows,
 		"Error": msg,
 		"Form":  map[string]string{"Name": name, "Description": description},
@@ -143,7 +143,7 @@ func (s *Server) renderProject(w http.ResponseWriter, r *http.Request, status in
 	for k, v := range s.gitSourceData(r) {
 		data[k] = v
 	}
-	s.render(w, status, "project", data)
+	s.render(w, r, status, "project", data)
 }
 
 func (s *Server) handleProjectDetail(w http.ResponseWriter, r *http.Request) {

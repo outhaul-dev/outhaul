@@ -27,17 +27,6 @@ func NewToken() string {
 	return hex.EncodeToString(b)
 }
 
-// requireAuth wraps a handler, redirecting unauthenticated browsers to /login.
-func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := s.currentSession(r); !ok {
-			http.Redirect(w, r, "/login", http.StatusSeeOther)
-			return
-		}
-		next(w, r)
-	}
-}
-
 // currentSession returns the valid session for the request, if any.
 func (s *Server) currentSession(r *http.Request) (core.Session, bool) {
 	c, err := r.Cookie(sessionCookie)
@@ -95,12 +84,12 @@ func (s *Server) handleSetupForm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.validSetupToken(r) {
-		s.render(w, http.StatusForbidden, "setup", map[string]any{
+		s.render(w, r, http.StatusForbidden, "setup", map[string]any{
 			"Title": "Setup", "Invalid": true, "HideChrome": true,
 		})
 		return
 	}
-	s.render(w, http.StatusOK, "setup", map[string]any{
+	s.render(w, r, http.StatusOK, "setup", map[string]any{
 		"Title": "Setup", "Token": s.setupToken, "HideChrome": true,
 	})
 }
@@ -116,14 +105,14 @@ func (s *Server) handleSetupSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.validSetupToken(r) {
-		s.render(w, http.StatusForbidden, "setup", map[string]any{"Title": "Setup", "Invalid": true, "HideChrome": true})
+		s.render(w, r, http.StatusForbidden, "setup", map[string]any{"Title": "Setup", "Invalid": true, "HideChrome": true})
 		return
 	}
 
 	username := r.FormValue("username")
 	password := r.FormValue("password")
 	if err := validateCredentials(username, password); err != nil {
-		s.render(w, http.StatusBadRequest, "setup", map[string]any{
+		s.render(w, r, http.StatusBadRequest, "setup", map[string]any{
 			"Title": "Setup", "Token": s.setupToken, "HideChrome": true, "Error": err.Error(),
 		})
 		return
@@ -131,7 +120,7 @@ func (s *Server) handleSetupSubmit(w http.ResponseWriter, r *http.Request) {
 
 	var hash string
 	if busy := s.withHashSlot(r.Context(), func() { hash, err = HashPassword(password) }); busy != nil {
-		s.render(w, http.StatusServiceUnavailable, "setup", map[string]any{
+		s.render(w, r, http.StatusServiceUnavailable, "setup", map[string]any{
 			"Title": "Setup", "Token": s.setupToken, "HideChrome": true, "Error": busyMessage,
 		})
 		return
@@ -172,7 +161,7 @@ func (s *Server) handleLoginForm(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	s.render(w, http.StatusOK, "login", map[string]any{"Title": "Sign in", "HideChrome": true})
+	s.render(w, r, http.StatusOK, "login", map[string]any{"Title": "Sign in", "HideChrome": true})
 }
 
 func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
@@ -186,7 +175,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	var ok bool
 	if busy := s.withHashSlot(r.Context(), func() { ok, err = VerifyPassword(user.PasswordHash, password) }); busy != nil {
-		s.render(w, http.StatusServiceUnavailable, "login", map[string]any{
+		s.render(w, r, http.StatusServiceUnavailable, "login", map[string]any{
 			"Title": "Sign in", "Error": busyMessage, "HideChrome": true,
 		})
 		return
@@ -205,7 +194,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 func (s *Server) loginFailed(w http.ResponseWriter, r *http.Request, cause error) {
 	// Do not leak whether the username exists.
 	_ = cause
-	s.render(w, http.StatusUnauthorized, "login", map[string]any{
+	s.render(w, r, http.StatusUnauthorized, "login", map[string]any{
 		"Title": "Sign in", "Error": "Invalid username or password.", "HideChrome": true,
 	})
 }

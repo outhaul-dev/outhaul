@@ -11,7 +11,6 @@ import (
 	"encoding/hex"
 	"html/template"
 	"io"
-	"io/fs"
 	"log"
 	"net/http"
 	"strconv"
@@ -196,7 +195,7 @@ func (s *Server) syncCerts(ctx context.Context) {
 // parseTemplates builds one template set per page, each combining base.tmpl with
 // the page template (so every page can define its own "content" block).
 func (s *Server) parseTemplates() error {
-	pages := []string{"login", "setup", "overview", "projects", "project", "apps", "app", "database", "databases", "deployment", "containers", "github_connect", "settings", "restore", "placeholder", "templates", "domains", "volumes", "metrics"}
+	pages := []string{"login", "setup", "noaccess", "overview", "projects", "project", "apps", "app", "database", "databases", "deployment", "containers", "github_connect", "settings", "restore", "placeholder", "templates", "domains", "volumes", "metrics"}
 	s.pages = make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.New("base").Funcs(templateFuncs())
@@ -214,121 +213,11 @@ func (s *Server) parseTemplates() error {
 // Handler returns the fully-routed HTTP handler.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		// The commit is for the updater, which asks on 127.0.0.1. Traefik and
-		// cloudflared come from the Docker bridge, so the public URL never
-		// tells it.
-		if s.build.Known() && fromLoopback(r) {
-			w.Header().Set("X-Outhaul-Commit", s.build.Commit)
+	for _, rt := range s.routes() {
+		if rt.level == levelUnset {
+			panic("server: route " + rt.pattern + " has no access level")
 		}
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
-	})
-
-	// Unauthenticated by design: the root certificate is public material and
-	// devices need it before they can trust anything (including the login page).
-	mux.HandleFunc("GET /ca.pem", s.handleCARoot)
-
-	sub, _ := fs.Sub(staticFS, "static")
-	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
-
-	mux.HandleFunc("GET /setup", s.handleSetupForm)
-	mux.HandleFunc("POST /setup", s.handleSetupSubmit)
-	mux.HandleFunc("GET /login", s.handleLoginForm)
-	mux.HandleFunc("POST /login", s.handleLoginSubmit)
-	mux.HandleFunc("POST /logout", s.handleLogout)
-
-	mux.HandleFunc("GET /{$}", s.requireAuth(s.handleOverview))
-	mux.HandleFunc("GET /projects", s.requireAuth(s.handleProjectsList))
-	mux.HandleFunc("POST /projects", s.requireAuth(s.handleCreateProject))
-	mux.HandleFunc("GET /projects/{id}", s.requireAuth(s.handleProjectDetail))
-	mux.HandleFunc("POST /projects/{id}/settings", s.requireAuth(s.handleProjectSettings))
-	mux.HandleFunc("POST /projects/{id}/env", s.requireAuth(s.handleSetProjectEnv))
-	mux.HandleFunc("POST /projects/{id}/env/delete", s.requireAuth(s.handleDeleteProjectEnv))
-	mux.HandleFunc("POST /projects/{id}/delete", s.requireAuth(s.handleDeleteProject))
-	mux.HandleFunc("POST /projects/{id}/databases", s.requireAuth(s.handleCreateDatabase))
-	mux.HandleFunc("GET /databases", s.requireAuth(s.handleDatabasesList))
-	mux.HandleFunc("GET /domains", s.requireAuth(s.handleDomainsList))
-	mux.HandleFunc("GET /volumes", s.requireAuth(s.handleVolumesList))
-	mux.HandleFunc("POST /volumes/reclaim", s.requireAuth(s.handleReclaimVolume))
-	mux.HandleFunc("GET /databases/{id}", s.requireAuth(s.handleDatabaseDetail))
-	mux.HandleFunc("GET /databases/{id}/logs", s.requireAuth(s.handleDatabaseLogsSSE))
-	mux.HandleFunc("POST /databases/{id}/start", s.requireAuth(s.handleStartDatabase))
-	mux.HandleFunc("POST /databases/{id}/stop", s.requireAuth(s.handleStopDatabase))
-	mux.HandleFunc("POST /databases/{id}/settings", s.requireAuth(s.handleDatabaseSettings))
-	mux.HandleFunc("POST /databases/{id}/delete", s.requireAuth(s.handleDeleteDatabase))
-	mux.HandleFunc("GET /templates", s.requireAuth(s.handleTemplatesList))
-	mux.HandleFunc("POST /templates/{id}", s.requireAuth(s.handleDeployTemplate))
-	mux.HandleFunc("GET /apps", s.requireAuth(s.handleAppsList))
-	mux.HandleFunc("POST /apps", s.requireAuth(s.handleCreateApp))
-	mux.HandleFunc("GET /apps/{id}", s.requireAuth(s.handleAppDetail))
-	mux.HandleFunc("GET /apps/{id}/logs", s.requireAuth(s.handleRuntimeLogsSSE))
-	mux.HandleFunc("GET /apps/{id}/stats", s.requireAuth(s.handleAppStats))
-	mux.HandleFunc("GET /metrics/sample", s.requireAuth(s.handleMetricsSample))
-	mux.HandleFunc("GET /metrics", s.requireAuth(s.handleMetrics))
-	mux.HandleFunc("POST /apps/{id}/deploy", s.requireAuth(s.handleDeploy))
-	mux.HandleFunc("POST /apps/{id}/settings", s.requireAuth(s.handleAppSettings))
-	mux.HandleFunc("POST /apps/{id}/kind", s.requireAuth(s.handleUpdateAppKind))
-	mux.HandleFunc("POST /apps/{id}/source", s.requireAuth(s.handleUpdateAppSource))
-	mux.HandleFunc("POST /apps/{id}/domains", s.requireAuth(s.handleAddDomain))
-	mux.HandleFunc("POST /apps/{id}/domains/{domainID}", s.requireAuth(s.handleUpdateDomain))
-	mux.HandleFunc("POST /apps/{id}/domains/{domainID}/delete", s.requireAuth(s.handleDeleteDomain))
-	mux.HandleFunc("POST /apps/{id}/volumes", s.requireAuth(s.handleAddVolume))
-	mux.HandleFunc("POST /apps/{id}/volumes/{volumeID}", s.requireAuth(s.handleUpdateVolume))
-	mux.HandleFunc("POST /apps/{id}/volumes/{volumeID}/delete", s.requireAuth(s.handleDeleteVolume))
-	mux.HandleFunc("POST /apps/{id}/env", s.requireAuth(s.handleSetEnv))
-	mux.HandleFunc("POST /apps/{id}/env/delete", s.requireAuth(s.handleDeleteEnv))
-	mux.HandleFunc("POST /apps/{id}/attachments", s.requireAuth(s.handleAttachDatabase))
-	mux.HandleFunc("POST /apps/{id}/attachments/{attachmentID}/delete", s.requireAuth(s.handleDetachDatabase))
-	mux.HandleFunc("POST /apps/{id}/webhook/secret", s.requireAuth(s.handleRegenerateWebhookSecret))
-	mux.HandleFunc("POST /apps/{id}/previews", s.requireAuth(s.handleSavePreviewConfig))
-	mux.HandleFunc("POST /apps/{id}/previews/{previewID}/destroy", s.requireAuth(s.handleDestroyPreview))
-	mux.HandleFunc("POST /apps/{id}/stop", s.requireAuth(s.handleStopApp))
-	mux.HandleFunc("POST /apps/{id}/restart", s.requireAuth(s.handleRestartApp))
-	mux.HandleFunc("POST /apps/{id}/delete", s.requireAuth(s.handleDeleteApp))
-	mux.HandleFunc("GET /deployments", s.handleDeploymentsRedirect)
-	mux.HandleFunc("GET /containers", s.requireAuth(s.handleContainers))
-	mux.HandleFunc("GET /deployments/{id}", s.requireAuth(s.handleDeploymentDetail))
-	mux.HandleFunc("GET /deployments/{id}/logs", s.requireAuth(s.handleLogsSSE))
-	mux.HandleFunc("POST /deployments/{id}/cancel", s.requireAuth(s.handleCancel))
-	mux.HandleFunc("POST /deployments/{id}/rollback", s.requireAuth(s.handleRollback))
-
-	mux.HandleFunc("POST /backups", s.requireAuth(s.handleCreateBackup))
-	mux.HandleFunc("POST /backups/{id}/run", s.requireAuth(s.handleRunBackup))
-	mux.HandleFunc("POST /backups/{id}/toggle", s.requireAuth(s.handleToggleBackup))
-	mux.HandleFunc("POST /backups/{id}/delete", s.requireAuth(s.handleDeleteBackup))
-	mux.HandleFunc("GET /backups/{id}/restore", s.requireAuth(s.handleRestorePage))
-	mux.HandleFunc("POST /backups/{id}/restore", s.requireAuth(s.handleRestoreBackup))
-
-	mux.HandleFunc("GET /settings", s.requireAuth(s.handleSettings))
-	mux.HandleFunc("POST /settings/password", s.requireAuth(s.handleChangePassword))
-	mux.HandleFunc("POST /settings/destinations", s.requireAuth(s.handleCreateDestination))
-	mux.HandleFunc("POST /settings/destinations/{id}/test", s.requireAuth(s.handleTestDestination))
-	mux.HandleFunc("POST /settings/destinations/{id}/delete", s.requireAuth(s.handleDeleteDestination))
-	mux.HandleFunc("POST /settings/push-keys", s.requireAuth(s.handleAddPushKey))
-	mux.HandleFunc("POST /settings/push-keys/{id}/delete", s.requireAuth(s.handleDeletePushKey))
-	mux.HandleFunc("POST /settings/ssh", s.requireAuth(s.handleSetSSHAddr))
-	mux.HandleFunc("POST /settings/tunnel/enable", s.requireAuth(s.handleEnableTunnel))
-	mux.HandleFunc("POST /settings/tunnel/disable", s.requireAuth(s.handleDisableTunnel))
-	mux.HandleFunc("POST /settings/git-sources/{id}/delete", s.requireAuth(s.handleDeleteGitSource))
-	mux.HandleFunc("POST /settings/update", s.requireAuth(s.handleRequestUpdate))
-	mux.HandleFunc("POST /settings/update/check", s.requireAuth(s.handleCheckForUpdate))
-	mux.HandleFunc("GET /settings/update/progress", s.requireAuth(s.handleUpdateProgress))
-
-	mux.HandleFunc("GET /github/connect", s.requireAuth(s.handleGithubConnect))
-	// callback and setup are called by GitHub directly (no session cookie); the
-	// callback is guarded by the one-time CSRF state instead.
-	mux.HandleFunc("GET /github/callback", s.handleGithubCallback)
-	mux.HandleFunc("GET /github/setup", s.handleGithubSetup)
-
-	// Webhook endpoints are called by GitHub/Gitea/GitLab directly (no session
-	// cookie); each verifies its own HMAC signature or token instead.
-	mux.HandleFunc("POST /webhooks/github", s.handleGithubWebhook)
-	mux.HandleFunc("POST /webhooks/app/{token}", s.handleAppWebhook)
-
-	for _, p := range placeholderPages {
-		mux.HandleFunc("GET /"+p.active, s.requireAuth(s.handlePlaceholder(p)))
+		mux.HandleFunc(rt.pattern, s.guard(rt))
 	}
 
 	// SameSite=Lax alone is not CSRF protection here: PR previews and apps on
@@ -363,7 +252,7 @@ func limitBodies(next http.Handler) http.Handler {
 // of a corrupt, half-written 200 (whose second WriteHeader the net/http server
 // logs as a "superfluous response.WriteHeader call"). Pages are small, so the
 // extra buffer is negligible.
-func (s *Server) render(w http.ResponseWriter, status int, page string, data map[string]any) {
+func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, page string, data map[string]any) {
 	t, ok := s.pages[page]
 	if !ok {
 		http.Error(w, "unknown page: "+page, http.StatusInternalServerError)
@@ -373,6 +262,13 @@ func (s *Server) render(w http.ResponseWriter, status int, page string, data map
 		data = map[string]any{}
 	}
 	data["UpdateAvailable"] = s.updateAvailable() // the navigation badge
+	// What the person may do. A public page has no person, so these stay zero.
+	me, _ := userFrom(r)
+	data["Me"] = me
+	data["IsSystemAdmin"] = me.Role.AtLeast(core.RoleSystemAdmin)
+	data["CanManage"] = me.Role.AtLeast(core.RoleProjectAdmin)
+	data["CanChange"] = s.canChange(r)
+	data["HasRole"] = me.Role.AtLeast(core.RoleProjectViewer)
 	var buf bytes.Buffer
 	if err := t.ExecuteTemplate(&buf, "base", data); err != nil {
 		// Nothing has been written to w yet, so a real 500 still reaches the

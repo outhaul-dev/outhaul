@@ -25,7 +25,7 @@ func (s *Server) renderTemplates(w http.ResponseWriter, r *http.Request, status 
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.render(w, status, "templates", map[string]any{
+	s.render(w, r, status, "templates", map[string]any{
 		"Title": "Templates", "Active": "templates", "Templates": tmpls,
 		"Projects": projects, "SelectedProject": selectedProject(projects),
 		"Error": errMsg,

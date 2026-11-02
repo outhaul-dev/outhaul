@@ -39,7 +39,7 @@ func (s *Server) handleDatabasesList(w http.ResponseWriter, r *http.Request) {
 	for _, d := range dbs {
 		rows = append(rows, row{Database: d, ProjectName: names[d.ProjectID]})
 	}
-	s.render(w, http.StatusOK, "databases", map[string]any{
+	s.render(w, r, http.StatusOK, "databases", map[string]any{
 		"Title":     "Databases",
 		"Active":    "databases",
 		"Databases": rows,
@@ -177,7 +177,7 @@ func (s *Server) renderDatabase(w http.ResponseWriter, r *http.Request, status i
 	if errMsg != "" {
 		data["Error"] = errMsg
 	}
-	s.render(w, status, "database", data)
+	s.render(w, r, status, "database", data)
 }
 
 func (s *Server) handleDatabaseDetail(w http.ResponseWriter, r *http.Request) {

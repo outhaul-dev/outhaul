@@ -9,7 +9,7 @@ func (s *Server) handleDomainsList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.render(w, http.StatusOK, "domains", map[string]any{
+	s.render(w, r, http.StatusOK, "domains", map[string]any{
 		"Title":   "Domains",
 		"Active":  "domains",
 		"Domains": domains,

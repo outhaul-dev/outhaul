@@ -15,7 +15,7 @@ import (
 
 func TestCreateAppSSHGeneratesKey(t *testing.T) {
 	env := newTestEnv(t)
-	env.login(t) // helper: performs setup+login so requireAuth passes (see harness)
+	env.login(t) // helper: performs setup+login so the guard passes (see harness)
 
 	form := url.Values{
 		"name": {"svc"}, "domain": {"svc.example.com"}, "source": {"ssh"},

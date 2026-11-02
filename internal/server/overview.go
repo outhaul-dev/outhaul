@@ -56,7 +56,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, recentRow{Deployment: d, AppName: names[d.AppID]})
 	}
 
-	s.render(w, http.StatusOK, "overview", map[string]any{
+	s.render(w, r, http.StatusOK, "overview", map[string]any{
 		"Title":        "Overview",
 		"Active":       "overview",
 		"ProjectCount": len(projects),

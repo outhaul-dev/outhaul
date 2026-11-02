@@ -57,7 +57,7 @@ type containerStat struct {
 // handleMetrics renders the Metrics page shell; the numbers are filled by the
 // inline poller hitting /metrics/sample.
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
-	s.render(w, http.StatusOK, "metrics", map[string]any{
+	s.render(w, r, http.StatusOK, "metrics", map[string]any{
 		"Title":  "Metrics",
 		"Active": "metrics",
 	})

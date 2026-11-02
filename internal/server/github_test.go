@@ -50,7 +50,7 @@ func TestGithubCallbackRejectsBadState(t *testing.T) {
 }
 
 // TestGithubCallbackAndSetupWorkWithoutSession verifies these GitHub-facing
-// endpoints are NOT behind requireAuth: no session cookie is ever set on the
+// endpoints are public routes: no session cookie is ever set on the
 // requests above, and they still succeed (rather than 303 to /login).
 func TestGithubConnectRequiresAuth(t *testing.T) {
 	env := newTestEnv(t)

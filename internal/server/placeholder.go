@@ -13,7 +13,7 @@ type placeholderPage struct {
 // a section that is present in the nav but not yet implemented.
 func (s *Server) handlePlaceholder(p placeholderPage) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		s.render(w, http.StatusOK, "placeholder", map[string]any{
+		s.render(w, r, http.StatusOK, "placeholder", map[string]any{
 			"Title":   p.title,
 			"Active":  p.active,
 			"Heading": p.title,
