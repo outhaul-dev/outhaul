@@ -131,7 +131,7 @@ func (s *Store) DeleteUser(ctx context.Context, id int64) error {
 }
 
 // guardLastPasswordAdmin returns ErrLastPasswordAdmin when id is a password
-// system admin and no other one exists. The change that calls it removes the
+// system admin and no other one exists who can sign in (has a password set). The change that calls it removes the
 // admin's standing, so it must run in the same transaction as that change.
 func guardLastPasswordAdmin(ctx context.Context, tx *sql.Tx, id int64) error {
 	var isAdmin bool
@@ -145,7 +145,7 @@ func guardLastPasswordAdmin(ctx context.Context, tx *sql.Tx, id int64) error {
 	}
 	var others int
 	if err := tx.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM users WHERE sign_in = 'password' AND role = 'system_admin' AND id <> ?`, id).Scan(&others); err != nil {
+		`SELECT COUNT(*) FROM users WHERE sign_in = 'password' AND role = 'system_admin' AND password_hash <> '' AND id <> ?`, id).Scan(&others); err != nil {
 		return err
 	}
 	if others == 0 {

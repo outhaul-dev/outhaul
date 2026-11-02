@@ -75,7 +75,13 @@ func TestLastPasswordAdminCannotBeRemovedOrDemoted(t *testing.T) {
 	check(true)
 	insertSSOAdmin(t, s, "x")
 	check(true)
-	if _, err := s.CreatePasswordAccount(ctx, "second", core.RoleSystemAdmin); err != nil {
+	second, err := s.CreatePasswordAccount(ctx, "second", core.RoleSystemAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// "second" has not redeemed a setup link, so it cannot sign in.
+	check(true)
+	if err := s.UpdateUserPassword(ctx, second.ID, "hash-2", ""); err != nil {
 		t.Fatal(err)
 	}
 	check(false)
