@@ -63,7 +63,7 @@ func (s *Server) usersPage(w http.ResponseWriter, r *http.Request, status int, e
 		"Active":    "users",
 		"Users":     rows,
 		"Waiting":   waiting,
-		"NewRole":   core.RoleProjectMember,
+		"FormRole":  "",
 		"AllRoles":  append([]core.Role{core.RoleNone}, core.AssignableRoles...),
 		"SetupDays": int(setupLinkTTL / (24 * time.Hour)),
 	}

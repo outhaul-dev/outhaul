@@ -72,7 +72,7 @@
         <span>Role</span>
         <select name="role">
           {{$chosen := .FormRole}}
-          {{range .AllRoles}}<option value="{{.}}"{{if or (eq (printf "%s" .) $chosen) (and (eq $chosen "") (eq . $.NewRole))}} selected{{end}}>{{.Label}}</option>{{end}}
+          {{range .AllRoles}}<option value="{{.}}"{{if or (eq (printf "%s" .) $chosen) (and (eq $chosen "") (eq (printf "%s" .) "none"))}} selected{{end}}>{{.Label}}</option>{{end}}
         </select>
       </label>
       <p class="muted">You get a link to pass on. They use it to choose their own password.</p>

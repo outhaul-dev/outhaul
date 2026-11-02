@@ -118,9 +118,17 @@ func TestAccountWithoutPasswordCannotSignIn(t *testing.T) {
 func TestResetPasswordEndsSessionsAndReplacesLink(t *testing.T) {
 	e := newTestEnv(t)
 	admin := e.signInAs(t, "root", core.RoleSystemAdmin)
-	id, first := createAccount(t, e, admin, "reception", "project_viewer")
-	if resp := e.postAs(t, "", "/account/setup", url.Values{"token": {first}, "password": {"old password"}}); resp.StatusCode != http.StatusSeeOther {
+	id, used := createAccount(t, e, admin, "reception", "project_viewer")
+	if resp := e.postAs(t, "", "/account/setup", url.Values{"token": {used}, "password": {"old password"}}); resp.StatusCode != http.StatusSeeOther {
 		t.Fatalf("setup = %d", resp.StatusCode)
+	}
+	// A link issued and not yet used, which the reset must replace.
+	first := NewToken()
+	if err := e.store.CreateSetupLink(context.Background(), id, first, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.getAs(t, "", "/account/setup?token="+first).StatusCode; got != http.StatusOK {
+		t.Fatalf("unused link before reset = %d, want 200", got)
 	}
 	session := ""
 	resp := e.postAs(t, "", "/login", url.Values{"username": {"reception"}, "password": {"old password"}})
@@ -303,4 +311,46 @@ func insertSSOUser(t *testing.T, e *testEnv, email string, role core.Role) int64
 	}
 	id, _ := res.LastInsertId()
 	return id
+}
+
+func TestCopyButtonHandlerIsOnEveryPageWithOne(t *testing.T) {
+	e := newTestEnv(t)
+	admin := e.signInAs(t, "root", core.RoleSystemAdmin)
+	resp := e.postAs(t, admin, "/users", url.Values{"username": {"reception"}, "role": {"none"}})
+	html := body(t, resp)
+	if !strings.Contains(html, `class="copybtn"`) {
+		t.Fatal("no copy button on the one-time link")
+	}
+	if !strings.Contains(html, "closest('.copybtn')") {
+		t.Error("the page has a copy button but not the handler for it")
+	}
+	sp := seedProject(t, e, "acme")
+	if !strings.Contains(body(t, e.getAs(t, admin, "/apps/"+itoa(sp.App.ID))), "closest('.copybtn')") {
+		t.Error("the app page lost its copy handler")
+	}
+}
+
+func selectedRoles(html string) []string {
+	dialog := html[strings.Index(html, `id="user-dialog"`):]
+	var out []string
+	for _, m := range regexp.MustCompile(`<option value="([a-z_]+)" selected>`).FindAllStringSubmatch(dialog, -1) {
+		out = append(out, m[1])
+	}
+	return out
+}
+
+func TestNewAccountRoleDefaultsToNoRole(t *testing.T) {
+	e := newTestEnv(t)
+	admin := e.signInAs(t, "root", core.RoleSystemAdmin)
+	if got := selectedRoles(body(t, e.getAs(t, admin, "/users"))); len(got) != 1 || got[0] != "none" {
+		t.Errorf("plain GET selects %v, want only none", got)
+	}
+	resp := e.postAs(t, admin, "/users", url.Values{"username": {"x"}, "role": {"project_viewer"}})
+	html := body(t, resp)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	if got := selectedRoles(html); len(got) != 1 || got[0] != "project_viewer" {
+		t.Errorf("error re-render selects %v, want only project_viewer", got)
+	}
 }
