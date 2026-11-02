@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"time"
 
@@ -165,4 +167,195 @@ func (s *Store) TouchUserSignIn(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE users SET last_sign_in_at = ? WHERE id = ?`, fmtTime(time.Now().UTC()), id)
 	return err
+}
+
+// AddProjectMember puts an account on a project. Adding twice is fine.
+func (s *Store) AddProjectMember(ctx context.Context, projectID, userID int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO project_members (project_id, user_id, created_at) VALUES (?, ?, ?)`,
+		projectID, userID, fmtTime(time.Now().UTC()))
+	return err
+}
+
+// RemoveProjectMember takes an account off a project.
+func (s *Store) RemoveProjectMember(ctx context.Context, projectID, userID int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM project_members WHERE project_id = ? AND user_id = ?`, projectID, userID)
+	return err
+}
+
+// IsProjectMember reports whether the account is on the project.
+func (s *Store) IsProjectMember(ctx context.Context, projectID, userID int64) (bool, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM project_members WHERE project_id = ? AND user_id = ?`, projectID, userID).Scan(&n)
+	return n > 0, err
+}
+
+func (s *Store) queryUsers(ctx context.Context, query string, args ...any) ([]core.User, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []core.User
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// ListProjectMembers returns the accounts on a project. System admins are
+// left out: they reach every project anyway, even if they joined before being
+// promoted.
+func (s *Store) ListProjectMembers(ctx context.Context, projectID int64) ([]core.User, error) {
+	return s.queryUsers(ctx,
+		`SELECT `+userCols+` FROM users
+		 WHERE role <> 'system_admin' AND id IN (SELECT user_id FROM project_members WHERE project_id = ?)
+		 ORDER BY LOWER(CASE WHEN sign_in = 'sso' AND email <> '' THEN email ELSE username END), id`, projectID)
+}
+
+// ListShareableUsers returns the accounts with a project role who are not yet
+// on the project.
+func (s *Store) ListShareableUsers(ctx context.Context, projectID int64) ([]core.User, error) {
+	return s.queryUsers(ctx,
+		`SELECT `+userCols+` FROM users
+		 WHERE role IN ('project_viewer', 'project_member', 'project_admin')
+		   AND id NOT IN (SELECT user_id FROM project_members WHERE project_id = ?)
+		 ORDER BY LOWER(CASE WHEN sign_in = 'sso' AND email <> '' THEN email ELSE username END), id`, projectID)
+}
+
+// ProjectIDsForUser returns the ids of the projects the account is on.
+func (s *Store) ProjectIDsForUser(ctx context.Context, userID int64) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT project_id FROM project_members WHERE user_id = ? ORDER BY project_id`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func hashSetupToken(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
+}
+
+// replaceSetupLink drops the account's earlier links and stores a new one.
+// Only the SHA-256 of the token is kept.
+func replaceSetupLink(ctx context.Context, tx *sql.Tx, userID int64, rawToken string, expiresAt time.Time) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM setup_links WHERE user_id = ?`, userID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO setup_links (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)`,
+		hashSetupToken(rawToken), userID, fmtTime(expiresAt), fmtTime(time.Now().UTC()))
+	return err
+}
+
+// CreateSetupLink stores a one-time link for the account, replacing any
+// earlier one.
+func (s *Store) CreateSetupLink(ctx context.Context, userID int64, rawToken string, expiresAt time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := replaceSetupLink(ctx, tx, userID, rawToken, expiresAt); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// setupLinkUser finds the account a live link belongs to; sql.ErrNoRows when
+// the link is unknown or expired.
+func setupLinkUser(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, rawToken string) (core.User, error) {
+	var userID int64
+	var expires string
+	err := q.QueryRowContext(ctx,
+		`SELECT user_id, expires_at FROM setup_links WHERE token_hash = ?`, hashSetupToken(rawToken)).Scan(&userID, &expires)
+	if err != nil {
+		return core.User{}, err
+	}
+	exp, err := parseTime(expires)
+	if err != nil {
+		return core.User{}, err
+	}
+	if !time.Now().Before(exp) {
+		return core.User{}, sql.ErrNoRows
+	}
+	return scanUser(q.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE id = ?`, userID))
+}
+
+// SetupLinkUser returns the account a setup link is for. It returns
+// sql.ErrNoRows when the link is unknown or has expired.
+func (s *Store) SetupLinkUser(ctx context.Context, rawToken string) (core.User, error) {
+	return setupLinkUser(ctx, s.db, rawToken)
+}
+
+// CompleteSetupLink uses a link: in one transaction it checks the link, sets
+// the password hash, deletes the link and ends the account's sessions. A used
+// or expired link gives sql.ErrNoRows.
+func (s *Store) CompleteSetupLink(ctx context.Context, rawToken, passwordHash string) (core.User, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return core.User{}, err
+	}
+	defer tx.Rollback()
+	u, err := setupLinkUser(ctx, tx, rawToken)
+	if err != nil {
+		return core.User{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET password_hash = ? WHERE id = ?`, passwordHash, u.ID); err != nil {
+		return core.User{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM setup_links WHERE user_id = ?`, u.ID); err != nil {
+		return core.User{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, u.ID); err != nil {
+		return core.User{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return core.User{}, err
+	}
+	u.PasswordHash = passwordHash
+	return u, nil
+}
+
+// ResetUserPassword stops the account's password working at once: in one
+// transaction it applies the last-admin guard, blanks the hash, ends the
+// sessions and issues a new setup link in place of any earlier one.
+func (s *Store) ResetUserPassword(ctx context.Context, id int64, rawToken string, expiresAt time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := guardLastPasswordAdmin(ctx, tx, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET password_hash = '' WHERE id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, id); err != nil {
+		return err
+	}
+	if err := replaceSetupLink(ctx, tx, id, rawToken, expiresAt); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

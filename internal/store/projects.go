@@ -127,3 +127,32 @@ func scanProject(row scanner) (core.Project, error) {
 	p.CreatedAt = t
 	return p, nil
 }
+
+// CreateProjectWithMember creates a project and adds userID to it in one
+// transaction.
+func (s *Store) CreateProjectWithMember(ctx context.Context, p core.Project, userID int64) (core.Project, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return core.Project{}, err
+	}
+	defer tx.Rollback()
+	p.CreatedAt = time.Now().UTC()
+	res, err := tx.ExecContext(ctx,
+		`INSERT INTO projects (name, description, created_at) VALUES (?, ?, ?)`,
+		p.Name, p.Description, fmtTime(p.CreatedAt))
+	if err != nil {
+		return core.Project{}, err
+	}
+	if p.ID, err = res.LastInsertId(); err != nil {
+		return core.Project{}, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO project_members (project_id, user_id, created_at) VALUES (?, ?, ?)`,
+		p.ID, userID, fmtTime(p.CreatedAt)); err != nil {
+		return core.Project{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return core.Project{}, err
+	}
+	return p, nil
+}

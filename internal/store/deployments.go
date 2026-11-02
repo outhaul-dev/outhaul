@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
@@ -393,4 +394,54 @@ func scanDeployment(row scanner) (core.Deployment, error) {
 		return core.Deployment{}, err
 	}
 	return d, nil
+}
+
+// inClause returns "?,?,?" and the ids as arguments.
+func inClause(ids []int64) (string, []any) {
+	marks := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		marks[i] = "?"
+		args[i] = id
+	}
+	return strings.Join(marks, ","), args
+}
+
+// ListRecentDeploymentsInProjects is ListRecentDeployments limited to apps in
+// the given projects. No projects means no deployments.
+func (s *Store) ListRecentDeploymentsInProjects(ctx context.Context, projectIDs []int64, limit int) ([]core.Deployment, error) {
+	if len(projectIDs) == 0 {
+		return nil, nil
+	}
+	in, args := inClause(projectIDs)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+deploymentCols+` FROM deployments
+		 WHERE app_id IN (SELECT id FROM apps WHERE project_id IN (`+in+`))
+		 ORDER BY created_at DESC, id DESC LIMIT ?`, append(args, limit)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ds []core.Deployment
+	for rows.Next() {
+		d, err := scanDeployment(rows)
+		if err != nil {
+			return nil, err
+		}
+		ds = append(ds, d)
+	}
+	return ds, rows.Err()
+}
+
+// CountDeploymentsInProjects is CountDeployments limited to apps in the given
+// projects.
+func (s *Store) CountDeploymentsInProjects(ctx context.Context, projectIDs []int64) (int, error) {
+	if len(projectIDs) == 0 {
+		return 0, nil
+	}
+	in, args := inClause(projectIDs)
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM deployments WHERE app_id IN (SELECT id FROM apps WHERE project_id IN (`+in+`))`, args...).Scan(&n)
+	return n, err
 }

@@ -201,3 +201,284 @@ func TestEndUserSessionsAndTouchSignIn(t *testing.T) {
 		t.Fatal("LastSignInAt not set")
 	}
 }
+
+func newProject(t *testing.T, s *Store, name string) core.Project {
+	t.Helper()
+	p, err := s.CreateProject(context.Background(), core.Project{Name: name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func userNames(us []core.User) []string {
+	var out []string
+	for _, u := range us {
+		out = append(out, u.Username)
+	}
+	return out
+}
+
+func TestProjectMembersCascadeWithProject(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	u, err := s.CreatePasswordAccount(ctx, "m", core.RoleProjectMember)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newProject(t, s, "p")
+	for i := 0; i < 2; i++ { // idempotent
+		if err := s.AddProjectMember(ctx, p.ID, u.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if ok, err := s.IsProjectMember(ctx, p.ID, u.ID); err != nil || !ok {
+		t.Fatalf("IsProjectMember = %v, %v", ok, err)
+	}
+	if ids, err := s.ProjectIDsForUser(ctx, u.ID); err != nil || len(ids) != 1 || ids[0] != p.ID {
+		t.Fatalf("ProjectIDsForUser = %v, %v", ids, err)
+	}
+	if err := s.DeleteProject(ctx, p.ID); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := s.IsProjectMember(ctx, p.ID, u.ID); ok {
+		t.Fatal("still a member after project delete")
+	}
+	if ids, err := s.ProjectIDsForUser(ctx, u.ID); err != nil || len(ids) != 0 {
+		t.Fatalf("ProjectIDsForUser = %v, %v", ids, err)
+	}
+}
+
+func TestRemoveProjectMember(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	u, _ := s.CreatePasswordAccount(ctx, "m", core.RoleProjectMember)
+	p := newProject(t, s, "p")
+	if err := s.AddProjectMember(ctx, p.ID, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RemoveProjectMember(ctx, p.ID, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := s.IsProjectMember(ctx, p.ID, u.ID); ok {
+		t.Fatal("still a member")
+	}
+}
+
+func TestCreateProjectWithMember(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	u, _ := s.CreatePasswordAccount(ctx, "m", core.RoleProjectAdmin)
+	p, err := s.CreateProjectWithMember(ctx, core.Project{Name: "mine"}, u.ID)
+	if err != nil || p.ID == 0 {
+		t.Fatalf("CreateProjectWithMember = %+v, %v", p, err)
+	}
+	if ok, _ := s.IsProjectMember(ctx, p.ID, u.ID); !ok {
+		t.Fatal("creator is not a member")
+	}
+}
+
+func TestListShareableUsersOnlyHasProjectRoles(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if _, err := s.CreateUser(ctx, "admin", "h"); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := s.CreatePasswordAccount(ctx, "m", core.RoleProjectMember)
+	if _, err := s.CreatePasswordAccount(ctx, "v", core.RoleProjectViewer); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreatePasswordAccount(ctx, "n", core.RoleNone); err != nil {
+		t.Fatal(err)
+	}
+	p := newProject(t, s, "p")
+	if err := s.AddProjectMember(ctx, p.ID, m.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ListShareableUsers(ctx, p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if names := userNames(got); len(names) != 1 || names[0] != "v" {
+		t.Fatalf("shareable = %v, want [v]", names)
+	}
+}
+
+func TestSystemAdminsArentListedOnProjects(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if _, err := s.CreateUser(ctx, "admin", "h"); err != nil {
+		t.Fatal(err)
+	}
+	m, _ := s.CreatePasswordAccount(ctx, "m", core.RoleProjectMember)
+	p := newProject(t, s, "p")
+	if err := s.AddProjectMember(ctx, p.ID, m.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.ListProjectMembers(ctx, p.ID); len(got) != 1 {
+		t.Fatalf("members = %v", userNames(got))
+	}
+	if err := s.SetUserRole(ctx, m.ID, core.RoleSystemAdmin); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.ListProjectMembers(ctx, p.ID); err != nil || len(got) != 0 {
+		t.Fatalf("members = %v, %v; want none", userNames(got), err)
+	}
+}
+
+func TestResetStopsTheOldPasswordAtOnce(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	admin, err := s.CreateUser(ctx, "admin", "h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSession(ctx, core.Session{Token: "a", UserID: admin.ID, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	// Only password system admin: refused, nothing changes.
+	if err := s.ResetUserPassword(ctx, admin.ID, "tok", time.Now().Add(time.Hour)); !errors.Is(err, ErrLastPasswordAdmin) {
+		t.Fatalf("err = %v, want ErrLastPasswordAdmin", err)
+	}
+	if got, _ := s.GetUser(ctx, admin.ID); got.PasswordHash != "h" {
+		t.Fatalf("hash = %q", got.PasswordHash)
+	}
+	if _, err := s.GetSession(ctx, "a"); err != nil {
+		t.Fatalf("session lost: %v", err)
+	}
+
+	u, _ := s.CreatePasswordAccount(ctx, "bob", core.RoleProjectMember)
+	if err := s.UpdateUserPassword(ctx, u.ID, "old", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSession(ctx, core.Session{Token: "b", UserID: u.ID, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSetupLink(ctx, u.ID, "earlier", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResetUserPassword(ctx, u.ID, "fresh", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetUser(ctx, u.ID); got.PasswordHash != "" {
+		t.Fatalf("hash = %q, want blank", got.PasswordHash)
+	}
+	if _, err := s.GetSession(ctx, "b"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("session survived: %v", err)
+	}
+	if _, err := s.SetupLinkUser(ctx, "earlier"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("earlier link err = %v", err)
+	}
+	if got, err := s.SetupLinkUser(ctx, "fresh"); err != nil || got.ID != u.ID {
+		t.Fatalf("fresh link = %+v, %v", got, err)
+	}
+}
+
+func TestSetupLinkWorksOnce(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	u, _ := s.CreatePasswordAccount(ctx, "bob", core.RoleProjectMember)
+	if err := s.CreateSetupLink(ctx, u.ID, "raw", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSession(ctx, core.Session{Token: "s", UserID: u.ID, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.SetupLinkUser(ctx, "raw"); err != nil || got.ID != u.ID {
+		t.Fatalf("SetupLinkUser = %+v, %v", got, err)
+	}
+	if got, err := s.CompleteSetupLink(ctx, "raw", "h2"); err != nil || got.ID != u.ID {
+		t.Fatalf("CompleteSetupLink = %+v, %v", got, err)
+	}
+	if got, _ := s.GetUser(ctx, u.ID); got.PasswordHash != "h2" {
+		t.Fatalf("hash = %q", got.PasswordHash)
+	}
+	if _, err := s.GetSession(ctx, "s"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("session survived: %v", err)
+	}
+	if _, err := s.CompleteSetupLink(ctx, "raw", "h3"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("second use err = %v", err)
+	}
+	if got, _ := s.GetUser(ctx, u.ID); got.PasswordHash != "h2" {
+		t.Fatalf("hash = %q after reuse", got.PasswordHash)
+	}
+}
+
+func TestSetupLinkExpiresAndIsReplaced(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	u, _ := s.CreatePasswordAccount(ctx, "bob", core.RoleProjectMember)
+	if err := s.CreateSetupLink(ctx, u.ID, "old", time.Now().Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetupLinkUser(ctx, "old"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expired err = %v", err)
+	}
+	if _, err := s.CompleteSetupLink(ctx, "old", "x"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expired complete err = %v", err)
+	}
+	if err := s.CreateSetupLink(ctx, u.ID, "a", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateSetupLink(ctx, u.ID, "b", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetupLinkUser(ctx, "a"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("replaced link err = %v", err)
+	}
+	if _, err := s.SetupLinkUser(ctx, "b"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSetupLinkTokenIsNotStoredInPlain(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	u, _ := s.CreatePasswordAccount(ctx, "bob", core.RoleProjectMember)
+	if err := s.CreateSetupLink(ctx, u.ID, "raw", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	var h string
+	if err := s.db.QueryRowContext(ctx, `SELECT token_hash FROM setup_links`).Scan(&h); err != nil {
+		t.Fatal(err)
+	}
+	if h == "raw" || len(h) != 64 {
+		t.Fatalf("token_hash = %q", h)
+	}
+}
+
+func TestRecentDeploymentsInProjects(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	pa, pb := newProject(t, s, "a"), newProject(t, s, "b")
+	var depA core.Deployment
+	for _, p := range []core.Project{pa, pb} {
+		app, err := s.CreateApp(ctx, core.App{Name: "app-" + p.Name, ProjectID: p.ID, RepoURL: "https://example.com/r.git", Domain: p.Name + ".example.com"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		d, err := s.CreateDeployment(ctx, app.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.ID == pa.ID {
+			depA = d
+		}
+	}
+	got, err := s.ListRecentDeploymentsInProjects(ctx, []int64{pa.ID}, 10)
+	if err != nil || len(got) != 1 || got[0].ID != depA.ID {
+		t.Fatalf("list = %+v, %v", got, err)
+	}
+	if n, err := s.CountDeploymentsInProjects(ctx, []int64{pa.ID}); err != nil || n != 1 {
+		t.Fatalf("count = %d, %v", n, err)
+	}
+	if n, err := s.CountDeploymentsInProjects(ctx, []int64{pa.ID, pb.ID}); err != nil || n != 2 {
+		t.Fatalf("count both = %d, %v", n, err)
+	}
+	if got, err := s.ListRecentDeploymentsInProjects(ctx, nil, 10); err != nil || len(got) != 0 {
+		t.Fatalf("empty list = %+v, %v", got, err)
+	}
+	if n, err := s.CountDeploymentsInProjects(ctx, []int64{}); err != nil || n != 0 {
+		t.Fatalf("empty count = %d, %v", n, err)
+	}
+}
