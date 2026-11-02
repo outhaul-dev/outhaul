@@ -6,17 +6,18 @@
   </div>
   <div class="pagehead-actions">
     <span class="badge {{dbStateClass .Database.Status}}">{{.Database.Status}}</span>
-    {{if eq .Database.Status "stopped"}}
+    {{if not .CanChange}}
+    {{else if eq .Database.Status "stopped"}}
     <form method="post" action="/databases/{{.Database.ID}}/start" class="inline"><button type="submit" class="btn">Start</button></form>
     {{else if eq .Database.Status "running"}}
     <form method="post" action="/databases/{{.Database.ID}}/stop" class="inline"><button type="submit" class="btn">Stop</button></form>
     {{end}}
-    <form method="post" action="/databases/{{.Database.ID}}/delete" class="inline" onsubmit="return confirm('Delete database {{.Database.Name}}? Its container AND ALL STORED DATA will be permanently removed.');"><button type="submit" class="btn btn-danger">Delete</button></form>
+    {{if .CanChange}}<form method="post" action="/databases/{{.Database.ID}}/delete" class="inline" onsubmit="return confirm('Delete database {{.Database.Name}}? Its container AND ALL STORED DATA will be permanently removed.');"><button type="submit" class="btn btn-danger">Delete</button></form>{{end}}
   </div>
 </div>
 
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
-{{if eq .Database.Status "failed"}}<div class="alert alert-error">Provisioning failed: {{.Database.Reason}}. Fix the cause, then re-apply settings below to retry.</div>{{end}}
+{{if eq .Database.Status "failed"}}<div class="alert alert-error">Provisioning failed: {{.Database.Reason}}. {{if .CanChange}}Fix the cause, then re-apply settings below to retry.{{end}}</div>{{end}}
 
 <section class="panel">
   <dl class="meta">
@@ -27,6 +28,7 @@
   </dl>
 </section>
 
+{{if .CanChange}}
 <section class="panel">
   <h2 class="panel-title">Connection</h2>
   <p class="env-note">From apps on this server (internal, over the shared Docker network):</p>
@@ -37,6 +39,7 @@
   {{end}}
   <p class="muted env-note">Tip: add the internal URL as a shared variable on the <a href="/projects/{{.Project.ID}}">project</a> (e.g. <span class="mono">{{.EnvExample}}</span>) and reference it from apps as <span class="mono">{{printf "${{project.%s}}" .EnvExample}}</span>.</p>
 </section>
+{{end}}
 
 <section class="panel">
   <div class="log-head">
@@ -92,6 +95,7 @@
 
 {{if ne .Database.Engine "redis"}}{{template "backups" .}}{{end}}
 
+{{if .CanChange}}
 <section class="panel">
   <h2 class="panel-title">Settings</h2>
   <form method="post" action="/databases/{{.Database.ID}}/settings" class="grid-form">
@@ -103,4 +107,5 @@
   </form>
   <p class="muted env-note">Applying recreates the container with the new port mapping — data is kept (it lives outside the container). This is also how to retry after a failed provision.</p>
 </section>
+{{end}}
 {{end}}

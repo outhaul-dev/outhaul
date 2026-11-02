@@ -169,9 +169,16 @@ func (s *Server) renderDatabase(w http.ResponseWriter, r *http.Request, status i
 		"Database":       d,
 		"Project":        p,
 		"ContainerState": containerState,
-		"InternalURL":    dbaas.InternalURL(d),
-		"ExternalURL":    dbaas.ExternalURL(d, host),
-		"EnvExample":     strings.ToUpper(strings.ReplaceAll(d.Name, "-", "_")) + "_URL",
+	}
+	// The connection details hold the password, so a viewer gets none of them
+	// and a copy of the database without it.
+	if s.canChange(r) {
+		data["InternalURL"] = dbaas.InternalURL(d)
+		data["ExternalURL"] = dbaas.ExternalURL(d, host)
+		data["EnvExample"] = strings.ToUpper(strings.ReplaceAll(d.Name, "-", "_")) + "_URL"
+	} else {
+		d.Password = ""
+		data["Database"] = d
 	}
 	// Redis is cache-shaped and has no dump tooling (matching Dokploy); its
 	// page omits the backups panel entirely.

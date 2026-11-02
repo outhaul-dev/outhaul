@@ -40,8 +40,10 @@ func (s *Server) backupPanelData(ctx context.Context, kind string, targetID int6
 		return nil, err
 	}
 	destName := make(map[int64]string, len(dests))
-	for _, d := range dests {
+	for i, d := range dests {
 		destName[d.ID] = d.Name
+		// Pages need only the name; the S3 keys never leave Settings.
+		dests[i] = core.Destination{ID: d.ID, Name: d.Name}
 	}
 	rows := make([]backupRow, 0, len(backups))
 	for _, b := range backups {

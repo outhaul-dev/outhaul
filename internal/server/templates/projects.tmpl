@@ -5,6 +5,7 @@
 
 {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 
+{{if .CanManage}}
 <section class="panel">
   <h2 class="panel-title">New project</h2>
   <form method="post" action="/projects" class="grid-form">
@@ -19,6 +20,7 @@
     <button type="submit" class="btn btn-primary">Create project</button>
   </form>
 </section>
+{{end}}
 
 <section class="panel">
   <h2 class="panel-title">Projects</h2>

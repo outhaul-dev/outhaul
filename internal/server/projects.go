@@ -131,6 +131,10 @@ func (s *Server) renderProject(w http.ResponseWriter, r *http.Request, status in
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	env := maskEnv(envVars)
+	if !s.canChange(r) {
+		env = viewerEnv(env)
+	}
 	data := map[string]any{
 		"Title":           p.Name,
 		"Active":          "projects",
@@ -138,7 +142,7 @@ func (s *Server) renderProject(w http.ResponseWriter, r *http.Request, status in
 		"Apps":            rows,
 		"AppCount":        len(rows),
 		"Databases":       dbs,
-		"Env":             maskEnv(envVars),
+		"Env":             env,
 		"Projects":        projects,
 		"SelectedProject": p.ID,
 		"InProject":       true,

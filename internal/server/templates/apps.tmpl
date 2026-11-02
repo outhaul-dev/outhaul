@@ -2,13 +2,13 @@
 <div class="pagehead">
   <h1>Apps</h1>
   <div class="pagehead-actions">
-    {{if .Projects}}<button type="button" class="btn btn-primary" onclick="openAppDialog()">+ New app</button>{{end}}
+    {{if and .CanChange .Projects}}<button type="button" class="btn btn-primary" onclick="openAppDialog()">+ New app</button>{{end}}
   </div>
 </div>
 
 {{if and .Error (ne .OpenDialog "app-dialog")}}<div class="alert alert-error">{{.Error}}</div>{{end}}
 
-{{template "appform" .}}
+{{if .CanChange}}{{template "appform" .}}{{end}}
 
 <section class="panel">
   <h2 class="panel-title">Deployed apps</h2>
@@ -36,7 +36,7 @@
   </table>
   </div>
   {{else}}
-  <p class="empty">No apps yet. Create one above to deploy your first service.</p>
+  <p class="empty">No apps yet. {{if .CanChange}}Create one above to deploy your first service.{{end}}</p>
   {{end}}
 </section>
 {{end}}

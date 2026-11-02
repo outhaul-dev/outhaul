@@ -9,12 +9,12 @@
       <span class="muted">→ {{.Destination}}{{if .Prefix}} <span class="mono">/{{.Prefix}}</span>{{end}}</span>
       <span class="muted">keep {{if .Retention}}{{.Retention}}{{else}}all{{end}}</span>
       {{if not .Enabled}}<span class="badge state-stopped">paused</span>{{end}}
-      <span class="backup-actions">
+      {{if $.CanChange}}<span class="backup-actions">
         <form method="post" action="/backups/{{.ID}}/run" class="inline"><button type="submit" class="btn btn-quiet">Run now</button></form>
         <a href="/backups/{{.ID}}/restore" class="linkbtn">restore…</a>
         <form method="post" action="/backups/{{.ID}}/toggle" class="inline"><button type="submit" class="linkbtn">{{if .Enabled}}pause{{else}}resume{{end}}</button></form>
         <form method="post" action="/backups/{{.ID}}/delete" class="inline" onsubmit="return confirm('Remove this backup schedule? Objects already in the bucket are kept.');"><button type="submit" class="linkbtn">remove</button></form>
-      </span>
+      </span>{{end}}
     </div>
     {{if .Runs}}
     <table class="table">
@@ -39,7 +39,8 @@
   <p class="empty">No backup schedules.</p>
   {{end}}
 
-  {{if .Destinations}}
+  {{if not .CanChange}}
+  {{else if .Destinations}}
   <form method="post" action="/backups" class="grid-form env-add">
     <input type="hidden" name="target_kind" value="{{.BackupKind}}">
     <input type="hidden" name="target_id" value="{{.BackupTargetID}}">
@@ -54,8 +55,10 @@
     <button type="submit" class="btn btn-primary">Add backup</button>
   </form>
   <p class="muted env-note">Cron is 5 fields in server time (<span class="mono">0 3 * * *</span> = daily 03:00). Retention keeps the newest N archives per directory; empty or 0 keeps everything.</p>
-  {{else}}
+  {{else if .IsSystemAdmin}}
   <p class="muted env-note">Add an S3-compatible destination in <a href="/settings">Settings</a> first — backups need somewhere to go.</p>
+  {{else}}
+  <p class="muted env-note">Backups need an S3-compatible destination first. Ask a system admin to add one in Settings.</p>
   {{end}}
 </section>
 {{end}}

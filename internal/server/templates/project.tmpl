@@ -16,10 +16,12 @@
   </dl>
 </section>
 
+{{if .CanChange}}
 <div class="action-bar">
   <button type="button" class="btn btn-primary" onclick="openAppDialog()">+ New app</button>
   <button type="button" class="btn" onclick="document.getElementById('db-dialog').showModal()">+ New database</button>
 </div>
+{{end}}
 
 <section class="panel">
   <h2 class="panel-title">Apps in this project</h2>
@@ -48,7 +50,7 @@
   {{end}}
 </section>
 
-{{template "appform" .}}
+{{if .CanChange}}{{template "appform" .}}{{end}}
 
 <section class="panel">
   <h2 class="panel-title">Databases</h2>
@@ -72,6 +74,7 @@
   {{else}}
   <p class="empty">No databases in this project yet.</p>
   {{end}}
+  {{if .CanChange}}
   <dialog id="db-dialog" class="modal" open{{if eq .OpenDialog "db-dialog"}} data-reopen{{end}} aria-labelledby="db-dialog-title">
     <form method="post" action="/projects/{{.Project.ID}}/databases">
       <div class="modal-head">
@@ -100,6 +103,7 @@
       </div>
     </form>
   </dialog>
+  {{end}}
 </section>
 
 <section class="panel">
@@ -113,10 +117,12 @@
         <td class="mono">{{.Key}}</td>
         <td class="mono muted">{{if .IsSecret}}••••••{{else}}{{.Value}}{{end}}</td>
         <td>
+          {{if $.CanChange}}
           <form method="post" action="/projects/{{$.Project.ID}}/env/delete" class="inline">
             <input type="hidden" name="key" value="{{.Key}}">
             <button type="submit" class="linkbtn">remove</button>
           </form>
+          {{end}}
         </td>
       </tr>
       {{end}}
@@ -125,6 +131,7 @@
   {{else}}
   <p class="empty">No shared variables.</p>
   {{end}}
+  {{if .CanChange}}
   <form method="post" action="/projects/{{.Project.ID}}/env" class="grid-form env-add">
     <label class="field"><span>Key</span><input type="text" name="key" placeholder="DATABASE_URL" required></label>
     <label class="field"><span>Value</span><input type="text" name="value" placeholder="postgres://…"></label>
@@ -132,8 +139,10 @@
     <button type="submit" class="btn btn-primary">Add</button>
   </form>
   <p class="muted env-note">Shared variables are not injected into apps by themselves — reference one from an app's environment as <span class="mono">{{"${{project.KEY}}"}}</span> and it is resolved on that app's next deploy.</p>
+  {{end}}
 </section>
 
+{{if .CanChange}}
 <section class="panel">
   <h2 class="panel-title">Project settings</h2>
   <form method="post" action="/projects/{{.Project.ID}}/settings" class="grid-form">
@@ -148,7 +157,9 @@
     <button type="submit" class="btn">Save settings</button>
   </form>
 </section>
+{{end}}
 
+{{if .CanManage}}
 <section class="panel">
   <h2 class="panel-title">Danger zone</h2>
   {{if or .Apps .Databases}}
@@ -159,6 +170,7 @@
   </form>
   {{end}}
 </section>
+{{end}}
 
 <script>
   // Progressive enhancement for the database dialog: it ships open (inline &

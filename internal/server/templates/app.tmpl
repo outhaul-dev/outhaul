@@ -6,9 +6,11 @@
   </div>
   <div class="pagehead-actions">
     <span class="badge state-{{if eq .Runtime "running"}}running{{else}}stopped{{end}}">{{.Runtime}}</span>
+    {{if .CanChange}}
     <form method="post" action="/apps/{{.App.ID}}/deploy" class="inline"><button type="submit" class="btn btn-primary">Deploy</button></form>
     <form method="post" action="/apps/{{.App.ID}}/stop" class="inline"><button type="submit" class="btn">Stop</button></form>
     <form method="post" action="/apps/{{.App.ID}}/restart" class="inline"><button type="submit" class="btn">Restart</button></form>
+    {{end}}
   </div>
 </div>
 
@@ -189,7 +191,7 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
         <td class="mono muted"><time datetime="{{.CreatedAt.Format "2006-01-02T15:04:05Z07:00"}}" title="{{fmtTime .CreatedAt}}">{{fmtTime .CreatedAt}}</time></td>
         <td class="mono muted">{{buildDur .}}</td>
         <td class="row-actions">
-          {{if and .Status.IsTerminal .Image (ne $.App.Kind "compose")}}
+          {{if and $.CanChange .Status.IsTerminal .Image (ne $.App.Kind "compose")}}
           {{if .ImagePruned}}
           <span class="muted" title="the built image was removed by image retention; deploy to rebuild">image pruned</span>
           {{else}}
@@ -205,7 +207,7 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
     </tbody>
   </table>
   {{else}}
-  <p class="empty">No deployments yet. Click <strong>Deploy</strong> to build and launch this app.</p>
+  <p class="empty">No deployments yet.{{if .CanChange}} Click <strong>Deploy</strong> to build and launch this app.{{end}}</p>
   {{end}}
 <script>
 (function () {
@@ -231,7 +233,7 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
 <section class="panel">
   <div class="log-head">
     <h2 class="panel-title">Domains</h2>
-    <button type="button" class="btn btn-primary" onclick="openDomainDialog()">+ New domain</button>
+    {{if .CanChange}}<button type="button" class="btn btn-primary" onclick="openDomainDialog()">+ New domain</button>{{end}}
   </div>
   {{if .Domains}}
   <table class="table">
@@ -245,11 +247,13 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
         <td class="mono muted">{{if .Path}}{{.Path}}{{if .InternalPath}} &rarr; {{.InternalPath}}{{end}}{{else}}/{{end}}</td>
         <td>{{if .TLS}}<span class="badge state-running">TLS</span>{{else}}<span class="muted">http</span>{{end}}</td>
         <td>
+          {{if $.CanChange}}
           <button type="button" class="linkbtn"
             onclick='openDomainDialog({"id":"{{.ID}}","host":"{{.Host}}","service":"{{.Service}}","port":"{{.Port}}","path":"{{.Path}}","internal_path":"{{.InternalPath}}","tls":"{{if .TLS}}1{{else}}0{{end}}"})'>edit</button>
           <form method="post" action="/apps/{{$.App.ID}}/domains/{{.ID}}/delete" class="inline" onsubmit="return confirm('Remove {{.Host}}{{.Path}}?');">
             <button type="submit" class="linkbtn">remove</button>
           </form>
+          {{end}}
         </td>
       </tr>
       {{end}}
@@ -261,7 +265,7 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
   <p class="muted env-note">Domain changes apply on this app's next deploy.</p>
 </section>
 
-{{template "domainform" .}}
+{{if .CanChange}}{{template "domainform" .}}{{end}}
 </section>
 
 <section class="tab" data-tab="resources">
@@ -292,7 +296,7 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
 <section class="panel">
   <div class="log-head">
     <h2 class="panel-title">Volumes</h2>
-    <button type="button" class="btn btn-primary" onclick="openVolumeDialog()">+ Add volume</button>
+    {{if .CanChange}}<button type="button" class="btn btn-primary" onclick="openVolumeDialog()">+ Add volume</button>{{end}}
   </div>
   {{if .Volumes}}
   <table class="table">
@@ -303,11 +307,13 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
         <td class="mono">{{.MountPath}}</td>
         <td class="mono muted">{{.Name}}</td>
         <td>
+          {{if $.CanChange}}
           <button type="button" class="linkbtn"
             onclick='openVolumeDialog({"id":"{{.ID}}","mount_path":"{{.MountPath}}"})'>edit</button>
           <form method="post" action="/apps/{{$.App.ID}}/volumes/{{.ID}}/delete" class="inline" onsubmit="return confirm('Detach the volume at {{.MountPath}}? The data is kept.');">
             <button type="submit" class="linkbtn">detach</button>
           </form>
+          {{end}}
         </td>
       </tr>
       {{end}}
@@ -316,10 +322,10 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
   {{else}}
   <p class="empty">No volumes. This app is stateless until you attach one — data written outside a volume is lost on the next deploy.</p>
   {{end}}
-  <p class="muted env-note">Volume changes apply on this app's next deploy. Detaching keeps the underlying data — reclaim it later from the <a href="/volumes">Volumes</a> tab.</p>
+  <p class="muted env-note">Volume changes apply on this app's next deploy. Detaching keeps the underlying data{{if .IsSystemAdmin}} — reclaim it later from the <a href="/volumes">Volumes</a> tab{{end}}.</p>
 </section>
 
-{{template "volumeform" .}}
+{{if .CanChange}}{{template "volumeform" .}}{{end}}
 
 {{/* Backups panel: shown once the handler supplies its data — a single-container
      app gets it while it has a volume, or while a schedule still exists. */}}
@@ -339,9 +345,11 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
         <td class="mono">{{.EnvVar}}</td>
         <td class="mono muted">{{.DBName}}</td>
         <td>
+          {{if $.CanChange}}
           <form method="post" action="/apps/{{$.App.ID}}/attachments/{{.ID}}/delete" class="inline">
             <button type="submit" class="linkbtn">detach</button>
           </form>
+          {{end}}
         </td>
       </tr>
       {{end}}
@@ -350,7 +358,8 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
   {{else}}
   <p class="empty">No databases attached. Attaching one injects its connection URL as an env var at deploy time.</p>
   {{end}}
-  {{if .ProjDatabases}}
+  {{if not .CanChange}}
+  {{else if .ProjDatabases}}
   <form method="post" action="/apps/{{.App.ID}}/attachments" class="grid-form env-add">
     <label class="field"><span>Database</span>
       <select name="database_id" required>
@@ -369,6 +378,7 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
 <section class="panel">
   <h2 class="panel-title">Preview environments {{template "hint" "Give each open pull request its own throwaway copy of this app — a fresh isolated deploy (with its own copies of any attached databases), torn down automatically when the PR closes or goes idle."}}</h2>
   <p class="muted">Spin up an ephemeral copy of this app for each open pull request, torn down when the PR closes.</p>
+  {{if .CanChange}}
   <form method="post" action="/apps/{{.App.ID}}/previews" class="grid-form">
     <label class="field-check"><input type="checkbox" name="enabled" {{if .PreviewConfig.Enabled}}checked{{end}}> <span>Enabled {{template "hint" "Turn preview environments on for this app. When off, pull requests are ignored."}}</span></label>
     <label class="field"><span>Base domain {{template "hint" "Preview hostnames are built under this domain from the app name and PR number (e.g. web-pr-42.preview.example.com — point a wildcard DNS record at this server). Leave blank to use generated sslip.io hostnames that need no DNS."}}</span><input type="text" name="base_domain" value="{{.PreviewConfig.BaseDomain}}" placeholder="preview.example.com"></label>
@@ -380,6 +390,9 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
   </form>
   <p class="muted env-note">Leave the base domain blank to use generated sslip.io hostnames.</p>
   <p class="muted env-note">Previews need the GitHub App to have the <strong>Pull requests: Read and write</strong> permission and the <strong>Pull request</strong> event. Apps connected before previews existed don't have them: add both under the App's <em>Permissions &amp; events</em> settings on GitHub, then accept the updated permissions on its installation.</p>
+  {{else}}
+  <p class="muted env-note">{{if .PreviewConfig.Enabled}}Previews are on for this app.{{else}}Previews are off for this app.{{end}}</p>
+  {{end}}
   {{if .Previews}}
   <table class="table">
     <thead><tr><th>PR</th><th>Status</th><th>URL</th><th></th></tr></thead>
@@ -390,9 +403,11 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
         <td><span class="badge state-{{if eq .Status "ready"}}running{{else if eq .Status "building"}}building{{else}}stopped{{end}}">{{.Status}}</span></td>
         <td>{{if .URL}}<a href="{{.URL}}" target="_blank" rel="noreferrer" class="mono">{{.URL}}</a>{{else}}<span class="muted">— internal only</span>{{end}}</td>
         <td>
+          {{if $.CanChange}}
           <form method="post" action="/apps/{{$.App.ID}}/previews/{{.ID}}/destroy" class="inline" onsubmit="return confirm('Destroy the preview for PR #{{.PR}}?');">
             <button type="submit" class="linkbtn">destroy</button>
           </form>
+          {{end}}
         </td>
       </tr>
       {{end}}
@@ -407,6 +422,7 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
 
 <section class="tab" data-tab="settings">
 {{if not .App.TemplateID}}
+{{if .CanChange}}
 <section class="panel">
   <h2 class="panel-title">Deploy settings</h2>
   <form method="post" action="/apps/{{.App.ID}}/settings" class="grid-form">
@@ -557,6 +573,7 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
   };
 })();
 </script>
+{{end}}
 
 <section class="panel">
   <h2 class="panel-title">Connect this repo</h2>
@@ -570,7 +587,7 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
   {{end}}
   {{if eq .App.Source "github"}}
   <p class="env-note">Auto-deploy is handled by the connected GitHub App — {{if eq .App.DeployTrigger "tag"}}new tags matching <span class="mono">{{.App.TagPattern}}</span> deploy automatically when auto-deploy is enabled. No webhook setup needed. GitHub sends no push events when more than three tags are pushed at once.{{else}}pushes to <span class="mono">{{.App.Branch}}</span> deploy automatically when auto-deploy is enabled. No webhook setup needed.{{end}}</p>
-  {{else if .WebhookURL}}
+  {{else if and .CanChange .WebhookURL}}
   <p class="env-note">Point a push webhook here to auto-deploy (content type <span class="mono">application/json</span>):</p>
   <div class="copywrap"><div class="cmd"><code>{{.WebhookURL}}</code></div>{{template "copybtn" .}}</div>
   <p class="env-note">and give it this secret — GitHub/Gitea: <em>Secret</em>; GitLab: <em>Secret token</em>. Deliveries without it are refused.</p>
@@ -579,10 +596,10 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
     <summary>show secret</summary>
     <div class="copywrap"><div class="cmd"><code>{{.App.WebhookSecret}}</code></div>{{template "copybtn" .}}</div>
   </details>
-  <form method="post" action="/apps/{{.App.ID}}/webhook/secret" class="inline" onsubmit="return confirm('Regenerate the webhook secret? Deliveries signed with the current one will be refused until the sender is updated.');">
+  {{if .CanChange}}<form method="post" action="/apps/{{.App.ID}}/webhook/secret" class="inline" onsubmit="return confirm('Regenerate the webhook secret? Deliveries signed with the current one will be refused until the sender is updated.');">
     <button type="submit" class="linkbtn">regenerate secret</button>
-  </form>
-  {{else if .WebhookEnable}}
+  </form>{{end}}
+  {{else if and .CanChange .WebhookEnable}}
   <p class="env-note">This app has no push webhook yet.</p>
   <form method="post" action="/apps/{{.App.ID}}/webhook/secret" class="inline">
     <button type="submit" class="btn btn-quiet">enable push webhook</button>
@@ -602,6 +619,7 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
         <td class="mono">{{.Key}}{{if ne .Scope "shared"}}{{if ne .Scope ""}} <span class="badge">{{.Scope}}</span>{{end}}{{end}}{{if .Reach}}<br><span class="muted">{{.Reach}}</span>{{end}}</td>
         <td class="mono muted">
           <span data-env-val>{{if .IsSecret}}••••••{{else}}{{.Value}}{{end}}</span>
+          {{if $.CanChange}}
           <form method="post" action="/apps/{{$.App.ID}}/env" class="env-edit" data-env-edit hidden>
             <input type="hidden" name="key" value="{{.Key}}">
             <input type="hidden" name="scope" value="{{if .Scope}}{{.Scope}}{{else}}shared{{end}}">
@@ -609,14 +627,17 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
             <button type="submit" class="btn btn-quiet">Save</button>
             <button type="button" class="linkbtn" data-env-cancel>Cancel</button>
           </form>
+          {{end}}
         </td>
         <td class="row-actions">
+          {{if $.CanChange}}
           <button type="button" class="linkbtn" data-env-editbtn>edit</button>
           <form method="post" action="/apps/{{$.App.ID}}/env/delete" class="inline">
             <input type="hidden" name="key" value="{{.Key}}">
             <input type="hidden" name="scope" value="{{if .Scope}}{{.Scope}}{{else}}shared{{end}}">
             <button type="submit" class="linkbtn">remove</button>
           </form>
+          {{end}}
         </td>
       </tr>
       {{end}}
@@ -625,6 +646,7 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
   {{else}}
   <p class="empty">No environment variables.</p>
   {{end}}
+  {{if .CanChange}}
   <form method="post" action="/apps/{{.App.ID}}/env" class="grid-form env-add">
     <label class="field"><span>Key</span><input type="text" name="key" placeholder="LOG_LEVEL" required></label>
     <label class="field"><span>Value</span><input type="text" name="value" placeholder="info"></label>
@@ -639,6 +661,7 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
     <button type="submit" class="btn btn-primary">Add</button>
   </form>
   <p class="muted env-note">Values may reference the project's shared variables as <span class="mono">{{"${{project.KEY}}"}}</span>, resolved on deploy. Redeploy to apply env changes.</p>
+  {{end}}
 </section>
 
 <script>
@@ -658,11 +681,13 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
 })();
 </script>
 
+{{if .CanChange}}
 <section class="panel danger-zone">
   <h2 class="panel-title">Danger zone</h2>
   <p class="muted">Deleting an app removes it and all its deployments, domains, env vars, volumes, and backups. This cannot be undone.</p>
   <form method="post" action="/apps/{{.App.ID}}/delete" class="inline" onsubmit="return confirm('Delete {{.App.Name}} and all its deployments?');"><button type="submit" class="btn btn-danger">Delete app</button></form>
 </section>
+{{end}}
 </section>
 
 <script>

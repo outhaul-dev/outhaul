@@ -755,12 +755,21 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 			previewRows = append(previewRows, previewRow{ID: k.ID, PR: k.PRNumber, Status: k.PreviewStatus, URL: url})
 		}
 	}
+	// A viewer gets the page without anything that could be used to act on the
+	// app: the template gets a copy with the webhook credentials removed, and
+	// masked variables.
+	canChange := s.canChange(r)
+	shownApp, shownEnv := app, maskEnv(envVars)
+	if !canChange {
+		shownApp.WebhookSecret, shownApp.WebhookToken = "", ""
+		shownEnv = viewerEnv(shownEnv)
+	}
 	data := map[string]any{
 		"Title":         app.Name,
 		"Active":        "apps",
-		"App":           app,
+		"App":           shownApp,
 		"Deployments":   deployments,
-		"Env":           maskEnv(envVars),
+		"Env":           shownEnv,
 		"Runtime":       runtimeState,
 		"Stack":         stack,
 		"Domains":       domains,
@@ -779,14 +788,14 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 	if p, err := s.store.GetProject(r.Context(), app.ProjectID); err == nil {
 		data["Project"] = p
 	}
-	if s.publicURL != "" && app.WebhookToken != "" {
+	if canChange && s.publicURL != "" && app.WebhookToken != "" {
 		data["WebhookURL"] = strings.TrimRight(s.publicURL, "/") + "/webhooks/app/" + app.WebhookToken
 	}
 	// Repo-backed apps without a token (created by a cold git push, then moved
 	// to a public or SSH repo) can enable a webhook from the page.
-	data["WebhookEnable"] = s.publicURL != "" && app.WebhookToken == "" &&
+	data["WebhookEnable"] = canChange && s.publicURL != "" && app.WebhookToken == "" &&
 		(app.Source == core.SourcePublic || app.Source == core.SourceSSH)
-	if app.Source == core.SourcePush {
+	if canChange && app.Source == core.SourcePush {
 		data["PushRemote"] = s.pushRemote(app.Name)
 		data["PushBranch"] = app.Branch
 	}
@@ -1107,6 +1116,18 @@ type envRow struct {
 	IsSecret bool
 	Scope    string
 	Reach    string // shared rows only: where the value still applies, when a scoped row overrides it
+}
+
+// viewerEnv hides every value, so a viewer sees which variables exist and
+// nothing they hold. Plain values can carry credentials too, and a viewer may
+// read but not use them.
+func viewerEnv(rows []envRow) []envRow {
+	out := make([]envRow, len(rows))
+	for i, r := range rows {
+		r.Value, r.IsSecret = "", true
+		out[i] = r
+	}
+	return out
 }
 
 func maskEnv(vars []core.EnvVar) []envRow {
