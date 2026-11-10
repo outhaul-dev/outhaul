@@ -42,12 +42,28 @@ func (s *Server) currentSession(r *http.Request) (core.Session, bool) {
 }
 
 // requestIsHTTPS reports whether the browser reached us over HTTPS — directly,
-// or through Traefik, which terminates TLS and sets X-Forwarded-Proto. The
-// session cookie is marked Secure only then, so plain-HTTP access on the admin
-// port (LAN, SSH tunnel) keeps working while an HTTPS session can never leak
-// over cleartext. A spoofed header only makes the spoofer's own cookie Secure.
+// or through Traefik, which terminates TLS and sets X-Forwarded-Proto. A
+// spoofed header only makes the spoofer's own cookie Secure.
 func requestIsHTTPS(r *http.Request) bool {
 	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+// sessionCookieFor is the session cookie for r, with no value or lifetime
+// yet; every place that sets or clears it starts here.
+//
+// It is Secure when the request is HTTPS, and always on an HTTPS public URL's
+// own host: in tunnel mode Traefik serves plain HTTP and says so in
+// X-Forwarded-Proto while browsers are on HTTPS, so the request alone can't
+// tell. Anywhere else (the admin port on a LAN address, an SSH tunnel to
+// localhost) it follows the request, so plain-HTTP sign-in keeps working there.
+func (s *Server) sessionCookieFor(r *http.Request) *http.Cookie {
+	return &http.Cookie{
+		Name:     sessionCookie,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   requestIsHTTPS(r) || (s.publicURLIsHTTPS() && s.onPublicHost(r)),
+		SameSite: http.SameSiteLaxMode,
+	}
 }
 
 // login creates a session and sets the cookie.
@@ -86,15 +102,9 @@ func (s *Server) finishLogin(w http.ResponseWriter, r *http.Request, user core.U
 	if err := s.store.TouchUserSignIn(r.Context(), user.ID); err != nil {
 		log.Printf("server: record sign-in for user %d: %v", user.ID, err)
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookie,
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		Secure:   requestIsHTTPS(r),
-		SameSite: http.SameSiteLaxMode,
-		Expires:  expires,
-	})
+	c := s.sessionCookieFor(r)
+	c.Value, c.Expires = token, expires
+	http.SetCookie(w, c)
 }
 
 // --- first-boot setup ---
@@ -247,9 +257,9 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		_ = s.store.DeleteSession(r.Context(), c.Value)
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name: sessionCookie, Value: "", Path: "/", MaxAge: -1, HttpOnly: true,
-	})
+	c := s.sessionCookieFor(r)
+	c.MaxAge = -1
+	http.SetCookie(w, c)
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 

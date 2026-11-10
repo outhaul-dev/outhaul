@@ -120,22 +120,32 @@ func (s *Server) publicURLIsHTTPS() bool {
 	return err == nil && u.Scheme == "https"
 }
 
+// onPublicHost reports whether r arrived on the public URL's host. Hosts are
+// compared with their ports, ignoring case and a port the public URL's scheme
+// implies. It is false when no public URL is set.
+func (s *Server) onPublicHost(r *http.Request) bool {
+	if !s.publicURLSet() {
+		return false
+	}
+	pub, err := url.Parse(s.publicURL)
+	if err != nil || pub.Host == "" {
+		return false
+	}
+	return hostWithoutDefaultPort(r.Host, pub.Scheme) == hostWithoutDefaultPort(pub.Host, pub.Scheme)
+}
+
 // ssoStartElsewhere is where a sign-in started on another host than the
 // public URL's must start instead: the same path and query on the public URL.
 // The flow cookie belongs to the host that answers start, and the provider
 // sends the browser back to the public URL, so a sign-in started anywhere
-// else could never finish. Hosts are compared with their ports, ignoring
-// case and a port the public URL's scheme implies; on the public URL's own
-// host ok is false, so the move can't loop.
+// else could never finish. On the public URL's own host ok is false, so the
+// move can't loop.
 func (s *Server) ssoStartElsewhere(r *http.Request) (to string, ok bool) {
-	if !s.publicURLSet() {
+	if !s.publicURLSet() || s.onPublicHost(r) {
 		return "", false
 	}
 	pub, err := url.Parse(s.publicURL)
 	if err != nil || pub.Host == "" {
-		return "", false
-	}
-	if hostWithoutDefaultPort(r.Host, pub.Scheme) == hostWithoutDefaultPort(pub.Host, pub.Scheme) {
 		return "", false
 	}
 	u := url.URL{Scheme: pub.Scheme, Host: pub.Host, Path: r.URL.Path, RawQuery: r.URL.RawQuery}

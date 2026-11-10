@@ -791,8 +791,11 @@ func TestFlowCookieFollowsThePublicURL(t *testing.T) {
 			t.Errorf("%s public URL, proto %q: the flow cookie wasn't cleared with its own name, path and Secure flag: %v",
 				c.public, c.proto, resp.Header.Values("Set-Cookie"))
 		}
-		if sc, ok := sessionCookieIn(resp); !ok || (c.proto == "https" && !sc.Secure) {
-			t.Errorf("%s public URL, proto %q: session cookie = %+v", c.public, c.proto, sc)
+		// The callback is on the public URL's host, so on an HTTPS public URL the
+		// session cookie is Secure whatever X-Forwarded-Proto says.
+		wantSecure := c.public == "https" || c.proto == "https"
+		if sc, ok := sessionCookieIn(resp); !ok || sc.Secure != wantSecure {
+			t.Errorf("%s public URL, proto %q: session cookie = %+v, want Secure %v", c.public, c.proto, sc, wantSecure)
 		}
 	}
 }
