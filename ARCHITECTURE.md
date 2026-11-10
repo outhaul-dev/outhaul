@@ -32,8 +32,10 @@ right here before writing the worker.
 - **Background jobs.** In-process worker with the `deployments` table as the
   queue. No external queue. Deploys for the same app serialize; different apps
   run concurrently.
-- **Auth.** Single admin user for v1. argon2id password hash, session cookie.
-  Created on first boot via a printed one-time setup URL.
+- **Auth.** Several accounts, with a role per person managed in Outhaul
+  (system admin, project admin, project member, project viewer, or no role).
+  argon2id password hash, session cookie. The first account, a system admin, is
+  created on first boot via a printed one-time setup URL.
 - **Config.** Single `/var/lib/outhaul/` data dir. Env-var overrides. No YAML.
 
 ### Milestone 1 scope (this session)
@@ -100,7 +102,7 @@ client) — via a `projects` table and an `apps.project_id` column. A `default`
 project is created by migration and backfilled with existing apps, so app
 creation never requires a project step first. Deliberate divergences from
 Dokploy, argued in `docs/superpowers/specs/2026-07-04-projects-design.md`:
-no organization layer (single-admin), no environment layer yet (a seam, the
+no organization layer, no environment layer yet (a seam, the
 same retrofit path Dokploy took), and project deletion is guarded rather than
 cascading — a project must be emptied of apps before it can be deleted, since
 deleting an app tears down a live container. Deployments and webhooks never
@@ -449,8 +451,11 @@ itself. `internal/gitrepo` owns a bare repo per push app plus its
 `post-receive` hook; `internal/gitssh` embeds an SSH server (default
 `OUTHAUL_SSH_ADDR`, `:2222`, overridable live from Settings and persisted to
 the `ssh_addr` setting) that authenticates `git push` against registered
-**push keys** — SHA256-fingerprinted SSH public keys managed from
-Settings — rather than per-app deploy keys, since the repo is local. A push
+**push keys** — SHA256-fingerprinted SSH public keys, each owned by an
+account and managed from its Account page — rather than per-app deploy keys,
+since the repo is local. A push is allowed only if the key owner's role can
+change the app's project (a cold push counts as the default project), checked
+at each push before anything is created. A push
 runs the hook, which relays over a unix socket (`internal/githook`) to the
 deploy worker so the build streams back into the pusher's terminal exactly
 like a browser-triggered deploy; a cold push to a name with no existing app
@@ -597,6 +602,10 @@ outhaul/
     server/
         server.go             # http.ServeMux, route table, middleware, graceful Shutdown
         auth.go               # argon2id, session cookies, first-boot setup token
+        access.go             # per-route access levels and the guard that checks role and project
+        routes.go             # the route table: every route states its access level
+        users.go              # Users page: accounts, roles, project sharing
+        account.go            # Account page: your own password and push keys
         handlers.go           # apps list/create, deploy trigger, deployment detail
         catalog.go            # template gallery + one-click deploy-from-template
         databases.go          # managed-database pages: cross-project list, create, detail, lifecycle, settings

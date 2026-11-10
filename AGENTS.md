@@ -57,6 +57,8 @@ it.
   `internal/config/config.go`, so `Config.Validate` (run first by
   `outhaul serve`) reports malformed values instead of silently falling back
   to defaults.
+- **Pages that show secrets** must withhold them when `!canChange`, so a
+  viewer sees that a value exists but not what it is.
 - **Commits** look like `fix(scope): summary` or `feat(scope): summary`. The
   body says what the user saw go wrong, and what changed.
 
@@ -130,6 +132,13 @@ fixed in five batches. All five are on `main`.
 - **Configuration is strict.** `Load` keeps defaults, so commands that only
   need paths still work, but `Validate` refuses bad values. Yes/no settings
   are case-insensitive, so `True` means on.
+- **Roles.** Roles are guardrails for trusted people, not containment: a
+  project member's code still runs on the same server. New routes go in
+  `routes()` with an access level; a route without one fails at startup. The
+  last password system admin can't be removed or demoted, because there is no
+  recovery command. A `git push` over SSH follows the same rule as the web:
+  the key's owner must be a system admin, or project member or above on the
+  app's project.
 - **Login.** There is no per-IP or per-user backoff. Behind Traefik every
   request shares one remote address, and a per-user lockout lets an attacker
   lock out the only admin. The two-at-a-time limit on hashing caps the rate of

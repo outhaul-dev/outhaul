@@ -29,6 +29,47 @@ type Keyring interface {
 	FindPushKeyByFingerprint(ctx context.Context, fingerprint string) (core.PushKey, bool, error)
 	TouchPushKey(ctx context.Context, id int64) error
 	GetAppByName(ctx context.Context, name string) (core.App, error)
+	GetUser(ctx context.Context, id int64) (core.User, error)
+	IsProjectMember(ctx context.Context, projectID, userID int64) (bool, error)
+}
+
+// errPushDenied means the key's owner may not change the project.
+var errPushDenied = errors.New("push denied")
+
+// authorize decides whether the owner of the key with fingerprint fp may push
+// to a repo in the project. It agrees with the web guard: a system admin may
+// use every project; anyone else needs project member or above and a place on
+// the project. The role is read now, so a demotion applies to the next push.
+// A store failure is returned as is, and the push is refused.
+func (s *Server) authorize(ctx context.Context, fp string, projectID int64) error {
+	pk, ok, err := s.keyring.FindPushKeyByFingerprint(ctx, fp)
+	if err != nil {
+		return err
+	}
+	if !ok || pk.UserID == 0 {
+		return errPushDenied
+	}
+	u, err := s.keyring.GetUser(ctx, pk.UserID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errPushDenied
+	}
+	if err != nil {
+		return err
+	}
+	if u.Role == core.RoleSystemAdmin {
+		return nil
+	}
+	if !u.Role.AtLeast(core.RoleProjectMember) {
+		return errPushDenied
+	}
+	on, err := s.keyring.IsProjectMember(ctx, projectID, u.ID)
+	if err != nil {
+		return err
+	}
+	if !on {
+		return errPushDenied
+	}
+	return nil
 }
 
 // Server is the git-push SSH server. It owns its listener so the port can be
@@ -225,6 +266,18 @@ func (s *Server) runGit(ctx context.Context, ch ssh.Channel, command, fp string)
 		return 1
 	case aerr != nil && !errors.Is(aerr, sql.ErrNoRows):
 		fmt.Fprintf(ch.Stderr(), "outhaul: %v\n", aerr)
+		return 1
+	}
+	// A cold push lands in the default project, where githook creates the app.
+	projectID := core.DefaultProjectID
+	if aerr == nil {
+		projectID = app.ProjectID
+	}
+	if err := s.authorize(ctx, fp, projectID); err != nil {
+		if !errors.Is(err, errPushDenied) {
+			log.Printf("gitssh: authorize %s for %s: %v", fp, repo, err)
+		}
+		fmt.Fprintf(ch.Stderr(), "outhaul: you don't have permission to use '%s'\n", repo)
 		return 1
 	}
 	// aerr == nil (push app) or ErrNoRows (cold push): proceed to lazy Init.

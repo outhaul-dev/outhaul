@@ -3,6 +3,7 @@ package gitssh
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -79,6 +80,16 @@ func waitAddr(t *testing.T, srv *Server) string {
 // and returns a path to the private key file (mode 0600).
 func registerKey(t *testing.T, st *store.Store) string {
 	t.Helper()
+	admin, err := st.CreatePasswordAccount(context.Background(), fmt.Sprintf("admin-%d", time.Now().UnixNano()), core.RoleSystemAdmin)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	return registerKeyFor(t, st, admin.ID)
+}
+
+// registerKeyFor is registerKey for a key owned by the given account (0 for none).
+func registerKeyFor(t *testing.T, st *store.Store, userID int64) string {
+	t.Helper()
 	cpriv, cpub, err := sshkey.Generate()
 	if err != nil {
 		t.Fatalf("client key: %v", err)
@@ -89,7 +100,7 @@ func registerKey(t *testing.T, st *store.Store) string {
 	}
 	fp := ssh.FingerprintSHA256(pub)
 	if _, err := st.AddPushKey(context.Background(), core.PushKey{
-		Label: "t", PublicKey: cpub, Fingerprint: fp,
+		Label: "t", PublicKey: cpub, Fingerprint: fp, UserID: userID,
 	}); err != nil {
 		t.Fatalf("AddPushKey: %v", err)
 	}
