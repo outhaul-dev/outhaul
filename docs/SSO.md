@@ -1,16 +1,17 @@
 # Signing in through an identity provider (SSO)
 
-Outhaul can let people sign in through any OpenID Connect (OIDC) provider
-(Okta, Keycloak, Authentik, Microsoft Entra ID, Google Workspace and so on),
-next to passwords. The UI calls it "SSO" and never names a provider. When one is
-connected, the login page shows a "Sign in with SSO" button above the password
-form.
+Outhaul can let people sign in through an OpenID Connect (OIDC) provider, next to
+passwords. It follows the OIDC standard, so it is meant to work with providers such
+as Okta, Keycloak, Authentik or Microsoft Entra ID, but it hasn't been tried with a
+real provider yet: see [Testing so far](#testing-so-far). The UI calls it "SSO" and
+never names a provider. When one is connected, the login page shows a "Sign in with
+SSO" button above the password form.
 
 A system admin sets it up on the Settings page, in the "Single sign-on (SSO)"
 panel. Passwords keep working the whole time.
 
-Roles and per-route sign-in for deployed apps ("protected routes") are coming.
-This page covers only signing in to Outhaul itself.
+Per-route sign-in for deployed apps ("protected routes") is coming. This page covers
+only signing in to Outhaul itself, and the roles described below.
 
 ## Before you start
 
@@ -36,7 +37,9 @@ The issuer URL must start with `https://`. `http://` is accepted only for
 
 ## Worked example: Okta
 
-The names of the menus change now and then; the idea is the same in any provider.
+These steps are written from Okta's documentation; they haven't been followed against
+a real Okta organization yet. The names of the menus change now and then; the idea is
+the same in any provider.
 
 1. In the Okta admin console, go to Applications, then Create App Integration.
 2. Choose "OIDC - OpenID Connect", then "Web Application".
@@ -144,5 +147,8 @@ until a provider is connected again.
   at the provider.
 - The provider's own error text is written to Outhaul's log, not shown on the login page.
 
-This feature has not yet been checked against every provider. If one behaves differently
-from what's described here, open an issue.
+## Testing so far
+
+SSO has been tested only against a test provider built into Outhaul's test suite, not
+yet against a real one. The Okta steps above are written from Okta's documentation.
+If your provider behaves differently from what's described here, open an issue.
