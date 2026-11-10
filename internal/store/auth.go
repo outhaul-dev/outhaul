@@ -66,6 +66,10 @@ func (s *Store) UpdateUserPassword(ctx context.Context, id int64, passwordHash, 
 		`DELETE FROM sessions WHERE user_id = ? AND token <> ?`, id, keepSession); err != nil {
 		return err
 	}
+	// The requirePasswordAccount check above makes this a password account.
+	if err := deleteGateSessionsFor(ctx, tx, core.User{ID: id}.GateSubject()); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 

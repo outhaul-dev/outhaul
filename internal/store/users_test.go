@@ -517,7 +517,7 @@ func TestStoreRefusesPasswordOperationsOnSSOAccount(t *testing.T) {
 
 	// A link row that exists anyway (planted directly) must not be usable.
 	if _, err := s.db.Exec(`INSERT INTO setup_links (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)`,
-		hashSetupToken("planted"), sso, fmtTime(exp), fmtTime(time.Now().UTC())); err != nil {
+		hashToken("planted"), sso, fmtTime(exp), fmtTime(time.Now().UTC())); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.SetupLinkUser(ctx, "planted"); !errors.Is(err, sql.ErrNoRows) {

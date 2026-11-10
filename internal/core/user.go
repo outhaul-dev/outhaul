@@ -1,6 +1,11 @@
 package core
 
-import "time"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strconv"
+	"time"
+)
 
 // Sign-in methods an account can use.
 const (
@@ -44,4 +49,29 @@ type Session struct {
 	UserID    int64
 	CreatedAt time.Time
 	ExpiresAt time.Time
+}
+
+// GateSession is a sign-in on Outhaul's own host. Subject names who signed in,
+// Kind is SignInSSO or SignInPassword, and Display is what apps receive in the
+// identity header.
+type GateSession struct {
+	Subject, Kind, Display string
+	ExpiresAt              time.Time
+}
+
+// SSOGateSubject is the gateway subject of the SSO identity (issuer, subject):
+// "sso:" and the SHA-256 hex of the pair joined by a NUL that neither can
+// contain, so no two identities collide. It is also the account's internal
+// username, and names route visits, which have no account.
+func SSOGateSubject(issuer, subject string) string {
+	sum := sha256.Sum256([]byte(issuer + "\x00" + subject))
+	return "sso:" + hex.EncodeToString(sum[:])
+}
+
+// GateSubject is the gateway subject of the account's sign-ins.
+func (u User) GateSubject() string {
+	if u.SignIn == SignInSSO {
+		return SSOGateSubject(u.SSOIssuer, u.SSOSubject)
+	}
+	return "user:" + strconv.FormatInt(u.ID, 10)
 }

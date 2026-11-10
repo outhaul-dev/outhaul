@@ -2,8 +2,9 @@ package store
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
+
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 // Settings keys for the SSO provider. The client secret is sealed.
@@ -103,10 +104,13 @@ func (s *Store) EndSSOSessions(ctx context.Context) error {
 	return endSSOSessions(ctx, s.db)
 }
 
-func endSSOSessions(ctx context.Context, q interface {
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
-}) error {
-	_, err := q.ExecContext(ctx,
-		`DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE sign_in = 'sso')`)
-	return err
+// endSSOSessions ends the sessions of SSO accounts and every SSO-kind gateway
+// session (route visits included, which have no account) with its route
+// sessions. Password-kind gateway sessions stay.
+func endSSOSessions(ctx context.Context, q execer) error {
+	if _, err := q.ExecContext(ctx,
+		`DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE sign_in = 'sso')`); err != nil {
+		return err
+	}
+	return deleteGateSessionsOfKind(ctx, q, core.SignInSSO)
 }

@@ -2,9 +2,7 @@ package store
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -80,8 +78,7 @@ func (s *Store) CreatePasswordAccount(ctx context.Context, username string, role
 // every pair its own name whatever characters they hold. Pages show the
 // account's email instead.
 func ssoUsername(issuer, subject string) string {
-	sum := sha256.Sum256([]byte(issuer + "\x00" + subject))
-	return "sso:" + hex.EncodeToString(sum[:])
+	return core.SSOGateSubject(issuer, subject)
 }
 
 // FindOrCreateSSOUser returns the SSO account for issuer and subject, creating
@@ -203,6 +200,13 @@ func (s *Store) DeleteUser(ctx context.Context, id int64) error {
 	if err := guardLastPasswordAdmin(ctx, tx, id); err != nil {
 		return err
 	}
+	subject, err := accountGateSubject(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if err := deleteGateSessionsFor(ctx, tx, subject); err != nil {
+		return err
+	}
 	// sessions.user_id has no cascade.
 	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, id); err != nil {
 		return err
@@ -237,10 +241,25 @@ func guardLastPasswordAdmin(ctx context.Context, tx *sql.Tx, id int64) error {
 	return nil
 }
 
-// EndUserSessions signs the account out everywhere.
+// EndUserSessions signs the account out everywhere, gateway sessions and the
+// route sessions from them included.
 func (s *Store) EndUserSessions(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, id)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	subject, err := accountGateSubject(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if err := deleteGateSessionsFor(ctx, tx, subject); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // TouchUserSignIn stamps last_sign_in_at = now.
@@ -329,11 +348,6 @@ func (s *Store) ProjectIDsForUser(ctx context.Context, userID int64) ([]int64, e
 	return ids, rows.Err()
 }
 
-func hashSetupToken(raw string) string {
-	sum := sha256.Sum256([]byte(raw))
-	return hex.EncodeToString(sum[:])
-}
-
 // replaceSetupLink drops the account's earlier links and stores a new one.
 // Only the SHA-256 of the token is kept.
 func replaceSetupLink(ctx context.Context, tx *sql.Tx, userID int64, rawToken string, expiresAt time.Time) error {
@@ -342,7 +356,7 @@ func replaceSetupLink(ctx context.Context, tx *sql.Tx, userID int64, rawToken st
 	}
 	_, err := tx.ExecContext(ctx,
 		`INSERT INTO setup_links (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)`,
-		hashSetupToken(rawToken), userID, fmtTime(expiresAt), fmtTime(time.Now().UTC()))
+		hashToken(rawToken), userID, fmtTime(expiresAt), fmtTime(time.Now().UTC()))
 	return err
 }
 
@@ -371,7 +385,7 @@ func setupLinkUser(ctx context.Context, q interface {
 	var userID int64
 	var expires string
 	err := q.QueryRowContext(ctx,
-		`SELECT user_id, expires_at FROM setup_links WHERE token_hash = ?`, hashSetupToken(rawToken)).Scan(&userID, &expires)
+		`SELECT user_id, expires_at FROM setup_links WHERE token_hash = ?`, hashToken(rawToken)).Scan(&userID, &expires)
 	if err != nil {
 		return core.User{}, err
 	}
@@ -420,6 +434,9 @@ func (s *Store) CompleteSetupLink(ctx context.Context, rawToken, passwordHash st
 	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, u.ID); err != nil {
 		return core.User{}, err
 	}
+	if err := deleteGateSessionsFor(ctx, tx, u.GateSubject()); err != nil {
+		return core.User{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return core.User{}, err
 	}
@@ -446,6 +463,9 @@ func (s *Store) ResetUserPassword(ctx context.Context, id int64, rawToken string
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, id); err != nil {
+		return err
+	}
+	if err := deleteGateSessionsFor(ctx, tx, core.User{ID: id}.GateSubject()); err != nil {
 		return err
 	}
 	if err := replaceSetupLink(ctx, tx, id, rawToken, expiresAt); err != nil {
