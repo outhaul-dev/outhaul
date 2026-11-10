@@ -1172,6 +1172,208 @@ func TestFormsSayWhatTheySaw(t *testing.T) {
 	}
 }
 
+// othersWasOf is the others_was the app page's dialog would send: the other
+// apps it warned would be redeployed.
+func othersWasOf(t *testing.T, e *testEnv, appID int64) string {
+	t.Helper()
+	m := regexp.MustCompile(`name="others_was" value="([^"]*)"`).FindStringSubmatch(body(t, e.get(t, "/apps/"+itoa(appID))))
+	if m == nil {
+		t.Fatal("the dialog has no others_was")
+	}
+	return html.UnescapeString(m[1])
+}
+
+// leftoverHooks creates the running app "hooks" whose container still routes
+// served openly (labelled from served), while its rows are now rows: what is
+// left after a row was removed or moved on a host that didn't require sign-in.
+// A served route that is also in rows stays the same row.
+func leftoverHooks(t *testing.T, e *testEnv, served []core.Domain, rows []core.Domain) core.App {
+	t.Helper()
+	return leftoverHooksIn(t, e, 0, served, rows)
+}
+
+// leftoverHooksIn is leftoverHooks with "hooks" in project projectID (0: the
+// default project).
+func leftoverHooksIn(t *testing.T, e *testEnv, projectID int64, served []core.Domain, rows []core.Domain) core.App {
+	t.Helper()
+	ctx := context.Background()
+	hooks, err := e.store.CreateApp(ctx, core.App{Name: "hooks", RepoURL: "https://x/hooks.git", ProjectID: projectID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedFinishedDeploy(t, e, hooks.ID, "hooks:1")
+	var added []core.Domain
+	for _, d := range served {
+		d.AppID = hooks.ID
+		added = append(added, addRow(t, e, d))
+	}
+	labels := labelled("c2", hooks, added, "running")
+	kept := map[string]bool{}
+	for _, d := range rows {
+		kept[d.Host+d.Path] = true
+	}
+	for _, d := range added {
+		if kept[d.Host+d.Path] {
+			delete(kept, d.Host+d.Path)
+			continue
+		}
+		if err := e.store.DeleteDomain(ctx, hooks.ID, d.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, d := range rows {
+		if kept[d.Host+d.Path] {
+			d.AppID = hooks.ID
+			addRow(t, e, d)
+		}
+	}
+	e.runtime.stack = append(e.runtime.stack, labels)
+	return hooks
+}
+
+// Protecting a host redeploys another app whose running container still
+// serves an open route there that its rows no longer have; an app whose open
+// route on the host is one of its rows is left alone.
+func TestProtectingAHostRedeploysLeftoverRoutes(t *testing.T) {
+	type save struct {
+		name   string
+		served core.Domain // the route hooks' container still serves
+		rows   []core.Domain
+		apply  func(t *testing.T, e *testEnv, web core.App, row core.Domain, othersWas string) *http.Response
+		want   bool // hooks is redeployed
+	}
+	switchOn := func(t *testing.T, e *testEnv, web core.App, row core.Domain, othersWas string) *http.Response {
+		f := domainForm(row, true)
+		f.Set("others_was", othersWas)
+		return e.saveDomain(t, web.ID, row, f)
+	}
+	addShut := func(t *testing.T, e *testEnv, web core.App, row core.Domain, othersWas string) *http.Response {
+		f := domainForm(core.Domain{Host: "web.test", Path: "/admin"}, true)
+		f.Set("others_was", othersWas)
+		return e.saveDomain(t, web.ID, core.Domain{}, f)
+	}
+	moveShut := func(t *testing.T, e *testEnv, web core.App, row core.Domain, othersWas string) *http.Response {
+		shut := addRow(t, e, core.Domain{AppID: web.ID, Host: "elsewhere.test", Protected: true})
+		moved := shut
+		moved.Host = "web.test"
+		moved.Path = "/admin"
+		f := domainForm(moved, true)
+		f.Set("others_was", othersWas)
+		return e.saveDomain(t, web.ID, shut, f)
+	}
+	hooksPath := core.Domain{Host: "web.test", Path: "/hooks"}
+	for _, c := range []save{
+		{name: "turn the switch on: a removed path", served: hooksPath, apply: switchOn, want: true},
+		{name: "turn the switch on: a path moved to another host", served: hooksPath, rows: []core.Domain{{Host: "hooks.test", Path: "/hooks"}}, apply: switchOn, want: true},
+		{name: "turn the switch on: the same rule", served: core.Domain{Host: "web.test"}, apply: switchOn, want: true},
+		{name: "add a protected row on the host", served: hooksPath, apply: addShut, want: true},
+		{name: "move a protected row onto the host", served: hooksPath, apply: moveShut, want: true},
+		{name: "an open path that is still a row", served: hooksPath, rows: []core.Domain{hooksPath}, apply: switchOn, want: false},
+		{name: "a removed path on another host", served: core.Domain{Host: "other.test", Path: "/hooks"}, apply: switchOn, want: false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e, _ := newProtectionEnv(t)
+			var hooks core.App
+			var web core.App
+			var row core.Domain
+			if c.served.Path == "" && c.served.Host == "web.test" {
+				// hooks served web.test before web had it.
+				e.runtime.stack = nil
+				hooks = leftoverHooks(t, e, []core.Domain{c.served}, c.rows)
+				stack := e.runtime.stack
+				web, row, _ = liveWeb(t, e, "img:1")
+				e.runContainers(append(e.runtime.stack, stack...)...)
+			} else {
+				web, row, _ = liveWeb(t, e, "img:1")
+				hooks = leftoverHooks(t, e, []core.Domain{c.served}, c.rows)
+			}
+			webBefore, hooksBefore := len(deploymentsOf(t, e, web.ID)), len(deploymentsOf(t, e, hooks.ID))
+			wantStatus(t, c.name, c.apply(t, e, web, row, othersWasOf(t, e, web.ID)), http.StatusSeeOther)
+			if n := len(deploymentsOf(t, e, web.ID)); n != webBefore+1 {
+				t.Errorf("web's deployments %d -> %d, want one queued", webBefore, n)
+			}
+			deps := deploymentsOf(t, e, hooks.ID)
+			if got := len(deps) > hooksBefore; got != c.want {
+				t.Errorf("hooks redeployed = %v, want %v", got, c.want)
+			}
+			if c.want && (deps[0].Image != "hooks:1" || deps[0].Status != core.StatusQueued) {
+				t.Errorf("hooks queued %+v, want a reuse of hooks:1, by the same rules", deps[0])
+			}
+		})
+	}
+}
+
+// The other app's redeploy follows from the save, as a removal's does: the
+// person saving needs no role on that app's project.
+func TestLeftoverRoutesNeedNoRoleOnTheOtherApp(t *testing.T) {
+	e, _ := newProtectionEnv(t)
+	ctx := context.Background()
+	web, row, _ := liveWeb(t, e, "img:1")
+	elsewhere, err := e.store.CreateProject(ctx, core.Project{Name: "elsewhere"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hooks := leftoverHooksIn(t, e, elsewhere.ID, []core.Domain{{Host: "web.test", Path: "/hooks"}}, nil)
+	if hooks.ProjectID != elsewhere.ID {
+		t.Fatalf("hooks is in project %d, want %d", hooks.ProjectID, elsewhere.ID)
+	}
+	web, err = e.store.GetApp(ctx, web.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	member := e.signInAs(t, "mina", core.RoleProjectMember, web.ProjectID)
+	m := regexp.MustCompile(`name="others_was" value="([^"]*)"`).FindStringSubmatch(body(t, e.getAs(t, member, "/apps/"+itoa(web.ID))))
+	if m == nil || html.UnescapeString(m[1]) != "web.test hooks" {
+		t.Fatalf("the member's dialog others_was = %v, want hooks named", m)
+	}
+	before := len(deploymentsOf(t, e, hooks.ID))
+	f := domainForm(row, true)
+	f.Set("others_was", "web.test hooks")
+	wantStatus(t, "turn the switch on", e.postAs(t, member, "/apps/"+itoa(web.ID)+"/domains/"+itoa(row.ID), f), http.StatusSeeOther)
+	if n := len(deploymentsOf(t, e, hooks.ID)); n != before+1 {
+		t.Errorf("hooks' deployments %d -> %d, want one queued", before, n)
+	}
+}
+
+// The dialog names the other apps a save would redeploy before it is made;
+// a save whose page didn't is refused, and so is one when they can't be
+// worked out.
+func TestLeftoverRoutesAreWarnedOf(t *testing.T) {
+	e, px := newProtectionEnv(t)
+	web, row, _ := liveWeb(t, e, "img:1")
+	hooks := leftoverHooks(t, e, []core.Domain{{Host: "web.test", Path: "/hooks"}}, nil)
+	seedFinishedDeploy(t, e, hooks.ID, "") // hooks' next deploy builds
+	hooksBefore := len(deploymentsOf(t, e, hooks.ID))
+	also := "Requiring sign-in on web.test also redeploys hooks, which still serves an old route there. It will deploy the latest code from main."
+
+	raw := body(t, e.get(t, "/apps/"+itoa(web.ID)))
+	page := html.UnescapeString(raw)
+	if !strings.Contains(page, also) || !strings.Contains(page, `data-also-host="web.test"`) {
+		t.Errorf("the dialog should say %q for web.test", also)
+	}
+	if got := othersWasOf(t, e, web.ID); got != "web.test hooks" {
+		t.Errorf("others_was = %q, want %q", got, "web.test hooks")
+	}
+
+	before := len(deploymentsOf(t, e, web.ID))
+	wantRefusedAsStale(t, e, "a save from a page that didn't name hooks", web, before,
+		e.saveDomain(t, web.ID, row, domainForm(row, true)), also)
+	if domainOf(t, e, row).Protected || len(deploymentsOf(t, e, hooks.ID)) != hooksBefore {
+		t.Error("a refused save changed the row or queued hooks' deploy")
+	}
+
+	e.runtime.listErr = errors.New("docker is down")
+	f := domainForm(row, true)
+	f.Set("others_was", "web.test hooks")
+	b := wantStatus(t, "a save when the containers can't be listed", e.saveDomain(t, web.ID, row, f), http.StatusServiceUnavailable)
+	if !strings.Contains(b, "docker is down") || !strings.Contains(b, "The domain wasn't changed.") {
+		t.Errorf("refusal = %q, want it to say why and that nothing changed", b)
+	}
+	if domainOf(t, e, row).Protected || px.calls != 0 {
+		t.Error("the row was turned on, or the proxy reconciled, though the other apps couldn't be worked out")
+	}
+}
+
 // Before a save that removes or moves an open path on a host that requires
 // sign-in, the page says it redeploys and what will ship: beside the remove
 // button (seen without JS), in its confirmation, and in the edit dialog.

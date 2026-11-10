@@ -883,6 +883,18 @@ func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, status in
 	}
 	if canChange {
 		data["ProtectionWarning"] = protectionWarningFor(app, deployments)
+		// Other apps a save requiring sign-in on a host would redeploy, named
+		// in the dialog before the save; the dialog sends back which it named.
+		others, err := s.leftoverRoutes(r.Context(), app)
+		if err != nil {
+			log.Printf("app page: other apps' old routes: %v", err)
+		}
+		keys := make([]string, 0, len(others))
+		for _, o := range others {
+			keys = append(keys, o.key())
+		}
+		data["AlsoRedeploys"] = others
+		data["OthersWas"] = strings.Join(keys, ",")
 		protectedHosts, err := s.store.ProtectedHosts(r.Context())
 		if err != nil {
 			// Warn of a redeploy on every open row rather than on none.
@@ -968,12 +980,16 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 	// From here the save and the deploy that applies it finish together, even
 	// if the browser goes: the reconcile can recreate the Traefik it came through.
 	ctx := context.WithoutCancel(r.Context())
+	var others []otherRedeploy
 	if r.FormValue("protected") != "" {
 		if ok, reason := s.protectionAvailability(ctx, d); !ok {
 			http.Error(w, reason, http.StatusBadRequest)
 			return
 		}
 		d.Protected = true
+		if others, ok = s.othersToRedeploy(ctx, w, r, app, d.Host); !ok {
+			return
+		}
 	}
 	added, err := s.store.AddDomain(ctx, d)
 	if err != nil {
@@ -991,7 +1007,7 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.finishDomainSave(ctx, w, r, app, d.Protected)
+	s.finishDomainSave(ctx, w, r, app, d.Protected, others)
 }
 
 // handleUpdateDomain rewrites an existing route in place.
@@ -1078,6 +1094,15 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 		}
 		redeploy = leaves
 	}
+	// Requiring sign-in on a host (turning it on, or moving a protected row)
+	// also redeploys other apps still serving an old open route there.
+	var others []otherRedeploy
+	if d.Protected && (!existing.Protected || moved) {
+		var ok bool
+		if others, ok = s.othersToRedeploy(ctx, w, r, app, d.Host); !ok {
+			return
+		}
+	}
 	if err := s.store.UpdateDomain(ctx, d); err != nil {
 		if errors.Is(err, store.ErrHostReserved) {
 			msg := ownHostRefusal
@@ -1097,7 +1122,40 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.finishDomainSave(ctx, w, r, app, redeploy)
+	s.finishDomainSave(ctx, w, r, app, redeploy, others)
+}
+
+// othersToRedeploy works out, before a save that requires sign-in on host,
+// which other apps it redeploys (leftoverRoutes). It answers, and reports
+// false, when that can't be worked out (the save is refused) or when the
+// form's others_was doesn't name them all: its page didn't warn of them, so
+// the page is rendered again with the warning.
+func (s *Server) othersToRedeploy(ctx context.Context, w http.ResponseWriter, r *http.Request, app core.App, host string) ([]otherRedeploy, bool) {
+	all, err := s.leftoverRoutes(ctx, app)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Sign-in wasn't turned on: Outhaul couldn't tell which other apps still serve old routes on %s, which it would redeploy (%v). The domain wasn't changed.", host, err), http.StatusServiceUnavailable)
+		return nil, false
+	}
+	shown := map[string]bool{}
+	for _, k := range strings.Split(r.FormValue("others_was"), ",") {
+		shown[k] = true
+	}
+	var others []otherRedeploy
+	var unshown []string
+	for _, o := range all {
+		if !strings.EqualFold(o.Host, host) {
+			continue
+		}
+		others = append(others, o)
+		if !shown[o.key()] {
+			unshown = append(unshown, o.Sentence())
+		}
+	}
+	if len(unshown) > 0 {
+		s.refuseStaleDomainSave(w, r, strings.Join(unshown, " ")+" Check it and try again.")
+		return nil, false
+	}
+	return others, true
 }
 
 // ensureGateHost has the proxy reconciled now, with the rows as saved, so
@@ -1123,18 +1181,31 @@ func (s *Server) refuseProtection(w http.ResponseWriter, err, undo error) {
 }
 
 // finishDomainSave ends a saved add, edit or removal. When the save changed
-// what sign-in covers it queues the deploy that applies it (applyProtection).
-// Either way it syncs the local CA, which mints a protected row's certificate
-// whatever its TLS flag.
-func (s *Server) finishDomainSave(ctx context.Context, w http.ResponseWriter, r *http.Request, app core.App, redeploy bool) {
-	var applyErr error
+// what sign-in covers it queues the deploy that applies it (applyProtection),
+// and one for each of others, by the same rules. Either way it syncs the
+// local CA, which mints a protected row's certificate whatever its TLS flag.
+func (s *Server) finishDomainSave(ctx context.Context, w http.ResponseWriter, r *http.Request, app core.App, redeploy bool, others []otherRedeploy) {
+	var failed []string
 	if redeploy {
-		_, applyErr = s.applyProtection(ctx, app)
+		if _, err := s.applyProtection(ctx, app); err != nil {
+			log.Printf("protected routes: queue the deploy of %q: %v", app.Name, err)
+			failed = append(failed, app.Name+" ("+err.Error()+")")
+		}
+	}
+	queued := map[int64]bool{}
+	for _, o := range others {
+		if queued[o.App.ID] {
+			continue // an app with old routes on the host under two names
+		}
+		queued[o.App.ID] = true
+		if _, err := s.queueProtectionDeploy(ctx, o.App); err != nil {
+			log.Printf("protected routes: queue the deploy of %q: %v", o.App.Name, err)
+			failed = append(failed, o.App.Name+" ("+err.Error()+")")
+		}
 	}
 	s.syncCerts(ctx)
-	if applyErr != nil {
-		log.Printf("protected routes: queue the deploy of %q: %v", app.Name, applyErr)
-		http.Error(w, "The domain change was saved, but the deploy that applies it to sign-in couldn't be queued: "+applyErr.Error()+". Deploy the app to apply it.", http.StatusInternalServerError)
+	if len(failed) > 0 {
+		http.Error(w, "The domain change was saved, but the deploy that applies it to sign-in couldn't be queued for "+strings.Join(failed, ", ")+". Deploy them to apply it.", http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/apps/"+strconv.FormatInt(app.ID, 10), http.StatusSeeOther)
@@ -1186,7 +1257,7 @@ func (s *Server) handleDeleteDomain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.finishDomainSave(ctx, w, r, app, redeploy)
+	s.finishDomainSave(ctx, w, r, app, redeploy, nil)
 }
 
 // handleAddVolume attaches a persistent volume to a single-container app. The

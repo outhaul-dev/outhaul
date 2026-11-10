@@ -2,7 +2,11 @@ package server
 
 import (
 	"context"
+	"database/sql"
+	"errors"
+	"fmt"
 	"log"
+	"sort"
 	"strings"
 
 	"github.com/outhaul-dev/outhaul/internal/compose"
@@ -102,15 +106,28 @@ func protectionMismatch(domains []core.Domain, appName string, containers []dock
 }
 
 // staleOpenRoute reports whether any of containers routes, without the gate,
-// a host and path that none of the app's rows has any more (its row was
-// removed, or its host or path changed), on a host in protectedHosts
-// (lower-cased). Only the app's own row routers count, and only when their
-// host can be read from their rule.
+// a host and path that none of the app's rows has any more, on a host in
+// protectedHosts (lower-cased): see staleOpenHosts.
 func staleOpenRoute(domains []core.Domain, appName string, containers []docker.Container, protectedHosts map[string]bool) bool {
+	for h := range staleOpenHosts(domains, appName, containers) {
+		if protectedHosts[h] {
+			return true
+		}
+	}
+	return false
+}
+
+// staleOpenHosts returns the hosts, lower-cased, on which any of containers
+// routes, without the gate, a host and path that none of the app's rows has
+// any more (its row was removed, or its host or path changed). Only the app's
+// own row routers count, and only when their host can be read from their
+// rule.
+func staleOpenHosts(domains []core.Domain, appName string, containers []docker.Container) map[string]bool {
 	current := make(map[string]string, len(domains)) // router -> rule
 	for _, d := range domains {
 		current[traefik.RouterName(appName, d.ID)] = traefik.Rule(d.Host, d.Path)
 	}
+	hosts := map[string]bool{}
 	const prefix, suffix = "traefik.http.routers.", ".rule"
 	ours := strings.TrimSuffix(traefik.RouterName(appName, 0), "0") // a row's router, less its ID
 	for _, c := range containers {
@@ -128,12 +145,94 @@ func staleOpenRoute(domains []core.Domain, appName string, containers []docker.C
 			if traefik.RowHasGate(c.Labels, router) {
 				continue
 			}
-			if protectedHosts[strings.ToLower(traefik.RuleHost(rule))] {
-				return true
+			if h := strings.ToLower(traefik.RuleHost(rule)); h != "" {
+				hosts[h] = true
 			}
 		}
 	}
-	return false
+	return hosts
+}
+
+// otherRedeploy is another app that a save requiring sign-in on Host
+// redeploys: its running containers still serve an open route on Host that
+// its rows no longer have, which would keep answering there with no gate.
+type otherRedeploy struct {
+	Host  string // lower-cased
+	App   core.App
+	Ships string // what its deploy builds (shipsWhat), or "" when it reuses its image
+}
+
+// Sentence is the warning the domain dialog shows for o.
+func (o otherRedeploy) Sentence() string {
+	s := "Requiring sign-in on " + o.Host + " also redeploys " + o.App.Name + ", which still serves an old route there."
+	if o.Ships != "" {
+		s += " It will deploy " + o.Ships + "."
+	}
+	return s
+}
+
+// key is how a form names o in others_was: its host and its app's name.
+func (o otherRedeploy) key() string { return o.Host + " " + o.App.Name }
+
+// leftoverRoutes lists the managed containers once, and returns every app
+// other than app whose running containers serve an open route that its rows
+// no longer have, once per host, sorted by host then app. A container whose
+// app no longer exists is left out: there is no app to redeploy.
+func (s *Server) leftoverRoutes(ctx context.Context, app core.App) ([]otherRedeploy, error) {
+	cs, err := s.runtime.ListContainers(ctx, map[string]string{"outhaul.managed": "true"})
+	if err != nil {
+		return nil, fmt.Errorf("list the containers: %w", err)
+	}
+	running := map[string][]docker.Container{}
+	for _, c := range cs {
+		if name := c.Labels["outhaul.app"]; name != "" && name != app.Name && c.Running() {
+			running[name] = append(running[name], c)
+		}
+	}
+	if len(running) == 0 {
+		return nil, nil
+	}
+	all, err := s.store.ListAllDomains(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("read the domains: %w", err)
+	}
+	rows := map[string][]core.Domain{}
+	for _, l := range all {
+		rows[l.AppName] = append(rows[l.AppName], l.Domain)
+	}
+	var out []otherRedeploy
+	for name, rc := range running {
+		hosts := staleOpenHosts(rows[name], name, rc)
+		if len(hosts) == 0 {
+			continue
+		}
+		other, err := s.store.GetAppByName(ctx, name)
+		if errors.Is(err, sql.ErrNoRows) {
+			log.Printf("protected routes: a container of %q, which no longer exists, serves an old route", name)
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read app %q: %w", name, err)
+		}
+		deps, err := s.store.ListDeploymentsForApp(ctx, other.ID)
+		if err != nil {
+			return nil, fmt.Errorf("read the deployments of %q: %w", name, err)
+		}
+		ships := ""
+		if protectionWarningFor(other, deps) != "" {
+			ships = shipsWhat(other)
+		}
+		for h := range hosts {
+			out = append(out, otherRedeploy{Host: h, App: other, Ships: ships})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Host != out[j].Host {
+			return out[i].Host < out[j].Host
+		}
+		return out[i].App.Name < out[j].App.Name
+	})
+	return out, nil
 }
 
 // openOnProtectedHost reports whether d is an open row on a host in
@@ -304,21 +403,26 @@ func protectionWarningFor(app core.App, newestFirst []core.Deployment) string {
 	return buildWarning(app)
 }
 
-// buildWarning names what a normal deploy of app builds: the newest matching
-// tag in tag mode, otherwise its branch's head.
+// buildWarning names what a normal deploy of app builds (shipsWhat).
 func buildWarning(app core.App) string {
+	return "This will deploy " + shipsWhat(app) + "."
+}
+
+// shipsWhat is what a normal deploy of app builds: the newest matching tag in
+// tag mode, otherwise its branch's head.
+func shipsWhat(app core.App) string {
 	if app.DeployTrigger == core.TriggerTag {
 		pattern := app.TagPattern
 		if pattern == "" {
 			pattern = core.DefaultTagPattern
 		}
-		return "This will deploy the newest tag matching " + pattern + "."
+		return "the newest tag matching " + pattern
 	}
 	branch := app.Branch
 	if branch == "" {
 		branch = "main"
 	}
-	return "This will deploy the latest code from " + branch + "."
+	return "the latest code from " + branch
 }
 
 // What a domain row shows in its Access column.
