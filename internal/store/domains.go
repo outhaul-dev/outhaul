@@ -183,8 +183,10 @@ func (s *Store) SetDomainProtected(ctx context.Context, appID, domainID int64, p
 	return nil
 }
 
-// RouteIsProtected reports whether the route Traefik would pick for host and
-// urlPath requires sign-in. Every app's rows on host (compared lower-cased)
+// RouteIsProtected reports whether the row Traefik would pick for host and
+// urlPath, by the domain table, requires sign-in. It reads the table, not
+// what is running: a stopped app, or a container whose labels predate a
+// change, can differ until the next deploy. Every app's rows on host (compared lower-cased)
 // whose path is a plain string prefix of urlPath match, as Traefik's PathPrefix
 // does, so "/webhooks" matches "/webhooksfoo"; a row with no path matches every
 // path, and an empty urlPath counts as "/". Traefik prefers the longest rule,
@@ -224,6 +226,14 @@ func (s *Store) RouteIsProtected(ctx context.Context, host, urlPath string) (boo
 		return false, err
 	}
 	return protected, nil
+}
+
+// AnyDomainProtected reports whether any app has a protected row: while one
+// does, Traefik must resolve the gate's host to the host gateway.
+func (s *Store) AnyDomainProtected(ctx context.Context) (bool, error) {
+	var any bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM domains WHERE protected != 0)`).Scan(&any)
+	return any, err
 }
 
 // GetDomain fetches one route scoped to its app.

@@ -378,6 +378,11 @@ func (ic *infraController) reconcile(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read tunnel token: %w", err)
 	}
+	// Read before anything changes: if it fails, Traefik is left as it is.
+	protected, err := ic.st.AnyDomainProtected(ctx)
+	if err != nil {
+		return fmt.Errorf("read protected routes: %w", err)
+	}
 	if tunnelOn {
 		// Bring the tunnel up before flipping Traefik to its portless posture,
 		// so the current Traefik keeps serving until the connector is live.
@@ -386,14 +391,14 @@ func (ic *infraController) reconcile(ctx context.Context) error {
 		if err := tunnel.EnsureConnector(ctx, ic.dc, cc, os.Stdout); err != nil {
 			return fmt.Errorf("ensure connector: %w", err)
 		}
-		if err := traefik.EnsureProxy(ctx, ic.dc, ic.proxyConfig(ctx, true), os.Stdout); err != nil {
+		if err := traefik.EnsureProxy(ctx, ic.dc, ic.proxyConfig(ctx, true, protected), os.Stdout); err != nil {
 			return fmt.Errorf("ensure traefik: %w", err)
 		}
 		return nil
 	}
 	// Disabling: restore the ACME/ports Traefik before removing the connector,
 	// so ingress is back before the tunnel goes away.
-	if err := traefik.EnsureProxy(ctx, ic.dc, ic.proxyConfig(ctx, false), os.Stdout); err != nil {
+	if err := traefik.EnsureProxy(ctx, ic.dc, ic.proxyConfig(ctx, false, protected), os.Stdout); err != nil {
 		return fmt.Errorf("ensure traefik: %w", err)
 	}
 	if err := tunnel.RemoveConnector(ctx, ic.dc); err != nil {
@@ -404,7 +409,8 @@ func (ic *infraController) reconcile(ctx context.Context) error {
 
 // proxyConfig builds the Traefik config for the current ingress posture. Tunnel
 // mode forces plain HTTP (Cloudflare does TLS); otherwise ACME/ports apply.
-func (ic *infraController) proxyConfig(ctx context.Context, tunnelOn bool) traefik.ProxyConfig {
+// protectedRoutes keeps the gate's host mapped to the host gateway.
+func (ic *infraController) proxyConfig(ctx context.Context, tunnelOn, protectedRoutes bool) traefik.ProxyConfig {
 	pc := traefik.ProxyConfig{
 		ContainerName:    "outhaul-traefik",
 		Image:            ic.cfg.TraefikImage,
@@ -414,6 +420,7 @@ func (ic *infraController) proxyConfig(ctx context.Context, tunnelOn bool) traef
 		AdminHost:        ic.cfg.AdminHost(),
 		AdminPort:        ic.cfg.AdminPort(),
 		DynamicDir:       ic.cfg.DynamicDir(),
+		ProtectedRoutes:  protectedRoutes,
 	}
 	if tunnelOn {
 		pc.TunnelMode = true

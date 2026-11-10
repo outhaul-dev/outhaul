@@ -201,7 +201,7 @@ func TestDomainProtectedRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddDomain: %v", err)
 	}
-	if got, _ := st.GetDomain(ctx, app.ID, d.ID); !got.Protected {
+	if got := mustGetDomain(t, st, app.ID, d.ID); !got.Protected {
 		t.Errorf("AddDomain did not store Protected: %+v", got)
 	}
 	d.Protected = false
@@ -214,7 +214,7 @@ func TestDomainProtectedRoundTrips(t *testing.T) {
 	if err := st.SetDomainProtected(ctx, app.ID, d.ID, true); err != nil {
 		t.Fatalf("SetDomainProtected: %v", err)
 	}
-	if got, _ := st.GetDomain(ctx, app.ID, d.ID); !got.Protected {
+	if got := mustGetDomain(t, st, app.ID, d.ID); !got.Protected {
 		t.Errorf("SetDomainProtected(true) not applied: %+v", got)
 	}
 	all, err := st.ListAllDomains(ctx)
@@ -224,7 +224,7 @@ func TestDomainProtectedRoundTrips(t *testing.T) {
 	if err := st.SetDomainProtected(ctx, app.ID, d.ID, false); err != nil {
 		t.Fatalf("SetDomainProtected: %v", err)
 	}
-	if got, _ := st.GetDomain(ctx, app.ID, d.ID); got.Protected {
+	if got := mustGetDomain(t, st, app.ID, d.ID); got.Protected {
 		t.Errorf("SetDomainProtected(false) not applied: %+v", got)
 	}
 }
@@ -235,14 +235,60 @@ func TestSetDomainProtectedScopedToApp(t *testing.T) {
 	ctx := context.Background()
 	app := testApp(t, st, "wiki", core.KindCompose, "")
 	other := testApp(t, st, "blog", core.KindCompose, "")
-	d, _ := st.AddDomain(ctx, core.Domain{AppID: app.ID, Host: "wiki.example.com", Service: "web", Port: 3000})
+	d, err := st.AddDomain(ctx, core.Domain{AppID: app.ID, Host: "wiki.example.com", Service: "web", Port: 3000})
+	if err != nil {
+		t.Fatalf("AddDomain: %v", err)
+	}
 
 	if err := st.SetDomainProtected(ctx, other.ID, d.ID, true); !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("SetDomainProtected through the wrong app: err = %v, want sql.ErrNoRows", err)
 	}
-	if got, _ := st.GetDomain(ctx, app.ID, d.ID); got.Protected {
+	if got := mustGetDomain(t, st, app.ID, d.ID); got.Protected {
 		t.Error("row protected through the wrong app")
 	}
+}
+
+// mustGetDomain reads one row, failing the test if it can't: a lookup error
+// must not pass for an unprotected row.
+func mustGetDomain(t *testing.T, st *Store, appID, id int64) core.Domain {
+	t.Helper()
+	d, err := st.GetDomain(context.Background(), appID, id)
+	if err != nil {
+		t.Fatalf("GetDomain(%d, %d): %v", appID, id, err)
+	}
+	return d
+}
+
+// AnyDomainProtected says whether Traefik must be able to reach the gate on
+// the host, whatever else is configured.
+func TestAnyDomainProtected(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	check := func(want bool) {
+		t.Helper()
+		got, err := st.AnyDomainProtected(ctx)
+		if err != nil {
+			t.Fatalf("AnyDomainProtected: %v", err)
+		}
+		if got != want {
+			t.Errorf("AnyDomainProtected = %v, want %v", got, want)
+		}
+	}
+	check(false)
+	app := testApp(t, st, "wiki", core.KindCompose, "")
+	d, err := st.AddDomain(ctx, core.Domain{AppID: app.ID, Host: "wiki.example.com", Service: "web", Port: 3000})
+	if err != nil {
+		t.Fatalf("AddDomain: %v", err)
+	}
+	check(false)
+	if err := st.SetDomainProtected(ctx, app.ID, d.ID, true); err != nil {
+		t.Fatalf("SetDomainProtected: %v", err)
+	}
+	check(true)
+	if err := st.SetDomainProtected(ctx, app.ID, d.ID, false); err != nil {
+		t.Fatalf("SetDomainProtected: %v", err)
+	}
+	check(false)
 }
 
 // Upgrading leaves every existing route open; nothing redeploys.

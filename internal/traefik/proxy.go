@@ -65,6 +65,12 @@ type ProxyConfig struct {
 	AdminPort  string // host port the admin UI listens on, e.g. "8080"
 	DynamicDir string // host dir bind-mounted as Traefik's file provider
 
+	// ProtectedRoutes is true while any domain row is protected. Its gate is
+	// host.docker.internal on AdminPort, so Traefik maps that name to the host
+	// gateway even when the admin route is off; otherwise the name would be
+	// looked up on the Docker network.
+	ProtectedRoutes bool
+
 	// TunnelMode makes the tunnel the server-wide ingress: Traefik serves plain
 	// HTTP on :80 for cloudflared to reach over the Docker network, publishes no
 	// host ports, and runs no ACME/redirect (Cloudflare terminates TLS at its
@@ -164,7 +170,9 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 	var extraHosts []string
 
 	// The file provider carries the admin-UI router and/or the local-CA cert
-	// list; host-gateway is only needed for the admin route.
+	// list; host-gateway is needed for the admin route and for the gate of
+	// any protected route. Without either, the spec is what it was before
+	// protected routes, so upgrading doesn't recreate Traefik.
 	if pc.adminRoutingEnabled() || (pc.LocalCA && !pc.TunnelMode) {
 		cmd = append(cmd,
 			"--providers.file.directory=/etc/traefik/dynamic",
@@ -172,7 +180,7 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 		)
 		mounts = append(mounts, docker.Mount{Source: pc.DynamicDir, Target: "/etc/traefik/dynamic", ReadOnly: true})
 	}
-	if pc.adminRoutingEnabled() {
+	if pc.adminRoutingEnabled() || pc.ProtectedRoutes {
 		extraHosts = append(extraHosts, "host.docker.internal:host-gateway")
 	}
 

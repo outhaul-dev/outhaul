@@ -14,6 +14,7 @@ import (
 
 	"github.com/outhaul-dev/outhaul/internal/config"
 	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/docker"
 	"github.com/outhaul-dev/outhaul/internal/store"
 	"github.com/outhaul-dev/outhaul/internal/update"
 )
@@ -232,5 +233,86 @@ func TestRunImagesListsManagedImages(t *testing.T) {
 	want := "traefik traefik:v9\ncloudflared " + config.DefaultCloudflaredImage + "\n"
 	if buf.String() != want {
 		t.Errorf("output = %q, want %q", buf.String(), want)
+	}
+}
+
+// A protected route's gate is http://host.docker.internal:<admin port>. While
+// a row is protected, Traefik keeps that name mapped to the host gateway,
+// whether or not the admin route is published (and in tunnel mode too), so it
+// is never looked up on the Docker network instead. reconcile runs at boot and
+// when the tunnel is turned on or off.
+func TestReconcileMapsTheGateHostWhileARouteIsProtected(t *testing.T) {
+	ctx := context.Background()
+	adminOn := config.Config{
+		DataDir: t.TempDir(), Network: "outhaul", TraefikImage: config.DefaultTraefikImage,
+		CloudflaredImage: config.DefaultCloudflaredImage, HTTPSPort: "443", ListenAddr: ":8080",
+		PublicURL: "https://outhaul.example.com", ACMEEmail: "ops@example.com",
+	}
+	adminOff := adminOn
+	adminOff.PublicURL = "" // no admin host, so no admin route
+	st, err := openStore(adminOn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	dc := docker.NewFake()
+	ic := &infraController{dc: dc, st: st}
+	mapped := func(cfg config.Config) bool {
+		t.Helper()
+		ic.cfg = cfg
+		if err := ic.reconcile(ctx); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		var spec *docker.ContainerSpec
+		for i := range dc.Created {
+			if dc.Created[i].Name == "outhaul-traefik" {
+				spec = &dc.Created[i]
+			}
+		}
+		if spec == nil {
+			t.Fatal("no Traefik container was created")
+		}
+		for _, h := range spec.ExtraHosts {
+			if h == "host.docker.internal:host-gateway" {
+				return true
+			}
+		}
+		return false
+	}
+
+	if mapped(adminOff) {
+		t.Error("no protected route and no admin route: the gate host should not be mapped")
+	}
+	app, err := st.CreateApp(ctx, core.App{Name: "wiki", RepoURL: "https://x/y.git", Domain: "wiki.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.ListDomains(ctx, app.ID)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("ListDomains = %v (%v)", rows, err)
+	}
+	if err := st.SetDomainProtected(ctx, app.ID, rows[0].ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if !mapped(adminOn) {
+		t.Error("admin route on: the gate host should be mapped")
+	}
+	if !mapped(adminOff) {
+		t.Error("admin route turned off while a route is protected: the gate host should stay mapped")
+	}
+	if err := st.SetCloudflareToken(ctx, "tok"); err != nil {
+		t.Fatal(err)
+	}
+	if !mapped(adminOff) {
+		t.Error("tunnel on, no admin route, a route protected: the gate host should be mapped")
+	}
+	if err := st.ClearCloudflareToken(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetDomainProtected(ctx, app.ID, rows[0].ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if mapped(adminOff) {
+		t.Error("no protected route left and no admin route: the mapping should go")
 	}
 }

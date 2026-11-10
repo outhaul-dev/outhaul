@@ -550,3 +550,55 @@ func (r *recordingFake) CreateContainer(ctx context.Context, spec docker.Contain
 	r.created = spec
 	return r.Fake.CreateContainer(ctx, spec)
 }
+
+// goldenProxyConfigs are installs with no admin route and no protected route.
+func goldenProxyConfigs() map[string]ProxyConfig {
+	base := ProxyConfig{ContainerName: "outhaul-traefik", Image: "traefik:v3.7.6", Network: "outhaul", HTTPPort: "80",
+		DockerSocket: "/var/run/docker.sock", DockerAPIVersion: "1.44", AdminPort: "8080", DynamicDir: "/var/lib/outhaul/traefik/dynamic"}
+	plain := base
+	acme := base
+	acme.ACME, acme.ACMEEmail, acme.HTTPSPort, acme.ACMEStorageDir = true, "ops@example.com", "443", "/var/lib/outhaul/traefik/acme"
+	localCA := base
+	localCA.LocalCA, localCA.HTTPSPort, localCA.CertsDir = true, "443", "/var/lib/outhaul/traefik/certs"
+	tunnel := base
+	tunnel.TunnelMode = true
+	return map[string]ProxyConfig{"plain": plain, "acme-no-admin": acme, "localca-no-admin": localCA, "tunnel-no-admin": tunnel}
+}
+
+// An install with no protected route and no admin route keeps exactly the
+// Traefik it had before protected routes existed, so upgrading doesn't
+// recreate it. The hashes were taken from the code before the change.
+func TestProxyUnchangedWithoutProtectedRoutes(t *testing.T) {
+	want := map[string]string{
+		"plain":            "3eba453e3f94",
+		"acme-no-admin":    "0050c4cc5af6",
+		"localca-no-admin": "c5d7e52cbe1a",
+		"tunnel-no-admin":  "0c01a78358e8",
+	}
+	for name, pc := range goldenProxyConfigs() {
+		spec := proxySpec(pc)
+		if got := spec.Labels["outhaul.config-hash"]; got != want[name] {
+			t.Errorf("%s: config hash = %s, want %s (an upgrade would recreate Traefik)", name, got, want[name])
+		}
+		if len(spec.ExtraHosts) != 0 {
+			t.Errorf("%s: extra hosts = %v, want none", name, spec.ExtraHosts)
+		}
+	}
+}
+
+// A protected route's gate is host.docker.internal on the admin port. Traefik
+// must resolve that to the host whether or not the admin route is published,
+// or the name would be looked up on the Docker network instead.
+func TestProtectedRoutesMapTheGateHost(t *testing.T) {
+	for name, pc := range goldenProxyConfigs() {
+		pc.ProtectedRoutes = true
+		if hosts := proxySpec(pc).ExtraHosts; len(hosts) != 1 || hosts[0] != "host.docker.internal:host-gateway" {
+			t.Errorf("%s with a protected route: extra hosts = %v, want just the host gateway", name, hosts)
+		}
+	}
+	pc := adminProxyConfig(t)
+	pc.ProtectedRoutes = true
+	if hosts := proxySpec(pc).ExtraHosts; len(hosts) != 1 || hosts[0] != "host.docker.internal:host-gateway" {
+		t.Errorf("admin route and a protected route: extra hosts = %v, want the host gateway once", hosts)
+	}
+}
