@@ -145,6 +145,8 @@ type Server struct {
 	gateBadHostLog     onceAMinute // the gate's "isn't a host name" line
 	gateNoPendingLog   onceAMinute // the gate's "no sign-in in progress" line
 	gateBadCodeLog     onceAMinute // the gate's "refused a sign-in code" line
+	gateMovedLog       onceAMinute // /gate/start's "moved, but arrived elsewhere" line
+	ssoMovedLog        onceAMinute // SSO start's "moved, but arrived elsewhere" line
 }
 
 // New constructs a Server, parsing the embedded templates. setupToken guards the
@@ -220,7 +222,7 @@ func (s *Server) syncCerts(ctx context.Context) {
 // parseTemplates builds one template set per page, each combining base.tmpl with
 // the page template (so every page can define its own "content" block).
 func (s *Server) parseTemplates() error {
-	pages := []string{"login", "setup", "noaccess", "gate_signout", "overview", "projects", "project", "apps", "app", "database", "databases", "deployment", "containers", "github_connect", "settings", "restore", "placeholder", "templates", "domains", "volumes", "metrics", "users", "account_setup", "account"}
+	pages := []string{"login", "setup", "noaccess", "gate_signout", "gate_refused", "overview", "projects", "project", "apps", "app", "database", "databases", "deployment", "containers", "github_connect", "settings", "restore", "placeholder", "templates", "domains", "volumes", "metrics", "users", "account_setup", "account"}
 	s.pages = make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.New("base").Funcs(templateFuncs())

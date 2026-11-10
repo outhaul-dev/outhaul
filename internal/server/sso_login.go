@@ -274,8 +274,10 @@ func (s *Server) handleSSOStart(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	if to, pubHost, ok := s.ssoStartElsewhere(r); ok {
 		if r.URL.Query().Has(ssoMovedParam) {
-			log.Printf("sso: sign-in refused: it was sent on to %q, the public URL's host, but arrived on %q; a proxy in front may be rewriting the Host header",
-				pubHost, logText(r.Host))
+			if s.ssoMovedLog.allow(time.Now()) {
+				log.Printf("sso: sign-in refused: it was sent on to %q, the public URL's host, but arrived on %q; a proxy in front may be rewriting the Host header (logged at most once a minute)",
+					pubHost, logText(r.Host))
+			}
 			ssoRefused(w, r, "sso_unavailable")
 			return
 		}
@@ -296,7 +298,7 @@ func (s *Server) handleSSOStart(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, host, err := s.validReturnURL(r.Context(), f.Return); err != nil {
-			refuseReturnURL(w, host, err)
+			s.refuseReturnURL(w, r, host, err)
 			return
 		}
 	} else if _, ok := s.currentSession(r); ok {
@@ -442,7 +444,8 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	// The sign-in covers protected routes too. Like the session, the gateway
 	// session exists before the check below, so a change to the settings
 	// either fails that check or, committing later, ends it with the others.
-	gateToken, err := s.startGateSession(w, r, user.GateSubject(), core.SignInSSO, user.Display())
+	// Its cookie is set only once the sign-in can't be refused.
+	gateToken, err := s.createGateSession(r, user.GateSubject(), core.SignInSSO, user.Display())
 	if err != nil {
 		if err := s.store.DeleteSession(context.WithoutCancel(r.Context()), token); err != nil {
 			log.Printf("sso: ending account %d's refused session: %v", user.ID, err)
@@ -469,7 +472,10 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		old = c.Value
 	}
-	s.endReplacedGateSession(r, gateToken)
+	if gateToken != "" {
+		s.setGateCookie(w, gateToken)
+		s.endReplacedGateSession(r, gateToken)
+	}
 	s.finishLogin(w, r, user, token, expires)
 	// The new session replaces any this browser had; the old one stops working.
 	if old != "" {
@@ -494,7 +500,7 @@ func (s *Server) finishRouteSSO(w http.ResponseWriter, r *http.Request, p *ssoCo
 		return
 	}
 	if _, host, err := s.validReturnURL(r.Context(), flow.Return); err != nil {
-		refuseReturnURL(w, host, err)
+		s.refuseReturnURL(w, r, host, err)
 		return
 	}
 	if !s.onPublicHost(r) {
@@ -502,7 +508,10 @@ func (s *Server) finishRouteSSO(w http.ResponseWriter, r *http.Request, p *ssoCo
 		ssoRefusedFor(w, r, flow, "sso_failed")
 		return
 	}
-	token, err := s.startGateSession(w, r, core.SSOGateSubject(id.Issuer, id.Subject), core.SignInSSO, id.Email)
+	token, err := s.createGateSession(r, core.SSOGateSubject(id.Issuer, id.Subject), core.SignInSSO, id.Email)
+	if err == nil && token == "" {
+		err = errors.New("no gateway session off the public URL's host")
+	}
 	if err != nil {
 		log.Printf("sso: starting a route sign-in's gateway session: %v", err)
 		ssoRefusedFor(w, r, flow, "sso_failed")
@@ -516,13 +525,17 @@ func (s *Server) finishRouteSSO(w http.ResponseWriter, r *http.Request, p *ssoCo
 		ssoRefusedFor(w, r, flow, "sso_failed")
 		return
 	}
+	s.setGateCookie(w, token)
 	s.endReplacedGateSession(r, token)
 	s.redirectWithCode(w, r, token, flow.Return, flow.GateNonce)
 }
 
-// endRefusedGateSession ends a gateway session just started for a sign-in
-// that was then refused, and clears the cookie set for it. It runs without
-// the request's context, which a browser that went away has cancelled.
+// endRefusedGateSession ends a gateway session just made for a sign-in that
+// was then refused. Its cookie was never set, so the gateway cookie the
+// browser already holds, and the session it names, are left as they were;
+// the cookie is cleared only if it names the session being ended. It runs
+// without the request's context, which a browser that went away has
+// cancelled.
 func (s *Server) endRefusedGateSession(w http.ResponseWriter, r *http.Request, token string) {
 	if token == "" {
 		return
@@ -530,5 +543,7 @@ func (s *Server) endRefusedGateSession(w http.ResponseWriter, r *http.Request, t
 	if err := s.store.DeleteGateSession(context.WithoutCancel(r.Context()), token); err != nil {
 		log.Printf("sso: ending a refused sign-in's gateway session: %v", err)
 	}
-	s.clearGateCookie(w)
+	if s.gateToken(r) == token {
+		s.clearGateCookie(w)
+	}
 }

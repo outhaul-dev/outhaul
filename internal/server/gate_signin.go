@@ -30,6 +30,10 @@ import (
 // errNotProtected means a return address isn't one the gate answers for.
 var errNotProtected = errors.New("not a protected address")
 
+// errOddPath means a return address was refused for how its path is spelled:
+// a browser or Traefik could read it differently from the gate.
+var errOddPath = errors.New("a path spelled in a way the gate doesn't sign in to")
+
 // errBadCredentials means a username and password sign nobody in.
 var errBadCredentials = errors.New("invalid credentials")
 
@@ -46,6 +50,17 @@ const (
 func gatePrivate(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
+}
+
+// gatePage marks a page a person reads, in place of gatePrivate: no cache
+// keeps it, and its URL goes in a Referer only to Outhaul's own origin, so
+// nothing outside Outhaul sees rd or n. Redirects keep no-referrer. Under
+// no-referrer a browser that sends no Sec-Fetch-Site posts the page's forms
+// with Origin: null, which cross-origin protection refuses; under
+// same-origin it sends the page's own origin.
+func gatePage(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "same-origin")
 }
 
 // gateCookieName names the gateway cookie. Like the SSO flow cookie it
@@ -116,6 +131,17 @@ func (s *Server) gateSession(r *http.Request) (token string, ok bool, err error)
 // this only on the public URL's host: anywhere else the browser may drop the
 // cookie, leaving a session nobody holds, so it returns "" and no error.
 func (s *Server) startGateSession(w http.ResponseWriter, r *http.Request, subject, kind, display string) (string, error) {
+	token, err := s.createGateSession(r, subject, kind, display)
+	if token != "" {
+		s.setGateCookie(w, token)
+	}
+	return token, err
+}
+
+// createGateSession is startGateSession without the cookie, for a sign-in
+// that can still be refused: the caller sets the cookie with setGateCookie
+// once it can't, so a refusal leaves the browser's cookie as it was.
+func (s *Server) createGateSession(r *http.Request, subject, kind, display string) (string, error) {
 	if !s.onPublicHost(r) {
 		return "", nil
 	}
@@ -125,7 +151,6 @@ func (s *Server) startGateSession(w http.ResponseWriter, r *http.Request, subjec
 	}); err != nil {
 		return "", err
 	}
-	s.setGateCookie(w, token)
 	return token, nil
 }
 
@@ -161,12 +186,16 @@ func (s *Server) endReplacedGateSession(r *http.Request, keep string) {
 }
 
 // endGateSession ends the browser's gateway session, with its route
-// sessions, and clears its cookie. On a store error the cookie is kept, so
-// the person can try again.
+// sessions, and clears its cookie. A delete that fails is tried once more,
+// without the request's context, which a browser that gave up has cancelled.
+// If that fails too, nothing is cleared and the error is returned, so the
+// person can try again.
 func (s *Server) endGateSession(w http.ResponseWriter, r *http.Request) error {
 	if token := s.gateToken(r); token != "" {
 		if err := s.store.DeleteGateSession(r.Context(), token); err != nil {
-			return err
+			if err := s.store.DeleteGateSession(context.WithoutCancel(r.Context()), token); err != nil {
+				return err
+			}
 		}
 	}
 	s.clearGateCookie(w)
@@ -214,7 +243,9 @@ func (s *Server) publicHost() string {
 // browser and Traefik can't read differently from the gate: no backslash,
 // no escaped dot, slash or backslash, nothing path.Clean would change apart
 // from a trailing slash. And the domain row Traefik would pick for it is
-// protected, whether Traefik reads the path decoded or as written.
+// protected, whether Traefik reads the path decoded or as written. A path
+// refused for its spelling, or protected read one way and not the other,
+// returns errOddPath instead, so the person can be told what to do.
 func (s *Server) validReturnURL(ctx context.Context, raw string) (u *url.URL, host string, err error) {
 	const scheme = "https://"
 	if len(raw) < len(scheme) || !strings.EqualFold(raw[:len(scheme)], scheme) || strings.Contains(raw, "#") {
@@ -252,23 +283,30 @@ func (s *Server) validReturnURL(ctx context.Context, raw string) (u *url.URL, ho
 	lower := strings.ToLower(escaped)
 	if strings.Contains(decoded, `\`) || strings.Contains(escaped, `\`) ||
 		strings.Contains(lower, "%2e") || strings.Contains(lower, "%2f") || strings.Contains(lower, "%5c") {
-		return nil, host, errNotProtected
+		return nil, host, errOddPath
 	}
 	clean := path.Clean(decoded)
 	if clean != "/" && strings.HasSuffix(decoded, "/") {
 		clean += "/"
 	}
 	if clean != decoded {
-		return nil, host, errNotProtected
+		return nil, host, errOddPath
 	}
+	protected := 0
 	for _, urlPath := range []string{decoded, escaped} {
-		protected, err := s.store.RouteIsProtected(ctx, host, urlPath)
+		ok, err := s.store.RouteIsProtected(ctx, host, urlPath)
 		if err != nil {
 			return nil, host, err
 		}
-		if !protected {
-			return nil, host, errNotProtected
+		if ok {
+			protected++
 		}
+	}
+	switch protected {
+	case 0:
+		return nil, host, errNotProtected
+	case 1:
+		return nil, host, errOddPath
 	}
 
 	u = &url.URL{Scheme: "https", Host: host, Path: decoded, RawPath: p.RawPath, RawQuery: escapeUnsafe(p.RawQuery)}
@@ -278,13 +316,29 @@ func (s *Server) validReturnURL(ctx context.Context, raw string) (u *url.URL, ho
 	return u, host, nil
 }
 
-// refuseReturnURL answers a return address validReturnURL refused.
-func refuseReturnURL(w http.ResponseWriter, host string, err error) {
-	if errors.Is(err, errNotProtected) {
+// refuseReturnURL answers a return address validReturnURL refused. One
+// refused for its path's spelling gets a page saying so, with a link to the
+// app's main page when that is protected, as a sign-in for it would work.
+func (s *Server) refuseReturnURL(w http.ResponseWriter, r *http.Request, host string, err error) {
+	switch {
+	case errors.Is(err, errOddPath):
+		data := map[string]any{"Title": "Sign in", "HideChrome": true}
+		if root, err := s.store.RouteIsProtected(r.Context(), host, "/"); err == nil && root {
+			if port, err := s.appPort(r.Context()); err == nil {
+				link := url.URL{Scheme: "https", Host: host, Path: "/"}
+				if port != "" {
+					link.Host += ":" + port
+				}
+				data["Link"] = link.String()
+			}
+		}
+		gatePage(w)
+		s.render(w, r, http.StatusBadRequest, "gate_refused", data)
+	case errors.Is(err, errNotProtected):
 		http.Error(w, gateNotProtectedCopy, http.StatusBadRequest)
-		return
+	default:
+		gateUnavailable(w, host, "checking a return address", err)
 	}
-	gateUnavailable(w, host, "checking a return address", err)
 }
 
 // redirectWithCode sends the browser back to returnURL with a one-time code
@@ -303,7 +357,7 @@ func (s *Server) redirectWithCode(w http.ResponseWriter, r *http.Request, rawGat
 	}
 	u, host, err := s.validReturnURL(r.Context(), returnURL)
 	if err != nil {
-		refuseReturnURL(w, host, err)
+		s.refuseReturnURL(w, r, host, err)
 		return
 	}
 	if rawGateToken == "" {
@@ -336,13 +390,32 @@ func (s *Server) gateLoginPage(w http.ResponseWriter, r *http.Request, status in
 	if errMsg != "" {
 		data["Error"] = errMsg
 	}
+	gatePage(w)
 	s.render(w, r, status, "login", data)
+}
+
+// isPrefetch reports whether r is a browser fetching a page ahead of a
+// navigation that may never happen: Sec-Purpose (prefetch, or prefetch for
+// a prerender), or the older Purpose and X-Moz.
+func isPrefetch(r *http.Request) bool {
+	for _, h := range []string{"Sec-Purpose", "Purpose", "X-Moz"} {
+		for _, v := range r.Header.Values(h) {
+			if strings.Contains(strings.ToLower(v), "prefetch") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // handleGateStart is where the gate sends a visitor to sign in. With a live
 // gateway session it sends them straight back with a code; that is safe only
 // because the code works in nothing but the browser that holds the pending
 // cookie n stands for. Anyone else sees the sign-in page for that address.
+//
+// Only a GET navigation mints a code. A HEAD or a prefetch with a live
+// gateway session is answered without one: minting replaces the session's
+// earlier code for the host, which a real navigation may still be carrying.
 func (s *Server) handleGateStart(w http.ResponseWriter, r *http.Request) {
 	gatePrivate(w)
 	if !s.publicURLSet() {
@@ -353,8 +426,10 @@ func (s *Server) handleGateStart(w http.ResponseWriter, r *http.Request) {
 	// arrives anywhere else moves there first, as SSO's start does.
 	if to, pubHost, ok := s.ssoStartElsewhere(r); ok {
 		if r.URL.Query().Has(ssoMovedParam) {
-			log.Printf("gate: sign-in page refused: it was sent on to %q, the public URL's host, but arrived on %q; a proxy in front may be rewriting the Host header",
-				pubHost, logText(r.Host))
+			if s.gateMovedLog.allow(time.Now()) {
+				log.Printf("gate: sign-in page refused: it was sent on to %q, the public URL's host, but arrived on %q; a proxy in front may be rewriting the Host header (logged at most once a minute)",
+					pubHost, logText(r.Host))
+			}
 			http.Error(w, gateUnavailableCopy, http.StatusServiceUnavailable)
 			return
 		}
@@ -369,7 +444,7 @@ func (s *Server) handleGateStart(w http.ResponseWriter, r *http.Request) {
 	}
 	_, host, err := s.validReturnURL(r.Context(), rd)
 	if err != nil {
-		refuseReturnURL(w, host, err)
+		s.refuseReturnURL(w, r, host, err)
 		return
 	}
 	token, ok, err := s.gateSession(r)
@@ -378,7 +453,16 @@ func (s *Server) handleGateStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ok {
-		if s.gateLooping(w, r, host) {
+		switch {
+		case r.Method == http.MethodHead:
+			w.WriteHeader(http.StatusOK)
+			return
+		case isPrefetch(r):
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if s.gateLooping(w, r, host, n) {
+			gatePage(w)
 			http.Error(w, "Your browser didn't keep the sign-in cookie for "+host+
 				", so it would keep coming back here. Allow cookies for that address, then open it again.", http.StatusBadRequest)
 			return
@@ -402,30 +486,39 @@ func (s *Server) gateLapsCookie() *http.Cookie {
 }
 
 // gateLooping counts this browser's arrival at /gate/start, signed in and
-// bound for host, and reports whether it is the gateMaxLaps-th in a row for
-// that host within gateLapsTTL of the last. A browser that refuses the app
-// host's cookies never keeps the pending or route cookie, so with a gateway
-// session it would otherwise go round between the gate and here for ever.
-// The count lives in a cookie on this host; an arrival for another host
-// starts it again, and reaching the limit clears it, so trying again after
-// the page starts afresh.
-func (s *Server) gateLooping(w http.ResponseWriter, r *http.Request, host string) bool {
+// bound for host with nonce n, and reports whether it is the gateMaxLaps-th
+// lap for that host within gateLapsTTL of the last. A browser that refuses
+// the app host's cookies never keeps the pending or route cookie, so with a
+// gateway session it would otherwise go round between the gate and here for
+// ever, bringing a new n each time. Tabs that share one pending cookie bring
+// the same n, so an arrival with the previous lap's n isn't counted.
+//
+// The count lives in a cookie on this host, as count:host:tag, where tag
+// stands for n without being it. An arrival for another host starts it again,
+// and reaching the limit clears it, so trying again after the page starts
+// afresh.
+func (s *Server) gateLooping(w http.ResponseWriter, r *http.Request, host, n string) bool {
 	c := s.gateLapsCookie()
-	laps := 0
+	tag := sha256Hex(n)[:16]
+	laps, last := 0, ""
 	if got, err := r.Cookie(c.Name); err == nil {
-		if n, h, ok := strings.Cut(got.Value, ":"); ok && h == host {
-			if v, err := strconv.Atoi(n); err == nil && v > 0 {
-				laps = v
+		if count, rest, ok := strings.Cut(got.Value, ":"); ok {
+			if h, t, ok := strings.Cut(rest, ":"); ok && h == host {
+				if v, err := strconv.Atoi(count); err == nil && v > 0 {
+					laps, last = v, t
+				}
 			}
 		}
 	}
-	laps++
+	if tag != last {
+		laps++
+	}
 	if laps >= gateMaxLaps {
 		c.MaxAge = -1
 		http.SetCookie(w, c)
 		return true
 	}
-	c.Value = strconv.Itoa(laps) + ":" + host
+	c.Value = strconv.Itoa(laps) + ":" + host + ":" + tag
 	c.MaxAge = int(gateLapsTTL / time.Second)
 	http.SetCookie(w, c)
 	return false
@@ -473,7 +566,7 @@ func (s *Server) handleGateSignIn(w http.ResponseWriter, r *http.Request) {
 	}
 	_, host, err := s.validReturnURL(r.Context(), rd)
 	if err != nil {
-		refuseReturnURL(w, host, err)
+		s.refuseReturnURL(w, r, host, err)
 		return
 	}
 	user, err := s.checkPassword(r.Context(), r.PostFormValue("username"), r.PostFormValue("password"))
@@ -504,14 +597,14 @@ func (s *Server) handleGateSignIn(w http.ResponseWriter, r *http.Request) {
 
 // handleGateSignOutPage asks before signing out, so a link can't do it.
 func (s *Server) handleGateSignOutPage(w http.ResponseWriter, r *http.Request) {
-	gatePrivate(w)
+	gatePage(w)
 	s.render(w, r, http.StatusOK, "gate_signout", map[string]any{"Title": "Sign out", "HideChrome": true})
 }
 
 // handleGateSignOut ends the browser's gateway session and every route
 // session it carried. An Outhaul session is left alone: /logout ends that.
 func (s *Server) handleGateSignOut(w http.ResponseWriter, r *http.Request) {
-	gatePrivate(w)
+	gatePage(w)
 	if err := s.endGateSession(w, r); err != nil {
 		log.Printf("gate: signing out: %v", err)
 		http.Error(w, gateSignOutFailedCopy, http.StatusServiceUnavailable)

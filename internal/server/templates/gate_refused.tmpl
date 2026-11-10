@@ -1,0 +1,8 @@
+{{define "content"}}
+<div class="authcard">
+  <div class="authmark">{{template "brandmark" .}}</div>
+  <h1 class="authtitle">out<span class="haul">haul</span></h1>
+  <p class="authsub">Outhaul can't sign you in to that exact address. Open the app's main page and try again.</p>
+  {{if .Link}}<p class="authsub"><a href="{{.Link}}">{{.Link}}</a></p>{{end}}
+</div>
+{{end}}

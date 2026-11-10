@@ -278,13 +278,19 @@ func (s *Server) loginFailed(w http.ResponseWriter, r *http.Request, cause error
 
 // handleLogout ends the Outhaul session and the gateway session, so the
 // person also loses every protected route they passed in this browser.
+//
+// The gateway session goes first. If it can't be ended, nothing is: the
+// person is told signing out didn't work, keeps both sessions and their
+// cookies, and can try again, rather than leaving with route access they
+// think has ended.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie(sessionCookie); err == nil {
-		_ = s.store.DeleteSession(r.Context(), c.Value)
-	}
 	if err := s.endGateSession(w, r); err != nil {
 		log.Printf("server: ending a gateway session at sign-out: %v", err)
-		s.clearGateCookie(w)
+		http.Error(w, gateSignOutFailedCopy, http.StatusServiceUnavailable)
+		return
+	}
+	if c, err := r.Cookie(sessionCookie); err == nil {
+		_ = s.store.DeleteSession(r.Context(), c.Value)
 	}
 	c := s.sessionCookieFor(r)
 	c.MaxAge = -1

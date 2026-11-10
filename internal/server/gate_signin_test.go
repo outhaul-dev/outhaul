@@ -23,6 +23,7 @@ const (
 	wireGateCookie      = "outhaul_gate"        // on a plain-HTTP public URL
 	wireGateCookieHTTPS = "__Host-outhaul_gate" // on an https:// public URL
 	notProtectedCopy    = "This address isn't protected by Outhaul"
+	oddPathCopy         = "Outhaul can't sign you in to that exact address. Open the app's main page and try again."
 )
 
 // testNonce is n for the browser holding testPending.
@@ -165,6 +166,17 @@ func wantPrivate(t *testing.T, what string, resp *http.Response) {
 	}
 }
 
+// wantPrivatePage checks a page a person reads is not cached, and names its
+// URL in a Referer only to Outhaul's own origin. Under no-referrer a browser
+// that sends no Sec-Fetch-Site would post the page's forms with Origin: null,
+// which cross-origin protection refuses.
+func wantPrivatePage(t *testing.T, what string, resp *http.Response) {
+	t.Helper()
+	if cc, rp := resp.Header.Get("Cache-Control"), resp.Header.Get("Referrer-Policy"); cc != "no-store" || rp != "same-origin" {
+		t.Errorf("%s: Cache-Control %q, Referrer-Policy %q; want no-store and same-origin", what, cc, rp)
+	}
+}
+
 // attrAfter is the HTML-unescaped attribute text in page that follows the
 // first occurrence of prefix, up to the closing quote; "" if prefix isn't
 // there.
@@ -260,21 +272,43 @@ func TestGateStartRefusesOpenPathsOnAProtectedHost(t *testing.T) {
 		"https://shop.example.com",
 		"https://shop.example.com/cart",
 		"https://shop.example.com/ADMIN",
-		"https://shop.example.com/admin/../cart",
-		"https://shop.example.com/admin/%2e%2e/cart",
-		"https://shop.example.com/admin/%2E%2E/cart",
-		"https://shop.example.com/admin%2f..%2fcart",
-		"https://shop.example.com/admin%2F..%2Fcart",
-		"https://shop.example.com/admin\\..\\cart",
-		"https://shop.example.com/admin%5c..%5ccart",
-		"https://shop.example.com/admin/./users",
-		"https://shop.example.com//admin",
-		"https://shop.example.com/admin//users",
-		// Read undecoded, as Traefik may, this is the open row's path.
-		"https://shop.example.com/%61dmin/users",
 	} {
 		resp := e.gateRequest(t, http.MethodGet, startPath(rd, testNonce), gate, nil)
 		wantRefusal(t, rd, resp, http.StatusBadRequest, notProtectedCopy)
+	}
+	// A path a browser or Traefik could read differently from the gate is
+	// refused for its spelling, and the page says so. It links to the app's
+	// main page when that is protected (wiki's), and not otherwise (shop's).
+	for rd, link := range map[string]string{
+		"https://shop.example.com/admin/../cart":     "",
+		"https://shop.example.com/admin/%2e%2e/cart": "",
+		"https://shop.example.com/admin/%2E%2E/cart": "",
+		"https://shop.example.com/admin%2f..%2fcart": "",
+		"https://shop.example.com/admin%2F..%2Fcart": "",
+		"https://shop.example.com/admin\\..\\cart":   "",
+		"https://shop.example.com/admin%5c..%5ccart": "",
+		"https://shop.example.com/admin/./users":     "",
+		"https://shop.example.com//admin":            "",
+		"https://shop.example.com/admin//users":      "",
+		// Read undecoded, as Traefik may, this is the open row's path.
+		"https://shop.example.com/%61dmin/users": "",
+		"https://wiki.example.com//page":         "https://wiki.example.com/",
+		"https://wiki.example.com/a/./b":         "https://wiki.example.com/",
+		"https://wiki.example.com/a%2Fb":         "https://wiki.example.com/",
+		"https://wiki.example.com/a\\b":          "https://wiki.example.com/",
+	} {
+		resp := e.gateRequest(t, http.MethodGet, startPath(rd, testNonce), gate, nil)
+		wantPrivatePage(t, rd, resp)
+		page := body(t, resp)
+		if resp.StatusCode != http.StatusBadRequest || !strings.Contains(page, oddPathCopy) || strings.Contains(page, notProtectedCopy) {
+			t.Errorf("%s: %d, want 400 saying %q:\n%s", rd, resp.StatusCode, oddPathCopy, page)
+		}
+		if got := attrAfter(page, `<a href="`); got != link {
+			t.Errorf("%s: links to %q, want %q", rd, got, link)
+		}
+		if resp.Header.Get("Location") != "" || len(resp.Cookies()) != 0 {
+			t.Errorf("%s: a refusal redirected to %q or set %q", rd, resp.Header.Get("Location"), resp.Header.Values("Set-Cookie"))
+		}
 	}
 	if n := count(t, e, "gate_codes"); n != 0 {
 		t.Fatalf("%d codes minted for open paths", n)
@@ -299,7 +333,7 @@ func TestGateStartShowsLoginNamingTheDestination(t *testing.T) {
 	seedGateRows(t, e)
 	rd := "https://wiki.example.com/page?x=1&y=2"
 	resp := newBrowser(e).get(t, startPath(rd, testNonce))
-	wantPrivate(t, "the sign-in page", resp)
+	wantPrivatePage(t, "the sign-in page", resp)
 	page := body(t, resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /gate/start = %d: %s", resp.StatusCode, page)
@@ -345,7 +379,7 @@ func TestPasswordSignInForRouteReturnsWithCode(t *testing.T) {
 
 	b := newBrowser(e)
 	resp := b.post(t, "/gate/sign-in", signInForm("nora", "wrong password", rd, testNonce))
-	wantPrivate(t, "a wrong password", resp)
+	wantPrivatePage(t, "a wrong password", resp)
 	page := body(t, resp)
 	if resp.StatusCode != http.StatusUnauthorized || !strings.Contains(page, "Invalid username or password.") {
 		t.Errorf("a wrong password = %d: %s", resp.StatusCode, page)
@@ -1161,7 +1195,7 @@ func TestGateStartStopsALoopForABrowserRefusingCookies(t *testing.T) {
 	minted("lap 2", lap(b, wiki), wiki)
 	codes := count(t, e, "gate_codes")
 	resp := lap(b, wiki)
-	wantPrivate(t, "lap 3", resp)
+	wantPrivatePage(t, "lap 3", resp)
 	page := body(t, resp)
 	if resp.StatusCode != http.StatusBadRequest || resp.Header.Get("Location") != "" {
 		t.Errorf("lap 3 = %d to %q, want a page instead", resp.StatusCode, resp.Header.Get("Location"))
@@ -1220,6 +1254,11 @@ func TestGateUsesTheConfiguredHTTPSPort(t *testing.T) {
 	for _, rd := range []string{"https://wiki.example.com/page", "https://wiki.example.com:443/page", "https://wiki.example.com:9999/page"} {
 		resp := e.gateRequest(t, http.MethodGet, startPath(rd, testNonce), gate, nil)
 		wantRefusal(t, rd+" on an 8443 install", resp, http.StatusBadRequest, notProtectedCopy)
+	}
+	// A path refused for its spelling links to the main page on that port.
+	page := body(t, e.gateRequest(t, http.MethodGet, startPath("https://wiki.example.com:8443//page", testNonce), gate, nil))
+	if got := attrAfter(page, `<a href="`); got != "https://wiki.example.com:8443/" {
+		t.Errorf("an odd path on 8443 links to %q, want https://wiki.example.com:8443/", got)
 	}
 
 	// In tunnel mode visitors reach apps on 443, at the tunnel's edge.
@@ -1384,5 +1423,385 @@ func TestGateSignInLogsNoSecrets(t *testing.T) {
 		if strings.Contains(out, secret) {
 			t.Errorf("the log holds %q:\n%s", secret, out)
 		}
+	}
+}
+
+// The gate's pages name their URL in a Referer only to Outhaul's own origin.
+// A browser that sends no Sec-Fetch-Site then posts their forms with an
+// Origin equal to the page's, which cross-origin protection accepts. Under
+// no-referrer it would send Origin: null, which is refused, as is any other
+// origin.
+func TestGateFormsPostFromTheirOwnOrigin(t *testing.T) {
+	e := gateSignInEnv(t)
+	passwordAccount(t, e, "nora", core.RoleNone, "supersecret")
+	b := newBrowser(e)
+	for _, p := range []string{startPath("https://wiki.example.com/", testNonce), "/gate/sign-out"} {
+		resp := b.get(t, p)
+		resp.Body.Close()
+		wantPrivatePage(t, "GET "+p, resp)
+	}
+
+	post := func(path, origin, gateTok string, form url.Values) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, e.http.URL+path, strings.NewReader(form.Encode()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Origin", origin)
+		if gateTok != "" {
+			req.AddCookie(&http.Cookie{Name: wireGateCookie, Value: gateTok})
+		}
+		resp, err := accountClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	form := signInForm("nora", "supersecret", "https://wiki.example.com/", testNonce)
+
+	resp := post("/gate/sign-in", e.http.URL, "", form)
+	resp.Body.Close()
+	wantCodeRedirect(t, "a sign-in carrying the page's Origin", resp, "https://wiki.example.com/")
+	gc := setCookie(resp, wireGateCookie)
+	if gc == nil {
+		t.Fatal("no gateway cookie")
+	}
+	resp = post("/gate/sign-out", e.http.URL, gc.Value, nil)
+	wantPrivatePage(t, "the signed-out page", resp)
+	if page := body(t, resp); resp.StatusCode != http.StatusOK || !strings.Contains(page, "signed out") {
+		t.Errorf("a sign-out carrying the page's Origin = %d: %s", resp.StatusCode, page)
+	}
+	if _, err := e.store.GetGateSession(context.Background(), gc.Value); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("the gateway session outlived signing out: %v", err)
+	}
+
+	before := count(t, e, "gate_sessions")
+	gate := gateSignIn(t, e, "dana")
+	for _, origin := range []string{"null", "https://wiki.example.com", "http://evil.example"} {
+		for _, path := range []string{"/gate/sign-in", "/gate/sign-out"} {
+			resp := post(path, origin, gate, form)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusForbidden || resp.Header.Get("Location") != "" {
+				t.Errorf("POST %s with Origin %s = %d to %q, want 403", path, origin, resp.StatusCode, resp.Header.Get("Location"))
+			}
+		}
+	}
+	if got := count(t, e, "gate_sessions"); got != before+1 {
+		t.Errorf("refused posts changed the gateway sessions: %d, want %d", got, before+1)
+	}
+}
+
+// Tabs that share one pending cookie bring the same n, and each still signs
+// in. Only an arrival with a new n, as from a browser that never keeps the
+// pending cookie, counts toward the loop guard.
+func TestGateStartLoopGuardSparesTabs(t *testing.T) {
+	e := gateSignInEnv(t)
+	gate := gateSignIn(t, e, "dana")
+	b := newBrowser(e)
+	u, _ := url.Parse(e.http.URL)
+	b.client.Jar.SetCookies(u, []*http.Cookie{{Name: wireGateCookie, Value: gate, Path: "/"}})
+	wiki := "https://wiki.example.com/page"
+	for i := range 5 {
+		resp := b.get(t, startPath(wiki, testNonce))
+		resp.Body.Close()
+		wantCodeRedirect(t, "tab "+itoa(int64(i+1)), resp, wiki)
+	}
+	// A new n after them, as when the pending cookie expired and was made
+	// again, is the second lap, not the sixth; its own tabs don't count either.
+	renewed := nonceOf(NewToken())
+	for i := range 3 {
+		resp := b.get(t, startPath(wiki, renewed))
+		resp.Body.Close()
+		wantCodeRedirect(t, "a renewed pending cookie, tab "+itoa(int64(i+1)), resp, wiki)
+	}
+	// A third n in a row is the third lap.
+	resp := b.get(t, startPath(wiki, nonceOf(NewToken())))
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest || resp.Header.Get("Location") != "" {
+		t.Errorf("a third new n = %d to %q, want the cookies page", resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
+// /gate/start mints a code only for a navigation. A HEAD or a prefetch with
+// a live gateway session is answered without one, and the code a real
+// navigation got still works.
+func TestGateStartMintsOnlyForANavigation(t *testing.T) {
+	e := gateSignInEnv(t)
+	gate := gateSignIn(t, e, "dana")
+	rd := "https://wiki.example.com/page"
+	resp := e.gateRequest(t, http.MethodGet, startPath(rd, testNonce), gate, nil)
+	resp.Body.Close()
+	code := wantCodeRedirect(t, "a navigation", resp, rd)
+	codes := count(t, e, "gate_codes")
+
+	ask := func(method string, header map[string]string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequest(method, e.http.URL+startPath(rd, testNonce), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for k, v := range header {
+			req.Header.Set(k, v)
+		}
+		req.AddCookie(&http.Cookie{Name: wireGateCookie, Value: gate})
+		resp, err := accountClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	resp = ask(http.MethodHead, nil)
+	if b := body(t, resp); resp.StatusCode != http.StatusOK || resp.Header.Get("Location") != "" || b != "" || len(resp.Cookies()) != 0 {
+		t.Errorf("HEAD = %d to %q, %d bytes, cookies %q; want 200 and nothing else", resp.StatusCode, resp.Header.Get("Location"), len(b), resp.Header.Values("Set-Cookie"))
+	}
+	for _, h := range []map[string]string{
+		{"Sec-Purpose": "prefetch"},
+		{"Sec-Purpose": "prefetch;prerender"},
+		{"Purpose": "prefetch"},
+		{"X-Moz": "prefetch"},
+	} {
+		resp := ask(http.MethodGet, h)
+		if b := body(t, resp); resp.StatusCode != http.StatusNoContent || resp.Header.Get("Location") != "" || b != "" || len(resp.Cookies()) != 0 {
+			t.Errorf("a prefetch (%v) = %d to %q, %d bytes, cookies %q; want 204 and nothing else", h, resp.StatusCode, resp.Header.Get("Location"), len(b), resp.Header.Values("Set-Cookie"))
+		}
+	}
+	if got := count(t, e, "gate_codes"); got != codes {
+		t.Errorf("codes: %d before, %d after; a HEAD or prefetch minted or spent one", codes, got)
+	}
+	route := redeem(t, e, code, gateWikiHost, "/page")
+	got, _ := e.checkGate(t, browserGet("/").with(route))
+	wantPass(t, "the navigation's code", got, "dana")
+}
+
+// heldGateway gives b a gateway session, and a route session on wiki that
+// came from it, as an earlier sign-in in b would have left them.
+func heldGateway(t *testing.T, e *testEnv, b *browser) (gate, route string) {
+	t.Helper()
+	gate = gateSignIn(t, e, "earlier")
+	code := mintGateCode(t, e, gate, gateWikiHost, time.Minute)
+	route = NewToken()
+	if _, err := e.store.RedeemGateCode(context.Background(), code, gateWikiHost, nonceOf(testPending), route, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(e.http.URL)
+	b.client.Jar.SetCookies(u, []*http.Cookie{{Name: e.srv.gateCookieName(), Value: gate, Path: "/"}})
+	return gate, route
+}
+
+// wantGatewayReplaced checks b now holds a new, live gateway session, and
+// the one it held before, with its route session, no longer works.
+func wantGatewayReplaced(t *testing.T, e *testEnv, b *browser, gate, route string) {
+	t.Helper()
+	ctx := context.Background()
+	if gc, ok := b.cookie(e.srv.gateCookieName()); !ok || gc.Value == gate {
+		t.Error("the browser didn't get a new gateway cookie")
+	} else if _, err := e.store.GetGateSession(ctx, gc.Value); err != nil {
+		t.Errorf("the new gateway session: %v", err)
+	}
+	if _, err := e.store.GetGateSession(ctx, gate); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("the earlier gateway session still works (err %v)", err)
+	}
+	if _, err := e.store.RouteSessionUser(ctx, route, gateWikiHost); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("the earlier route session still works (err %v)", err)
+	}
+}
+
+// Signing in again in one browser, by any way in, ends the gateway session
+// the browser held, so the next person on a shared browser doesn't pass
+// protected routes as the last one.
+func TestSigningInAgainEndsTheEarlierGatewaySession(t *testing.T) {
+	t.Run("/login", func(t *testing.T) {
+		e := gateSignInEnv(t)
+		passwordAdmin(t, e, "admin", "supersecret")
+		b := newBrowser(e)
+		gate, route := heldGateway(t, e, b)
+		resp := b.post(t, "/login", url.Values{"username": {"admin"}, "password": {"supersecret"}})
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/" {
+			t.Fatalf("POST /login = %d to %q", resp.StatusCode, resp.Header.Get("Location"))
+		}
+		wantGatewayReplaced(t, e, b, gate, route)
+	})
+	t.Run("/gate/sign-in", func(t *testing.T) {
+		e := gateSignInEnv(t)
+		passwordAccount(t, e, "nora", core.RoleNone, "supersecret")
+		b := newBrowser(e)
+		gate, route := heldGateway(t, e, b)
+		resp := b.post(t, "/gate/sign-in", signInForm("nora", "supersecret", "https://wiki.example.com/", testNonce))
+		resp.Body.Close()
+		wantCodeRedirect(t, "POST /gate/sign-in", resp, "https://wiki.example.com/")
+		wantGatewayReplaced(t, e, b, gate, route)
+	})
+	t.Run("setup link", func(t *testing.T) {
+		e := gateSignInEnv(t)
+		e.completeSetup(t)
+		ctx := context.Background()
+		u, err := e.store.CreatePasswordAccount(ctx, "mina", core.RoleNone)
+		if err != nil {
+			t.Fatal(err)
+		}
+		link := NewToken()
+		if err := e.store.CreateSetupLink(ctx, u.ID, link, time.Now().Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		b := newBrowser(e)
+		gate, route := heldGateway(t, e, b)
+		resp := b.post(t, "/account/setup", url.Values{"token": {link}, "password": {"correct horse"}})
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusSeeOther {
+			t.Fatalf("POST /account/setup = %d", resp.StatusCode)
+		}
+		wantGatewayReplaced(t, e, b, gate, route)
+	})
+	t.Run("SSO", func(t *testing.T) {
+		e := ssoLoginEnv(t, fakeIdentity("sub-1", "dana@example.com"))
+		b := newBrowser(e)
+		gate, route := heldGateway(t, e, b)
+		b.signIn(t)
+		wantGatewayReplaced(t, e, b, gate, route)
+	})
+	t.Run("SSO route visit", func(t *testing.T) {
+		fake := fakeIdentity("sub-1", "dana@example.com")
+		e := ssoLoginEnv(t, fake)
+		seedGateRows(t, e)
+		b := newBrowser(e)
+		gate, route := heldGateway(t, e, b)
+		resp := b.get(t, "/auth/sso/start?"+url.Values{"rd": {"https://wiki.example.com/"}, "n": {testNonce}}.Encode())
+		resp.Body.Close()
+		resp = b.callback(t, url.Values{"state": {fake.LastAuthState}, "code": {"C"}})
+		resp.Body.Close()
+		wantCodeRedirect(t, "an SSO route visit", resp, "https://wiki.example.com/")
+		wantGatewayReplaced(t, e, b, gate, route)
+	})
+}
+
+// A refused SSO sign-in leaves the gateway cookie the browser already had,
+// and its session, as they were.
+func TestRefusedSSOSignInKeepsTheEarlierGatewaySession(t *testing.T) {
+	for _, routeVisit := range []bool{true, false} {
+		e := ssoLoginEnv(t, fakeIdentity("sub-1", "dana@example.com"))
+		seedGateRows(t, e)
+		b := newBrowser(e)
+		gate, route := heldGateway(t, e, b)
+		// The issuer changes as the new gateway session is written, so the
+		// sign-in is refused at its second check.
+		if _, err := e.rawDB(t).Exec(`CREATE TRIGGER change_sso AFTER INSERT ON gate_sessions
+			BEGIN UPDATE settings SET value = 'https://other.example.com' WHERE key = 'sso_issuer'; END`); err != nil {
+			t.Fatal(err)
+		}
+		path := "/auth/sso/start"
+		if routeVisit {
+			path += "?" + url.Values{"rd": {"https://wiki.example.com/page"}, "n": {testNonce}}.Encode()
+		}
+		resp := b.get(t, path)
+		resp.Body.Close()
+		loc, _ := url.Parse(resp.Header.Get("Location"))
+		if loc == nil || loc.Host != "sso.fake.invalid" {
+			t.Fatalf("route %v: start = %d to %q", routeVisit, resp.StatusCode, resp.Header.Get("Location"))
+		}
+		resp = b.callback(t, url.Values{"state": {loc.Query().Get("state")}, "code": {"C"}})
+		resp.Body.Close()
+		if l := resp.Header.Get("Location"); strings.Contains(l, wireCodeParam) || l == "/" {
+			t.Fatalf("route %v: callback to %q, want a refusal", routeVisit, l)
+		}
+		if gc, ok := b.cookie(wireGateCookie); !ok || gc.Value != gate {
+			t.Errorf("route %v: the browser's gateway cookie was replaced or cleared", routeVisit)
+		}
+		if _, err := e.store.GetGateSession(context.Background(), gate); err != nil {
+			t.Errorf("route %v: the earlier gateway session: %v", routeVisit, err)
+		}
+		if _, err := e.store.RouteSessionUser(context.Background(), route, gateWikiHost); err != nil {
+			t.Errorf("route %v: the earlier route session: %v", routeVisit, err)
+		}
+		if n := count(t, e, "gate_sessions"); n != 1 {
+			t.Errorf("route %v: %d gateway sessions, want only the earlier one", routeVisit, n)
+		}
+	}
+}
+
+// A start moved to the public URL that arrives elsewhere all the same is
+// logged, but not once per request.
+func TestMovedSignInsLogOnceAMinute(t *testing.T) {
+	e := newTestEnv(t)
+	e.srv.publicURL = "https://outhaul.example.com"
+	var logged bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	for range 3 {
+		for _, p := range []string{startPath("https://wiki.example.com/", testNonce) + "&moved=1", "/auth/sso/start?moved=1"} {
+			req, _ := http.NewRequest(http.MethodGet, e.http.URL+p, nil)
+			req.Host = "10.0.0.5:8080"
+			resp, err := accountClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+		}
+	}
+	out := logged.String()
+	for _, line := range []string{"gate: sign-in page refused", "sso: sign-in refused: it was sent on"} {
+		if n := strings.Count(out, line); n != 1 {
+			t.Errorf("%q logged %d times for three requests, want 1:\n%s", line, n, out)
+		}
+	}
+}
+
+// /logout that can't end the gateway session says so, and ends nothing: the
+// person can try again. A delete that fails once is tried again first.
+func TestLogoutEndsNothingWhenTheGatewaySessionCantBeEnded(t *testing.T) {
+	e := gateSignInEnv(t)
+	passwordAdmin(t, e, "admin", "supersecret")
+	b := newBrowser(e)
+	resp := b.post(t, "/login", url.Values{"username": {"admin"}, "password": {"supersecret"}})
+	resp.Body.Close()
+	sc, _ := b.cookie(sessionCookie)
+	gc, ok := b.cookie(wireGateCookie)
+	if sc == nil || !ok {
+		t.Fatal("not signed in")
+	}
+	db := e.rawDB(t)
+	if _, err := db.Exec(`CREATE TRIGGER keep_gate BEFORE DELETE ON gate_sessions BEGIN SELECT RAISE(ABORT, 'kept'); END`); err != nil {
+		t.Fatal(err)
+	}
+	resp = b.post(t, "/logout", nil)
+	page := body(t, resp)
+	if resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(page, "Signing out didn't work") || resp.Header.Get("Location") != "" {
+		t.Errorf("POST /logout with the delete failing = %d to %q: %s", resp.StatusCode, resp.Header.Get("Location"), page)
+	}
+	if raw := resp.Header.Values("Set-Cookie"); len(raw) != 0 {
+		t.Errorf("a failed sign-out cleared cookies: %q", raw)
+	}
+	if !hasSession(e, sc.Value) {
+		t.Error("a failed sign-out ended the Outhaul session")
+	}
+	if _, err := e.store.GetGateSession(context.Background(), gc.Value); err != nil {
+		t.Errorf("the gateway session: %v", err)
+	}
+
+	if _, err := db.Exec(`DROP TRIGGER keep_gate`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE gate_fail (n INTEGER);
+		INSERT INTO gate_fail VALUES (1);
+		CREATE TRIGGER fail_once BEFORE DELETE ON gate_sessions WHEN (SELECT n FROM gate_fail) > 0
+		BEGIN UPDATE gate_fail SET n = n - 1; SELECT RAISE(FAIL, 'once'); END`); err != nil {
+		t.Fatal(err)
+	}
+	resp = b.post(t, "/logout", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login" {
+		t.Errorf("POST /logout with one failed delete = %d to %q, want 303 to /login", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	var left int
+	if err := db.QueryRow(`SELECT n FROM gate_fail`).Scan(&left); err != nil || left != 0 {
+		t.Errorf("the delete didn't fail first (n = %d, %v)", left, err)
+	}
+	if _, err := e.store.GetGateSession(context.Background(), gc.Value); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("the gateway session outlived /logout: %v", err)
+	}
+	if hasSession(e, sc.Value) {
+		t.Error("the Outhaul session outlived /logout")
 	}
 }
