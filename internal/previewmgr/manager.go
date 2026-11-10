@@ -6,10 +6,10 @@ package previewmgr
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
@@ -35,6 +35,7 @@ type Store interface {
 	GetDatabase(ctx context.Context, id int64) (core.Database, error)
 	ListDomains(ctx context.Context, appID int64) ([]core.Domain, error)
 	AddDomain(ctx context.Context, d core.Domain) (core.Domain, error)
+	SetDomainProtected(ctx context.Context, appID, domainID int64, protected bool) error
 	CreateDeployment(ctx context.Context, appID int64) (core.Deployment, error)
 	DeleteApp(ctx context.Context, id int64) error
 }
@@ -78,11 +79,17 @@ type Manager struct {
 	events   chan prJob    // pull_request events waiting for Run (see Enqueue)
 	stopped  chan struct{} // closed when Run returns
 
-	jobTimeout time.Duration // bound on handling one event (see handleJob)
+	jobTimeout   time.Duration // bound on handling one event (see handleJob)
+	gateHostWait time.Duration // how long a spawn waits for the proxy reconcile (see ensureGateHost)
 
-	proxy          ProxyControl               // reconciles Traefik before a preview that requires sign-in deploys; nil refuses one
+	proxy          ProxyControl               // reconciles Traefik before a preview that requires sign-in deploys; nil: none
 	protectedHTTPS func(context.Context) bool // whether protected rows are served over HTTPS; nil: no
 }
+
+// defaultGateHostWait bounds how long a spawn waits for the proxy reconcile a
+// preview that requires sign-in asks for: the reconcile can take minutes
+// (it may recreate Traefik), and the spawn holds the queue's single consumer.
+const defaultGateHostWait = 20 * time.Second
 
 // ProxyControl reconciles the managed proxy now, so Traefik can reach the
 // gate (server.ProxyControl). Its error names what failed.
@@ -92,7 +99,8 @@ type ProxyControl interface {
 
 func New(st Store, n Notifier, db DBProvisioner, dk Docker, gh GithubAPI, ts TokenSource, serverIP string) *Manager {
 	return &Manager{store: st, notifier: n, dbprov: db, docker: dk, gh: gh, token: ts, serverIP: serverIP,
-		events: make(chan prJob, queueSize), stopped: make(chan struct{}), jobTimeout: defaultJobTimeout}
+		events: make(chan prJob, queueSize), stopped: make(chan struct{}), jobTimeout: defaultJobTimeout,
+		gateHostWait: defaultGateHostWait}
 }
 
 // SetProxyControl wires the proxy reconcile a preview that requires sign-in
@@ -231,9 +239,7 @@ func (m *Manager) buildPreview(ctx context.Context, parent, child core.App, cfg 
 		return err
 	}
 	if protected {
-		if err := m.ensureGateHost(ctx); err != nil {
-			return err
-		}
+		m.ensureGateHost(ctx, child)
 	}
 	if err := m.injectPreviewURL(ctx, child.ID); err != nil {
 		return err
@@ -317,15 +323,28 @@ func previewRef(ev webhook.PullRequestEvent) string {
 // domain dialog does when sign-in is turned on. The parent's protected row
 // normally keeps the mapping, but between reading the parent's rows and
 // saving the preview's, the parent's row can be turned off and a reconcile
-// drop it, leaving this preview the only protected row.
-func (m *Manager) ensureGateHost(ctx context.Context) error {
+// drop it, leaving this preview the only protected row. So a reconcile that
+// fails, or no proxy, doesn't stop the spawn: it is logged, and the preview
+// is deployed protected. The spawn waits for the reconcile no longer than
+// gateHostWait, on the job's context, since it holds the queue's single
+// consumer; a reconcile still running then finishes on its own.
+func (m *Manager) ensureGateHost(ctx context.Context, child core.App) {
 	if m.proxy == nil {
-		return errors.New("the preview requires sign-in, but this server has no proxy it can update")
+		log.Printf("previewmgr: preview %s requires sign-in, but this server has no proxy to update; deploying it anyway", child.Name)
+		return
 	}
-	if err := m.proxy.ReconcileProxy(ctx); err != nil {
-		return fmt.Errorf("the preview requires sign-in, but Outhaul couldn't %w", err)
+	ctx, cancel := context.WithTimeout(ctx, m.gateHostWait)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- m.proxy.ReconcileProxy(ctx) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			log.Printf("previewmgr: preview %s requires sign-in, but Outhaul couldn't %v; deploying it anyway", child.Name, err)
+		}
+	case <-ctx.Done():
+		log.Printf("previewmgr: preview %s requires sign-in, and updating the proxy didn't finish within %v (%v); deploying it anyway", child.Name, m.gateHostWait, ctx.Err())
 	}
-	return nil
 }
 
 // linkScheme is the scheme a preview's link uses, by the rule the pages use:
@@ -418,12 +437,41 @@ func (m *Manager) mintDomains(ctx context.Context, parent, child core.App, cfg c
 		})
 	}
 	for _, d := range rows {
-		if _, err := m.store.AddDomain(ctx, d); err != nil {
+		on, err := m.addMinted(ctx, d)
+		if err != nil {
 			return false, err
 		}
-		protected = protected || d.Protected
+		protected = protected || on
 	}
 	return protected, nil
+}
+
+// addMinted saves d, a row minted for a preview, and reports whether the row
+// saved requires sign-in. A save of the parent's domains can have given the
+// preview a row on d's host and path already, while it was being made
+// (server.protectPreviews): then that row is kept, and requires sign-in if
+// either does.
+func (m *Manager) addMinted(ctx context.Context, d core.Domain) (bool, error) {
+	_, addErr := m.store.AddDomain(ctx, d)
+	if addErr == nil {
+		return d.Protected, nil
+	}
+	have, err := m.store.ListDomains(ctx, d.AppID)
+	if err != nil {
+		return false, addErr
+	}
+	for _, r := range have {
+		if !strings.EqualFold(r.Host, d.Host) || r.Path != d.Path {
+			continue
+		}
+		if d.Protected && !r.Protected {
+			if err := m.store.SetDomainProtected(ctx, d.AppID, r.ID, true); err != nil {
+				return false, err
+			}
+		}
+		return d.Protected || r.Protected, nil
+	}
+	return false, addErr
 }
 
 func (m *Manager) redeploy(ctx context.Context, parent core.App, ev webhook.PullRequestEvent) error {
@@ -562,7 +610,11 @@ func (m *Manager) OnDeployFinished(ctx context.Context, app core.App, success bo
 		var urls []string
 		if ds, _ := m.store.ListDomains(ctx, app.ID); len(ds) > 0 {
 			for _, d := range ds {
-				urls = append(urls, m.linkScheme(ctx, d)+d.Host)
+				u := m.linkScheme(ctx, d) + d.Host + d.Path
+				if d.Protected {
+					u += " (requires sign-in)"
+				}
+				urls = append(urls, u)
 			}
 		}
 		body = ReadyComment(urls, "") // no commit SHA available on core.App

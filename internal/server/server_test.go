@@ -111,6 +111,7 @@ type fakeRuntime struct {
 	container *docker.Container
 	stack     []docker.Container // returned by ListContainers (compose apps)
 	listErr   error              // returned by ListContainers when set
+	listErrOf map[string]error   // by app name: returned when listing that app's containers (outhaul.app)
 	listCalls int                // ListContainers calls
 	started   []string
 	stopped   []string
@@ -137,6 +138,9 @@ func (f *fakeRuntime) ListContainers(_ context.Context, match map[string]string)
 	f.listCalls++
 	if f.listErr != nil {
 		return nil, f.listErr
+	}
+	if err := f.listErrOf[match["outhaul.app"]]; err != nil {
+		return nil, err
 	}
 	var out []docker.Container
 	for _, c := range f.stack {

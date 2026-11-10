@@ -2123,8 +2123,10 @@ func TestPreviewsAreWarnedOf(t *testing.T) {
 	}
 
 	// A save that changes no preview needs none named: the preview's row
-	// already requires sign-in for that route.
-	setProtected(t, e, prRow, true)
+	// already requires sign-in for that route, and its container has the gate.
+	prRow = setProtected(t, e, prRow, true)
+	e.runContainers(withImage(labelled("c1", web, []core.Domain{row}, "running"), "img:1"),
+		withImage(labelled("p1", pr, []core.Domain{prRow}, "running"), "pr:1"))
 	f = domainForm(core.Domain{Host: "admin.test"}, true)
 	wantStatus(t, "add a protected row the preview already has", e.saveDomain(t, web.ID, core.Domain{}, f), http.StatusSeeOther)
 	if n := len(deploymentsOf(t, e, pr.ID)); n != prBefore {
@@ -2179,9 +2181,11 @@ func TestProtectedPreviewShowsItsAccess(t *testing.T) {
 					t.Errorf("%s: preview row = %s\nwant %q", path, got, c.want)
 				}
 			}
-			unprotected := prRow
-			unprotected.TLS = false
-			if err := e.store.UpdateDomain(context.Background(), unprotected); err != nil {
+			// With its TLS flag off, the protected row is still served over
+			// HTTPS (the test server has TLS).
+			tlsOff := prRow
+			tlsOff.TLS = false
+			if err := e.store.UpdateDomain(context.Background(), tlsOff); err != nil {
 				t.Fatal(err)
 			}
 			if page := body(t, e.get(t, "/apps/"+itoa(web.ID))); !strings.Contains(page, `href="https://`+previewHost+`"`) {
@@ -2242,31 +2246,56 @@ func TestForkPreviewIsProtectedToo(t *testing.T) {
 	}
 }
 
-// A preview that now requires sign-in gets its OUTHAUL_PREVIEW_URL by the rule
-// the pages link with: here, its TLS flag is off, and the server serves
-// protected rows over HTTPS.
+// A preview that now requires sign-in has the scheme of its
+// OUTHAUL_PREVIEW_URL follow the rule the pages link with: here, its TLS
+// flag is off, and the server serves protected rows over HTTPS. Only the
+// scheme changes, of a URL on one of the preview's hosts: the rest of it is
+// kept, a host added by hand that sorts first doesn't replace it, and a URL
+// naming none of its hosts is left alone.
 func TestProtectedPreviewURLIsHTTPS(t *testing.T) {
-	e, _ := newProtectionEnv(t)
-	ctx := context.Background()
-	web, row, pr, prRow := previewedWeb(t, e, false)
-	prRow.TLS = false
-	if err := e.store.UpdateDomain(ctx, prRow); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.store.SetEnvScoped(ctx, pr.ID, "OUTHAUL_PREVIEW_URL", "http://"+previewHost, false, core.ScopeShared); err != nil {
-		t.Fatal(err)
-	}
-	f := domainForm(row, true)
-	f.Set("others_was", othersWasOf(t, e, web.ID))
-	wantStatus(t, "turn the switch on", e.saveDomain(t, web.ID, row, f), http.StatusSeeOther)
-	vars, err := e.store.ListEnv(ctx, pr.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, v := range vars {
-		if v.Key == "OUTHAUL_PREVIEW_URL" && v.Value != "https://"+previewHost {
-			t.Errorf("OUTHAUL_PREVIEW_URL = %q, want https://%s", v.Value, previewHost)
-		}
+	for _, c := range []struct {
+		name, was, want string
+		extra           bool // the preview also has a.pr42.test, added by hand
+	}{
+		{"its minted host", "http://" + previewHost, "https://" + previewHost, false},
+		{"a URL with a path", "http://" + previewHost + "/app?x=1", "https://" + previewHost + "/app?x=1", false},
+		{"a host added by hand sorts first", "http://" + previewHost, "https://" + previewHost, true},
+		{"a URL naming none of its hosts", "http://elsewhere.test", "http://elsewhere.test", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e, _ := newProtectionEnv(t)
+			ctx := context.Background()
+			web, row, pr, prRow := previewedWeb(t, e, false)
+			prRow.TLS = false
+			if err := e.store.UpdateDomain(ctx, prRow); err != nil {
+				t.Fatal(err)
+			}
+			if c.extra {
+				addRow(t, e, core.Domain{AppID: pr.ID, Host: "a.pr42.test"})
+			}
+			if err := e.store.SetEnvScoped(ctx, pr.ID, "OUTHAUL_PREVIEW_URL", c.was, false, core.ScopeShared); err != nil {
+				t.Fatal(err)
+			}
+			f := domainForm(row, true)
+			f.Set("others_was", othersWasOf(t, e, web.ID))
+			wantStatus(t, "turn the switch on", e.saveDomain(t, web.ID, row, f), http.StatusSeeOther)
+			vars, err := e.store.ListEnv(ctx, pr.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, v := range vars {
+				if v.Key == "OUTHAUL_PREVIEW_URL" {
+					found = true
+					if v.Value != c.want {
+						t.Errorf("OUTHAUL_PREVIEW_URL = %q, want %q", v.Value, c.want)
+					}
+				}
+			}
+			if !found {
+				t.Error("OUTHAUL_PREVIEW_URL is gone")
+			}
+		})
 	}
 }
 
@@ -2298,9 +2327,95 @@ func TestPreviewProtectionFailureIsReported(t *testing.T) {
 	}
 }
 
-// previewProtection matches a parent's protected row to the preview's row for
-// the same service and path, by the host the preview has for that service,
-// and adds a row, protected, for a protected route the preview has none for.
+// When a preview's deploy can't be queued, the parent's save still stands,
+// and the reply says to deploy the preview. The next save requiring sign-in
+// on the parent queues it: the preview's rows already require sign-in, but
+// its container still serves them without the gate.
+func TestPreviewDeployIsRetriedAfterItCouldntBeQueued(t *testing.T) {
+	e, _ := newProtectionEnv(t)
+	web, row, pr, prRow := previewedWeb(t, e, false)
+	prBefore := len(deploymentsOf(t, e, pr.ID))
+	f := domainForm(row, true)
+	f.Set("others_was", othersWasOf(t, e, web.ID))
+	e.runtime.listErrOf = map[string]error{pr.Name: errors.New("docker is down")}
+	b := wantStatus(t, "turn the switch on", e.saveDomain(t, web.ID, row, f), http.StatusInternalServerError)
+	if want := "The domain change was saved, but it couldn't be applied to every preview of web: web-pr-42 (its deploy couldn't be queued, so deploy the preview to apply it: "; !strings.Contains(b, want) {
+		t.Errorf("reply = %q, want it to contain %q", b, want)
+	}
+	if !domainOf(t, e, prRow).Protected || len(deploymentsOf(t, e, pr.ID)) != prBefore {
+		t.Fatal("the preview's row should require sign-in, with no deploy queued")
+	}
+
+	e.runtime.listErrOf = nil
+	row = domainOf(t, e, row)
+	f = domainForm(row, true)
+	f.Set("others_was", othersWasOf(t, e, web.ID))
+	wantStatus(t, "save the protected row again", e.saveDomain(t, web.ID, row, f), http.StatusSeeOther)
+	deps := deploymentsOf(t, e, pr.ID)
+	if len(deps) != prBefore+1 || deps[0].Image != "pr:1" {
+		t.Errorf("preview deployments = %+v, want a reuse of pr:1 queued", deps)
+	}
+
+	// Once its container has the gate, a save queues nothing more for it.
+	gated := domainOf(t, e, prRow)
+	e.runContainers(withImage(labelled("c1", web, []core.Domain{domainOf(t, e, row)}, "running"), "img:1"),
+		withImage(labelled("p1", pr, []core.Domain{gated}, "running"), "pr:1"))
+	f = domainForm(domainOf(t, e, row), true)
+	f.Set("others_was", othersWasOf(t, e, web.ID))
+	wantStatus(t, "save it once more", e.saveDomain(t, web.ID, row, f), http.StatusSeeOther)
+	if n := len(deploymentsOf(t, e, pr.ID)); n != prBefore+1 {
+		t.Errorf("preview deployments %d -> %d, want none more", prBefore+1, n)
+	}
+}
+
+// A row protectPreview adds can be there already, minted by the preview
+// manager after the preview's rows were read (a spawn racing the save): that
+// row is turned on instead. A route another app serves is still refused.
+func TestAddedPreviewRowMergesWithOneMintedSince(t *testing.T) {
+	e, _ := newProtectionEnv(t)
+	ctx := context.Background()
+	_, _, pr, prRow := previewedWeb(t, e, false)
+	if err := e.srv.addPreviewRow(ctx, core.Domain{AppID: pr.ID, Host: previewHost, Port: deployAppPort, TLS: true, Protected: true}); err != nil {
+		t.Fatalf("addPreviewRow: %v", err)
+	}
+	if rows := domainsOf(t, e, pr.ID); len(rows) != 1 || rows[0].ID != prRow.ID || !rows[0].Protected {
+		t.Errorf("preview rows = %+v, want its own row, protected", rows)
+	}
+	squatter, err := e.store.CreateApp(ctx, core.App{Name: "squatter", RepoURL: "https://x/s.git"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addRow(t, e, core.Domain{AppID: squatter.ID, Host: previewHost, Path: "/admin"})
+	if err := e.srv.addPreviewRow(ctx, core.Domain{AppID: pr.ID, Host: previewHost, Path: "/admin", Port: deployAppPort, Protected: true}); err == nil {
+		t.Error("a route another app serves was added to the preview")
+	}
+}
+
+// Editing a parent's row that already requires sign-in gives the preview its
+// protection again: here its row was turned off by hand, and its container
+// serves it openly. It redeploys.
+func TestEditingProtectedParentReprotectsPreview(t *testing.T) {
+	e, _ := newProtectionEnv(t)
+	web, row, pr, prRow := previewedWeb(t, e, false)
+	row = setProtected(t, e, row, true)
+	e.runContainers(withImage(labelled("c1", web, []core.Domain{row}, "running"), "img:1"),
+		withImage(labelled("p1", pr, []core.Domain{prRow}, "running"), "pr:1"))
+	prBefore := len(deploymentsOf(t, e, pr.ID))
+	f := domainForm(row, true)
+	f.Set("others_was", othersWasOf(t, e, web.ID))
+	wantStatus(t, "save the protected row", e.saveDomain(t, web.ID, row, f), http.StatusSeeOther)
+	if !domainOf(t, e, prRow).Protected {
+		t.Error("the preview's row was left open")
+	}
+	if n := len(deploymentsOf(t, e, pr.ID)); n != prBefore+1 {
+		t.Errorf("preview deployments %d -> %d, want one queued", prBefore, n)
+	}
+}
+
+// previewProtection turns on every preview row with the service and path of a
+// parent's protected row, whatever its host, and the route on the host the
+// preview manager minted for that service; when the preview has no row there,
+// it adds one, protected, on that host, never on one added by hand.
 func TestPreviewProtection(t *testing.T) {
 	s := &Server{serverIP: "203.0.113.7"}
 	parent := core.App{ID: 1, Name: "shop", Kind: core.KindCompose}
@@ -2309,6 +2424,12 @@ func TestPreviewProtection(t *testing.T) {
 	// The preview was made when the base domain was old.example.
 	web := core.Domain{ID: 20, AppID: 2, Host: "web-shop-pr-9.old.example", Service: "web", Port: 3000}
 	hooks := core.Domain{ID: 21, AppID: 2, Host: "web-shop-pr-9.old.example", Service: "web", Port: 3000, Path: "/hooks"}
+	// Hosts added to the preview by hand, which sort before its minted host;
+	// another app serves the rest of a.shared.test.
+	extra := core.Domain{ID: 22, AppID: 2, Host: "a.pr9.test", Service: "web", Port: 3000}
+	shared := core.Domain{ID: 23, AppID: 2, Host: "a.shared.test", Service: "web", Port: 3000, Path: "/pr9"}
+	// A row on the minted host for another service.
+	worker := core.Domain{ID: 24, AppID: 2, Host: "web-shop-pr-9.old.example", Service: "worker", Port: 4000, Path: "/admin"}
 	row := func(host, service, path string, protected bool) core.Domain {
 		return core.Domain{AppID: 1, Host: host, Service: service, Port: 3000, Path: path, TLS: true, Protected: protected}
 	}
@@ -2330,6 +2451,10 @@ func TestPreviewProtection(t *testing.T) {
 		{"a preview row already protected", []core.Domain{row("shop.test", "web", "", true)}, []core.Domain{func() core.Domain { d := web; d.Protected = true; return d }()}, nil, nil},
 		{"a new path goes on the service's existing host", []core.Domain{row("shop.test", "web", "/admin", true)}, []core.Domain{web}, nil, []string{"web-shop-pr-9.old.example/admin"}},
 		{"a new service gets the host a new preview would", []core.Domain{row("api.test", "api", "", true)}, []core.Domain{web}, nil, []string{"api-shop-pr-9.new.example"}},
+		{"an extra host sorting first is turned on, and so is the minted row", []core.Domain{row("shop.test", "web", "", true)}, []core.Domain{extra, web}, []string{"a.pr9.test", "web-shop-pr-9.old.example"}, nil},
+		{"a new path goes on the minted host, not an extra host sorting first", []core.Domain{row("shop.test", "web", "/admin", true)}, []core.Domain{extra, web}, nil, []string{"web-shop-pr-9.old.example/admin"}},
+		{"an extra host shared with another app gains no path", []core.Domain{row("shop.test", "web", "/admin", true)}, []core.Domain{shared, web}, nil, []string{"web-shop-pr-9.old.example/admin"}},
+		{"the minted route is turned on, whatever its row's service", []core.Domain{row("shop.test", "web", "/admin", true)}, []core.Domain{web, worker}, []string{"web-shop-pr-9.old.example/admin"}, nil},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			turnOn, add := s.previewProtection(cfg, parent, c.parent, pr, c.preview)

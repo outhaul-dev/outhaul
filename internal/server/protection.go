@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -362,50 +363,69 @@ func (s *Server) leavesOpenRoute(ctx context.Context, d core.Domain) (bool, erro
 }
 
 // previewProtection is what giving preview the protection of parentRows (its
-// parent's rows) changes. For each protected parent row, the preview's row for
-// the same service and path, which the preview manager minted from it (the
-// preview host derives only from the service and the PR), is turned on if it
-// is open; when the preview has no such row, one is added, protected, as the
-// preview manager would mint it, so the route isn't left to an open row above
-// it. Protection is only ever added: a parent row turned off leaves its
-// previews as they are. Rows that collapse into one preview row are protected
-// once.
+// parent's rows) changes. Every open preview row with the service and path of
+// a protected parent row is turned on, whatever its host: the row the preview
+// manager minted from it, and any added by hand. So is the row on the host
+// the preview manager minted for that service (mintedPreviewHost) and that
+// path, whatever its service; when the preview has none there, one is added,
+// protected, as the preview manager would mint it, so the route isn't left to
+// an open row above it. A host added by hand never gains a path. Protection
+// is only ever added: a parent row turned off leaves its previews as they
+// are. Rows that collapse into one preview row are protected once.
 func (s *Server) previewProtection(cfg core.PreviewConfig, parent core.App, parentRows []core.Domain, preview core.App, previewRows []core.Domain) (turnOn, add []core.Domain) {
-	type route struct{ host, path string }
-	// A service's host is the one its existing preview rows have, so a base
-	// domain changed since the preview was made doesn't split it over two.
-	hostOf := map[string]string{}
-	have := map[route]core.Domain{}
+	type route struct{ service, path string }
+	type at struct{ host, path string } // host lower-cased
+	protect := map[route]bool{}
+	have := map[at]bool{}
 	for _, r := range previewRows {
-		if _, ok := hostOf[r.Service]; !ok {
-			hostOf[r.Service] = r.Host
-		}
-		have[route{strings.ToLower(r.Host), r.Path}] = r
+		have[at{strings.ToLower(r.Host), r.Path}] = true
 	}
-	done := map[route]bool{}
+	minted := map[at]bool{}
 	for _, p := range parentRows {
-		if !p.Protected {
+		if !p.Protected || protect[route{p.Service, p.Path}] {
 			continue
 		}
-		host, ok := hostOf[p.Service]
-		if !ok {
-			host = core.PreviewHost(cfg, parent.Name, preview.PRNumber, p.Service, s.serverIP)
-		}
-		k := route{strings.ToLower(host), p.Path}
-		if done[k] {
+		protect[route{p.Service, p.Path}] = true
+		host := s.mintedPreviewHost(cfg, parent, preview, p.Service, previewRows)
+		k := at{strings.ToLower(host), p.Path}
+		if minted[k] {
 			continue
 		}
-		done[k] = true
-		if r, ok := have[k]; ok {
-			if !r.Protected {
-				turnOn = append(turnOn, r)
-			}
-			continue
+		minted[k] = true
+		if !have[k] {
+			add = append(add, core.Domain{AppID: preview.ID, Host: host, Service: p.Service, Port: p.Port,
+				Path: p.Path, InternalPath: p.InternalPath, TLS: p.TLS, Protected: true})
 		}
-		add = append(add, core.Domain{AppID: preview.ID, Host: host, Service: p.Service, Port: p.Port,
-			Path: p.Path, InternalPath: p.InternalPath, TLS: p.TLS, Protected: true})
+	}
+	for _, r := range previewRows {
+		if !r.Protected && (protect[route{r.Service, r.Path}] || minted[at{strings.ToLower(r.Host), r.Path}]) {
+			turnOn = append(turnOn, r)
+		}
 	}
 	return turnOn, add
+}
+
+// mintedPreviewHost is the host the preview manager minted preview's rows of
+// service on. That is the host it would mint now (core.PreviewHost) when one
+// of rows has it; otherwise the first of rows whose first DNS label is that
+// host's, which it minted under a base domain changed since, so the
+// service's rows aren't split over two; otherwise the host it would mint now.
+func (s *Server) mintedPreviewHost(cfg core.PreviewConfig, parent, preview core.App, service string, rows []core.Domain) string {
+	now := core.PreviewHost(cfg, parent.Name, preview.PRNumber, service, s.serverIP)
+	label, _, _ := strings.Cut(now, ".")
+	found := ""
+	for _, r := range rows {
+		if strings.EqualFold(r.Host, now) {
+			return r.Host
+		}
+		if l, _, _ := strings.Cut(r.Host, "."); found == "" && strings.EqualFold(l, label) {
+			found = r.Host
+		}
+	}
+	if found != "" {
+		return found
+	}
+	return now
 }
 
 // previewRedeploy names preview in the domain dialog of its parent: a save
@@ -442,9 +462,10 @@ func (s *Server) previewRedeploys(ctx context.Context, app core.App) ([]otherRed
 	return out, nil
 }
 
-// previewsToProtect returns the previews of app whose rows protectPreviews
-// would change once app's rows are rows: those a save leaving rows protected
-// also protects, and redeploys.
+// previewsToProtect returns the previews of app that protectPreviews would
+// change or redeploy once app's rows are rows: those a save leaving rows
+// protected also protects, and redeploys. A preview whose containers can't be
+// read is counted in, so the save names it rather than not.
 func (s *Server) previewsToProtect(ctx context.Context, app core.App, rows []core.Domain) ([]otherRedeploy, error) {
 	kids, err := s.store.ListPreviewsForParent(ctx, app.ID)
 	if err != nil || len(kids) == 0 {
@@ -461,7 +482,14 @@ func (s *Server) previewsToProtect(ctx context.Context, app core.App, rows []cor
 			return nil, err
 		}
 		if turnOn, add := s.previewProtection(cfg, app, rows, k, have); len(turnOn)+len(add) == 0 {
-			continue
+			stale, err := s.previewMismatch(ctx, k, have)
+			if err != nil {
+				log.Printf("protected routes: check the containers of %q: %v", k.Name, err)
+				stale = true
+			}
+			if !stale {
+				continue
+			}
 		}
 		o, err := s.previewRedeploy(ctx, k)
 		if err != nil {
@@ -474,9 +502,9 @@ func (s *Server) previewsToProtect(ctx context.Context, app core.App, rows []cor
 
 // protectPreviews gives each preview of parent the protection of parent's
 // rows (previewProtection), fork previews included, and redeploys each one
-// whose rows changed by the same rules as any app (applyProtection). It
-// carries on past a preview it can't change, and returns what failed, naming
-// each preview.
+// whose rows changed, or whose containers still disagree with its rows, by
+// the same rules as any app (applyProtection). It carries on past a preview
+// it can't change, and returns what failed, naming each preview.
 func (s *Server) protectPreviews(ctx context.Context, parent core.App) error {
 	kids, err := s.store.ListPreviewsForParent(ctx, parent.ID)
 	if err != nil {
@@ -502,13 +530,26 @@ func (s *Server) protectPreviews(ctx context.Context, parent core.App) error {
 	return errors.Join(errs...)
 }
 
-// protectPreview is protectPreviews for one preview.
+// protectPreview is protectPreviews for one preview. When its rows already
+// have the protection, it is still redeployed if its containers serve them
+// otherwise (previewMismatch): the deploy an earlier save asked for may not
+// have been queued.
 func (s *Server) protectPreview(ctx context.Context, cfg core.PreviewConfig, parent core.App, parentRows []core.Domain, preview core.App) error {
 	have, err := s.store.ListDomains(ctx, preview.ID)
 	if err != nil {
 		return fmt.Errorf("read its domains: %w", err)
 	}
 	turnOn, add := s.previewProtection(cfg, parent, parentRows, preview, have)
+	if len(turnOn)+len(add) == 0 {
+		stale, err := s.previewMismatch(ctx, preview, have)
+		if err != nil {
+			return fmt.Errorf("check whether its containers have the protection: %w", err)
+		}
+		if !stale {
+			return nil
+		}
+		return s.applyPreviewProtection(ctx, preview)
+	}
 	var errs []error
 	changed := false
 	for _, d := range turnOn {
@@ -519,7 +560,7 @@ func (s *Server) protectPreview(ctx context.Context, cfg core.PreviewConfig, par
 		changed = true
 	}
 	for _, d := range add {
-		if _, err := s.store.AddDomain(ctx, d); err != nil {
+		if err := s.addPreviewRow(ctx, d); err != nil {
 			errs = append(errs, fmt.Errorf("add %s%s, requiring sign-in: %w", d.Host, d.Path, err))
 			continue
 		}
@@ -527,31 +568,101 @@ func (s *Server) protectPreview(ctx context.Context, cfg core.PreviewConfig, par
 	}
 	if changed {
 		s.refreshPreviewURL(ctx, preview)
-		if _, err := s.applyProtection(ctx, preview); err != nil {
-			errs = append(errs, fmt.Errorf("queue its deploy: %w", err))
+		if err := s.applyPreviewProtection(ctx, preview); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
 }
 
-// refreshPreviewURL sets the preview's OUTHAUL_PREVIEW_URL from its first row,
-// as the preview manager does when it makes one, by the rule the pages link
-// with: a row that now requires sign-in may be served over HTTPS. Its next
-// deploy carries it. A failure is only logged: the route is protected either way.
+// addPreviewRow adds d, a protected row, to its preview. The preview manager
+// can have minted a row on d's host and path since the preview's rows were
+// read, while it was making the preview: then that row is turned on instead.
+func (s *Server) addPreviewRow(ctx context.Context, d core.Domain) error {
+	_, addErr := s.store.AddDomain(ctx, d)
+	if addErr == nil {
+		return nil
+	}
+	have, err := s.store.ListDomains(ctx, d.AppID)
+	if err != nil {
+		return addErr
+	}
+	for _, r := range have {
+		if strings.EqualFold(r.Host, d.Host) && r.Path == d.Path {
+			if r.Protected {
+				return nil
+			}
+			return s.store.SetDomainProtected(ctx, d.AppID, r.ID, true)
+		}
+	}
+	return addErr
+}
+
+// applyPreviewProtection is applyProtection for a preview, whose failure says
+// to deploy it.
+func (s *Server) applyPreviewProtection(ctx context.Context, preview core.App) error {
+	if _, err := s.applyProtection(ctx, preview); err != nil {
+		return fmt.Errorf("its deploy couldn't be queued, so deploy the preview to apply it: %w", err)
+	}
+	return nil
+}
+
+// previewMismatch reports whether preview's containers serve its rows other
+// than they say (protectionMismatch). One with no containers has nothing to
+// redeploy: its next deploy reads the rows.
+func (s *Server) previewMismatch(ctx context.Context, preview core.App, rows []core.Domain) (bool, error) {
+	cs, err := s.appContainers(ctx, preview)
+	if err != nil || len(cs) == 0 {
+		return false, err
+	}
+	hosts, err := s.store.ProtectedHosts(ctx)
+	if err != nil {
+		return false, err
+	}
+	return protectionMismatch(rows, preview.Name, cs, hosts), nil
+}
+
+// refreshPreviewURL moves the preview's OUTHAUL_PREVIEW_URL to https when the
+// rule the pages link with says so for the row it names: a row that now
+// requires sign-in may be served over HTTPS. Only the scheme changes, of a
+// URL whose host is one of the preview's rows (the first of them on that
+// host, as the preview manager links it); one naming none is left alone, and
+// one already on https stays there. Its next deploy carries it. A failure is
+// only logged: the route is protected either way.
 func (s *Server) refreshPreviewURL(ctx context.Context, preview core.App) {
 	rows, err := s.store.ListDomains(ctx, preview.ID)
-	if err != nil || len(rows) == 0 {
-		if err != nil {
-			log.Printf("protected routes: read the domains of %q: %v", preview.Name, err)
-		}
+	if err != nil {
+		log.Printf("protected routes: read the domains of %q: %v", preview.Name, err)
 		return
 	}
-	d, scheme := rows[0], "http://"
-	if d.TLS || d.Protected && s.protectedOverHTTPS(ctx) {
-		scheme = "https://"
+	vars, err := s.store.ListEnv(ctx, preview.ID)
+	if err != nil {
+		log.Printf("protected routes: read the variables of %q: %v", preview.Name, err)
+		return
 	}
-	if err := s.store.SetEnvScoped(ctx, preview.ID, "OUTHAUL_PREVIEW_URL", scheme+d.Host, false, core.ScopeShared); err != nil {
-		log.Printf("protected routes: set OUTHAUL_PREVIEW_URL of %q: %v", preview.Name, err)
+	for _, v := range vars {
+		if v.Key != "OUTHAUL_PREVIEW_URL" {
+			continue
+		}
+		rest, ok := strings.CutPrefix(v.Value, "http://")
+		if !ok {
+			continue
+		}
+		u, err := url.Parse(v.Value)
+		if err != nil {
+			continue
+		}
+		for _, d := range rows {
+			if !strings.EqualFold(d.Host, u.Hostname()) {
+				continue
+			}
+			if d.TLS || d.Protected && s.protectedOverHTTPS(ctx) {
+				if err := s.store.SetEnvScoped(ctx, preview.ID, v.Key, "https://"+rest, v.IsSecret, v.Scope); err != nil {
+					log.Printf("protected routes: set OUTHAUL_PREVIEW_URL of %q: %v", preview.Name, err)
+				}
+			}
+			break
+		}
 	}
 }
 
