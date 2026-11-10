@@ -129,6 +129,11 @@ type Server struct {
 	ssoCached *ssoConn // nil until discovery succeeds; dropped when the settings change
 	ssoGen    int      // bumped by dropSSOProvider, so a stale discovery isn't cached
 
+	ssoFailed      error         // the last discovery failure, returned until ssoFailedUntil
+	ssoFailedUntil time.Time     // see ssoRetryAfter
+	ssoRetryAfter  time.Duration // how long a failed discovery is remembered (ssoDiscoveryRetry; tests shorten it)
+	ssoDiscovering chan struct{} // holds one token while a discovery runs, so only one does
+
 	hashSlots chan struct{} // bounds concurrent argon2 work; see withHashSlot
 	hashWait  time.Duration // how long a password check waits for a slot
 }
@@ -161,6 +166,8 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 	s.streams, s.stopStreams = context.WithCancel(context.Background())
 	s.hashSlots = make(chan struct{}, maxConcurrentHashes)
 	s.hashWait = defaultHashWait
+	s.ssoRetryAfter = ssoDiscoveryRetry
+	s.ssoDiscovering = make(chan struct{}, 1)
 	if err := s.parseTemplates(); err != nil {
 		return nil, err
 	}

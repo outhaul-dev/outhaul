@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1041,4 +1042,105 @@ func TestSetupRefusesSSOUsernames(t *testing.T) {
 		t.Errorf("validUsername = %v, want %q", err, ssoPrefixRefusal)
 	}
 	e.completeSetup(t)
+}
+
+// While discovery fails, a flood of sign-ins makes one call to the provider
+// per ssoRetryAfter, not one each. Saving the settings always runs a fresh
+// discovery, and saving or removing them forgets the failure.
+func TestDiscoveryFailureIsRememberedBriefly(t *testing.T) {
+	e := ssoLoginEnv(t, nil)
+	admin := e.signInAs(t, "boss", core.RoleSystemAdmin)
+	var calls atomic.Int32
+	var failing atomic.Bool
+	failing.Store(true)
+	e.srv.discover = func(context.Context, sso.Config) (sso.Provider, error) {
+		calls.Add(1)
+		if failing.Load() {
+			time.Sleep(100 * time.Millisecond) // a slow provider: the flood arrives meanwhile
+			return nil, errors.New("sso: discovery failed: no route to host")
+		}
+		return fakeIdentity("sub-1", "dana@example.com"), nil
+	}
+	start := func() *http.Response {
+		resp := e.getAs(t, "", "/auth/sso/start")
+		resp.Body.Close()
+		return resp
+	}
+	unavailable := func(resp *http.Response) bool {
+		return resp.StatusCode == http.StatusSeeOther && resp.Header.Get("Location") == "/login?error=sso_unavailable"
+	}
+
+	var wg sync.WaitGroup
+	results := make([]*http.Response, 50)
+	for i := range results {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			results[i] = start()
+		}()
+	}
+	wg.Wait()
+	for i, resp := range results {
+		if !unavailable(resp) {
+			t.Fatalf("start %d = %d to %q, want sso_unavailable", i, resp.StatusCode, resp.Header.Get("Location"))
+		}
+	}
+	for i := 0; i < 10; i++ {
+		start()
+	}
+	if n := calls.Load(); n != 1 {
+		t.Fatalf("discovery ran %d times for 60 sign-ins, want 1", n)
+	}
+
+	// Saving runs its own discovery every time, even while a failure is
+	// remembered.
+	form := url.Values{"issuer": {testIssuer}, "client_id": {"cid"}, "client_secret": {""}}
+	for i := 0; i < 2; i++ {
+		resp := e.postAs(t, admin, "/settings/sso", form)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("save with discovery failing = %d, want 400", resp.StatusCode)
+		}
+	}
+	if n := calls.Load(); n != 3 {
+		t.Fatalf("discovery ran %d times after two saves, want 3", n)
+	}
+
+	// A successful save forgets the failure: the next sign-in discovers again.
+	failing.Store(false)
+	if resp := e.postAs(t, admin, "/settings/sso", form); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("save = %d, want 303", resp.StatusCode)
+	}
+	if resp := start(); resp.StatusCode != http.StatusFound {
+		t.Fatalf("start after a save = %d to %q, want 302 to the provider", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	// So does removing the settings.
+	failing.Store(true)
+	e.srv.dropSSOProvider()
+	if resp := start(); !unavailable(resp) {
+		t.Fatalf("start = %d, want sso_unavailable", resp.StatusCode)
+	}
+	if resp := e.postAs(t, admin, "/settings/sso/delete", nil); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("remove = %d, want 303", resp.StatusCode)
+	}
+	if err := e.store.SetSSOSettings(context.Background(), store.SSOSettings{Issuer: testIssuer, ClientID: "cid", ClientSecret: "sec"}, false); err != nil {
+		t.Fatal(err)
+	}
+	failing.Store(false)
+	if resp := start(); resp.StatusCode != http.StatusFound {
+		t.Fatalf("start after removing and reconnecting = %d to %q, want 302", resp.StatusCode, resp.Header.Get("Location"))
+	}
+
+	// And the failure is only remembered for ssoRetryAfter.
+	e.srv.ssoRetryAfter = 20 * time.Millisecond
+	failing.Store(true)
+	e.srv.dropSSOProvider()
+	before := calls.Load()
+	start()
+	time.Sleep(50 * time.Millisecond)
+	start()
+	if n := calls.Load() - before; n != 2 {
+		t.Errorf("discovery ran %d times across an expired failure, want 2", n)
+	}
 }

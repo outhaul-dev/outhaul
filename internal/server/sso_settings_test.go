@@ -310,7 +310,7 @@ func TestSSOProviderIsCachedUntilSettingsChange(t *testing.T) {
 	if len(*seen) != n+1 {
 		t.Errorf("cache not dropped on save")
 	}
-	// A failed discovery is not cached.
+	// A failed discovery is remembered briefly, until the settings change.
 	e.srv.dropSSOProvider()
 	fails := 0
 	e.srv.discover = func(context.Context, sso.Config) (sso.Provider, error) {
@@ -318,9 +318,16 @@ func TestSSOProviderIsCachedUntilSettingsChange(t *testing.T) {
 		return nil, errors.New("down")
 	}
 	e.srv.ssoProvider(ctx)
+	if _, err := e.srv.ssoProvider(ctx); err == nil || err.Error() != "down" {
+		t.Errorf("remembered failure = %v, want the discovery's error", err)
+	}
+	if fails != 1 {
+		t.Errorf("discovery ran %d times while failing, want 1", fails)
+	}
+	e.srv.dropSSOProvider()
 	e.srv.ssoProvider(ctx)
 	if fails != 2 {
-		t.Errorf("failed discovery cached: %d attempts", fails)
+		t.Errorf("a settings change didn't forget the failure: %d attempts", fails)
 	}
 }
 

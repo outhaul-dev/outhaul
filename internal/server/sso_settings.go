@@ -6,10 +6,15 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/sso"
 	"github.com/outhaul-dev/outhaul/internal/store"
 )
+
+// ssoDiscoveryRetry is how long a failed discovery is remembered, so a flood
+// of sign-ins while the provider is down makes one call to it per period.
+const ssoDiscoveryRetry = 5 * time.Second
 
 // errSSONotConfigured means no SSO provider is connected.
 var errSSONotConfigured = errors.New("server: no SSO provider is configured")
@@ -20,19 +25,31 @@ func (s *Server) ssoRedirectURI() string {
 }
 
 // ssoProvider returns the connected provider, running discovery the first time
-// and after the settings change. A failed discovery is not cached. Without a
-// public URL there is nowhere for the provider to send people back, so SSO
-// counts as not connected.
+// and after the settings change. Without a public URL there is nowhere for the
+// provider to send people back, so SSO counts as not connected.
+//
+// One discovery runs at a time, and a failure is remembered for
+// ssoRetryAfter, so a flood of sign-ins while the provider is down makes one
+// call to it per period. Saving or removing the settings forgets both the
+// provider and the failure. Saving runs its own discovery, never this one.
 func (s *Server) ssoProvider(ctx context.Context) (*ssoConn, error) {
 	if !s.publicURLSet() {
 		return nil, errSSONotConfigured
 	}
-	s.ssoMu.Lock()
-	if s.ssoCached != nil {
-		p := s.ssoCached
-		s.ssoMu.Unlock()
-		return p, nil
+	if p, err, known := s.ssoRemembered(); known {
+		return p, err
 	}
+	select {
+	case s.ssoDiscovering <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	defer func() { <-s.ssoDiscovering }()
+	// Another request may have finished a discovery while this one waited.
+	if p, err, known := s.ssoRemembered(); known {
+		return p, err
+	}
+	s.ssoMu.Lock()
 	gen := s.ssoGen
 	s.ssoMu.Unlock()
 
@@ -43,21 +60,42 @@ func (s *Server) ssoProvider(ctx context.Context) (*ssoConn, error) {
 	if !ok {
 		return nil, errSSONotConfigured
 	}
-	dp, err := s.discover(ctx, sso.Config{
+	// Not the request's own context: the requests waiting on this discovery
+	// mustn't all fail because the first one gave up. Discover bounds itself.
+	dp, err := s.discover(context.WithoutCancel(ctx), sso.Config{
 		Issuer: cfg.Issuer, ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret,
 		RedirectURL: s.ssoRedirectURI(),
 	})
+	s.ssoMu.Lock()
+	defer s.ssoMu.Unlock()
+	// Settings changed while discovery ran: the result is for the old ones,
+	// so it isn't remembered.
+	remember := s.ssoGen == gen
 	if err != nil {
+		if remember {
+			s.ssoFailed, s.ssoFailedUntil = err, time.Now().Add(s.ssoRetryAfter)
+		}
 		return nil, err
 	}
 	p := &ssoConn{Provider: dp, issuer: cfg.Issuer, clientID: cfg.ClientID}
-	s.ssoMu.Lock()
-	defer s.ssoMu.Unlock()
-	// Settings changed while discovery ran: this provider is for the old ones.
-	if s.ssoGen == gen {
+	if remember {
 		s.ssoCached = p
 	}
 	return p, nil
+}
+
+// ssoRemembered returns the cached provider, or a discovery failure that is
+// still fresh. known is false when discovery has to run.
+func (s *Server) ssoRemembered() (p *ssoConn, failed error, known bool) {
+	s.ssoMu.Lock()
+	defer s.ssoMu.Unlock()
+	if s.ssoCached != nil {
+		return s.ssoCached, nil, true
+	}
+	if s.ssoFailed != nil && time.Now().Before(s.ssoFailedUntil) {
+		return nil, s.ssoFailed, true
+	}
+	return nil, nil, false
 }
 
 // ssoConn is the connected provider with the settings it was discovered
@@ -79,10 +117,12 @@ func (s *Server) ssoStillCurrent(ctx context.Context, p *ssoConn) bool {
 	return ok && cur.Issuer == p.issuer && cur.ClientID == p.clientID
 }
 
-// dropSSOProvider forgets the cached provider; call when settings change.
+// dropSSOProvider forgets the cached provider and any remembered discovery
+// failure; call when settings change.
 func (s *Server) dropSSOProvider() {
 	s.ssoMu.Lock()
 	s.ssoCached = nil
+	s.ssoFailed = nil
 	s.ssoGen++
 	s.ssoMu.Unlock()
 }
