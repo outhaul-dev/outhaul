@@ -1,6 +1,9 @@
 package server
 
 import (
+	"database/sql"
+	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -27,8 +30,13 @@ func (s *Server) handleAttachDatabase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A database in another project answers like one that doesn't exist, so
-	// its name isn't disclosed.
-	if db, err := s.store.GetDatabase(r.Context(), dbID); err != nil || db.ProjectID != app.ProjectID {
+	// its name isn't disclosed. So does one that can't be read, but that is
+	// logged.
+	db, err := s.store.GetDatabase(r.Context(), dbID)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		log.Printf("server: attach database %d to app %d: %v", dbID, id, err)
+	}
+	if err != nil || db.ProjectID != app.ProjectID {
 		http.NotFound(w, r)
 		return
 	}
