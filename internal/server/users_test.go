@@ -175,8 +175,8 @@ func TestResetPasswordRefusesYourselfAndTheLastAdmin(t *testing.T) {
 	}
 	alice, _ := e.store.GetUserByName(ctx, "alice")
 	resp := e.postAs(t, a, "/users/"+itoa(alice.ID)+"/reset", nil)
-	if html := body(t, resp); resp.StatusCode != http.StatusBadRequest || !strings.Contains(html, "/account") {
-		t.Errorf("own reset = %d %s, want 400 pointing to /account", resp.StatusCode, html)
+	if html := body(t, resp); resp.StatusCode != http.StatusBadRequest || !strings.Contains(html, "reset your own password here") {
+		t.Errorf("own reset = %d %s, want 400 with the refusal message", resp.StatusCode, html)
 	}
 	after, _ := e.store.GetUserByName(ctx, "alice")
 	if after.PasswordHash != "$argon2id$x" {
@@ -321,12 +321,12 @@ func TestCopyButtonHandlerIsOnEveryPageWithOne(t *testing.T) {
 	if !strings.Contains(html, `class="copybtn"`) {
 		t.Fatal("no copy button on the one-time link")
 	}
-	if !strings.Contains(html, "closest('.copybtn')") {
-		t.Error("the page has a copy button but not the handler for it")
+	if n := strings.Count(html, "closest('.copybtn')"); n != 1 {
+		t.Errorf("the one-time link page has %d copy handlers, want exactly 1", n)
 	}
 	sp := seedProject(t, e, "acme")
-	if !strings.Contains(body(t, e.getAs(t, admin, "/apps/"+itoa(sp.App.ID))), "closest('.copybtn')") {
-		t.Error("the app page lost its copy handler")
+	if n := strings.Count(body(t, e.getAs(t, admin, "/apps/"+itoa(sp.App.ID))), "closest('.copybtn')"); n != 1 {
+		t.Errorf("the app page has %d copy handlers, want exactly 1", n)
 	}
 }
 
