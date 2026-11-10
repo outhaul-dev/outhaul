@@ -137,6 +137,8 @@ type Server struct {
 
 	hashSlots chan struct{} // bounds concurrent argon2 work; see withHashSlot
 	hashWait  time.Duration // how long a password check waits for a slot
+
+	gateNoPublicURLLog onceAMinute // the gate's "no public URL" line; see gateSignIn
 }
 
 // New constructs a Server, parsing the embedded templates. setupToken guards the

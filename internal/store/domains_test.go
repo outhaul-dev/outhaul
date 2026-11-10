@@ -332,8 +332,8 @@ func TestGateTablesCascadeFromGatewaySession(t *testing.T) {
 	      VALUES ('g1', 'user:1', 'password', 'dana', '2026-11-02T00:00:00Z', '2026-11-02T08:00:00Z')`)
 	exec(`INSERT INTO route_sessions (token_hash, gate_token_hash, host, display, expires_at)
 	      VALUES ('r1', 'g1', 'wiki.example.com', 'dana', '2026-11-02T08:00:00Z')`)
-	exec(`INSERT INTO gate_codes (code_hash, gate_token_hash, host, expires_at)
-	      VALUES ('c1', 'g1', 'wiki.example.com', '2026-11-02T00:01:00Z')`)
+	exec(`INSERT INTO gate_codes (code_hash, gate_token_hash, host, nonce_hash, expires_at)
+	      VALUES ('c1', 'g1', 'wiki.example.com', 'n1', '2026-11-02T00:01:00Z')`)
 	exec(`DELETE FROM gate_sessions WHERE token_hash = 'g1'`)
 
 	for _, table := range []string{"route_sessions", "gate_codes"} {

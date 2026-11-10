@@ -14,6 +14,10 @@ import (
 const (
 	wikiHost = "wiki.example.com"
 	docsHost = "docs.example.com"
+
+	// testNonce stands in for the hash of the pending cookie in the browser
+	// that asked for a code.
+	testNonce = "nonce-hash"
 )
 
 // gateSessionFor makes a live gateway session and one route session on wikiHost.
@@ -24,10 +28,10 @@ func gateSessionFor(t *testing.T, s *Store, subject, kind, display, gateTok, rou
 		Subject: subject, Kind: kind, Display: display, ExpiresAt: time.Now().Add(8 * time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateGateCode(ctx, "code-"+routeTok, gateTok, wikiHost, time.Now().Add(time.Minute)); err != nil {
+	if err := s.CreateGateCode(ctx, "code-"+routeTok, gateTok, wikiHost, testNonce, time.Now().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RedeemGateCode(ctx, "code-"+routeTok, wikiHost, routeTok, time.Now().Add(8*time.Hour)); err != nil {
+	if _, err := s.RedeemGateCode(ctx, "code-"+routeTok, wikiHost, testNonce, routeTok, time.Now().Add(8*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -52,23 +56,55 @@ func TestCodeWorksOnceOnItsOwnHost(t *testing.T) {
 	if err := s.CreateGateSession(ctx, "g1", core.GateSession{Subject: "user:1", Kind: core.SignInPassword, Display: "dana", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateGateCode(ctx, "c1", "g1", wikiHost, time.Now().Add(time.Minute)); err != nil {
+	if err := s.CreateGateCode(ctx, "c1", "g1", wikiHost, testNonce, time.Now().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RedeemGateCode(ctx, "c1", docsHost, "r-wrong", time.Now().Add(time.Hour)); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.RedeemGateCode(ctx, "c1", docsHost, testNonce, "r-wrong", time.Now().Add(time.Hour)); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("wrong host: err = %v", err)
 	}
 	if _, err := s.RouteSessionUser(ctx, "r-wrong", docsHost); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("wrong-host redeem made a route session: %v", err)
 	}
-	display, err := s.RedeemGateCode(ctx, "c1", "WIKI.example.com", "r1", time.Now().Add(time.Hour))
+	display, err := s.RedeemGateCode(ctx, "c1", "WIKI.example.com", testNonce, "r1", time.Now().Add(time.Hour))
 	if err != nil || display != "dana" {
 		t.Fatalf("own host: %q, %v", display, err)
 	}
-	if _, err := s.RedeemGateCode(ctx, "c1", wikiHost, "r2", time.Now().Add(time.Hour)); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.RedeemGateCode(ctx, "c1", wikiHost, testNonce, "r2", time.Now().Add(time.Hour)); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("second redeem: err = %v", err)
 	}
 	wantRouteGone(t, s, "r2")
+}
+
+// A code works only alongside the nonce of the browser that asked for it. A
+// missing or different nonce is refused like an unknown code, and leaves the
+// code for the browser it belongs to.
+func TestCodeWorksOnlyWithItsNonce(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	if err := s.CreateGateSession(ctx, "g1", core.GateSession{Subject: "user:1", Kind: core.SignInPassword, Display: "dana", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateGateCode(ctx, "c1", "g1", wikiHost, "nonce-a", time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	var stored string
+	if err := s.db.QueryRowContext(ctx, `SELECT nonce_hash FROM gate_codes`).Scan(&stored); err != nil || stored != "nonce-a" {
+		t.Fatalf("stored nonce = %q, %v; want nonce-a", stored, err)
+	}
+	for i, n := range []string{"", "nonce-b", "nonce-a ", "NONCE-A", "nonce-"} {
+		tok := "r-wrong-" + string(rune('a'+i))
+		if _, err := s.RedeemGateCode(ctx, "c1", wikiHost, n, tok, time.Now().Add(time.Hour)); !errors.Is(err, sql.ErrNoRows) {
+			t.Errorf("nonce %q: err = %v; want sql.ErrNoRows", n, err)
+		}
+		wantRouteGone(t, s, tok)
+	}
+	display, err := s.RedeemGateCode(ctx, "c1", wikiHost, "nonce-a", "r1", time.Now().Add(time.Hour))
+	if err != nil || display != "dana" {
+		t.Fatalf("its own nonce, after the refusals: %q, %v", display, err)
+	}
+	if _, err := s.RedeemGateCode(ctx, "c1", wikiHost, "nonce-a", "r2", time.Now().Add(time.Hour)); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("second redeem: err = %v", err)
+	}
 }
 
 func TestCodeExpires(t *testing.T) {
@@ -77,10 +113,10 @@ func TestCodeExpires(t *testing.T) {
 	if err := s.CreateGateSession(ctx, "g1", core.GateSession{Subject: "user:1", Kind: core.SignInPassword, Display: "dana", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateGateCode(ctx, "c1", "g1", wikiHost, time.Now().Add(-time.Second)); err != nil {
+	if err := s.CreateGateCode(ctx, "c1", "g1", wikiHost, testNonce, time.Now().Add(-time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RedeemGateCode(ctx, "c1", wikiHost, "r1", time.Now().Add(time.Hour)); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.RedeemGateCode(ctx, "c1", wikiHost, testNonce, "r1", time.Now().Add(time.Hour)); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("err = %v", err)
 	}
 	wantRouteGone(t, s, "r1")
@@ -90,13 +126,13 @@ func TestCodeOfExpiredGateSessionIsRefused(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	gateSessionFor(t, s, "user:1", core.SignInPassword, "dana", "g1", "r1")
-	if err := s.CreateGateCode(ctx, "c2", "g1", wikiHost, time.Now().Add(time.Minute)); err != nil {
+	if err := s.CreateGateCode(ctx, "c2", "g1", wikiHost, testNonce, time.Now().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE gate_sessions SET expires_at = ?`, fmtTime(time.Now().Add(-time.Second))); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RedeemGateCode(ctx, "c2", wikiHost, "r2", time.Now().Add(time.Hour)); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.RedeemGateCode(ctx, "c2", wikiHost, testNonce, "r2", time.Now().Add(time.Hour)); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("err = %v", err)
 	}
 }
@@ -140,7 +176,7 @@ func TestEndingGatewaySessionEndsRouteSessions(t *testing.T) {
 			s := newTestStore(t)
 			gateSessionFor(t, s, "user:1", core.SignInPassword, "dana", "g1", "r1")
 			gateSessionFor(t, s, "user:2", core.SignInSSO, "eli", "g2", "r2")
-			if err := s.CreateGateCode(ctx, "open-code", "g1", wikiHost, time.Now().Add(time.Minute)); err != nil {
+			if err := s.CreateGateCode(ctx, "open-code", "g1", wikiHost, testNonce, time.Now().Add(time.Minute)); err != nil {
 				t.Fatal(err)
 			}
 			wantRouteOK(t, s, "r1")
@@ -148,7 +184,7 @@ func TestEndingGatewaySessionEndsRouteSessions(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantRouteGone(t, s, "r1")
-			if _, err := s.RedeemGateCode(ctx, "open-code", wikiHost, "r9", time.Now().Add(time.Hour)); !errors.Is(err, sql.ErrNoRows) {
+			if _, err := s.RedeemGateCode(ctx, "open-code", wikiHost, testNonce, "r9", time.Now().Add(time.Hour)); !errors.Is(err, sql.ErrNoRows) {
 				t.Fatalf("code outlived its gateway session: %v", err)
 			}
 			if name != "DeleteGateSessionsOfKind" {
@@ -209,20 +245,27 @@ func TestGateWritesRefuseEmptyValues(t *testing.T) {
 	if err := s.CreateGateSession(ctx, "g1", ok); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateGateCode(ctx, "", "g1", wikiHost, time.Now().Add(time.Minute)); err == nil || errors.Is(err, sql.ErrNoRows) {
+	if err := s.CreateGateCode(ctx, "", "g1", wikiHost, testNonce, time.Now().Add(time.Minute)); err == nil || errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("empty code: err = %v", err)
 	}
-	if err := s.CreateGateCode(ctx, "c1", "g1", wikiHost, time.Now().Add(time.Minute)); err != nil {
+	if err := s.CreateGateCode(ctx, "c0", "g1", wikiHost, "", time.Now().Add(time.Minute)); err == nil || errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("empty nonce: err = %v", err)
+	}
+	if err := s.CreateGateCode(ctx, "c1", "g1", wikiHost, testNonce, time.Now().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RedeemGateCode(ctx, "", wikiHost, "r1", time.Now().Add(time.Hour)); err == nil || errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.RedeemGateCode(ctx, "", wikiHost, testNonce, "r1", time.Now().Add(time.Hour)); err == nil || errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("empty redeem code: err = %v", err)
 	}
-	if _, err := s.RedeemGateCode(ctx, "c1", wikiHost, "", time.Now().Add(time.Hour)); err == nil || errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.RedeemGateCode(ctx, "c1", wikiHost, testNonce, "", time.Now().Add(time.Hour)); err == nil || errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("empty route token: err = %v", err)
 	}
+	// A browser with no pending cookie is refused like any wrong browser.
+	if _, err := s.RedeemGateCode(ctx, "c1", wikiHost, "", "r1", time.Now().Add(time.Hour)); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("empty nonce at redeem: err = %v; want sql.ErrNoRows", err)
+	}
 	// The refused redeem left the code usable.
-	if _, err := s.RedeemGateCode(ctx, "c1", wikiHost, "r1", time.Now().Add(time.Hour)); err != nil {
+	if _, err := s.RedeemGateCode(ctx, "c1", wikiHost, testNonce, "r1", time.Now().Add(time.Hour)); err != nil {
 		t.Errorf("code was spent by a refused redeem: %v", err)
 	}
 }
@@ -239,15 +282,15 @@ func TestNewCodeReplacesEarlierUnredeemedCodesForSameHost(t *testing.T) {
 	for _, c := range []struct{ code, gate, host string }{
 		{"old", "g1", wikiHost}, {"other-host", "g1", docsHost}, {"other-gate", "g2", wikiHost}, {"new", "g1", wikiHost},
 	} {
-		if err := s.CreateGateCode(ctx, c.code, c.gate, c.host, exp); err != nil {
+		if err := s.CreateGateCode(ctx, c.code, c.gate, c.host, testNonce, exp); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.RedeemGateCode(ctx, "old", wikiHost, "r-old", time.Now().Add(time.Hour)); !errors.Is(err, sql.ErrNoRows) {
+	if _, err := s.RedeemGateCode(ctx, "old", wikiHost, testNonce, "r-old", time.Now().Add(time.Hour)); !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("old code survived: %v", err)
 	}
 	for i, c := range []struct{ code, host string }{{"other-host", docsHost}, {"other-gate", wikiHost}, {"new", wikiHost}} {
-		if _, err := s.RedeemGateCode(ctx, c.code, c.host, "r"+string(rune('a'+i)), time.Now().Add(time.Hour)); err != nil {
+		if _, err := s.RedeemGateCode(ctx, c.code, c.host, testNonce, "r"+string(rune('a'+i)), time.Now().Add(time.Hour)); err != nil {
 			t.Errorf("%s should still work: %v", c.code, err)
 		}
 	}
@@ -312,10 +355,10 @@ func TestRouteSessionExpiryIsCappedByGatewaySession(t *testing.T) {
 	if err := s.CreateGateSession(ctx, "g1", core.GateSession{Subject: "user:1", Kind: core.SignInPassword, Display: "dana", ExpiresAt: gateExp}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateGateCode(ctx, "c1", "g1", wikiHost, time.Now().Add(time.Minute)); err != nil {
+	if err := s.CreateGateCode(ctx, "c1", "g1", wikiHost, testNonce, time.Now().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.RedeemGateCode(ctx, "c1", wikiHost, "r1", time.Now().Add(8*time.Hour)); err != nil {
+	if _, err := s.RedeemGateCode(ctx, "c1", wikiHost, testNonce, "r1", time.Now().Add(8*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	var exp string
@@ -332,11 +375,11 @@ func TestCreateGateSessionCleansUpExpired(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	gateSessionFor(t, s, "user:1", core.SignInPassword, "dana", "old", "r-old")
-	if err := s.CreateGateCode(ctx, "stale", "old", wikiHost, time.Now().Add(time.Minute)); err != nil {
+	if err := s.CreateGateCode(ctx, "stale", "old", wikiHost, testNonce, time.Now().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	gateSessionFor(t, s, "user:2", core.SignInPassword, "eli", "live", "r-live")
-	if err := s.CreateGateCode(ctx, "expired-code", "live", wikiHost, time.Now().Add(-time.Minute)); err != nil {
+	if err := s.CreateGateCode(ctx, "expired-code", "live", wikiHost, testNonce, time.Now().Add(-time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	past := fmtTime(time.Now().Add(-time.Second))
@@ -472,7 +515,7 @@ func TestGateTokensAreHashed(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	gateSessionFor(t, s, "user:1", core.SignInPassword, "dana", "raw-gate-token", "raw-route-token")
-	if err := s.CreateGateCode(ctx, "raw-live-code", "raw-gate-token", wikiHost, time.Now().Add(time.Minute)); err != nil {
+	if err := s.CreateGateCode(ctx, "raw-live-code", "raw-gate-token", wikiHost, testNonce, time.Now().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	for _, q := range []string{

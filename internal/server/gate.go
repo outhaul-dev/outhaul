@@ -1,13 +1,16 @@
 package server
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/traefik"
@@ -31,6 +34,15 @@ const (
 
 	// gateSessionTTL is how long gateway and route sessions last.
 	gateSessionTTL = 8 * time.Hour
+
+	// pendingCookie ties a sign-in to the browser that started it. The gate
+	// sets it on the app's host when it sends a browser to sign in, and puts
+	// the SHA-256 hex of its value in the sign-in URL as n. A code minted from
+	// that sign-in works only alongside this cookie.
+	pendingCookie = "__Host-outhaul_pending"
+
+	// pendingTTL is how long a browser has to finish signing in.
+	pendingTTL = 10 * time.Minute
 )
 
 // maxRouteToken bounds a route cookie the gate looks up. Real ones are
@@ -91,31 +103,37 @@ func (s *Server) handleGateCheck(w http.ResponseWriter, r *http.Request) {
 }
 
 // gateRedeem answers a request carrying a code. Only the first code is tried,
-// and only on a GET or HEAD, as a code arrives on a page navigation. A code
-// that doesn't work never lets the request through: a valid cookie sends the
+// only on a GET or HEAD, as a code arrives on a page navigation, and only in
+// the browser holding the pending cookie the code was minted for. A code that
+// doesn't work never lets the request through: a valid cookie sends the
 // visitor on to the URL without the code, and anyone else starts again.
 func (s *Server) gateRedeem(w http.ResponseWriter, r *http.Request, v gateVisit) {
 	if v.code != "" && (v.method == http.MethodGet || v.method == http.MethodHead) {
-		token := NewToken()
-		_, err := s.store.RedeemGateCode(r.Context(), v.code, v.host, token, time.Now().Add(gateSessionTTL))
-		if err == nil {
-			http.SetCookie(w, &http.Cookie{
-				Name:     routeCookie,
-				Value:    token,
-				Path:     "/",
-				MaxAge:   int(gateSessionTTL / time.Second),
-				Secure:   true,
-				HttpOnly: true,
-				SameSite: http.SameSiteLaxMode,
-			})
-			http.Redirect(w, r, v.url(), http.StatusFound)
-			return
+		if pending := pendingValue(r); pending == "" {
+			log.Printf("gate: refused a sign-in code on %q: this browser has no sign-in in progress", v.host)
+		} else {
+			token := NewToken()
+			_, err := s.store.RedeemGateCode(r.Context(), v.code, v.host, sha256Hex(pending), token, time.Now().Add(gateSessionTTL))
+			if err == nil {
+				http.SetCookie(w, &http.Cookie{
+					Name:     routeCookie,
+					Value:    token,
+					Path:     "/",
+					MaxAge:   int(gateSessionTTL / time.Second),
+					Secure:   true,
+					HttpOnly: true,
+					SameSite: http.SameSiteLaxMode,
+				})
+				http.SetCookie(w, newPendingCookie("", -1))
+				http.Redirect(w, r, v.url(), http.StatusFound)
+				return
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				gateUnavailable(w, v.host, "redeeming a sign-in code", err)
+				return
+			}
+			log.Printf("gate: refused a sign-in code on %q: it is unknown, used, expired, for another host, or for another browser", v.host)
 		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			gateUnavailable(w, v.host, "redeeming a sign-in code", err)
-			return
-		}
-		log.Printf("gate: refused a sign-in code on %q: it is unknown, used, expired, or for another host", v.host)
 	}
 	_, ok, err := s.routeUser(r, v.host)
 	switch {
@@ -129,20 +147,65 @@ func (s *Server) gateRedeem(w http.ResponseWriter, r *http.Request, v gateVisit)
 }
 
 // gateSignIn sends a browser to sign in on the public URL, to come back to
-// v's URL, and answers anything else 401. With no public URL there is nowhere
-// to sign in, so a browser gets 503.
+// v's URL, and answers anything else 401. The browser gets a pending cookie on
+// this host, whose hash the sign-in URL carries, so the code it comes back
+// with works only here; one it already holds is kept, so two tabs signing in
+// to the same app don't spoil each other's codes. With no public URL there is
+// nowhere to sign in, so a browser gets 503.
 func (s *Server) gateSignIn(w http.ResponseWriter, r *http.Request, v gateVisit) {
 	if !v.browser {
 		http.Error(w, "Sign in to use this address.", http.StatusUnauthorized)
 		return
 	}
-	to := s.gateStartURL(v.url())
-	if to == "" {
-		log.Printf("gate: can't send a visitor to %q to sign in: Outhaul has no public URL", v.host)
+	if !s.publicURLSet() {
+		if s.gateNoPublicURLLog.allow(time.Now()) {
+			log.Printf("gate: can't send a visitor to %q to sign in: Outhaul has no public URL (logged at most once a minute)", v.host)
+		}
 		http.Error(w, gateUnavailableCopy, http.StatusServiceUnavailable)
 		return
 	}
-	http.Redirect(w, r, to, http.StatusFound)
+	pending := pendingValue(r)
+	if pending == "" {
+		pending = NewToken()
+	}
+	http.SetCookie(w, newPendingCookie(pending, int(pendingTTL/time.Second)))
+	http.Redirect(w, r, s.gateStartURL(v.url(), sha256Hex(pending)), http.StatusFound)
+}
+
+// newPendingCookie is the pending cookie with value, lasting maxAge seconds;
+// a negative maxAge clears it.
+func newPendingCookie(value string, maxAge int) *http.Cookie {
+	return &http.Cookie{
+		Name:     pendingCookie,
+		Value:    value,
+		Path:     "/",
+		MaxAge:   maxAge,
+		Secure:   true,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	}
+}
+
+// pendingValue is the request's pending cookie, or "" when it has none that
+// the gate could have made (NewToken's 64 lower-case hex characters).
+func pendingValue(r *http.Request) string {
+	c, err := r.Cookie(pendingCookie)
+	if err != nil || len(c.Value) != 64 {
+		return ""
+	}
+	for i := 0; i < len(c.Value); i++ {
+		if b := c.Value[i]; !('0' <= b && b <= '9' || 'a' <= b && b <= 'f') {
+			return ""
+		}
+	}
+	return c.Value
+}
+
+// sha256Hex is the nonce a pending cookie's value stands for in a sign-in URL
+// and on a code.
+func sha256Hex(v string) string {
+	sum := sha256.Sum256([]byte(v))
+	return hex.EncodeToString(sum[:])
 }
 
 func gateUnavailable(w http.ResponseWriter, host, doing string, err error) {
@@ -169,13 +232,18 @@ func (s *Server) routeUser(r *http.Request, host string) (display string, ok boo
 }
 
 // gateStartURL is the sign-in page on the public URL, for a visitor to come
-// back to returnURL. It is "" when no public URL is set: a relative URL would
-// be read on the app's host.
-func (s *Server) gateStartURL(returnURL string) string {
+// back to returnURL, from the browser whose pending cookie hashes to
+// nonceHash (n, left out when empty). It is "" when no public URL is set: a
+// relative URL would be read on the app's host.
+func (s *Server) gateStartURL(returnURL, nonceHash string) string {
 	if !s.publicURLSet() {
 		return ""
 	}
-	return strings.TrimRight(s.publicURL, "/") + "/gate/start?" + url.Values{"rd": {returnURL}}.Encode()
+	q := url.Values{"rd": {returnURL}}
+	if nonceHash != "" {
+		q.Set("n", nonceHash)
+	}
+	return strings.TrimRight(s.publicURL, "/") + "/gate/start?" + q.Encode()
 }
 
 // gateVisit is the request Traefik asks the gate about.
@@ -313,4 +381,23 @@ func acceptsHTML(h http.Header) bool {
 		}
 	}
 	return false
+}
+
+// onceAMinute lets a log line that would repeat on every request through at
+// most once a minute. The zero value is ready to use.
+type onceAMinute struct {
+	mu   sync.Mutex
+	last time.Time
+}
+
+// allow reports whether the line may be logged at now, and if so starts the
+// next minute.
+func (o *onceAMinute) allow(now time.Time) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.last.IsZero() && now.Sub(o.last) < time.Minute {
+		return false
+	}
+	o.last = now
+	return true
 }

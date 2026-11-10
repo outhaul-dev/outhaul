@@ -27,11 +27,14 @@ CREATE TABLE route_sessions (
     expires_at      TEXT NOT NULL
 );
 
--- A one-time code carries a gateway session to one protected host, once.
+-- A one-time code carries a gateway session to one protected host, once, in
+-- the browser that asked for it: nonce_hash is the SHA-256 hex of the pending
+-- cookie the gate set on that host, and the code works only alongside it.
 CREATE TABLE gate_codes (
     code_hash       TEXT PRIMARY KEY,
     gate_token_hash TEXT NOT NULL REFERENCES gate_sessions(token_hash) ON DELETE CASCADE,
     host            TEXT NOT NULL,
+    nonce_hash      TEXT NOT NULL,
     expires_at      TEXT NOT NULL
 );
 

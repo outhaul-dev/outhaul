@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"errors"
@@ -147,12 +148,16 @@ func (s *Store) DeleteGateSessionsOfKind(ctx context.Context, kind string) error
 }
 
 // CreateGateCode stores a one-time code that carries the gateway session to
-// host. Only the hash of the code is kept.
-// The session's earlier unredeemed codes for the same host are deleted, so
-// one signed-in person can't pile codes up.
-func (s *Store) CreateGateCode(ctx context.Context, rawCode, rawGateToken, host string, expiresAt time.Time) error {
+// host, in the browser whose pending cookie hashes to nonceHash. Only the hash
+// of the code is kept. The session's earlier unredeemed codes for the same
+// host are deleted, so one signed-in person can't pile codes up. An empty
+// rawCode or nonceHash is refused with an error that isn't sql.ErrNoRows.
+func (s *Store) CreateGateCode(ctx context.Context, rawCode, rawGateToken, host, nonceHash string, expiresAt time.Time) error {
 	if rawCode == "" {
 		return errGateArg("a code can't be empty")
+	}
+	if nonceHash == "" {
+		return errGateArg("a code needs the browser's nonce")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -164,8 +169,8 @@ func (s *Store) CreateGateCode(ctx context.Context, rawCode, rawGateToken, host 
 		return err
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO gate_codes (code_hash, gate_token_hash, host, expires_at) VALUES (?, ?, ?, ?)`,
-		hashToken(rawCode), hashToken(rawGateToken), normHost(host), fmtTime(expiresAt)); err != nil {
+		`INSERT INTO gate_codes (code_hash, gate_token_hash, host, nonce_hash, expires_at) VALUES (?, ?, ?, ?, ?)`,
+		hashToken(rawCode), hashToken(rawGateToken), normHost(host), nonceHash, fmtTime(expiresAt)); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -174,13 +179,19 @@ func (s *Store) CreateGateCode(ctx context.Context, rawCode, rawGateToken, host 
 // RedeemGateCode turns a code into a route session for host, in one
 // transaction: it checks the code, deletes it and stores the route session
 // under the hash of rawRouteToken. It returns sql.ErrNoRows when the code is
-// unknown, has expired, is for another host (the code is kept, so it still
-// works on its own host), or its gateway session is gone or has expired. The
-// route session ends at routeExpires or when its gateway session does,
-// whichever is first.
-func (s *Store) RedeemGateCode(ctx context.Context, rawCode, host, rawRouteToken string, routeExpires time.Time) (string, error) {
+// unknown, has expired, is for another host, or was minted for another
+// browser (nonceHash, empty included, isn't the one it was created with), or
+// its gateway session is gone or has expired. A code refused for its host or
+// its browser is kept, so it still works where it belongs. An empty rawCode or
+// rawRouteToken is refused with an error that isn't sql.ErrNoRows. The route
+// session ends at routeExpires or when its gateway session does, whichever is
+// first.
+func (s *Store) RedeemGateCode(ctx context.Context, rawCode, host, nonceHash, rawRouteToken string, routeExpires time.Time) (string, error) {
 	if rawCode == "" || rawRouteToken == "" {
 		return "", errGateArg("a code and a route token can't be empty")
+	}
+	if nonceHash == "" {
+		return "", sql.ErrNoRows
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -188,16 +199,19 @@ func (s *Store) RedeemGateCode(ctx context.Context, rawCode, host, rawRouteToken
 	}
 	defer tx.Rollback()
 	var (
-		gateHash, codeHost, codeExp, display, gateExp string
+		gateHash, codeHost, codeNonce, codeExp, display, gateExp string
 	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT c.gate_token_hash, c.host, c.expires_at, g.display, g.expires_at
+		`SELECT c.gate_token_hash, c.host, c.nonce_hash, c.expires_at, g.display, g.expires_at
 		   FROM gate_codes c JOIN gate_sessions g ON g.token_hash = c.gate_token_hash
-		  WHERE c.code_hash = ?`, hashToken(rawCode)).Scan(&gateHash, &codeHost, &codeExp, &display, &gateExp)
+		  WHERE c.code_hash = ?`, hashToken(rawCode)).Scan(&gateHash, &codeHost, &codeNonce, &codeExp, &display, &gateExp)
 	if err != nil {
 		return "", err
 	}
 	if codeHost != normHost(host) {
+		return "", sql.ErrNoRows
+	}
+	if subtle.ConstantTimeCompare([]byte(codeNonce), []byte(nonceHash)) != 1 {
 		return "", sql.ErrNoRows
 	}
 	res, err := tx.ExecContext(ctx, `DELETE FROM gate_codes WHERE code_hash = ?`, hashToken(rawCode))
