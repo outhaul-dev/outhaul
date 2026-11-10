@@ -153,6 +153,7 @@ func (s seededProject) target(t *testing.T, pattern string) (method, path string
 		"templates":   "any-template",
 		"settings":    "1",
 		"users":       "1",
+		"account":     "1",
 	}
 	if id, ok := ids[strings.Split(path, "/")[1]]; ok {
 		path = strings.ReplaceAll(path, "{id}", id)
@@ -162,6 +163,7 @@ func (s seededProject) target(t *testing.T, pattern string) (method, path string
 		"{volumeID}", itoa(s.Volume.ID),
 		"{attachmentID}", itoa(s.Attachment.ID),
 		"{previewID}", itoa(s.App.ID),
+		"{userID}", "1",
 	).Replace(path)
 	if strings.Contains(path, "{") {
 		t.Fatalf("pattern %q: no test value for a wildcard in %q", pattern, path)

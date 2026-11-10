@@ -165,7 +165,7 @@
   <div class="copywrap"><pre class="mono">git remote add outhaul {{.PushRemote}}
 git push outhaul {{.PushBranch}}{{if eq .App.DeployTrigger "tag"}}
 git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.TagPattern}}{{end}}</pre>{{template "copybtn" .}}</div>
-  <p class="muted env-note">Your push key must be registered under <a href="/settings">Settings → Push keys</a>, and the SSH port must be reachable from your machine.</p>
+  <p class="muted env-note">Your push key must be registered under <a href="/account">Account → Push keys</a>, and the SSH port must be reachable from your machine.</p>
 </section>
 {{end}}
 

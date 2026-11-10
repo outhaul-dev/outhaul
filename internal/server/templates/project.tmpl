@@ -142,6 +142,45 @@
   {{end}}
 </section>
 
+<section class="panel">
+  <h2 class="panel-title">People</h2>
+  {{if .Members}}
+  <table class="table">
+    <thead><tr><th>Person</th><th>Role</th><th></th></tr></thead>
+    <tbody>
+      {{range .Members}}
+      <tr>
+        <td>{{.Display}}{{if eq .ID $.Me.ID}} <span class="muted">(you)</span>{{end}}</td>
+        <td class="muted">{{.Role.Label}}</td>
+        <td class="row-actions">
+          {{if $.CanManage}}
+          <form method="post" action="/projects/{{$.Project.ID}}/members/{{.ID}}/delete" class="inline"{{if eq .ID $.Me.ID}} onsubmit="return confirm('Leave {{$.Project.Name}}? You will lose access to it.');"{{end}}><button type="submit" class="linkbtn">{{if eq .ID $.Me.ID}}leave{{else}}remove{{end}}</button></form>
+          {{end}}
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">Nobody has been added to this project yet.</p>
+  {{end}}
+  <p class="muted env-note">System admins can see every project and aren't listed here. A person's role is set on the Users page and applies to every project they are on.</p>
+  {{if .CanManage}}
+  {{if .Shareable}}
+  <form method="post" action="/projects/{{.Project.ID}}/members" class="grid-form env-add">
+    <label class="field"><span>Add a person</span>
+      <select name="user_id" required>
+        {{range .Shareable}}<option value="{{.ID}}">{{.Display}} ({{.Role.Label}})</option>{{end}}
+      </select>
+    </label>
+    <button type="submit" class="btn btn-primary">Add</button>
+  </form>
+  {{else}}
+  <p class="muted env-note">Everyone who has a project role is already on this project. Give someone a role on the Users page first to add them.</p>
+  {{end}}
+  {{end}}
+</section>
+
 {{if .CanChange}}
 <section class="panel">
   <h2 class="panel-title">Project settings</h2>

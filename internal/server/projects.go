@@ -131,6 +131,18 @@ func (s *Server) renderProject(w http.ResponseWriter, r *http.Request, status in
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	members, err := s.store.ListProjectMembers(r.Context(), p.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	var shareable []core.User
+	if me, _ := userFrom(r); me.Role.AtLeast(core.RoleProjectAdmin) {
+		if shareable, err = s.store.ListShareableUsers(r.Context(), p.ID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
 	env := maskEnv(envVars)
 	if !s.canChange(r) {
 		env = viewerEnv(env)
@@ -148,6 +160,8 @@ func (s *Server) renderProject(w http.ResponseWriter, r *http.Request, status in
 		"InProject":       true,
 		"Return":          "/projects/" + strconv.FormatInt(p.ID, 10),
 		"DBForm":          dbForm,
+		"Members":         members,
+		"Shareable":       shareable,
 	}
 	if errMsg != "" {
 		data["Error"] = errMsg
@@ -286,4 +300,64 @@ func selectedProject(projects []core.Project) int64 {
 		return projects[0].ID
 	}
 	return 0
+}
+
+// handleAddProjectMember puts an account on the project. Only an account the
+// People panel offers, or one already on it, is accepted.
+func (s *Server) handleAddProjectMember(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	userID, ok := parseID(r.FormValue("user_id"))
+	if !ok {
+		http.Error(w, "Choose a person to add.", http.StatusBadRequest)
+		return
+	}
+	on, err := s.store.IsProjectMember(r.Context(), id, userID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !on {
+		shareable, err := s.store.ListShareableUsers(r.Context(), id)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		offered := false
+		for _, u := range shareable {
+			offered = offered || u.ID == userID
+		}
+		if !offered {
+			http.Error(w, "That person can't be added: they need a project role first.", http.StatusBadRequest)
+			return
+		}
+		if err := s.store.AddProjectMember(r.Context(), id, userID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	http.Redirect(w, r, "/projects/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+}
+
+// handleRemoveProjectMember takes an account off the project. Someone who
+// removes themselves can no longer open the project, so they go to the list.
+func (s *Server) handleRemoveProjectMember(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(r.PathValue("id"))
+	userID, ok2 := parseID(r.PathValue("userID"))
+	if !ok || !ok2 {
+		http.NotFound(w, r)
+		return
+	}
+	if err := s.store.RemoveProjectMember(r.Context(), id, userID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if me, _ := userFrom(r); me.ID == userID && me.Role != core.RoleSystemAdmin {
+		http.Redirect(w, r, "/projects", http.StatusSeeOther)
+		return
+	}
+	http.Redirect(w, r, "/projects/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
 }

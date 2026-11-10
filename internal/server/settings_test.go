@@ -18,15 +18,12 @@ func TestSettingsPageRenders(t *testing.T) {
 	if !strings.Contains(page, "Settings") {
 		t.Error("settings page missing heading")
 	}
-	if !strings.Contains(page, "Change password") {
-		t.Error("settings page missing password section")
-	}
 }
 
 func TestChangePasswordRejectsWrongCurrent(t *testing.T) {
 	e := newTestEnv(t)
 	e.login(t)
-	resp := e.postForm(t, "/settings/password", url.Values{
+	resp := e.postForm(t, "/account/password", url.Values{
 		"current": {"wrong"}, "new": {"newpassword1"},
 	})
 	if resp.StatusCode != http.StatusBadRequest {
@@ -34,13 +31,18 @@ func TestChangePasswordRejectsWrongCurrent(t *testing.T) {
 	}
 }
 
-func TestSettingsShowsPushKeysPanel(t *testing.T) {
+func TestAccountShowsPushKeysPanel(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	if page := body(t, e.get(t, "/account")); !strings.Contains(page, "Push keys") {
+		t.Error("account page missing push keys panel")
+	}
+}
+
+func TestSettingsShowsSSHPortPanel(t *testing.T) {
 	e := newTestEnv(t)
 	e.login(t)
 	page := body(t, e.get(t, "/settings"))
-	if !strings.Contains(page, "Push keys") {
-		t.Error("settings page missing push keys panel")
-	}
 	if !strings.Contains(page, "Git-push SSH port") {
 		t.Error("settings page missing git-push SSH port panel")
 	}
@@ -52,7 +54,7 @@ func TestSettingsShowsPushKeysPanel(t *testing.T) {
 func TestChangePasswordUpdates(t *testing.T) {
 	e := newTestEnv(t)
 	e.login(t)
-	resp := e.postForm(t, "/settings/password", url.Values{
+	resp := e.postForm(t, "/account/password", url.Values{
 		"current": {"supersecret"}, "new": {"newpassword1"},
 	})
 	if resp.StatusCode != http.StatusSeeOther {
@@ -77,7 +79,7 @@ func TestChangePasswordRevokesOtherSessions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp := e.postForm(t, "/settings/password", url.Values{
+	resp := e.postForm(t, "/account/password", url.Values{
 		"current": {"supersecret"}, "new": {"newpassword1"},
 	})
 	resp.Body.Close()

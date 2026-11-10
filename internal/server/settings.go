@@ -11,11 +11,10 @@ import (
 
 	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/github"
-	"golang.org/x/crypto/ssh"
 )
 
 // handleSettings renders the settings hub: GitHub App connection status,
-// backup destinations, and the change-password form.
+// and backup destinations.
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	s.renderSettings(w, r, http.StatusOK, "")
 }
@@ -37,16 +36,7 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, status i
 		return
 	}
 	data["Destinations"] = dests
-	keys, err := s.store.ListPushKeys(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	data["PushKeys"] = keys
 	data["SSHAddr"] = s.sshAddr()
-	if r.URL.Query().Get("ok") != "" {
-		data["Notice"] = "Password updated."
-	}
 	if name := r.URL.Query().Get("tested"); name != "" {
 		data["Notice"] = "Destination " + name + " is reachable and writable."
 	}
@@ -80,95 +70,6 @@ func (s *Server) handleCARoot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/x-pem-file")
 	w.Header().Set("Content-Disposition", `attachment; filename="outhaul-ca.pem"`)
 	w.Write(pemBytes)
-}
-
-// handleChangePassword verifies the current password and stores a new hash.
-func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
-	sess, ok := s.currentSession(r)
-	if !ok {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
-	current := r.FormValue("current")
-	next := r.FormValue("new")
-	if len(next) < 8 {
-		http.Error(w, "New password must be at least 8 characters.", http.StatusBadRequest)
-		return
-	}
-	user, err := s.store.GetUser(r.Context(), sess.UserID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	var (
-		valid     bool
-		verifyErr error
-		hash      string
-	)
-	busy := s.withHashSlot(r.Context(), func() {
-		if valid, verifyErr = VerifyPassword(user.PasswordHash, current); verifyErr == nil && valid {
-			hash, err = HashPassword(next)
-		}
-	})
-	if busy != nil {
-		http.Error(w, busyMessage, http.StatusServiceUnavailable)
-		return
-	}
-	if verifyErr != nil || !valid {
-		http.Error(w, "Current password is incorrect.", http.StatusBadRequest)
-		return
-	}
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	// Other sessions are revoked with the old password: a password change is
-	// how an admin locks out a leaked session.
-	if err := s.store.UpdateUserPassword(r.Context(), user.ID, hash, sess.Token); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	http.Redirect(w, r, "/settings?ok=1", http.StatusSeeOther)
-}
-
-// handleAddPushKey validates an authorized_keys line, derives its SHA256
-// fingerprint, and stores it.
-func (s *Server) handleAddPushKey(w http.ResponseWriter, r *http.Request) {
-	label := strings.TrimSpace(r.FormValue("label"))
-	keyText := strings.TrimSpace(r.FormValue("public_key"))
-	if label == "" || keyText == "" {
-		s.renderSettings(w, r, http.StatusBadRequest, "Label and public key are required.")
-		return
-	}
-	pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(keyText))
-	if err != nil {
-		s.renderSettings(w, r, http.StatusBadRequest, "That does not look like a valid SSH public key.")
-		return
-	}
-	fp := ssh.FingerprintSHA256(pub)
-	if _, err := s.store.AddPushKey(r.Context(), core.PushKey{
-		Label:       label,
-		Fingerprint: fp,
-		PublicKey:   strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub))),
-	}); err != nil {
-		s.renderSettings(w, r, http.StatusBadRequest, "Could not add key (is it already registered?).")
-		return
-	}
-	http.Redirect(w, r, "/settings", http.StatusSeeOther)
-}
-
-// handleDeletePushKey removes a push key by ID.
-func (s *Server) handleDeletePushKey(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseID(r.PathValue("id"))
-	if !ok {
-		http.Error(w, "bad id", http.StatusBadRequest)
-		return
-	}
-	if err := s.store.DeletePushKey(r.Context(), id); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	http.Redirect(w, r, "/settings", http.StatusSeeOther)
 }
 
 // handleSetSSHAddr persists and live-rebinds the git-push SSH listen address.

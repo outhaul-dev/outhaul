@@ -11,7 +11,12 @@ func TestPushKeyCRUD(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 
+	owner, err := s.CreatePasswordAccount(ctx, "keyholder", core.RoleProjectMember)
+	if err != nil {
+		t.Fatalf("CreatePasswordAccount: %v", err)
+	}
 	pk, err := s.AddPushKey(ctx, core.PushKey{
+		UserID:      owner.ID,
 		Label:       "laptop",
 		Fingerprint: "SHA256:aaa",
 		PublicKey:   "ssh-ed25519 AAAA laptop",
@@ -26,9 +31,9 @@ func TestPushKeyCRUD(t *testing.T) {
 		t.Fatalf("new key should have nil LastUsedAt, got %v", pk.LastUsedAt)
 	}
 
-	keys, err := s.ListPushKeys(ctx)
+	keys, err := s.ListPushKeysForUser(ctx, owner.ID)
 	if err != nil || len(keys) != 1 {
-		t.Fatalf("ListPushKeys = %v, %v; want 1 key", keys, err)
+		t.Fatalf("ListPushKeysForUser = %v, %v; want 1 key", keys, err)
 	}
 
 	got, ok, err := s.FindPushKeyByFingerprint(ctx, "SHA256:aaa")
@@ -51,7 +56,7 @@ func TestPushKeyCRUD(t *testing.T) {
 	if err := s.DeletePushKey(ctx, pk.ID); err != nil {
 		t.Fatalf("DeletePushKey: %v", err)
 	}
-	keys, _ = s.ListPushKeys(ctx)
+	keys, _ = s.ListPushKeysForUser(ctx, owner.ID)
 	if len(keys) != 0 {
 		t.Fatalf("expected 0 keys after delete, got %d", len(keys))
 	}

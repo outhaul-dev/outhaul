@@ -30,25 +30,6 @@ func (s *Store) AddPushKey(ctx context.Context, pk core.PushKey) (core.PushKey, 
 	return pk, nil
 }
 
-// ListPushKeys returns all keys, newest first.
-func (s *Store) ListPushKeys(ctx context.Context) ([]core.PushKey, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT `+pushKeyCols+` FROM push_keys ORDER BY created_at DESC, id DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []core.PushKey
-	for rows.Next() {
-		pk, err := scanPushKey(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, pk)
-	}
-	return out, rows.Err()
-}
-
 // ListPushKeysForUser returns one account's keys, newest first.
 func (s *Store) ListPushKeysForUser(ctx context.Context, userID int64) ([]core.PushKey, error) {
 	rows, err := s.db.QueryContext(ctx,
