@@ -334,6 +334,26 @@ func TestCodesForOtherNoncesSurvive(t *testing.T) {
 	}
 }
 
+// A gateway session past its expiry is no session, even before the cleanup
+// has deleted its row.
+func TestGateSessionExpires(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	if err := s.CreateGateSession(ctx, "g1", core.GateSession{Subject: "user:1", Kind: core.SignInPassword, Display: "dana", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetGateSession(ctx, "g1"); err != nil {
+		t.Fatalf("a live session: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE gate_sessions SET expires_at = ? WHERE token_hash = ?`,
+		fmtTime(time.Now().Add(-time.Second)), hashToken("g1")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetGateSession(ctx, "g1"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("an expired session: err = %v, want sql.ErrNoRows", err)
+	}
+}
+
 // julianday reads the stored text to the millisecond, so the cleanup's
 // boundary is pinned at one millisecond, not one nanosecond.
 func TestCleanupBoundaryAgreesWithGo(t *testing.T) {

@@ -1548,6 +1548,47 @@ func TestGateCodesOfTwoTabsBothRedeem(t *testing.T) {
 	}
 }
 
+// redirectWithCode refuses a malformed nonce itself, whatever its caller
+// checked, and mints nothing: a code bound to no browser's pending cookie
+// could never be redeemed, or could be by the wrong one.
+func TestRedirectWithCodeRefusesABadNonce(t *testing.T) {
+	e := gateSignInEnv(t)
+	gate := gateSignIn(t, e, "dana")
+	before := count(t, e, "gate_codes")
+	for _, n := range []string{"", "short", strings.ToUpper(testNonce), testNonce + "0"} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/gate/start", nil)
+		e.srv.redirectWithCode(rec, req, gate, "https://wiki.example.com/page", n)
+		if rec.Code != http.StatusBadRequest || rec.Header().Get("Location") != "" {
+			t.Errorf("nonce %q: %d to %q, want 400 and no redirect", n, rec.Code, rec.Header().Get("Location"))
+		}
+	}
+	if got := count(t, e, "gate_codes"); got != before {
+		t.Errorf("bad nonces minted %d codes", got-before)
+	}
+}
+
+// A return address that already carries a code (an old link, or a loop) is
+// sent back with only the new one: the old is stripped, the rest kept.
+func TestCodeRedirectReplacesAnOldCode(t *testing.T) {
+	e := gateSignInEnv(t)
+	gate := gateSignIn(t, e, "dana")
+	b := newBrowser(e)
+	u, _ := url.Parse(e.http.URL)
+	b.client.Jar.SetCookies(u, []*http.Cookie{{Name: wireGateCookie, Value: gate, Path: "/"}})
+	old := NewToken()
+	for _, rd := range []string{
+		"https://wiki.example.com/page?x=1&" + wireCodeParam + "=" + old,
+		"https://wiki.example.com/page?" + wireCodeParam + "=" + old + "&x=1",
+	} {
+		resp := b.get(t, startPath(rd, testNonce))
+		resp.Body.Close()
+		if code := wantCodeRedirect(t, rd, resp, "https://wiki.example.com/page?x=1"); code == old {
+			t.Errorf("%s: the old code came back", rd)
+		}
+	}
+}
+
 // /gate/start mints a code only for a navigation. A HEAD or a prefetch with
 // a live gateway session is answered without one, and the code a real
 // navigation got still works.
