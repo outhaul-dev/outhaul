@@ -20,6 +20,7 @@ const setupLinkTTL = 7 * 24 * time.Hour
 
 const (
 	setupLinkGone  = "This link has expired or has already been used."
+	ssoNoPassword  = "This person signs in with SSO, so they have no password to reset."
 	lastAdminError = "This is the last system admin who can sign in with a password. Make another password account a system admin first, and wait until they have set their password, or nobody could manage Outhaul if single sign-on stopped working."
 )
 
@@ -192,11 +193,18 @@ func (s *Server) refuse(w http.ResponseWriter, r *http.Request, err error) bool 
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, store.ErrLastPasswordAdmin) {
+	switch {
+	case errors.Is(err, store.ErrLastPasswordAdmin):
 		s.usersPage(w, r, http.StatusBadRequest, map[string]any{"Error": lastAdminError})
-		return true
+	case errors.Is(err, store.ErrNotPasswordAccount):
+		s.usersPage(w, r, http.StatusBadRequest, map[string]any{"Error": ssoNoPassword})
+	case errors.Is(err, sql.ErrNoRows):
+		// Removed since targetUser found it.
+		http.NotFound(w, r)
+	default:
+		log.Printf("server: change account: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
-	http.Error(w, err.Error(), http.StatusInternalServerError)
 	return true
 }
 
@@ -239,9 +247,7 @@ func (s *Server) handleResetUserPassword(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if u.SignIn != core.SignInPassword {
-		s.usersPage(w, r, http.StatusBadRequest, map[string]any{
-			"Error": "This person signs in with SSO, so they have no password to reset.",
-		})
+		s.usersPage(w, r, http.StatusBadRequest, map[string]any{"Error": ssoNoPassword})
 		return
 	}
 	link, err := s.setupLinkFor(r, func(token string, expires time.Time) error {

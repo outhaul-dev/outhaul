@@ -3,7 +3,9 @@ package server
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/store"
 )
 
 var setupLinkRE = regexp.MustCompile(`/account/setup\?token=([0-9a-f]+)`)
@@ -408,5 +411,29 @@ func TestLastAdminRefusedWhileSecondAdminHasNoPasswordYet(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(html, lastAdminCopy) ||
 		!strings.Contains(html, "wait until they have set their password") {
 		t.Fatalf("demote = %d %s, want 400 with the last-admin message", resp.StatusCode, html)
+	}
+}
+
+// The account can change between targetUser and the store call: removed, or
+// (for a reset) found to sign in with SSO. Neither is a server failure.
+func TestRefuseAnswersARaceWithoutA500(t *testing.T) {
+	e := newTestEnv(t)
+	admin := core.User{ID: 1, Username: "root", Role: core.RoleSystemAdmin, SignIn: core.SignInPassword}
+	call := func(err error) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		e.srv.refuse(rec, withUser(httptest.NewRequest(http.MethodPost, "/users/7/reset", nil), admin), err)
+		return rec
+	}
+	for _, err := range []error{sql.ErrNoRows, fmt.Errorf("reset: %w", sql.ErrNoRows)} {
+		if rec := call(err); rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "no rows") {
+			t.Errorf("%v: %d %q, want 404 without the store's error", err, rec.Code, rec.Body.String())
+		}
+	}
+	for _, err := range []error{store.ErrNotPasswordAccount, fmt.Errorf("reset: %w", store.ErrNotPasswordAccount)} {
+		rec := call(err)
+		page := rec.Body.String()
+		if rec.Code != http.StatusBadRequest || !strings.Contains(page, "signs in with SSO") || strings.Contains(page, "store:") {
+			t.Errorf("%v: %d, want 400 with the SSO message and not the store's error: %s", err, rec.Code, page)
+		}
 	}
 }
