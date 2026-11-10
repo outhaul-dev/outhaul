@@ -17,6 +17,17 @@ type TunnelControl interface {
 // SetTunnelControl wires tunnel management so the Settings page can toggle it.
 func (s *Server) SetTunnelControl(c TunnelControl) { s.tunnel = c }
 
+// ProxyControl reconciles the managed proxy with the stored settings now. The
+// main package's infraController satisfies it. Turning sign-in on asks for one
+// first, so Traefik maps the gate's host before a gated container is deployed.
+// nil means the proxy can't be reconciled, and sign-in can't be turned on.
+type ProxyControl interface {
+	ReconcileProxy(ctx context.Context) error
+}
+
+// SetProxyControl wires the proxy reconcile that turning sign-in on needs.
+func (s *Server) SetProxyControl(p ProxyControl) { s.proxy = p }
+
 // handleEnableTunnel persists the pasted connector token and brings the tunnel
 // up. An empty token is rejected; a live reconcile failure re-renders the page.
 func (s *Server) handleEnableTunnel(w http.ResponseWriter, r *http.Request) {

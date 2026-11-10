@@ -65,7 +65,8 @@ type ProxyConfig struct {
 	AdminPort  string // host port the admin UI listens on, e.g. "8080"
 	DynamicDir string // host dir bind-mounted as Traefik's file provider
 
-	// ProtectedRoutes is true while any domain row is protected. Its gate is
+	// ProtectedRoutes is true while any domain row is protected, or any
+	// managed container still carries a gate (HasGateLabel). The gate is
 	// host.docker.internal on AdminPort, so Traefik maps that name to the host
 	// gateway even when the admin route is off; otherwise the name would be
 	// looked up on the Docker network.

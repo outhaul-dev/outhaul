@@ -299,6 +299,7 @@ func serve() error {
 		srv.SetSSHControl(sshSrv)
 	}
 	srv.SetTunnelControl(infra)
+	srv.SetProxyControl(infra)
 	srv.SetHTTPSPort(cfg.HTTPSPort)
 	srv.SetBuild(update.Current())
 	srv.SetUpdates(updates, checker)
@@ -384,6 +385,9 @@ func (ic *infraController) reconcile(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read protected routes: %w", err)
 	}
+	if !protected {
+		protected = ic.gatedContainersRemain(ctx)
+	}
 	if tunnelOn {
 		// Bring the tunnel up before flipping Traefik to its portless posture,
 		// so the current Traefik keeps serving until the connector is live.
@@ -406,6 +410,25 @@ func (ic *infraController) reconcile(ctx context.Context) error {
 		return fmt.Errorf("remove connector: %w", err)
 	}
 	return nil
+}
+
+// gatedContainersRemain reports whether any managed container still carries a
+// gate. One deployed while a row was protected calls the gate until it is
+// replaced, even once no row is protected (the row was turned off or deleted,
+// or the redeploy failed), so the gate's host stays mapped until then. When
+// the containers can't be listed, the answer is yes: the mapping is kept.
+func (ic *infraController) gatedContainersRemain(ctx context.Context) bool {
+	cs, err := ic.dc.ListContainers(ctx, map[string]string{"outhaul.managed": "true"})
+	if err != nil {
+		log.Printf("reconcile: could not list containers, so the gate's host stays mapped: %v", err)
+		return true
+	}
+	for _, c := range cs {
+		if traefik.HasGateLabel(c.Labels) {
+			return true
+		}
+	}
+	return false
 }
 
 // proxyConfig builds the Traefik config for the current ingress posture. Tunnel
@@ -476,6 +499,18 @@ func (ic *infraController) Enable(_ context.Context, token string) error {
 	}
 	ic.logStatus(ctx)
 	return nil
+}
+
+// ReconcileProxy reconciles now, for the server to call before it turns
+// sign-in on (server.ProxyControl), so Traefik maps the gate's host. Like
+// Enable, it runs on a detached context: when the mapping was missing it
+// recreates Traefik, which can drop the request that asked for it, and a
+// cancelled reconcile could leave no Traefik at all. EnsureProxy keeps a
+// container whose config already matches, so normally this changes nothing.
+func (ic *infraController) ReconcileProxy(_ context.Context) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	return ic.reconcile(ctx)
 }
 
 // Disable clears the token and returns Traefik to its ACME/ports posture. As

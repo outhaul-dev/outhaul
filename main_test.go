@@ -15,7 +15,9 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/config"
 	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/docker"
+	"github.com/outhaul-dev/outhaul/internal/server"
 	"github.com/outhaul-dev/outhaul/internal/store"
+	"github.com/outhaul-dev/outhaul/internal/traefik"
 	"github.com/outhaul-dev/outhaul/internal/update"
 )
 
@@ -314,5 +316,105 @@ func TestReconcileMapsTheGateHostWhileARouteIsProtected(t *testing.T) {
 	}
 	if mapped(adminOff) {
 		t.Error("no protected route left and no admin route: the mapping should go")
+	}
+}
+
+// listFails is a Docker whose container listing fails.
+type listFails struct{ *docker.Fake }
+
+func (listFails) ListContainers(context.Context, map[string]string) ([]docker.Container, error) {
+	return nil, errors.New("docker unreachable")
+}
+
+// A container deployed while a row was protected keeps calling the gate until
+// it is replaced, even after the row is turned off or deleted (or when the
+// redeploy that would replace it fails). Until then the gate's host stays
+// mapped, and when the containers can't be listed it stays mapped too.
+func TestReconcileKeepsTheGateHostWhileAContainerIsGated(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Config{
+		DataDir: t.TempDir(), Network: "outhaul", TraefikImage: config.DefaultTraefikImage,
+		CloudflaredImage: config.DefaultCloudflaredImage, HTTPSPort: "443", ListenAddr: ":8080",
+	} // no public URL: no admin route
+	st, err := openStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	fake := docker.NewFake()
+	ic := &infraController{dc: fake, st: st, cfg: cfg}
+	mapped := func() bool {
+		t.Helper()
+		if err := ic.reconcile(ctx); err != nil {
+			t.Fatalf("reconcile: %v", err)
+		}
+		c, _ := fake.FindContainer(ctx, "outhaul-traefik")
+		if c == nil {
+			t.Fatal("no Traefik container")
+		}
+		var spec docker.ContainerSpec
+		for _, s := range fake.Created {
+			if s.Name == "outhaul-traefik" {
+				spec = s
+			}
+		}
+		for _, h := range spec.ExtraHosts {
+			if h == "host.docker.internal:host-gateway" {
+				return true
+			}
+		}
+		return false
+	}
+	if mapped() {
+		t.Fatal("nothing protected and nothing gated: the gate host should not be mapped")
+	}
+
+	app := core.App{Name: "wiki"}
+	gated := traefik.AppLabels(app, []core.Domain{{ID: 1, Host: "wiki.example.com", Protected: true}}, 8080, true, "le", "http://host.docker.internal:8080/gate/check")
+	id, err := fake.CreateContainer(ctx, docker.ContainerSpec{Name: "outhaul-app-wiki", Image: "img:1", Labels: gated})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mapped() {
+		t.Error("no row is protected, but a container still carries a gate: the gate host should stay mapped")
+	}
+	if err := fake.RemoveContainer(ctx, id, true); err != nil {
+		t.Fatal(err)
+	}
+	if mapped() {
+		t.Error("the gated container is gone: the mapping should go")
+	}
+
+	ic.dc = listFails{fake}
+	if !mapped() {
+		t.Error("containers can't be listed: the gate host should be kept mapped")
+	}
+}
+
+// The server asks for a reconcile before it turns sign-in on. The request may
+// travel through the Traefik that the reconcile recreates, so a cancelled
+// request must not stop it half-way.
+func TestReconcileProxyOutlivesTheRequest(t *testing.T) {
+	cfg := config.Config{
+		DataDir: t.TempDir(), Network: "outhaul", TraefikImage: config.DefaultTraefikImage,
+		CloudflaredImage: config.DefaultCloudflaredImage, HTTPSPort: "443", ListenAddr: ":8080",
+		PublicURL: "https://outhaul.example.com", ACMEEmail: "ops@example.com",
+	}
+	st, err := openStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	fake := docker.NewFake()
+	ic := &infraController{dc: fake, st: st, cfg: cfg}
+	var _ server.ProxyControl = ic
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := ic.ReconcileProxy(ctx); err != nil {
+		t.Fatalf("ReconcileProxy with the request gone: %v", err)
+	}
+	if c, _ := fake.FindContainer(context.Background(), "outhaul-traefik"); c == nil || !c.Running() {
+		t.Errorf("Traefik after ReconcileProxy = %+v, want it running", c)
 	}
 }

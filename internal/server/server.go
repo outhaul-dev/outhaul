@@ -106,6 +106,7 @@ type Server struct {
 	repos      *gitrepo.Manager // push-app bare repos; nil disables push-repo cleanup
 	sshControl SSHControl       // git-push SSH server; nil disables the port setting
 	tunnel     TunnelControl    // Cloudflare Tunnel management; nil disables the tunnel card
+	proxy      ProxyControl     // reconciles Traefik before sign-in is turned on; nil refuses to turn it on
 	build      update.Build     // the running binary's stamp; /healthz reports its commit
 	updates    *update.Dir      // shared with the root updater; nil hides the Updates panel
 	checker    *update.Checker  // the running build against main; set with updates

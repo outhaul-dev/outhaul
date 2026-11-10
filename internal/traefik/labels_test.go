@@ -395,3 +395,27 @@ func TestEmptyGateAddressFailsClosed(t *testing.T) {
 		t.Error("RowHasGate = true for a gate with no address")
 	}
 }
+
+// While any container still carries a gate, Traefik may call it, so the
+// proxy keeps the gate's host mapped. Any route's gate counts, on either
+// router, whatever its address.
+func TestHasGateLabel(t *testing.T) {
+	cases := []struct {
+		name   string
+		labels map[string]string
+		want   bool
+	}{
+		{"a protected row", AppLabels(core.App{Name: "web"}, []core.Domain{{ID: 1, Host: "h", Protected: true}}, 8080, true, "le", "addr"), true},
+		{"a protected row among open ones", AppLabels(core.App{Name: "web"}, []core.Domain{{ID: 1, Host: "h"}, {ID: 2, Host: "h", Path: "/a", Protected: true}}, 8080, false, "", "addr"), true},
+		{"a gate with no address", RouteLabels("r", "h", 8080, "", "", false, "", true, ""), true},
+		{"open rows only", AppLabels(core.App{Name: "web"}, []core.Domain{{ID: 1, Host: "h"}, {ID: 2, Host: "h", Path: "/a"}}, 8080, true, "le", "addr"), false},
+		{"internal only", AppLabels(core.App{Name: "web"}, nil, 8080, true, "le", "addr"), false},
+		{"no labels", nil, false},
+		{"a forward auth not named as a gate", map[string]string{"traefik.http.middlewares.auth.forwardauth.address": "x"}, false},
+	}
+	for _, c := range cases {
+		if got := HasGateLabel(c.labels); got != c.want {
+			t.Errorf("%s: HasGateLabel = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

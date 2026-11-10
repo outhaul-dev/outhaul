@@ -161,6 +161,19 @@ func RowHasGate(labels map[string]string, router string) bool {
 	return true
 }
 
+// HasGateLabel reports whether labels (a container's) define any route's gate:
+// a forward-auth middleware named "<router>-gate", whatever its address. While
+// a container carries one, Traefik may call the gate, so it must keep the
+// gate's host mapped to the host gateway (ProxyConfig.ProtectedRoutes).
+func HasGateLabel(labels map[string]string) bool {
+	for k := range labels {
+		if strings.HasPrefix(k, "traefik.http.middlewares.") && strings.HasSuffix(k, "-gate.forwardauth.address") {
+			return true
+		}
+	}
+	return false
+}
+
 // rewriteMiddlewares defines the strip/add-prefix middlewares that turn the
 // external urlPath into the internalPath the container receives, writing their
 // definition labels into dst and returning the router's middleware names in
