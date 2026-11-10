@@ -1582,7 +1582,7 @@ func TestLeftoverRoutesOfAppsYouDontShare(t *testing.T) {
 	zephyr := leftoverApp(t, e, core.App{Name: "zephyr", RepoURL: "https://x/zephyr.git", Branch: "moonbeam", ProjectID: elsewhere.ID}, "", "c-zephyr",
 		[]core.Domain{{Host: "web.test", Path: "/old"}, {Host: "hidden.test", Path: "/old"}}, nil)
 	secrets := []string{"zephyr", "moonbeam", "hidden.test"}
-	generic := "Requiring sign-in on web.test also redeploys an app in a project you don't share."
+	generic := "Requiring sign-in on web.test also redeploys an app in a project you don't share. It may deploy its latest code."
 	named := "Requiring sign-in on web.test also redeploys zephyr, which still serves an old route there. It will deploy the latest code from moonbeam."
 	opaque := regexp.MustCompile(`^web\.test ~[0-9a-f]{16}$`)
 	keyOf := func(t *testing.T, raw string) string {
@@ -1655,7 +1655,7 @@ func TestLeftoverRoutesOfAppsYouDontShare(t *testing.T) {
 	add := domainForm(core.Domain{Host: "hidden.test", Path: "/new"}, true)
 	refused = wantStatus(t, "a new row on hidden.test", e.postAs(t, mina, "/apps/"+itoa(web.ID)+"/domains", add), http.StatusConflict)
 	text := html.UnescapeString(refused)
-	if !strings.Contains(text, "Requiring sign-in on hidden.test also redeploys an app in a project you don't share.") ||
+	if !strings.Contains(text, "Requiring sign-in on hidden.test also redeploys an app in a project you don't share. It may deploy its latest code.") ||
 		strings.Contains(text, "zephyr") || strings.Contains(text, "moonbeam") {
 		t.Errorf("the refusal should warn of an unnamed app on hidden.test; got %q", text)
 	}

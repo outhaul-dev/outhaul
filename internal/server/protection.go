@@ -245,10 +245,14 @@ type otherRedeploy struct {
 // notShared is how the dialog and errors refer to a Hidden app.
 const notShared = "an app in a project you don't share"
 
+// hiddenShips is what the dialog says of what a Hidden app will deploy: what
+// it is can't be said, and it may build.
+const hiddenShips = " It may deploy its latest code."
+
 // Sentence is the warning the domain dialog shows for o.
 func (o otherRedeploy) Sentence() string {
 	if o.Hidden {
-		return "Requiring sign-in on " + o.Host + " also redeploys " + notShared + "."
+		return "Requiring sign-in on " + o.Host + " also redeploys " + notShared + "." + hiddenShips
 	}
 	s := "Requiring sign-in on " + o.Host + " also redeploys " + o.App.Name + ", which still serves an old route there."
 	if o.Preview {
@@ -311,9 +315,9 @@ func alsoLines(others []otherRedeploy) []alsoLine {
 		hidden[o.Host]++
 	}
 	for _, h := range hosts {
-		s := "Requiring sign-in on " + h + " also redeploys " + notShared + "."
+		s := "Requiring sign-in on " + h + " also redeploys " + notShared + "." + hiddenShips
 		if n := hidden[h]; n > 1 {
-			s = fmt.Sprintf("Requiring sign-in on %s also redeploys %d apps in projects you don't share.", h, n)
+			s = fmt.Sprintf("Requiring sign-in on %s also redeploys %d apps in projects you don't share. They may deploy their latest code.", h, n)
 		}
 		out = append(out, alsoLine{h, s})
 	}

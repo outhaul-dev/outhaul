@@ -439,3 +439,22 @@ func TestProtectionSaveRedeploysARestartingApp(t *testing.T) {
 		t.Errorf("deployments %d -> %d, want one queued", before, n)
 	}
 }
+
+// An app in a project the person can't see is named only generically, with
+// no word of what it will deploy, so the line says it may deploy its latest
+// code. Several on one host make one line.
+func TestHiddenAppLines(t *testing.T) {
+	one := otherRedeploy{Host: "web.test", Hidden: true, App: core.App{ID: 1, Name: "zephyr"}, Ships: "the latest code from moonbeam"}
+	two := one
+	two.App.ID = 2
+	if got, want := one.Sentence(), "Requiring sign-in on web.test also redeploys an app in a project you don't share. It may deploy its latest code."; got != want {
+		t.Errorf("Sentence = %q, want %q", got, want)
+	}
+	lines := alsoLines([]otherRedeploy{one, two})
+	if len(lines) != 1 || lines[0].Sentence != "Requiring sign-in on web.test also redeploys 2 apps in projects you don't share. They may deploy their latest code." {
+		t.Errorf("alsoLines = %+v", lines)
+	}
+	if lines := alsoLines([]otherRedeploy{one}); len(lines) != 1 || lines[0].Sentence != one.Sentence() {
+		t.Errorf("alsoLines of one = %+v, want its Sentence", lines)
+	}
+}
