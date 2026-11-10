@@ -1,8 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -364,5 +366,31 @@ func TestFailedSaveKeepsOldSettingsSoARetryEndsSessions(t *testing.T) {
 	saveSSO(t, e, "https://idp.example.com", "cid2", "").Body.Close()
 	if hasSession(e, tok) {
 		t.Error("the retried save left the SSO session alive")
+	}
+}
+
+// A store failure while saving is logged, and the page says only "internal
+// error", not the store's own text.
+func TestSaveSSOHidesStoreErrors(t *testing.T) {
+	var logged bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	e, _ := ssoEnv(t)
+	if resp := saveSSO(t, e, "https://idp.example.com", "cid", "sec"); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("first save = %d", resp.StatusCode)
+	}
+	// A secret that no longer decrypts makes reading the settings fail.
+	if _, err := e.rawDB(t).Exec(`UPDATE settings SET value = 'not-sealed' WHERE key = 'sso_client_secret'`); err != nil {
+		t.Fatal(err)
+	}
+	resp := saveSSO(t, e, "https://idp.example.com", "cid", "")
+	page := body(t, resp)
+	if resp.StatusCode != http.StatusInternalServerError || strings.TrimSpace(page) != "internal error" {
+		t.Errorf("save with unreadable settings = %d %q, want 500 internal error", resp.StatusCode, page)
+	}
+	if !strings.Contains(logged.String(), "decrypt SSO client secret") {
+		t.Errorf("the store's error wasn't logged:\n%s", logged.String())
 	}
 }

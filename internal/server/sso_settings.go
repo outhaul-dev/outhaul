@@ -159,7 +159,8 @@ func (s *Server) handleSaveSSO(w http.ResponseWriter, r *http.Request) {
 	secret := strings.TrimSpace(r.FormValue("client_secret"))
 	cur, exists, err := s.store.GetSSOSettings(ctx)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("sso: reading the settings to save them: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	if secret == "" && exists {
