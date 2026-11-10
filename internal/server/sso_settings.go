@@ -112,36 +112,30 @@ func (s *Server) handleSaveSSO(w http.ResponseWriter, r *http.Request) {
 		s.renderSSOError(w, r, "Changing the issuer needs your confirmation.", issuer, clientID, true)
 		return
 	}
-	if err := s.store.SetSSOSettings(ctx, store.SSOSettings{Issuer: issuer, ClientID: clientID, ClientSecret: secret}); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	// A new issuer or client ID means different accounts: their sessions end
+	// with the save, in one transaction, so a failure leaves both as they were.
+	endSessions := exists && (issuerChanged || cur.ClientID != clientID)
+	if err := s.store.SetSSOSettings(ctx, store.SSOSettings{Issuer: issuer, ClientID: clientID, ClientSecret: secret}, endSessions); err != nil {
+		log.Printf("sso: saving settings: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	s.dropSSOProvider()
-	if exists && (issuerChanged || cur.ClientID != clientID) {
-		if err := s.store.EndSSOSessions(ctx); err != nil {
-			log.Printf("sso: ending sessions after a settings change: %v", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-	}
 	http.Redirect(w, r, "/settings#sso", http.StatusSeeOther)
 }
 
-// handleDeleteSSO removes the provider and ends every SSO session. Passwords
-// keep working.
+// handleDeleteSSO removes the provider and ends every SSO session, in one
+// transaction. Passwords keep working.
 func (s *Server) handleDeleteSSO(w http.ResponseWriter, r *http.Request) {
 	if !s.publicURLSet() {
 		s.renderSettings(w, r, http.StatusBadRequest, "Single sign-on needs OUTHAUL_PUBLIC_URL to be set.")
 		return
 	}
 	if err := s.store.ClearSSOSettings(r.Context()); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("sso: removing settings: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	s.dropSSOProvider()
-	if err := s.store.EndSSOSessions(r.Context()); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
 	http.Redirect(w, r, "/settings#sso", http.StatusSeeOther)
 }

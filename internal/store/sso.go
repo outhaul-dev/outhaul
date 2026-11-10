@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 )
 
@@ -47,8 +48,10 @@ func (s *Store) GetSSOSettings(ctx context.Context) (SSOSettings, bool, error) {
 }
 
 // SetSSOSettings stores the provider settings, sealing the client secret. The
-// three rows are written together or not at all.
-func (s *Store) SetSSOSettings(ctx context.Context, v SSOSettings) error {
+// three rows are written together or not at all. endSessions also signs out
+// every SSO account in the same transaction, so a failure can't save the new
+// settings and leave the old sessions alive.
+func (s *Store) SetSSOSettings(ctx context.Context, v SSOSettings, endSessions bool) error {
 	if s.box == nil {
 		return fmt.Errorf("store: no secret box configured; cannot store the SSO client secret")
 	}
@@ -68,20 +71,42 @@ func (s *Store) SetSSOSettings(ctx context.Context, v SSOSettings) error {
 			return err
 		}
 	}
+	if endSessions {
+		if err := endSSOSessions(ctx, tx); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 
-// ClearSSOSettings removes the provider settings.
+// ClearSSOSettings removes the provider settings and, in the same
+// transaction, signs out every SSO account.
 func (s *Store) ClearSSOSettings(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM settings WHERE key IN (?, ?, ?)`,
-		ssoIssuerKey, ssoClientIDKey, ssoSecretKey)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM settings WHERE key IN (?, ?, ?)`,
+		ssoIssuerKey, ssoClientIDKey, ssoSecretKey); err != nil {
+		return err
+	}
+	if err := endSSOSessions(ctx, tx); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // EndSSOSessions signs out every account that signs in with SSO. Password
 // sessions are untouched.
 func (s *Store) EndSSOSessions(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx,
+	return endSSOSessions(ctx, s.db)
+}
+
+func endSSOSessions(ctx context.Context, q interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}) error {
+	_, err := q.ExecContext(ctx,
 		`DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE sign_in = 'sso')`)
 	return err
 }

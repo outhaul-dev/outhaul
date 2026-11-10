@@ -52,7 +52,7 @@ func TestHasSealedValues(t *testing.T) {
 			}
 		},
 		"sso client secret": func(t *testing.T, s *Store) {
-			if err := s.SetSSOSettings(ctx, SSOSettings{Issuer: "https://idp", ClientID: "c", ClientSecret: "s"}); err != nil {
+			if err := s.SetSSOSettings(ctx, SSOSettings{Issuer: "https://idp", ClientID: "c", ClientSecret: "s"}, false); err != nil {
 				t.Fatal(err)
 			}
 		},

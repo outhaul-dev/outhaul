@@ -271,7 +271,7 @@ func TestSSOProviderIsCachedUntilSettingsChange(t *testing.T) {
 	if _, err := e.srv.ssoProvider(ctx); !errors.Is(err, errSSONotConfigured) {
 		t.Fatalf("err = %v, want errSSONotConfigured", err)
 	}
-	if err := e.store.SetSSOSettings(ctx, store.SSOSettings{Issuer: "https://idp.example.com", ClientID: "c", ClientSecret: "s"}); err != nil {
+	if err := e.store.SetSSOSettings(ctx, store.SSOSettings{Issuer: "https://idp.example.com", ClientID: "c", ClientSecret: "s"}, false); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 2; i++ {
@@ -301,5 +301,41 @@ func TestSSOProviderIsCachedUntilSettingsChange(t *testing.T) {
 	e.srv.ssoProvider(ctx)
 	if fails != 2 {
 		t.Errorf("failed discovery cached: %d attempts", fails)
+	}
+}
+
+// A save that can't end the old sessions changes nothing, so the retry still
+// sees a changed client ID and ends them.
+func TestFailedSaveKeepsOldSettingsSoARetryEndsSessions(t *testing.T) {
+	e, _ := ssoEnv(t)
+	saveSSO(t, e, "https://idp.example.com", "cid", "sec").Body.Close()
+	tok := ssoSession(t, e)
+	db := e.rawDB(t)
+	if _, err := db.Exec(`CREATE TRIGGER fail_session_delete BEFORE DELETE ON sessions
+		BEGIN SELECT RAISE(ABORT, 'sessions are read-only'); END`); err != nil {
+		t.Fatal(err)
+	}
+	resp := saveSSO(t, e, "https://idp.example.com", "cid2", "")
+	page := body(t, resp)
+	if resp.StatusCode != http.StatusInternalServerError || strings.Contains(page, "read-only") {
+		t.Fatalf("status = %d %q, want 500 without the store's error", resp.StatusCode, page)
+	}
+	if got, _, _ := e.store.GetSSOSettings(context.Background()); got.ClientID != "cid" {
+		t.Fatalf("client ID = %q after a failed save, want cid", got.ClientID)
+	}
+	resp = e.postForm(t, "/settings/sso/delete", url.Values{})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("delete status = %d, want 500", resp.StatusCode)
+	}
+	if _, ok, _ := e.store.GetSSOSettings(context.Background()); !ok {
+		t.Fatal("settings removed although the sessions weren't ended")
+	}
+	if _, err := db.Exec(`DROP TRIGGER fail_session_delete`); err != nil {
+		t.Fatal(err)
+	}
+	saveSSO(t, e, "https://idp.example.com", "cid2", "").Body.Close()
+	if hasSession(e, tok) {
+		t.Error("the retried save left the SSO session alive")
 	}
 }
