@@ -163,8 +163,16 @@ func TestProtectedRouteDefinesItsGateInLabels(t *testing.T) {
 	want := map[string]string{
 		"traefik.http.middlewares.r-gate.forwardauth.address":             "http://host.docker.internal:8080/gate/check",
 		"traefik.http.middlewares.r-gate.forwardauth.authresponseheaders": "X-Outhaul-User",
-		"traefik.http.routers.r.middlewares":                              "r-gate",
-		"traefik.http.routers.r-tls.middlewares":                          "r-gate",
+		// Explicitly false: Traefik then drops every X-Forwarded-* a client
+		// sent, even through an entrypoint that trusts them, and sets its own.
+		"traefik.http.middlewares.r-gate.forwardauth.trustforwardheader": "false",
+		// The gate replaces X-Outhaul-User; the other spellings CGI-style
+		// servers read as the same header need removing.
+		"traefik.http.middlewares.r-noalias.headers.customrequestheaders.X_Outhaul_User": "",
+		"traefik.http.middlewares.r-noalias.headers.customrequestheaders.X-Outhaul_User": "",
+		"traefik.http.middlewares.r-noalias.headers.customrequestheaders.X_Outhaul-User": "",
+		"traefik.http.routers.r.middlewares":                                             "r-gate,r-noalias",
+		"traefik.http.routers.r-tls.middlewares":                                         "r-gate,r-noalias",
 	}
 	for k, v := range want {
 		got, ok := l[k]
@@ -180,9 +188,6 @@ func TestProtectedRouteDefinesItsGateInLabels(t *testing.T) {
 		if strings.Contains(v, "@file") {
 			t.Errorf("%s = %q references the file provider", k, v)
 		}
-		if strings.Contains(strings.ToLower(k), "trustforwardheader") {
-			t.Errorf("%s set: Traefik must overwrite X-Forwarded-* itself", k)
-		}
 	}
 	// Forward auth already replaces the header, so a protected row needs no strip.
 	if _, ok := l["traefik.http.middlewares.r-noident.headers.customrequestheaders.X-Outhaul-User"]; ok {
@@ -194,15 +199,15 @@ func TestProtectedRouteDefinesItsGateInLabels(t *testing.T) {
 // rewrite on both routers.
 func TestGateRunsBeforePathRewrites(t *testing.T) {
 	l := RouteLabels("r", "h", 8080, "/a", "/", true, "", true, "addr")
-	if got := l["traefik.http.routers.r.middlewares"]; got != "r-gate,r-strip" {
-		t.Errorf("routers.r.middlewares = %q, want r-gate,r-strip", got)
+	if got := l["traefik.http.routers.r.middlewares"]; got != "r-gate,r-noalias,r-strip" {
+		t.Errorf("routers.r.middlewares = %q, want r-gate,r-noalias,r-strip", got)
 	}
-	if got := l["traefik.http.routers.r-tls.middlewares"]; got != "r-gate,r-strip" {
-		t.Errorf("routers.r-tls.middlewares = %q, want r-gate,r-strip", got)
+	if got := l["traefik.http.routers.r-tls.middlewares"]; got != "r-gate,r-noalias,r-strip" {
+		t.Errorf("routers.r-tls.middlewares = %q, want r-gate,r-noalias,r-strip", got)
 	}
 	l = RouteLabels("r", "h", 8080, "/a", "/v1", false, "", true, "addr")
-	if got := l["traefik.http.routers.r.middlewares"]; got != "r-gate,r-strip,r-addpfx" {
-		t.Errorf("routers.r.middlewares = %q, want r-gate,r-strip,r-addpfx", got)
+	if got := l["traefik.http.routers.r.middlewares"]; got != "r-gate,r-noalias,r-strip,r-addpfx" {
+		t.Errorf("routers.r.middlewares = %q, want r-gate,r-noalias,r-strip,r-addpfx", got)
 	}
 }
 
@@ -218,12 +223,20 @@ func TestOpenRouteStripsIdentityHeader(t *testing.T) {
 	if v != "" {
 		t.Errorf("%s = %q, want empty (which removes the header)", key, v)
 	}
+	// Servers that turn headers into CGI-style variables read these spellings
+	// as the same header, so they go too.
+	for _, h := range []string{"X_Outhaul_User", "X-Outhaul_User", "X_Outhaul-User"} {
+		alias := "traefik.http.middlewares.r-noident.headers.customrequestheaders." + h
+		if v, ok := l[alias]; !ok || v != "" {
+			t.Errorf("%s = %q (present %v), want present and empty", alias, v, ok)
+		}
+	}
 	if got := l["traefik.http.routers.r.middlewares"]; got != "r-noident" {
 		t.Errorf("routers.r.middlewares = %q, want r-noident", got)
 	}
 	for k := range l {
-		if strings.Contains(k, "forwardauth") {
-			t.Errorf("open row carries forward-auth label %s", k)
+		if strings.Contains(k, "forwardauth") || strings.Contains(k, "noalias") {
+			t.Errorf("open row carries gate label %s", k)
 		}
 	}
 
@@ -239,6 +252,9 @@ func TestOpenRouteStripsIdentityHeader(t *testing.T) {
 func TestIdentityHeaderName(t *testing.T) {
 	if IdentityHeader != "X-Outhaul-User" {
 		t.Errorf("IdentityHeader = %q", IdentityHeader)
+	}
+	if IdentityHeaderAlias != "X_Outhaul_User" {
+		t.Errorf("IdentityHeaderAlias = %q", IdentityHeaderAlias)
 	}
 }
 
@@ -289,6 +305,16 @@ func TestRowHasGate(t *testing.T) {
 	l["traefik.http.middlewares.r-gate.forwardauth.address"] = ""
 	if RowHasGate(l, "r") {
 		t.Error("gate with an empty forward-auth address should not count as gated")
+	}
+
+	// The gate is what counts: neither the trustForwardHeader label nor the
+	// alias strip is required.
+	l = RouteLabels("r", "h", 8080, "", "", true, "", true, "addr")
+	delete(l, "traefik.http.middlewares.r-gate.forwardauth.trustforwardheader")
+	l["traefik.http.routers.r.middlewares"] = "r-gate"
+	l["traefik.http.routers.r-tls.middlewares"] = "r-gate"
+	if !RowHasGate(l, "r") {
+		t.Error("a gate without trustForwardHeader or the alias strip should still count as gated")
 	}
 
 	// Listed, but not first: a rewrite would run before it.

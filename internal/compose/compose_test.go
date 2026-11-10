@@ -150,9 +150,14 @@ func TestComposeOverrideCarriesGate(t *testing.T) {
 	for _, want := range []string{
 		`"traefik.http.middlewares.outhaul-wiki-d1-gate.forwardauth.address": "http://host.docker.internal:8080/gate/check"`,
 		`"traefik.http.middlewares.outhaul-wiki-d1-gate.forwardauth.authresponseheaders": "X-Outhaul-User"`,
-		`"traefik.http.routers.outhaul-wiki-d1.middlewares": "outhaul-wiki-d1-gate"`,
-		`"traefik.http.routers.outhaul-wiki-d1-tls.middlewares": "outhaul-wiki-d1-gate"`,
+		`"traefik.http.middlewares.outhaul-wiki-d1-gate.forwardauth.trustforwardheader": "false"`,
+		"      \"traefik.http.middlewares.outhaul-wiki-d1-noalias.headers.customrequestheaders.X_Outhaul_User\": \"\"\n",
+		`"traefik.http.routers.outhaul-wiki-d1.middlewares": "outhaul-wiki-d1-gate,outhaul-wiki-d1-noalias"`,
+		`"traefik.http.routers.outhaul-wiki-d1-tls.middlewares": "outhaul-wiki-d1-gate,outhaul-wiki-d1-noalias"`,
 		"      \"traefik.http.middlewares.outhaul-wiki-d2-noident.headers.customrequestheaders.X-Outhaul-User\": \"\"\n",
+		"      \"traefik.http.middlewares.outhaul-wiki-d2-noident.headers.customrequestheaders.X_Outhaul_User\": \"\"\n",
+		"      \"traefik.http.middlewares.outhaul-wiki-d2-noident.headers.customrequestheaders.X-Outhaul_User\": \"\"\n",
+		"      \"traefik.http.middlewares.outhaul-wiki-d1-noalias.headers.customrequestheaders.X_Outhaul-User\": \"\"\n",
 		`"traefik.http.routers.outhaul-wiki-d2.middlewares": "outhaul-wiki-d2-noident"`,
 	} {
 		if !strings.Contains(got, want) {

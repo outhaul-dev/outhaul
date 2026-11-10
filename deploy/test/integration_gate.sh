@@ -232,12 +232,37 @@ if [ "$got" = "present:[]" ]; then
 else
 	fail "the container keeps the empty-valued strip label" "docker inspect gave: '$got'"
 fi
-mw=$(api middlewares/gt-shop-noident@docker)
-case $mw in
-*'"status":"enabled"'*'"customRequestHeaders":{"X-Outhaul-User":""}'* | *'"customRequestHeaders":{"X-Outhaul-User":""}'*'"status":"enabled"'*)
-	pass "Traefik loads gt-shop-noident with customRequestHeaders X-Outhaul-User = \"\"" ;;
-*) fail "Traefik loads gt-shop-noident with an empty X-Outhaul-User" "API: $mw" ;;
-esac
+# api_has PATH DESCRIPTION SUBSTRING...: the API object at PATH is enabled and
+# contains every SUBSTRING.
+api_has() {
+	obj=$(api "$1")
+	desc=$2
+	shift 2
+	for want in '"status":"enabled"' "$@"; do
+		case $obj in
+		*"$want"*) ;;
+		*)
+			fail "$desc" "missing $want" "API: $obj"
+			return
+			;;
+		esac
+	done
+	pass "$desc"
+}
+api_has middlewares/gt-shop-noident@docker \
+	"Traefik loads gt-shop-noident, emptying X-Outhaul-User and every other spelling of it" \
+	'"customRequestHeaders":{"X-Outhaul-User":"","X-Outhaul_User":"","X_Outhaul-User":"","X_Outhaul_User":""}' \
+	'"usedBy":["gt-shop-tls@docker","gt-shop@docker"]'
+api_has middlewares/gt-wiki-noalias@docker \
+	"Traefik loads gt-wiki-noalias, emptying every other spelling of X-Outhaul-User" \
+	'"customRequestHeaders":{"X-Outhaul_User":"","X_Outhaul-User":"","X_Outhaul_User":""}' \
+	'"usedBy":["gt-wiki-tls@docker","gt-wiki@docker"]'
+if docker logs "$traefik_c" 2>&1 | grep -q 'trustForwardHeader is not configured'; then
+	fail "Traefik raises no trustForwardHeader warning for the gate" \
+		"$(docker logs "$traefik_c" 2>&1 | grep 'trustForwardHeader is not configured' | head -2)"
+else
+	pass "Traefik raises no trustForwardHeader warning for the gate (it is set to false)"
+fi
 for r in gt-wiki gt-wiki-tls gt-hooks gt-hooks-tls gt-shop gt-shop-tls gt-admin gt-admin-tls; do
 	info=$(api "routers/$r@docker")
 	case $info in
@@ -247,18 +272,29 @@ for r in gt-wiki gt-wiki-tls gt-hooks gt-hooks-tls gt-shop gt-shop-tls gt-admin 
 done
 info=$(api routers/gt-admin@docker)
 case $info in
-*'"middlewares":["gt-admin-gate@docker","gt-admin-strip@docker"]'*) pass "gt-admin runs the gate before the strip" ;;
-*) fail "gt-admin runs the gate before the strip" "API: $info" ;;
+*'"middlewares":["gt-admin-gate@docker","gt-admin-noalias@docker","gt-admin-strip@docker"]'*)
+	pass "gt-admin runs the gate, then the alias strip, then the path strip" ;;
+*) fail "gt-admin runs the gate, then the alias strip, then the path strip" "API: $info" ;;
 esac
 compose_out=$("$work/gatelabels" -compose -tls -port 8000 'gt,wiki.test,,,protected' 'gt,wiki.test,/webhooks,,open')
 printf 'services:\n  web:\n    image: %s\n' "$python_image" >"$work/compose.yml"
 printf '%s\n' "$compose_out" >"$work/override.yml"
 merged=$(docker compose -p outhaul-gatetest-compose -f "$work/compose.yml" -f "$work/override.yml" config 2>&1)
-if printf '%s\n' "$merged" | grep -qF 'traefik.http.middlewares.outhaul-gt-d2-noident.headers.customrequestheaders.X-Outhaul-User: ""'; then
-	pass "docker compose keeps the empty strip label from the override"
-else
-	fail "docker compose keeps the empty strip label from the override" "$(printf '%s\n' "$merged" | grep -i -e noident -e error | head -5)"
-fi
+for want in \
+	'traefik.http.middlewares.outhaul-gt-d2-noident.headers.customrequestheaders.X-Outhaul-User: ""' \
+	'traefik.http.middlewares.outhaul-gt-d2-noident.headers.customrequestheaders.X_Outhaul_User: ""' \
+	'traefik.http.middlewares.outhaul-gt-d2-noident.headers.customrequestheaders.X-Outhaul_User: ""' \
+	'traefik.http.middlewares.outhaul-gt-d2-noident.headers.customrequestheaders.X_Outhaul-User: ""' \
+	'traefik.http.middlewares.outhaul-gt-d1-noalias.headers.customrequestheaders.X_Outhaul_User: ""' \
+	'traefik.http.middlewares.outhaul-gt-d1-noalias.headers.customrequestheaders.X-Outhaul_User: ""' \
+	'traefik.http.middlewares.outhaul-gt-d1-noalias.headers.customrequestheaders.X_Outhaul-User: ""' \
+	'traefik.http.middlewares.outhaul-gt-d1-gate.forwardauth.trustforwardheader: "false"'; do
+	if printf '%s\n' "$merged" | grep -qF -- "$want"; then
+		pass "docker compose keeps $want"
+	else
+		fail "docker compose keeps $want" "$(printf '%s\n' "$merged" | grep -i -e outhaul_user -e outhaul-user -e trustforward -e error | head -8)"
+	fi
+done
 echo
 
 tid=0
@@ -311,6 +347,34 @@ for scheme in http https; do
 		fail "$scheme the gate sees /gate/check and the unstripped URI /admin/x" "$lines"
 	fi
 
+	# Servers that turn headers into CGI-style variables read X_Outhaul_User,
+	# X-Outhaul_User and X_Outhaul-User as X-Outhaul-User, so none of them may
+	# reach an app, on any row, in any case.
+	for target in "wiki.test /page" "shop.test /admin/x"; do
+		set -- $target
+		tid=$((tid + 1))
+		code=$(req "$scheme" "$1" "$2" -H 'Cookie: gatetest=ok' -H 'X_Outhaul_User: mallory1' \
+			-H 'x_outhaul_user: mallory2' -H 'X_OUTHAUL_USER: mallory3' -H 'X-Outhaul_User: mallory4' \
+			-H 'X_Outhaul-User: mallory5' -H "X-Gatetest-Id: $tid")
+		body=$(cat "$work/b")
+		if [ "$code" = 200 ] && [ "$(count_lines "$body" 'h x-outhaul-user: dana')" = 1 ] &&
+			! printf '%s\n' "$body" | grep -qi -e mallory -e 'x_outhaul_user'; then
+			pass "$scheme $1$2 (protected), gate says 200: X_Outhaul_User, X-Outhaul_User and X_Outhaul-User are gone, and dana still arrives"
+		else
+			fail "$scheme $1$2 (protected), gate says 200: want dana only, and no other spelling" "status=$code" "$body"
+		fi
+	done
+	tid=$((tid + 1))
+	code=$(req "$scheme" shop.test /cart -H 'X_Outhaul_User: mallory1' \
+		-H 'x_outhaul_user: mallory2' -H 'X_OUTHAUL_USER: mallory3' -H 'X-Outhaul_User: mallory4' \
+		-H 'X_Outhaul-User: mallory5' -H "X-Gatetest-Id: $tid")
+	body=$(cat "$work/b")
+	if [ "$code" = 200 ] && ! printf '%s\n' "$body" | grep -qi -e mallory -e 'x_outhaul_user'; then
+		pass "$scheme shop.test/cart (open host): served, and X_Outhaul_User, X-Outhaul_User and X_Outhaul-User are gone"
+	else
+		fail "$scheme shop.test/cart: want 200 with no other spelling of X-Outhaul-User" "status=$code" "$body"
+	fi
+
 	# An open row strips a client-sent X-Outhaul-User, and still serves.
 	tid=$((tid + 1))
 	code=$(req "$scheme" shop.test /cart -H 'X-Outhaul-User: mallory' -H "X-Gatetest-Id: $tid")
@@ -330,13 +394,15 @@ for scheme in http https; do
 	# including /webhooksfoo: PathPrefix is a plain string prefix.
 	for p in /webhooks /webhooks/x /webhooksfoo; do
 		tid=$((tid + 1))
-		code=$(req "$scheme" wiki.test "$p" -H 'Accept: text/html' -H 'X-Outhaul-User: mallory' -H "X-Gatetest-Id: $tid")
+		code=$(req "$scheme" wiki.test "$p" -H 'Accept: text/html' -H 'X-Outhaul-User: mallory' \
+			-H 'X_Outhaul_User: mallory' -H 'X-Outhaul_User: mallory' -H 'X_Outhaul-User: mallory' \
+			-H "X-Gatetest-Id: $tid")
 		body=$(cat "$work/b")
 		if [ "$code" = 200 ] && [ "$(count_lines "$body" "path: $p")" = 1 ] &&
-			! printf '%s\n' "$body" | grep -qi 'x-outhaul-user' && [ -z "$(gate_lines "$tid")" ]; then
-			pass "$scheme wiki.test$p (open path, protected host): reaches the backend, no gate call, forged header stripped"
+			! printf '%s\n' "$body" | grep -qi -e mallory -e 'outhaul.user' && [ -z "$(gate_lines "$tid")" ]; then
+			pass "$scheme wiki.test$p (open path, protected host): reaches the backend, no gate call, every forged spelling stripped"
 		else
-			fail "$scheme wiki.test$p: want 200 from the backend with no gate call and no X-Outhaul-User" \
+			fail "$scheme wiki.test$p: want 200 from the backend with no gate call and no spelling of X-Outhaul-User" \
 				"status=$code" "$body" "gate saw: $(gate_lines "$tid")"
 		fi
 	done
@@ -350,7 +416,8 @@ for scheme in http https; do
 		code=$(req "$scheme" wiki.test '/page?q=1' \
 			-H 'Cookie: gatetest=ok; theme=dark' -H 'Accept: text/html,application/xhtml+xml' \
 			-H 'X-Forwarded-Host: evil.test' -H 'X-Forwarded-Uri: /webhooks' -H 'X-Forwarded-Method: POST' \
-			-H "X-Forwarded-Proto: $forged_proto" -H "X-Gatetest-Id: $tid")
+			-H "X-Forwarded-Proto: $forged_proto" -H 'X-Forwarded-Prefix: /evil' \
+			-H 'X-Forwarded-Port: 666' -H 'X-Real-Ip: 6.6.6.6' -H "X-Gatetest-Id: $tid")
 		lines=$(gate_lines "$tid")
 		check_gate() { # description, expected line, header name
 			if [ "$(count_lines "$lines" "$2")" = 1 ] && [ "$(printf '%s\n' "$lines" | grep -c "^h $3: ")" = 1 ]; then
@@ -365,6 +432,13 @@ for scheme in http https; do
 		check_gate "client sent /webhooks" 'h x-forwarded-uri: /page?q=1' x-forwarded-uri
 		check_gate "client sent POST" 'h x-forwarded-method: GET' x-forwarded-method
 		check_gate "client sent $forged_proto" "h x-forwarded-proto: $scheme" x-forwarded-proto
+		for forged in 'h x-forwarded-prefix: /evil' 'h x-forwarded-port: 666' 'h x-real-ip: 6.6.6.6'; do
+			if [ "$(count_lines "$lines" "$forged")" = 0 ] && [ -n "$lines" ]; then
+				pass "$scheme via the $via Traefik, the gate doesn't receive the client's '${forged#h }'"
+			else
+				fail "$scheme via the $via Traefik, the gate doesn't receive the client's '${forged#h }'" "$lines"
+			fi
+		done
 	done
 	via=outhaul
 	echo

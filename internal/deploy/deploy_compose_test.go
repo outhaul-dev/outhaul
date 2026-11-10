@@ -286,7 +286,8 @@ func TestComposePipelineOverrideCarriesTheGate(t *testing.T) {
 	router := traefik.RouterName("shop", ds[0].ID)
 	for _, want := range []string{
 		`"traefik.http.middlewares.` + router + `-gate.forwardauth.address": "http://host.docker.internal:9123/gate/check"`,
-		`"traefik.http.routers.` + router + `.middlewares": "` + router + `-gate"`,
+		`"traefik.http.routers.` + router + `.middlewares": "` + router + `-gate,` + router + `-noalias"`,
+		`"traefik.http.middlewares.` + router + `-gate.forwardauth.trustforwardheader": "false"`,
 	} {
 		if !strings.Contains(overrideContent, want) {
 			t.Errorf("override missing %s; got:\n%s", want, overrideContent)

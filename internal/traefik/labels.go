@@ -47,14 +47,15 @@ func AppLabels(app core.App, domains []core.Domain, port int, globalTLS bool, ce
 // which is correct under the local CA, where the file provider serves a
 // pre-issued cert by SNI instead.
 //
-// Every router's first middleware is about identity. A protected route calls
-// the gate at gateAddress (forward auth), which answers with IdentityHeader
-// for a signed-in visitor; an open route removes any IdentityHeader the client
-// sent, so an app that trusts the header can't be fooled on a route with no
-// gate. Both are defined in these labels, never in the file provider: Traefik
-// drops a router that references an undefined middleware, and the request
-// then falls through to an open router. The identity middleware runs before
-// any path rewrite, so the gate sees the URL the visitor asked for.
+// Every router's middlewares start with identity. A protected route calls the
+// gate at gateAddress (forward auth) first, which answers with IdentityHeader
+// for a signed-in visitor, then removes the header's other spellings
+// (identityAliases); an open route removes the header and its other
+// spellings, so an app that trusts the header can't be fooled on a route with
+// no gate. All of them are defined in these labels, never in the file
+// provider: Traefik drops a router that references an undefined middleware,
+// and the request then falls through to an open router. They run before any
+// path rewrite, so the gate sees the URL the visitor asked for.
 func RouteLabels(router, host string, port int, urlPath, internalPath string, tlsEnabled bool, certResolver string, protected bool, gateAddress string) map[string]string {
 	rule := fmt.Sprintf("Host(`%s`)", host)
 	if urlPath != "" {
@@ -69,7 +70,7 @@ func RouteLabels(router, host string, port int, urlPath, internalPath string, tl
 		"traefik.http.routers." + router + ".service":                   router,
 		"traefik.http.services." + router + ".loadbalancer.server.port": strconv.Itoa(port),
 	}
-	mws := []string{identityMiddleware(router, protected, gateAddress, labels)}
+	mws := identityMiddlewares(router, protected, gateAddress, labels)
 	mws = append(mws, rewriteMiddlewares(router, urlPath, internalPath, labels)...)
 	labels["traefik.http.routers."+router+".middlewares"] = strings.Join(mws, ",")
 	if tlsEnabled {
@@ -90,26 +91,46 @@ func RouteLabels(router, host string, port int, urlPath, internalPath string, tl
 // protected route: the SSO email, or the username of a password account.
 const IdentityHeader = "X-Outhaul-User"
 
-// identityMiddleware defines the router's identity middleware in dst and
-// returns its name: "<router>-gate", a forward auth to gateAddress that copies
-// IdentityHeader from the gate's answer, for a protected route; otherwise
-// "<router>-noident", a headers middleware whose empty custom request header
-// value makes Traefik delete IdentityHeader from the request.
+// IdentityHeaderAlias is IdentityHeader spelled with underscores. Servers that
+// turn headers into CGI-style variables read both as HTTP_X_OUTHAUL_USER, so a
+// client must not be able to send it to any app either.
+const IdentityHeaderAlias = "X_Outhaul_User"
+
+// identityAliases are every spelling of IdentityHeader, other than itself, that
+// a CGI-style server turns into the same variable: each separator a hyphen or
+// an underscore. Traefik matches header names case-insensitively.
+var identityAliases = []string{IdentityHeaderAlias, "X-Outhaul_User", "X_Outhaul-User"}
+
+// identityMiddlewares defines the router's identity middlewares in dst and
+// returns their names in order. A protected route gets "<router>-gate", a
+// forward auth to gateAddress that replaces IdentityHeader with the gate's
+// answer, then "<router>-noalias", which removes IdentityHeaderAlias and the
+// other identityAliases. An open route gets "<router>-noident", which removes
+// IdentityHeader and its aliases. A headers middleware removes a request
+// header whose custom value is empty.
 //
-// The gate leaves trustForwardHeader unset, so Traefik sets X-Forwarded-Host,
-// -Uri, -Method and -Proto itself and a client can't choose what the gate
-// checks, even through an entrypoint that trusts forwarded headers
-// (deploy/test/integration_gate.sh checks this on a real Traefik).
-func identityMiddleware(router string, protected bool, gateAddress string, dst map[string]string) string {
+// The gate sets trustForwardHeader to false, so Traefik drops every
+// X-Forwarded-* header a client sent and sets X-Forwarded-Host, -Uri, -Method
+// and -Proto itself, even through an entrypoint that trusts forwarded headers;
+// a client can't choose what the gate checks (deploy/test/integration_gate.sh
+// checks this on a real Traefik).
+func identityMiddlewares(router string, protected bool, gateAddress string, dst map[string]string) []string {
+	strip := func(name string, headers ...string) {
+		for _, h := range headers {
+			dst["traefik.http.middlewares."+name+".headers.customrequestheaders."+h] = ""
+		}
+	}
 	if protected {
-		gate := router + "-gate"
+		gate, noalias := router+"-gate", router+"-noalias"
 		dst["traefik.http.middlewares."+gate+".forwardauth.address"] = gateAddress
 		dst["traefik.http.middlewares."+gate+".forwardauth.authresponseheaders"] = IdentityHeader
-		return gate
+		dst["traefik.http.middlewares."+gate+".forwardauth.trustforwardheader"] = "false"
+		strip(noalias, identityAliases...)
+		return []string{gate, noalias}
 	}
-	strip := router + "-noident"
-	dst["traefik.http.middlewares."+strip+".headers.customrequestheaders."+IdentityHeader] = ""
-	return strip
+	noident := router + "-noident"
+	strip(noident, append([]string{IdentityHeader}, identityAliases...)...)
+	return []string{noident}
 }
 
 // RowHasGate reports whether labels (a container's) put router behind its
