@@ -126,6 +126,8 @@ func (s *Server) routes() []route {
 		{"POST /settings/tunnel/enable", levelSystemAdmin, nil, s.handleEnableTunnel},
 		{"POST /settings/tunnel/disable", levelSystemAdmin, nil, s.handleDisableTunnel},
 		{"POST /settings/git-sources/{id}/delete", levelSystemAdmin, nil, s.handleDeleteGitSource},
+		{"POST /settings/sso", levelSystemAdmin, nil, s.handleSaveSSO},
+		{"POST /settings/sso/delete", levelSystemAdmin, nil, s.handleDeleteSSO},
 		{"POST /settings/update", levelSystemAdmin, nil, s.handleRequestUpdate},
 		{"POST /settings/update/check", levelSystemAdmin, nil, s.handleCheckForUpdate},
 		{"GET /settings/update/progress", levelSystemAdmin, nil, s.handleUpdateProgress},

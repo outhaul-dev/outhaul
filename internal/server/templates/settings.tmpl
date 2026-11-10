@@ -167,6 +167,37 @@
   </form>
 </section>
 
+<section class="panel" id="sso">
+  <h2 class="panel-title">Single sign-on (SSO)</h2>
+  {{if .NeedsPublicURL}}
+  <p class="env-note">Single sign-on needs <code>OUTHAUL_PUBLIC_URL</code> to be set to your admin UI's public HTTPS URL. Set it, then connect a provider here.</p>
+  {{else}}
+  {{with .SSO}}
+  <p class="muted env-note">Let people sign in to Outhaul through your identity provider (any OpenID Connect provider). Register this redirect URI at the provider: <code>{{.RedirectURI}}</code></p>
+  <div class="alert alert-warn">Everyone the provider lets sign in can reach every protected route, so limit who is assigned to this application at the provider. A provider where anyone can sign in, such as public Google accounts, is not safe to use.</div>
+  {{if .NeedsConfirm}}
+  <div class="alert alert-warn">Changing the issuer ends every SSO sign-in, and everyone will come back as a new account with no role. The old accounts keep their roles and push keys until they are removed.</div>
+  {{end}}
+  <form method="post" action="/settings/sso" class="grid-form">
+    <label class="field"><span>Issuer URL</span><input type="text" name="issuer" value="{{.Issuer}}" placeholder="https://idp.example.com" required></label>
+    <label class="field"><span>Client ID</span><input type="text" name="client_id" value="{{.ClientID}}" autocomplete="off" required></label>
+    <label class="field"><span>Client secret</span><input type="password" name="client_secret" autocomplete="off"{{if not .HasSecret}} required{{end}}></label>
+    {{if .HasSecret}}<p class="muted env-note">A client secret is saved. Leave this blank to keep it.</p>{{end}}
+    {{if .NeedsConfirm}}
+    <label class="field"><span><input type="checkbox" name="confirm_issuer_change" value="1" required> Change the issuer and sign everyone out</span></label>
+    {{end}}
+    <button type="submit" class="btn btn-primary">{{if .Configured}}Save and check{{else}}Connect{{end}}</button>
+  </form>
+  <p class="muted env-note">Saving checks the settings with the provider and refuses any that fail. Changing the issuer or client ID ends every SSO sign-in; replacing only the secret does not.</p>
+  {{if .Configured}}
+  <form method="post" action="/settings/sso/delete" class="grid-form" onsubmit="return confirm('Remove single sign-on? Everyone signed in with SSO is signed out. Password sign-in keeps working.');">
+    <button type="submit" class="btn btn-danger">Remove SSO</button>
+  </form>
+  {{end}}
+  {{end}}
+  {{end}}
+</section>
+
 <section class="panel">
   <h2 class="panel-title">Cloudflare Tunnel</h2>
   {{if .TunnelAvailable}}

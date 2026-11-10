@@ -27,6 +27,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/gitsource"
 	"github.com/outhaul-dev/outhaul/internal/hostmetrics"
 	"github.com/outhaul-dev/outhaul/internal/logstream"
+	"github.com/outhaul-dev/outhaul/internal/sso"
 	"github.com/outhaul-dev/outhaul/internal/store"
 	"github.com/outhaul-dev/outhaul/internal/update"
 	"github.com/outhaul-dev/outhaul/internal/webhook"
@@ -123,6 +124,11 @@ type Server struct {
 	streams     context.Context // cancelled by CloseStreams; ends every open log stream
 	stopStreams context.CancelFunc
 
+	discover  func(ctx context.Context, cfg sso.Config) (sso.Provider, error) // sso.Discover; tests replace it
+	ssoMu     sync.Mutex
+	ssoCached sso.Provider // nil until discovery succeeds; dropped when the settings change
+	ssoGen    int          // bumped by dropSSOProvider, so a stale discovery isn't cached
+
 	hashSlots chan struct{} // bounds concurrent argon2 work; see withHashSlot
 	hashWait  time.Duration // how long a password check waits for a slot
 }
@@ -150,6 +156,7 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 		setupToken:        setupToken,
 		stateTokens:       map[string]time.Time{},
 		backfillAttempted: map[int64]bool{},
+		discover:          sso.Discover,
 	}
 	s.streams, s.stopStreams = context.WithCancel(context.Background())
 	s.hashSlots = make(chan struct{}, maxConcurrentHashes)

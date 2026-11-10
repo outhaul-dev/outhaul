@@ -22,6 +22,12 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 // renderSettings renders the settings page (also used to redisplay it with an
 // error after a rejected destination or SSH-address change).
 func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, status int, errMsg string) {
+	s.renderSettingsWith(w, r, status, errMsg, nil)
+}
+
+// renderSettingsWith is renderSettings with extra template data, which
+// overrides the page's own entries of the same name.
+func (s *Server) renderSettingsWith(w http.ResponseWriter, r *http.Request, status int, errMsg string, extra map[string]any) {
 	data := map[string]any{"Title": "Settings", "Active": "settings"}
 	if !s.publicURLSet() {
 		data["NeedsPublicURL"] = true
@@ -50,6 +56,12 @@ func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, status i
 	data["LocalCA"] = s.caFile != ""
 	if s.updatesWired() {
 		data["Updates"] = s.updatesPanel(r.Context())
+	}
+	if _, ok := extra["SSO"]; !ok {
+		data["SSO"] = s.ssoPanel(r)
+	}
+	for k, v := range extra {
+		data[k] = v
 	}
 	s.render(w, r, status, "settings", data)
 }

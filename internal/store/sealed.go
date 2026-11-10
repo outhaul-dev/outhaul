@@ -13,6 +13,7 @@ var sealedQueries = []string{
 	`SELECT 1 FROM destinations LIMIT 1`,
 	`SELECT 1 FROM github_app_sources LIMIT 1`,
 	`SELECT 1 FROM settings WHERE key = '` + cloudflareTokenKey + `' LIMIT 1`,
+	`SELECT 1 FROM settings WHERE key = '` + ssoSecretKey + `' LIMIT 1`,
 }
 
 // HasSealedValues reports whether any stored value is sealed with the secret

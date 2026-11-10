@@ -51,6 +51,11 @@ func TestHasSealedValues(t *testing.T) {
 				t.Fatal(err)
 			}
 		},
+		"sso client secret": func(t *testing.T, s *Store) {
+			if err := s.SetSSOSettings(ctx, SSOSettings{Issuer: "https://idp", ClientID: "c", ClientSecret: "s"}); err != nil {
+				t.Fatal(err)
+			}
+		},
 		"cloudflare token": func(t *testing.T, s *Store) {
 			if err := s.SetCloudflareToken(ctx, "tok"); err != nil {
 				t.Fatal(err)
