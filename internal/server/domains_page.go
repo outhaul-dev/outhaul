@@ -1,6 +1,18 @@
 package server
 
-import "net/http"
+import (
+	"log"
+	"net/http"
+
+	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/docker"
+)
+
+// domainRow is a row of the Domains page with its Access cell.
+type domainRow struct {
+	core.DomainListing
+	Access accessState
+}
 
 // handleDomainsList renders every route across the apps the person may see: the
 // global Domains tab.
@@ -33,9 +45,45 @@ func (s *Server) handleDomainsList(w http.ResponseWriter, r *http.Request) {
 		}
 		domains = kept
 	}
+	// One call for every managed container, grouped by app, rather than one
+	// per row. When Docker can't be asked every row is Unknown.
+	byApp := map[string][]docker.Container{}
+	all, listErr := s.runtime.ListContainers(r.Context(), map[string]string{"outhaul.managed": "true"})
+	if listErr != nil {
+		log.Printf("domains page: list the managed containers: %v", listErr)
+	}
+	for _, c := range all {
+		if c.Running() {
+			byApp[c.Labels["outhaul.app"]] = append(byApp[c.Labels["outhaul.app"]], c)
+		}
+	}
+	latest := map[int64]*core.Deployment{} // fetched only for rows that need it
+	rows := make([]domainRow, 0, len(domains))
+	for _, d := range domains {
+		row := domainRow{DomainListing: d}
+		switch {
+		case listErr != nil:
+			row.Access = unknownAccess()
+		default:
+			cs := byApp[d.AppName]
+			row.Access = accessStateFor(d.Domain, d.AppName, cs, nil)
+			if row.Access.Label == accessNotYet {
+				dep, ok := latest[d.AppID]
+				if !ok {
+					var err error
+					if dep, err = s.store.LatestDeploymentForApp(r.Context(), d.AppID); err != nil {
+						log.Printf("domains page: latest deployment of %q: %v", d.AppName, err)
+					}
+					latest[d.AppID] = dep
+				}
+				row.Access = accessStateFor(d.Domain, d.AppName, cs, dep)
+			}
+		}
+		rows = append(rows, row)
+	}
 	s.render(w, r, http.StatusOK, "domains", map[string]any{
 		"Title":   "Domains",
 		"Active":  "domains",
-		"Domains": domains,
+		"Domains": rows,
 	})
 }

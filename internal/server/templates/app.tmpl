@@ -239,15 +239,16 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
   {{if .ProtectionUnreachable}}<div class="alert alert-warn">Visitors can't get through to the domains that require sign-in, because signing in isn't available on this server. They keep requiring it until you turn sign-in off on them, or fix the cause: {{.ProtectionReason}}</div>{{end}}
   {{if .Domains}}
   <table class="table">
-    <thead><tr><th>Domain</th>{{if eq .App.Kind "compose"}}<th>Service</th>{{end}}<th>Port</th><th>Path</th><th>HTTPS</th><th></th></tr></thead>
+    <thead><tr><th>Domain</th>{{if eq .App.Kind "compose"}}<th>Service</th>{{end}}<th>Port</th><th>Path</th><th>HTTPS</th><th>Access</th><th></th></tr></thead>
     <tbody>
       {{range .Domains}}
       <tr>
-        <td><a href="http{{if .TLS}}s{{end}}://{{.Host}}{{.Path}}" target="_blank" rel="noreferrer" class="mono">{{.Host}}{{.Path}}</a></td>
+        <td><a href="http{{if .WantsTLS}}s{{end}}://{{.Host}}{{.Path}}" target="_blank" rel="noreferrer" class="mono">{{.Host}}{{.Path}}</a></td>
         {{if eq $.App.Kind "compose"}}<td class="mono">{{.Service}}</td>{{end}}
         <td class="mono">{{.Port}}</td>
         <td class="mono muted">{{if .Path}}{{.Path}}{{if .InternalPath}} &rarr; {{.InternalPath}}{{end}}{{else}}/{{end}}</td>
-        <td>{{if .TLS}}<span class="badge state-running">TLS</span>{{else}}<span class="muted">http</span>{{end}}</td>
+        <td>{{if .WantsTLS}}<span class="badge state-running">TLS</span>{{else}}<span class="muted">http</span>{{end}}</td>
+        <td>{{template "accesscell" (index $.AccessStates .ID)}}</td>
         <td>
           {{if $.CanChange}}
           {{$exposes := index $.OpenOnProtectedHost .ID}}
@@ -261,7 +262,7 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
       </tr>
       {{if and $.CanChange (index $.OpenOnProtectedHost .ID)}}
       <tr class="domain-note">
-        <td colspan="{{if eq $.App.Kind "compose"}}6{{else}}5{{end}}">Removing this domain, or changing its host or path, redeploys this app if it is running, because {{.Host}} requires sign-in. {{with $.ProtectionWarning}}<strong>{{.}}</strong>{{end}}</td>
+        <td colspan="{{if eq $.App.Kind "compose"}}7{{else}}6{{end}}">Removing this domain, or changing its host or path, redeploys this app if it is running, because {{.Host}} requires sign-in. {{with $.ProtectionWarning}}<strong>{{.}}</strong>{{end}}</td>
       </tr>
       {{end}}
       {{end}}
@@ -270,7 +271,7 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
   {{else}}
   <p class="empty">No domains yet — this app is internal-only until you add one.</p>
   {{end}}
-  <p class="muted env-note">Domain changes apply on this app's next deploy.</p>
+  <p class="muted env-note">Changing this redeploys the app. Other domain changes apply on this app's next deploy.</p>
 </section>
 
 {{if .CanChange}}{{template "domainform" .}}{{end}}

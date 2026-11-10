@@ -287,3 +287,66 @@ func buildWarning(app core.App) string {
 	}
 	return "This will deploy the latest code from " + branch + "."
 }
+
+// What a domain row shows in its Access column.
+const (
+	accessSignIn   = "Sign-in required"
+	accessOpen     = "Open"
+	accessNotYet   = "Not protected yet"
+	accessUnknown  = "Unknown"
+	accessNextNote = "applies on the next deploy"
+)
+
+// accessState is one row's Access cell. DeploymentID, when set, is the
+// deployment the cell's note is about, to link to.
+type accessState struct {
+	Label, Class, Note string
+	DeploymentID       int64
+}
+
+// unknownAccess is the cell when Docker can't be asked: it is never
+// "Sign-in required" or "Open", because neither is known.
+func unknownAccess() accessState {
+	return accessState{Label: accessUnknown, Class: "state-queued", Note: "Docker can't be reached"}
+}
+
+// accessStateFor says what Traefik is doing for d, from the labels on the
+// app's running containers, not from the stored setting, so the page can't
+// disagree with the proxy. A stopped container serves nothing and doesn't
+// count. A row no running container defines counts as lacking the gate when
+// it is protected: an open row above it may already be serving that path.
+// latest is the app's newest deployment, named in the note when a protected
+// row lacks the gate; it may be nil.
+func accessStateFor(d core.Domain, appName string, containers []docker.Container, latest *core.Deployment) accessState {
+	var running []docker.Container
+	for _, c := range containers {
+		if c.Running() {
+			running = append(running, c)
+		}
+	}
+	if len(running) == 0 {
+		if d.Protected {
+			return accessState{Label: accessSignIn, Class: "state-running", Note: accessNextNote}
+		}
+		return accessState{Label: accessOpen, Class: "state-stopped", Note: accessNextNote}
+	}
+	_, gated := rowGate(running, traefik.RouterName(appName, d.ID))
+	switch {
+	case d.Protected && gated:
+		return accessState{Label: accessSignIn, Class: "state-running"}
+	case d.Protected:
+		st := accessState{Label: accessNotYet, Class: "state-building"}
+		if latest != nil {
+			switch latest.Status {
+			case core.StatusQueued, core.StatusBuilding, core.StatusDeploying:
+				st.Note, st.DeploymentID = "redeploying", latest.ID
+			case core.StatusFailed:
+				st.Class, st.Note, st.DeploymentID = "state-failed", "the last deploy failed", latest.ID
+			}
+		}
+		return st
+	case gated:
+		return accessState{Label: accessSignIn, Class: "state-running", Note: "until the redeploy finishes"}
+	}
+	return accessState{Label: accessOpen, Class: "state-stopped"}
+}

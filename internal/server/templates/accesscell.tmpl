@@ -1,0 +1,1 @@
+{{define "accesscell"}}<span class="badge {{.Class}}">{{.Label}}</span>{{if .Note}} <span class="muted">{{if .DeploymentID}}<a href="/deployments/{{.DeploymentID}}">{{.Note}}</a>{{else}}{{.Note}}{{end}}</span>{{end}}{{end}}

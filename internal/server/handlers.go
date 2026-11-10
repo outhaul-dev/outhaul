@@ -20,6 +20,7 @@ import (
 
 	"github.com/outhaul-dev/outhaul/internal/compose"
 	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/docker"
 	"github.com/outhaul-dev/outhaul/internal/gitsource"
 	"github.com/outhaul-dev/outhaul/internal/sshkey"
 	"github.com/outhaul-dev/outhaul/internal/store"
@@ -758,7 +759,7 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 			url := ""
 			if ds, _ := s.store.ListDomains(r.Context(), k.ID); len(ds) > 0 {
 				scheme := "http://"
-				if ds[0].TLS {
+				if ds[0].WantsTLS() {
 					scheme = "https://"
 				}
 				url = scheme + ds[0].Host
@@ -857,6 +858,11 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	openOnProtected := map[int64]bool{}
 	data["OpenOnProtectedHost"] = openOnProtected
+	// The Access column reads the running containers' labels, for viewers too.
+	cs, csErr := s.appContainers(r.Context(), app)
+	if csErr != nil {
+		log.Printf("app page: list the containers of %q: %v", app.Name, csErr)
+	}
 	if canChange {
 		data["ProtectionWarning"] = protectionWarningFor(app, deployments)
 		protectedHosts, err := s.store.ProtectedHosts(r.Context())
@@ -873,12 +879,11 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 				openOnProtected[d.ID] = true
 			}
 		}
-		if cs, err := s.appContainers(r.Context(), app); err != nil {
-			log.Printf("app page: list the containers of %q: %v", app.Name, err)
-		} else if len(cs) > 0 && protectionMismatch(domains, app.Name, cs, protectedHosts) {
+		if csErr == nil && len(cs) > 0 && protectionMismatch(domains, app.Name, cs, protectedHosts) {
 			data["RestartDeploys"] = true
 		}
 	}
+	data["AccessStates"] = accessStates(domains, app.Name, cs, csErr, deployments)
 	// GitHub connectivity for the Settings "Source & build" editor (repo dropdown).
 	// Degrades gracefully to no dropdown when no App is connected.
 	for k, v := range s.gitSourceData(r) {
@@ -1888,6 +1893,25 @@ func parseWatchPaths(v string) []string {
 		if line = strings.TrimSpace(line); line != "" {
 			out = append(out, line)
 		}
+	}
+	return out
+}
+
+// accessStates is the Access cell of each of an app's rows, by row ID, from
+// its containers (listErr is why they couldn't be listed, or nil) and its
+// deployments, newest first. With Docker unreachable every row is Unknown.
+func accessStates(domains []core.Domain, appName string, containers []docker.Container, listErr error, newestFirst []core.Deployment) map[int64]accessState {
+	var latest *core.Deployment
+	if len(newestFirst) > 0 {
+		latest = &newestFirst[0]
+	}
+	out := make(map[int64]accessState, len(domains))
+	for _, d := range domains {
+		if listErr != nil {
+			out[d.ID] = unknownAccess()
+			continue
+		}
+		out[d.ID] = accessStateFor(d, appName, containers, latest)
 	}
 	return out
 }

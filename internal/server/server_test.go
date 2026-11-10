@@ -110,6 +110,8 @@ func (f *fakeBackups) TestDestination(_ context.Context, d core.Destination) err
 type fakeRuntime struct {
 	container *docker.Container
 	stack     []docker.Container // returned by ListContainers (compose apps)
+	listErr   error              // returned by ListContainers when set
+	listCalls int                // ListContainers calls
 	started   []string
 	stopped   []string
 	removed   []string
@@ -129,6 +131,10 @@ func (f *fakeRuntime) FindContainer(_ context.Context, name string) (*docker.Con
 	return f.container, nil
 }
 func (f *fakeRuntime) ListContainers(_ context.Context, _ map[string]string) ([]docker.Container, error) {
+	f.listCalls++
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	return f.stack, nil
 }
 func (f *fakeRuntime) StartContainer(_ context.Context, id string) error {
