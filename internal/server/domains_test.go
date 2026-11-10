@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"html"
 	"net/http"
 	"net/url"
 	"strings"
@@ -257,5 +258,103 @@ func TestDomainsPageTagsPreviewRows(t *testing.T) {
 	// The preview row should link to the parent app, not the child.
 	if !strings.Contains(page, "/apps/"+itoa(parent.ID)) {
 		t.Errorf("/domains preview row should link to parent app /apps/%d", parent.ID)
+	}
+}
+
+const ownAddressRefusal = "That is Outhaul's own address, so an app can't use it."
+
+// refusedAsOwnAddress checks resp is a 400 saying the host is Outhaul's own.
+func refusedAsOwnAddress(t *testing.T, what string, resp *http.Response) {
+	t.Helper()
+	page := body(t, resp)
+	if resp.StatusCode != http.StatusBadRequest ||
+		!(strings.Contains(page, ownAddressRefusal) || strings.Contains(page, html.EscapeString(ownAddressRefusal))) {
+		t.Errorf("%s = %d, want 400 saying %q: %.300s", what, resp.StatusCode, ownAddressRefusal, page)
+	}
+}
+
+// An app routed on the host of Outhaul's own public URL would share its
+// origin and cookies, so no domain row may use it, whatever its case, port or
+// path. A row already on it can still be deleted.
+func TestAppCantUseOuthaulsOwnHost(t *testing.T) {
+	ctx := context.Background()
+	e := newTestEnv(t) // public URL https://slip.example.com, server IP 203.0.113.7
+	e.completeSetup(t)
+	web, _ := e.store.CreateApp(ctx, core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	shop, _ := e.store.CreateApp(ctx, core.App{Name: "shop", RepoURL: "https://x/y.git", Kind: core.KindCompose, ComposePath: "docker-compose.yml"})
+	addTo := func(app core.App) string { return "/apps/" + itoa(app.ID) + "/domains" }
+
+	for _, c := range []struct {
+		what string
+		app  core.App
+		form url.Values
+	}{
+		{"add slip.example.com", web, url.Values{"host_kind": {"custom"}, "host": {"slip.example.com"}}},
+		{"add SLIP.Example.com", web, url.Values{"host_kind": {"custom"}, "host": {" SLIP.Example.com "}}},
+		{"add slip.example.com/x", web, url.Values{"host_kind": {"custom"}, "host": {"slip.example.com"}, "path": {"/x"}}},
+		{"add it to a compose app", shop, url.Values{"host_kind": {"custom"}, "host": {"slip.example.com"}, "service": {"web"}, "port": {"3000"}}},
+	} {
+		refusedAsOwnAddress(t, c.what, e.postForm(t, addTo(c.app), c.form))
+	}
+
+	// A port on the public URL doesn't make its host another one.
+	e.srv.publicURL = "https://Slip.Example.com:8443/"
+	refusedAsOwnAddress(t, "add with a port on the public URL",
+		e.postForm(t, addTo(web), url.Values{"host_kind": {"custom"}, "host": {"slip.example.com"}}))
+
+	// A generated sslip.io host is checked too.
+	e.srv.publicURL = "https://web.203.0.113.7.sslip.io"
+	refusedAsOwnAddress(t, "add a generated sslip.io host", e.postForm(t, addTo(web), url.Values{"host_kind": {"sslip"}}))
+	e.srv.publicURL = "https://slip.example.com"
+
+	// Moving a row onto it is refused, and the row stays as it was.
+	moving, _ := e.store.AddDomain(ctx, core.Domain{AppID: web.ID, Host: "edit.test", Port: 8080, TLS: true})
+	refusedAsOwnAddress(t, "edit onto it", e.postForm(t, addTo(web)+"/"+itoa(moving.ID),
+		url.Values{"host_kind": {"custom"}, "host": {"slip.example.com"}}))
+	if got, _ := e.store.GetDomain(ctx, web.ID, moving.ID); got.Host != "edit.test" {
+		t.Errorf("refused edit changed the row to %q", got.Host)
+	}
+
+	// A row already on it can't be edited in place, but can be deleted.
+	old, err := e.store.AddDomain(ctx, core.Domain{AppID: web.ID, Host: "slip.example.com", Path: "/old", Port: 8080, TLS: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refusedAsOwnAddress(t, "edit a row already on it", e.postForm(t, addTo(web)+"/"+itoa(old.ID),
+		url.Values{"host_kind": {"custom"}, "host": {"slip.example.com"}, "path": {"/other"}}))
+	resp := e.postForm(t, addTo(web)+"/"+itoa(old.ID)+"/delete", url.Values{})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Errorf("delete a row already on it = %d, want 303", resp.StatusCode)
+	}
+
+	// New apps can't start on it either.
+	form := dockerfileForm("api")
+	form.Set("domain", "slip.example.com")
+	refusedAsOwnAddress(t, "create an app on it", e.postForm(t, "/apps", form))
+	form = composeForm("stack")
+	form.Set("domain", "Slip.Example.com")
+	refusedAsOwnAddress(t, "create a compose app on it", e.postForm(t, "/apps", form))
+	for _, name := range []string{"api", "stack"} {
+		if _, err := e.store.GetAppByName(ctx, name); err == nil {
+			t.Errorf("app %q was created", name)
+		}
+	}
+
+	all, err := e.store.ListAllDomains(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range all {
+		if strings.EqualFold(d.Host, "slip.example.com") {
+			t.Errorf("a row is on Outhaul's own host: %+v", d)
+		}
+	}
+
+	// Any other host is still fine.
+	resp = e.postForm(t, addTo(web), url.Values{"host_kind": {"custom"}, "host": {"app.example.com"}})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Errorf("add app.example.com = %d, want 303", resp.StatusCode)
 	}
 }

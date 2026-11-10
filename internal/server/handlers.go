@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"path"
 	"regexp"
 	"sort"
@@ -335,6 +336,10 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 
 	if verr := validateApp(app); verr != "" {
 		s.renderAppsWithError(w, r, verr)
+		return
+	}
+	if s.isOwnHost(app.Domain) || firstDomain != nil && s.isOwnHost(firstDomain.Host) {
+		s.renderAppsWithError(w, r, ownHostRefusal)
 		return
 	}
 
@@ -1060,6 +1065,9 @@ func (s *Server) parseDomainForm(r *http.Request, app core.App) (core.Domain, st
 	if !domainHostRe.MatchString(host) {
 		return core.Domain{}, "Domain must be a bare hostname (e.g. app.example.com)."
 	}
+	if s.isOwnHost(host) {
+		return core.Domain{}, ownHostRefusal
+	}
 
 	d := core.Domain{Host: host, TLS: r.FormValue("tls") != ""}
 
@@ -1091,6 +1099,24 @@ func (s *Server) parseDomainForm(r *http.Request, app core.App) (core.Domain, st
 		d.Service, d.Port = "", deployAppPort
 	}
 	return d, ""
+}
+
+// ownHostRefusal is why a domain row can't use Outhaul's own host.
+const ownHostRefusal = "That is Outhaul's own address, so an app can't use it."
+
+// isOwnHost reports whether host is the host of Outhaul's public URL, ignoring
+// case and any port. An app routed there, even on a path of its own, would
+// share Outhaul's origin and so its cookies.
+func (s *Server) isOwnHost(host string) bool {
+	if !s.publicURLSet() {
+		return false
+	}
+	u, err := url.Parse(s.publicURL)
+	if err != nil {
+		return false
+	}
+	own := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	return own != "" && own == strings.TrimSuffix(strings.ToLower(host), ".")
 }
 
 // cleanURLPath validates an optional external/internal path: empty is allowed
