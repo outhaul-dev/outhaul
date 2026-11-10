@@ -57,6 +57,7 @@ one-time setup URL. Developers with a local checkout can run
 - **Secrets encrypted at rest** — env vars and generated credentials are sealed on disk.
 - **App lifecycle** — stop, restart, and delete from the UI.
 - **Single sign-on** — let people sign in through an OpenID Connect provider next to passwords. It has been tested so far only against a test provider, not a real one; see [docs/SSO.md](docs/SSO.md).
+- **Protected routes** — any domain of an app can require sign-in to Outhaul, with a password or SSO, and the app receives the person's name in the `X-Outhaul-User` header, so an internal tool needs no login of its own. Checked so far against a real Traefik with a stand-in for Outhaul, not yet end to end; see [docs/PROTECTED-ROUTES.md](docs/PROTECTED-ROUTES.md).
 
 ### Batteries included
 - **Managed databases** — one click provisions PostgreSQL, MySQL, or Redis with generated credentials and persistent storage, reachable over the internal network (and optionally on a published host port).
@@ -186,7 +187,7 @@ No config files — defaults with `OUTHAUL_*` environment overrides:
 | `OUTHAUL_HEALTH_TIMEOUT`| `60s`                | Deploy health-check deadline               |
 | `OUTHAUL_IMAGE_KEEP`    | `5`                  | Built images kept per app for rollback (`0` keeps all) |
 | `OUTHAUL_PRUNE_BUILD_CACHE` | `yes`            | Nightly prune of build cache unused for 7 days; it is daemon-wide, so set `no` on a host shared with other builds |
-| `OUTHAUL_PUBLIC_URL`    | (empty)              | Public base URL of the admin UI; enables GitHub App + webhook URLs |
+| `OUTHAUL_PUBLIC_URL`    | (empty)              | Public base URL of the admin UI; enables GitHub App + webhook URLs, SSO and protected routes |
 | `OUTHAUL_SERVER_IP`     | (auto-detected)      | Public IP embedded in generated `sslip.io` template domains |
 
 Apps are expected to listen on `$PORT` (Outhaul sets it and points Traefik at it).

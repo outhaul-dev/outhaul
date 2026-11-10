@@ -8,8 +8,8 @@ driving Docker, Traefik and Nixpacks. Read these first:
 - `README.md`: what it does, and how it is installed.
 - `ARCHITECTURE.md`: locked decisions (do not revisit them), package layout,
   the deployment state machine, and the testing seams.
-- `docs/`: local-CA HTTPS, manual deployment, and past design specs and plans
-  (`docs/superpowers/`).
+- `docs/`: local-CA HTTPS, manual deployment, SSO, protected routes, and past
+  design specs and plans (`docs/superpowers/`).
 
 ## Build, run, test
 
@@ -19,15 +19,27 @@ Go version: see `go.mod` (1.26.x). The installer is POSIX `sh`.
 go build ./...
 go vet ./...
 go test ./...          # what CI runs
-go test -race ./...    # run before calling a change done
+go test -race -timeout 30m ./...  # run before calling a change done
 sh deploy/test/run.sh  # installer unit tests (CI: when deploy/** changes)
 shellcheck -s sh --severity=warning deploy/bootstrap.sh deploy/update.sh deploy/test/*.sh
 
+sh deploy/test/integration_gate.sh  # protected-route labels on a real Traefik (not in CI)
 sh deploy/dev/run.sh   # the full stack in a container, against the host Docker daemon
 ```
 
+Under `-race`, `internal/server` takes more than ten minutes, longer than
+`go test`'s default timeout, hence `-timeout 30m`.
+
 CI's shellcheck is Ubuntu's 0.9.0, which reports some errors that newer
 versions don't. `koalaman/shellcheck:v0.9.0` runs the same version in Docker.
+
+`deploy/test/integration_gate.sh` proves the labels Outhaul gives protected and
+open domain rows on a real Traefik, with a stub in place of Outhaul. It needs
+Docker and Go, starts only `outhaul-gatetest-*` containers and a network of the
+same name, on loopback ports, and removes them when it ends. None of them
+carries `traefik.enable`, so a Traefik that exposes only labelled containers,
+like Outhaul's own, ignores them. `--outhaul HOST:PORT` uses a running
+Outhaul's gate instead of the stub; the script's header says how.
 
 `go build .` leaves an `outhaul` binary in the repository root. Don't commit
 it.
@@ -147,6 +159,17 @@ fixed in five batches. All five are on `main`.
   request shares one remote address, and a per-user lockout lets an attacker
   lock out the only admin. The two-at-a-time limit on hashing caps the rate of
   guesses.
+- **Protected routes.** The gate is defined in each app's own labels, never in
+  the file provider: Traefik drops a router that names a middleware the file
+  provider doesn't define, and its requests fall to an open router. Every open
+  row removes the identity header (`X-Outhaul-User`), so a visitor can't send
+  an app a forged one through Traefik. A row's Access state comes from the running
+  containers' labels (`traefik.RowHasGate`), never from the stored flag. A
+  one-time sign-in code works only in the browser that asked for it, through
+  the pending cookie on the app's host. A protection change takes effect by
+  redeploying, because Traefik reads it only from labels; Restart deploys
+  instead when labels and rows disagree. Everyone who can sign in gets
+  through: there is one group per server. See `docs/PROTECTED-ROUTES.md`.
 
 ### Open: reliability and UX
 

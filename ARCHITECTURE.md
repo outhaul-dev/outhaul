@@ -40,7 +40,8 @@ right here before writing the worker.
   An SSO account is keyed by the provider's issuer and subject, never linked by
   email, has no password, and starts with no role. SSO sessions last 8 hours;
   password sessions last 7 days. The last system admin who can sign in with a
-  password can't be demoted or removed.
+  password can't be demoted or removed. A domain row can put the same sign-in in
+  front of an app (protected routes, below).
 - **Config.** Single `/var/lib/outhaul/` data dir. Env-var overrides. No YAML.
 
 ### Milestone 1 scope (this session)
@@ -494,6 +495,72 @@ shows in the process log and in the webhook response body (status 200), and
 use tag mode; a tag-mode app's previews still follow the PR head. The design
 is in `docs/superpowers/specs/2026-10-26-tag-deploys-design.md`.
 
+### Protected routes (done)
+
+A domain row can require sign-in (`domains.protected`, migration 0028), so an
+app gets Outhaul's sign-in, password or SSO, in front of it and the signed-in
+person's name in `X-Outhaul-User`. Everyone who can sign in to Outhaul gets
+through, with or without a role: there is one group per server. The user guide
+is `docs/PROTECTED-ROUTES.md`; the design is in
+`docs/superpowers/specs/2026-11-02-sso-roles-protected-routes-design.md`.
+
+**Labels.** `traefik.RouteLabels` gives a protected row a forward-auth
+middleware, defined in the row's own labels and first on its HTTP and HTTPS
+routers, that calls `GET /gate/check` on the admin port as
+`host.docker.internal` (`config.GateAddress`) and copies `X-Outhaul-User` from
+the answer. Every open row gets a headers middleware that removes that header
+instead. The gate is never defined in the file provider: Traefik drops a router
+that names a middleware the file provider doesn't define, and its requests fall
+to an open router. On a TLS server a protected row is served over HTTPS whatever
+its own TLS flag.
+
+**The flow.** A cookie on Outhaul's host never reaches an app, so each app host
+gets its own cookie through a one-time code:
+
+1. Traefik asks `/gate/check` (`internal/server/gate.go`) about every request,
+   with `X-Forwarded-Host`, `-Uri` and `-Method` and the visitor's cookies. A
+   route cookie (`__Host-outhaul_route`) that is live for exactly that host gets
+   200 and the person's name.
+2. Otherwise a browser page load (a `GET` or `HEAD` that accepts `text/html`) is
+   redirected to `/gate/start` on the public URL, with the address it asked for
+   and the SHA-256 of a short-lived pending cookie the gate sets on the app's
+   host. Anything else gets 401.
+3. `/gate/start` (`gate_signin.go`) goes on only if the row Traefik would pick
+   for that address (the longest matching path on the host) is protected. The
+   person signs in there with a password or SSO, which starts a gateway session
+   in a cookie on the public URL's host; signing in to Outhaul itself starts one
+   too. An SSO sign-in for a route creates no account.
+4. Outhaul mints a one-time code (60 seconds, single use) for that host, tied to
+   the browser's pending cookie, and sends the browser back with it in
+   `__outhaul_code`.
+5. The gate redeems the code only alongside that pending cookie, sets the route
+   cookie on that host, and redirects to the address without the code, as an
+   absolute `https://` URL.
+
+Gateway and route sessions last 8 hours, and a route session ends with its
+gateway session: sign-out (`/gate/sign-out` or `/logout`), removing the
+account, changing or resetting a password, and (for SSO sign-ins) changing the
+SSO settings all end them. Tokens and
+codes are stored only as SHA-256 (`internal/store/gate.go`). When the store
+fails the gate answers 503, never a pass. When Outhaul is down, Traefik answers
+500 on protected rows and open rows are untouched.
+
+**Applying a change.** Traefik learns a row's protection only from container
+labels, so a save that changes what sign-in covers queues a deploy at once
+(`internal/server/protection.go`): the serving image again, as a rollback, when
+it can; otherwise a normal deploy of the latest code, which the dialog names
+first. Restart deploys instead when the labels and the rows disagree. Previews
+take their protection from the parent's rows (`previewmgr.mintDomains`), and a
+parent save that requires sign-in protects and redeploys its existing previews.
+
+**Status from labels.** The Access column on the app page and the Domains page
+reads the running containers' labels (`traefik.RowHasGate`), not the stored
+flag, so it shows what Traefik is doing.
+
+`deploy/test/integration_gate.sh` checks the labels on a real Traefik with a
+stub in place of Outhaul (not in CI). Its `--outhaul` mode uses a running
+Outhaul instead.
+
 ---
 
 ## Package layout
@@ -532,6 +599,8 @@ outhaul/
         databases.go          # managed-database CRUD (password encrypted at rest, recover-on-boot)
         backups.go            # S3 destinations (secret encrypted), backup schedules, run history
         deployments.go        # Deployment CRUD + queue ops (claim, recover-on-boot, rollbacks)
+        domains.go            # domain rows, and which row Traefik would pick for a host and path
+        gate.go               # protected routes: gateway sessions, route sessions, one-time codes (stored hashed)
 
     docker/                   # Docker behind an interface (fake for tests)
         client.go             # Client interface: PullImage, Create/Start/Stop/Remove, Inspect, EnsureNetwork
@@ -539,7 +608,7 @@ outhaul/
         fake.go               # in-memory fake for unit tests
 
     traefik/
-        labels.go             # Labels(app) -> map[string]string   (PURE, table-driven tested)
+        labels.go             # Labels(app) -> map[string]string   (PURE, table-driven tested); a protected row's gate, an open row's header strip
         labels_test.go
         proxy.go              # EnsureProxy(ctx, docker): create/adopt the Traefik container + network
 
@@ -613,7 +682,10 @@ outhaul/
         routes.go             # the route table: every route states its access level
         users.go              # Users page: accounts, roles, setup links
         account.go            # Account page: your own password and push keys
-        handlers.go           # apps list/create, deploy trigger, deployment detail
+        gate.go               # protected routes: /gate/check, Traefik's forward-auth call for every request to a protected row
+        gate_signin.go        # protected routes: sign-in and sign-out on the public URL, one-time codes back to the app's host
+        protection.go         # the "Require sign-in" switch: when it's available, the redeploy that applies it, the Access column
+        handlers.go           # apps list/create, deploy trigger, deployment detail, domain rows
         catalog.go            # template gallery + one-click deploy-from-template
         databases.go          # managed-database pages: cross-project list, create, detail, lifecycle, settings
         backups.go            # backup schedules + destinations (create/test/delete, run-now)
@@ -633,7 +705,9 @@ outhaul/
   in-memory `fake`. Unit tests use the fake; no test touches a real Docker
   daemon. An integration build tag can exercise the real client later.
 - **Traefik label generation is a pure function** (`traefik.Labels`) tested
-  table-driven, independent of any running container.
+  table-driven, independent of any running container. The protected-route
+  labels are also checked on a real Traefik by `deploy/test/integration_gate.sh`,
+  which CI doesn't run.
 - **`Builder` is an interface.** Nixpacks and the Dockerfile strategy are the
   two implementations; the pipeline picks by app kind and depends only on the
   interface, so buildpack strategies slot in without touching the worker.

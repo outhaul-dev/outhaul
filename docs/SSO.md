@@ -10,8 +10,9 @@ SSO" button above the password form.
 A system admin sets it up on the Settings page, in the "Single sign-on (SSO)"
 panel. Passwords keep working the whole time.
 
-Per-route sign-in for deployed apps ("protected routes") is coming. This page covers
-only signing in to Outhaul itself, and the roles described below.
+The same sign-in can also stand in front of a deployed app: see
+[PROTECTED-ROUTES.md](PROTECTED-ROUTES.md). This page covers signing in to Outhaul
+itself, and the roles described below.
 
 ## Before you start
 
@@ -62,9 +63,11 @@ To keep it when you edit other fields, leave the secret box empty.
 
 ## Who can sign in
 
-Everyone the provider lets sign in gets an Outhaul account the first time they do.
-The account has no role (see below), and once protected routes ship, anyone who can
-sign in will also be able to pass them.
+Everyone the provider lets sign in gets an Outhaul account the first time they sign
+in to Outhaul. The account has no role (see below). Everyone the provider lets sign in
+also gets through every protected route, whether or not they have an account: signing
+in to a protected route doesn't create one. See
+[PROTECTED-ROUTES.md](PROTECTED-ROUTES.md#who-gets-through).
 
 So limit who is assigned to the application at the provider, as in step 5 above. A
 provider where anyone can sign in, such as public Google accounts, is not safe to use.
@@ -98,7 +101,8 @@ on the Users page. Outhaul asks you to confirm an issuer change for this reason.
 The name shown for an SSO account is the `email` claim the provider sends. If there
 is no email, or the provider marks it unverified (`email_verified: false`), Outhaul
 uses `preferred_username` instead. If the provider sends neither, the sign-in is
-refused with a message saying so. The name is refreshed at each sign-in.
+refused with a message saying so. The name is refreshed at each sign-in. Apps behind
+a protected route receive the same name in the `X-Outhaul-User` header.
 
 This is whatever the provider says. Don't let people change their own email or username
 at the provider, or one person could appear under another's name in Outhaul.
@@ -125,8 +129,12 @@ seconds, not on every attempt.
 - Removing them on the Users page in Outhaul ends their sessions at once and deletes their
   push keys. Removing them at the provider does neither of these, so the account and its
   keys stay in Outhaul until you remove it there.
+- Removing them on the Users page also ends their sign-ins to protected routes, but while
+  the provider still lets them sign in, they can sign in to a protected route again. To
+  stop that, remove them at the provider.
 - Changing the issuer or the client ID, or removing the SSO settings, ends every SSO
-  sign-in, including ones in progress. Password sessions are not affected.
+  sign-in, protected routes included, and ones in progress. Password sessions are not
+  affected.
 - Replacing only the client secret does not end any sign-in.
 
 To turn SSO off, press "Remove SSO" in the panel. The button disappears from the login

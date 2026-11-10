@@ -2,6 +2,10 @@
 # Proves the protected-route labels on a real Traefik. Not run by CI.
 #
 #   sh deploy/test/integration_gate.sh
+#   sh deploy/test/integration_gate.sh --outhaul HOST:PORT
+#
+# The first form puts a stub in place of Outhaul. The second uses a running
+# Outhaul's /gate/check instead; see "With a running Outhaul" below.
 #
 # Needs Docker and Go. It starts, on one scratch network:
 #   - an echo backend carrying the labels traefik.RouteLabels gives four rows
@@ -43,7 +47,92 @@
 # Every container and the network are named outhaul-gatetest-*, and are removed
 # on exit, failure included. Prints one PASS or FAIL line per assertion and
 # exits non-zero if any fails.
+#
+# With a running Outhaul (--outhaul HOST:PORT)
+#
+# HOST is host-gateway (the Docker host, which is how Outhaul's own Traefik
+# reaches Outhaul) or an IPv4 address, and PORT is Outhaul's admin port (the
+# port of OUTHAUL_LISTEN_ADDR, 8080 by default). Only the main Traefik and the
+# echo backend start, with no stubs: host.docker.internal is mapped to HOST,
+# and the labels use config.GateAddress for PORT. The test's containers are on
+# their own network, so a firewall that lets only Outhaul's network reach the
+# admin port (as the installer sets up) keeps them out; the script stops and
+# says so. Run it where the Docker bridge can reach the admin port, such as a
+# development machine.
+#
+# Outhaul needs a public URL. None of wiki.test or shop.test has to be one of
+# its domains: the gate decides from cookies alone. Optional settings:
+#   GATETEST_PUBLIC_URL    Outhaul's public URL. With it, the sign-in redirect
+#                          must point there; without it, only its path is
+#                          checked.
+#   GATETEST_ROUTE_HOST    A host with a protected domain row in that Outhaul,
+#   GATETEST_ROUTE_COOKIE  and the value of the __Host-outhaul_route cookie a
+#                          browser got there after signing in. The backend also
+#                          serves that host, as a protected row, and the checks
+#                          that need someone signed in use the cookie. Without
+#                          them those checks print SKIP.
+# It checks, over HTTP and HTTPS, that a page load with no cookie is sent to
+# /gate/start on the public URL; that a POST, a JSON request, a CORS preflight
+# and a WebSocket handshake get 401; that //evil.example/ stays on the host;
+# and, with the cookie, that it passes and works on no other host. Last, if
+# it runs in a terminal, it asks you to stop Outhaul and checks that protected
+# paths then answer 500 and open ones 200.
 set -u
+
+usage() {
+	echo "usage: sh deploy/test/integration_gate.sh [--outhaul HOST:PORT]" >&2
+	echo "  HOST is host-gateway or an IPv4 address; PORT is Outhaul's admin port" >&2
+	exit 2
+}
+mode=stub
+case $# in
+0) ;;
+2)
+	[ "$1" = --outhaul ] || usage
+	mode=outhaul
+	outhaul_addr=$2
+	case $outhaul_addr in *:*) ;; *) usage ;; esac
+	outhaul_host=${outhaul_addr%:*}
+	outhaul_port=${outhaul_addr##*:}
+	case $outhaul_host in
+	host-gateway) ;;
+	*[!0-9.]* | *..* | .* | *.) usage ;;
+	*.*.*.*) ;;
+	*) usage ;;
+	esac
+	case $outhaul_port in
+	'' | *[!0-9]*) usage ;;
+	esac
+	;;
+*) usage ;;
+esac
+public_url=${GATETEST_PUBLIC_URL:-}
+route_host=${GATETEST_ROUTE_HOST:-}
+route_cookie=${GATETEST_ROUTE_COOKIE:-}
+if [ "$mode" = outhaul ]; then
+	if [ -n "$route_host$route_cookie" ] && { [ -z "$route_host" ] || [ -z "$route_cookie" ]; }; then
+		echo "GATETEST_ROUTE_HOST and GATETEST_ROUTE_COOKIE are set together, or not at all" >&2
+		exit 2
+	fi
+	case $route_host in
+	*[!a-z0-9.-]*)
+		echo "GATETEST_ROUTE_HOST: a host name in lower case, such as wiki.example.com" >&2
+		exit 2
+		;;
+	esac
+	case $route_cookie in
+	*[!0-9a-f]*)
+		echo "GATETEST_ROUTE_COOKIE: the cookie's value only, 64 hex characters" >&2
+		exit 2
+		;;
+	esac
+	case $route_host in
+	wiki.test | shop.test)
+		echo "GATETEST_ROUTE_HOST: use a host other than wiki.test and shop.test" >&2
+		exit 2
+		;;
+	esac
+fi
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 net=outhaul-gatetest-net
@@ -54,9 +143,11 @@ unmapped_c=outhaul-gatetest-traefik-unmapped
 app_c=outhaul-gatetest-app
 gate_c=outhaul-gatetest-gate
 alias_c=outhaul-gatetest-alias
+probe_c=outhaul-gatetest-probe
 traefik_image=${GATETEST_TRAEFIK_IMAGE:-traefik:v3.7.6}
 python_image=python:3-slim
 admin_port=8080
+if [ "$mode" = outhaul ]; then admin_port=$outhaul_port; fi
 docker_sock=${GATETEST_DOCKER_SOCK:-/var/run/docker.sock}
 
 if ! docker info >/dev/null 2>&1; then
@@ -73,19 +164,39 @@ fi
 
 work=$(mktemp -d)
 cleanup() {
-	docker rm -f "$traefik_c" "$trusting_c" "$redirect_c" "$unmapped_c" "$app_c" "$gate_c" "$alias_c" >/dev/null 2>&1 || true
+	docker rm -f "$traefik_c" "$trusting_c" "$redirect_c" "$unmapped_c" "$app_c" "$gate_c" "$alias_c" "$probe_c" >/dev/null 2>&1 || true
 	docker network rm "$net" >/dev/null 2>&1 || true
 	rm -rf "$work"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+# Output piped to a reader that has gone (| head) would otherwise end the
+# script without the EXIT trap, leaving the containers behind.
+trap 'exit 129' HUP
+trap 'exit 141' PIPE
 
 passed=0
 failed=0
+skipped=0
 pass() {
 	passed=$((passed + 1))
 	printf 'PASS  %s\n' "$1"
+}
+skip() {
+	skipped=$((skipped + 1))
+	printf 'SKIP  %s\n' "$1"
+}
+info() { # what a run found out, without passing or failing
+	printf 'INFO  %s\n' "$1"
+}
+finish() {
+	if [ "$skipped" -gt 0 ]; then
+		printf '%d passed, %d failed, %d skipped\n' "$passed" "$failed" "$skipped"
+	else
+		printf '%d passed, %d failed\n' "$passed" "$failed"
+	fi
+	[ "$failed" -eq 0 ]
 }
 fail() {
 	failed=$((failed + 1))
@@ -107,6 +218,9 @@ die() {
 echo "== setup"
 (cd "$root" && go build -o "$work/gatelabels" ./deploy/test/gatelabels) || die "go build gatelabels"
 routes="gt-wiki,wiki.test,,,protected gt-hooks,wiki.test,/webhooks,,open gt-shop,shop.test,,,open gt-admin,shop.test,/admin,/,protected,notls"
+if [ "$mode" = outhaul ] && [ -n "$route_host" ]; then
+	routes="$routes gt-real,$route_host,,,protected"
+fi
 # shellcheck disable=SC2086 # one word per route
 "$work/gatelabels" -tls -port 8000 -admin-port "$admin_port" $routes >"$work/labels" || die "gatelabels"
 printf 'outhaul.gatetest=true\n' >>"$work/labels"
@@ -179,15 +293,42 @@ http.server.ThreadingHTTPServer(("", %PORT%), H).serve_forever()
 EOF
 )
 alias_py=$(printf '%s\n' "$alias_py" | sed "s/%PORT%/$admin_port/")
+# What Outhaul's address gives a container on the test network that maps
+# host.docker.internal as the Traefiks do: "answers <status>" for /healthz,
+# "refused", or "unreachable: <reason>".
+probe_py=$(
+	cat <<'EOF'
+import sys, urllib.error, urllib.request
+try:
+    with urllib.request.urlopen("http://host.docker.internal:%s/healthz" % sys.argv[1], timeout=5) as r:
+        print("answers %d" % r.status)
+except urllib.error.HTTPError as e:
+    print("answers %d" % e.code)
+except urllib.error.URLError as e:
+    print("refused" if isinstance(e.reason, ConnectionRefusedError) else "unreachable: %s" % e.reason)
+except ConnectionRefusedError:
+    print("refused")
+except Exception as e:
+    print("unreachable: %s" % e)
+EOF
+)
 
 api_version=$(docker version --format '{{.Server.APIVersion}}') || die "docker version"
 docker network create "$net" >/dev/null || die "create network $net"
-docker run -d --name "$gate_c" --network "$net" \
-	"$python_image" python -u -c "$gate_py" >/dev/null || die "start the gate stub"
-gate_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$gate_c")
-[ -n "$gate_ip" ] || die "find the gate stub's address"
-docker run -d --name "$alias_c" --network "$net" --network-alias host.docker.internal \
-	"$python_image" python -u -c "$alias_py" >/dev/null || die "start the alias stub"
+if [ "$mode" = stub ]; then
+	docker run -d --name "$gate_c" --network "$net" \
+		"$python_image" python -u -c "$gate_py" >/dev/null || die "start the gate stub"
+	gate_ip=$(docker inspect --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$gate_c")
+	[ -n "$gate_ip" ] || die "find the gate stub's address"
+	docker run -d --name "$alias_c" --network "$net" --network-alias host.docker.internal \
+		"$python_image" python -u -c "$alias_py" >/dev/null || die "start the alias stub"
+else
+	gate_ip=$outhaul_host
+fi
+probe_outhaul() {
+	docker run --rm --name "$probe_c" --network "$net" --add-host "host.docker.internal:$gate_ip" \
+		"$python_image" python -c "$probe_py" "$admin_port" 2>&1 | tail -1
+}
 docker run -d --name "$app_c" --network "$net" --label-file "$work/labels" \
 	"$python_image" python -u -c "$echo_py" >/dev/null || die "start the echo backend"
 start_traefik() { # name, mapped|unmapped, extra Traefik arguments...
@@ -209,13 +350,15 @@ start_traefik() { # name, mapped|unmapped, extra Traefik arguments...
 		--log.level=INFO --log.nocolor=true "$@" >/dev/null || die "start $name"
 }
 start_traefik "$traefik_c" mapped
-start_traefik "$trusting_c" mapped \
-	--entrypoints.web.forwardedheaders.insecure=true \
-	--entrypoints.websecure.forwardedheaders.insecure=true
-start_traefik "$redirect_c" mapped \
-	--entrypoints.web.http.redirections.entrypoint.to=websecure \
-	--entrypoints.web.http.redirections.entrypoint.scheme=https
-start_traefik "$unmapped_c" unmapped
+if [ "$mode" = stub ]; then
+	start_traefik "$trusting_c" mapped \
+		--entrypoints.web.forwardedheaders.insecure=true \
+		--entrypoints.websecure.forwardedheaders.insecure=true
+	start_traefik "$redirect_c" mapped \
+		--entrypoints.web.http.redirections.entrypoint.to=websecure \
+		--entrypoints.web.http.redirections.entrypoint.scheme=https
+	start_traefik "$unmapped_c" unmapped
+fi
 
 host_port() { # container, container port
 	docker port "$1" "$2/tcp" | sed -n 's/^127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' | head -1
@@ -223,21 +366,25 @@ host_port() { # container, container port
 http_port=$(host_port "$traefik_c" 80)
 https_port=$(host_port "$traefik_c" 443)
 api_port=$(host_port "$traefik_c" 8080)
-trusting_http_port=$(host_port "$trusting_c" 80)
-trusting_https_port=$(host_port "$trusting_c" 443)
-redirect_http_port=$(host_port "$redirect_c" 80)
-redirect_https_port=$(host_port "$redirect_c" 443)
-unmapped_http_port=$(host_port "$unmapped_c" 80)
-unmapped_https_port=$(host_port "$unmapped_c" 443)
-[ -n "$http_port" ] && [ -n "$https_port" ] && [ -n "$api_port" ] &&
-	[ -n "$trusting_http_port" ] && [ -n "$trusting_https_port" ] &&
-	[ -n "$redirect_http_port" ] && [ -n "$redirect_https_port" ] &&
-	[ -n "$unmapped_http_port" ] && [ -n "$unmapped_https_port" ] || die "find Traefik's loopback ports"
+[ -n "$http_port" ] && [ -n "$https_port" ] && [ -n "$api_port" ] || die "find Traefik's loopback ports"
 echo "Main Traefik $traefik_image on 127.0.0.1: web $http_port, websecure $https_port, api $api_port"
-echo "Trusting Traefik on 127.0.0.1: web $trusting_http_port, websecure $trusting_https_port"
-echo "Redirecting Traefik on 127.0.0.1: web $redirect_http_port, websecure $redirect_https_port"
-echo "Unmapped Traefik on 127.0.0.1: web $unmapped_http_port, websecure $unmapped_https_port"
-echo "Gate stub at $gate_ip, mapped as host.docker.internal in every Traefik but the unmapped one"
+if [ "$mode" = stub ]; then
+	trusting_http_port=$(host_port "$trusting_c" 80)
+	trusting_https_port=$(host_port "$trusting_c" 443)
+	redirect_http_port=$(host_port "$redirect_c" 80)
+	redirect_https_port=$(host_port "$redirect_c" 443)
+	unmapped_http_port=$(host_port "$unmapped_c" 80)
+	unmapped_https_port=$(host_port "$unmapped_c" 443)
+	[ -n "$trusting_http_port" ] && [ -n "$trusting_https_port" ] &&
+		[ -n "$redirect_http_port" ] && [ -n "$redirect_https_port" ] &&
+		[ -n "$unmapped_http_port" ] && [ -n "$unmapped_https_port" ] || die "find Traefik's loopback ports"
+	echo "Trusting Traefik on 127.0.0.1: web $trusting_http_port, websecure $trusting_https_port"
+	echo "Redirecting Traefik on 127.0.0.1: web $redirect_http_port, websecure $redirect_https_port"
+	echo "Unmapped Traefik on 127.0.0.1: web $unmapped_http_port, websecure $unmapped_https_port"
+	echo "Gate stub at $gate_ip, mapped as host.docker.internal in every Traefik but the unmapped one"
+else
+	echo "Outhaul at $outhaul_addr, mapped as host.docker.internal; the gate is http://host.docker.internal:$admin_port/gate/check"
+fi
 
 # req SCHEME HOST PATH [curl args...]: prints the status code; the response
 # headers go to $work/h and the body to $work/b. It goes to the Traefik named
@@ -275,7 +422,8 @@ count_lines() { # how many lines of $1 equal $2
 	printf '%s\n' "$1" | grep -cFx -- "$2"
 }
 
-for via in main trusting redirect unmapped; do
+if [ "$mode" = stub ]; then vias="main trusting redirect unmapped"; else vias=main; fi
+for via in $vias; do
 	if [ "$via" = redirect ]; then first=https; else first=http; fi
 	ready=no
 	i=0
@@ -291,6 +439,213 @@ for via in main trusting redirect unmapped; do
 done
 via=main
 echo
+
+# The Accept header a browser sends with a page load.
+browser_accept='Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+has() { # whether $1 contains $2
+	case $1 in *"$2"*) return 0 ;; esac
+	return 1
+}
+is_hex64() {
+	case $1 in '' | *[!0-9a-f]*) return 1 ;; esac
+	[ ${#1} -eq 64 ]
+}
+sha256() { printf '%s' "$1" | sha256sum | cut -c1-64; }
+
+# check_sign_in STATUS SCHEME HOST PATH RD_PATH: the last response is the
+# gate's answer to a page load of HOST PATH with no cookie: a 302 to
+# /gate/start on the public URL, coming back to https://HOST (at the HTTPS
+# port) and RD_PATH, the path as the redirect escapes it, and a pending cookie
+# on HOST whose SHA-256 the redirect carries as n.
+check_sign_in() {
+	desc="$2 $3$4, a page load with no cookie"
+	loc=$(header Location)
+	cookie=$(header Set-Cookie | grep '^__Host-outhaul_pending=' | head -1)
+	pending=${cookie#__Host-outhaul_pending=}
+	pending=${pending%%;*}
+	n=${loc#*\?n=}
+	n=${n%%&*}
+	if [ -n "$public_url" ]; then
+		case $loc in "${public_url%/}/gate/start?n="*) where=yes ;; *) where=no ;; esac
+	else
+		case $loc in http://*/gate/start"?n="* | https://*/gate/start"?n="*) where=yes ;; *) where=no ;; esac
+	fi
+	case $loc in
+	*"&rd=https%3A%2F%2F$3$5" | *"&rd=https%3A%2F%2F$3%3A"[0-9]*"$5") back=yes ;;
+	*) back=no ;;
+	esac
+	if [ "$1" = 302 ] && [ "$where" = yes ] && [ "$back" = yes ] && is_hex64 "$pending" &&
+		[ "$n" = "$(sha256 "$pending")" ] && has "$cookie" '; Path=/' && has "$cookie" '; HttpOnly' &&
+		has "$cookie" '; Secure'; then
+		pass "$desc: 302 to /gate/start on the public URL, coming back to https://$3 and $5, with a pending cookie on $3 that n names"
+	else
+		hint=
+		if [ "$1" = 503 ]; then hint="503: does this Outhaul have a public URL (OUTHAUL_PUBLIC_URL)?"; fi
+		fail "$desc: want a 302 to /gate/start, coming back to https://$3 and $5, with a pending cookie" \
+			"status=$1" "location='$loc'" "set-cookie='$cookie'" ${hint:+"$hint"}
+	fi
+}
+expect_401() { # STATUS DESCRIPTION: the last response is the gate's 401
+	if [ "$1" = 401 ] && [ -z "$(header Location)" ] && [ -z "$(header Set-Cookie)" ]; then
+		pass "$2: 401, with no redirect and no cookie"
+	else
+		fail "$2: want 401" "status=$1" "location='$(header Location)'" "$(cat "$work/b")"
+	fi
+}
+
+# The checks against a running Outhaul (--outhaul).
+outhaul_checks() {
+	echo "== Outhaul at $outhaul_addr"
+	got=$(probe_outhaul)
+	if [ "$got" = "answers 200" ]; then
+		pass "Outhaul answers /healthz at host.docker.internal:$admin_port, from the test network"
+	else
+		die "Outhaul's /healthz at host.docker.internal:$admin_port ($outhaul_host) gives '$got' from the test network. Check the address, and that no firewall keeps the Docker bridge from the admin port."
+	fi
+	echo
+
+	for scheme in http https; do
+		echo "== $scheme"
+		code=$(req "$scheme" wiki.test /page -H "$browser_accept")
+		check_sign_in "$code" "$scheme" wiki.test /page %2Fpage
+		code=$(req "$scheme" shop.test /admin/x -H "$browser_accept")
+		check_sign_in "$code" "$scheme" shop.test /admin/x %2Fadmin%2Fx
+		# A browser reads a path that starts with // as naming another host.
+		code=$(req "$scheme" wiki.test //evil.example/ --path-as-is -H "$browser_accept")
+		check_sign_in "$code" "$scheme" wiki.test //evil.example/ %2Fevil.example%2F
+
+		code=$(req "$scheme" wiki.test /page --data 'q=1' -H "$browser_accept")
+		expect_401 "$code" "$scheme POST wiki.test/page (a form) with no cookie"
+		code=$(req "$scheme" wiki.test /page -H 'Accept: application/json')
+		expect_401 "$code" "$scheme GET wiki.test/page with Accept: application/json"
+		code=$(req "$scheme" wiki.test /page -H 'Accept: */*')
+		expect_401 "$code" "$scheme GET wiki.test/page with Accept: */* (a fetch call)"
+		code=$(req "$scheme" wiki.test /page -X OPTIONS -H 'Accept: */*' -H 'Origin: https://other.test' \
+			-H 'Access-Control-Request-Method: POST')
+		expect_401 "$code" "$scheme OPTIONS wiki.test/page (a CORS preflight)"
+		code=$(req "$scheme" wiki.test /socket --http1.1 -H 'Accept:' -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+			-H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' -H 'Origin: https://wiki.test')
+		expect_401 "$code" "$scheme a WebSocket handshake to wiki.test/socket with no cookie"
+		# Which test refuses it: the same handshake, accepting text/html as no
+		# browser's does, passes the gate's Accept test.
+		code=$(req "$scheme" wiki.test /socket --http1.1 -H "$browser_accept" -H 'Connection: Upgrade' \
+			-H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
+			-H 'Origin: https://wiki.test')
+		case $code in
+		401) info "$scheme a WebSocket handshake that accepts text/html gets 401 too: Traefik passes Upgrade to the gate, and the gate's Upgrade test refuses it" ;;
+		302) info "$scheme a WebSocket handshake that accepts text/html gets 302: Traefik doesn't pass Upgrade to the gate, so the gate's Accept test alone refuses a handshake" ;;
+		*) fail "$scheme a WebSocket handshake that accepts text/html: want 401 or 302" "status=$code" "$(cat "$work/b")" ;;
+		esac
+
+		code=$(req "$scheme" wiki.test /webhooks/x -H "$browser_accept" -H 'X-Outhaul-User: mallory')
+		body=$(cat "$work/b")
+		if [ "$code" = 200 ] && [ "$(count_lines "$body" 'path: /webhooks/x')" = 1 ] &&
+			! printf '%s\n' "$body" | grep -qi mallory; then
+			pass "$scheme wiki.test/webhooks/x (open path, protected host), no cookie: served, without the forged X-Outhaul-User"
+		else
+			fail "$scheme wiki.test/webhooks/x, no cookie: want 200 from the backend, without X-Outhaul-User" "status=$code" "$body"
+		fi
+
+		if [ -z "$route_host" ]; then
+			skip "$scheme the checks with someone signed in (set GATETEST_ROUTE_HOST and GATETEST_ROUTE_COOKIE)"
+			echo
+			continue
+		fi
+		jar="Cookie: __Host-outhaul_route=$route_cookie"
+		code=$(req "$scheme" "$route_host" /page -H "$jar" -H "$browser_accept" -H 'X-Outhaul-User: mallory')
+		body=$(cat "$work/b")
+		user=$(printf '%s\n' "$body" | sed -n 's/^h x-outhaul-user: //p')
+		if [ "$code" = 200 ] && [ "$(printf '%s\n' "$body" | grep -c '^h x-outhaul-user: ')" = 1 ] &&
+			[ -n "$user" ] && [ "$user" != mallory ]; then
+			pass "$scheme $route_host/page with the route cookie: served, and the app gets X-Outhaul-User: $user, not the forged one"
+		else
+			fail "$scheme $route_host/page with the route cookie: want 200, with X-Outhaul-User from Outhaul" \
+				"status=$code" "location='$(header Location)'" "$body" \
+				"Is GATETEST_ROUTE_COOKIE a live route cookie for $route_host? Sign-ins last 8 hours."
+		fi
+		code=$(req "$scheme" "$route_host" //evil.example/ --path-as-is -H "$jar" -H "$browser_accept")
+		body=$(cat "$work/b")
+		if [ "$code" = 200 ] && [ -z "$(header Location)" ] && printf '%s\n' "$body" | grep -q '^path: /'; then
+			pass "$scheme $route_host//evil.example/ with the route cookie: served on $route_host at '$(printf '%s\n' "$body" | sed -n 's/^path: //p')', with no redirect"
+		else
+			fail "$scheme $route_host//evil.example/ with the route cookie: want 200 from the backend" \
+				"status=$code" "location='$(header Location)'" "$body"
+		fi
+		code=$(req "$scheme" "$route_host" '//evil.example/?__outhaul_code=not-a-code' --path-as-is -H "$jar" -H "$browser_accept")
+		loc=$(header Location)
+		case $code:$loc in
+		302:"https://$route_host/evil.example/" | 302:"https://$route_host:"[0-9]*"/evil.example/")
+			pass "$scheme $route_host//evil.example/ with a code and the route cookie: 302 to $loc, on the host and without the code"
+			;;
+		*)
+			fail "$scheme $route_host//evil.example/ with a code and the route cookie: want a 302 to https://$route_host/evil.example/" \
+				"status=$code" "location='$loc'"
+			;;
+		esac
+		code=$(req "$scheme" wiki.test /page -H "$jar" -H "$browser_accept")
+		if [ "$code" = 302 ] && has "$(header Location)" '/gate/start?'; then
+			pass "$scheme wiki.test/page with $route_host's route cookie: sent to sign in, as the cookie works only on its own host"
+		else
+			fail "$scheme wiki.test/page with $route_host's route cookie: want the sign-in redirect" \
+				"status=$code" "location='$(header Location)'"
+		fi
+		echo
+	done
+
+	echo "== Outhaul stopped"
+	answer=s
+	if [ -t 0 ]; then
+		printf 'Stop Outhaul now, and leave the machine it runs on up. Press Enter once it has stopped, or type s and Enter to skip: '
+		read -r answer || answer=s
+	fi
+	case $answer in
+	s | S)
+		skip "with Outhaul stopped, protected paths answer 500 and open paths 200 (it asks in a terminal)"
+		return
+		;;
+	esac
+	i=0
+	got=$(probe_outhaul)
+	while [ "$got" != refused ] && [ $i -lt 30 ]; do
+		sleep 1
+		i=$((i + 1))
+		got=$(probe_outhaul)
+	done
+	if [ "$got" = refused ]; then
+		pass "Outhaul's address still resolves, and refuses connections"
+	else
+		fail "Outhaul's address refuses connections once it has stopped" "the test network gets: $got"
+		return
+	fi
+	for scheme in http https; do
+		for target in "wiki.test /page" "shop.test /admin/x"; do
+			set -- $target
+			code=$(req "$scheme" "$1" "$2" -H "$browser_accept")
+			if [ "$code" = 500 ]; then
+				pass "$scheme $1$2 (protected) with Outhaul stopped: 500, not the app"
+			else
+				fail "$scheme $1$2 (protected) with Outhaul stopped: want 500" "status=$code" "$(cat "$work/b")"
+			fi
+		done
+		for target in "shop.test /cart" "wiki.test /webhooks"; do
+			set -- $target
+			code=$(req "$scheme" "$1" "$2" -H "$browser_accept")
+			if [ "$code" = 200 ]; then
+				pass "$scheme $1$2 (open) with Outhaul stopped: still 200"
+			else
+				fail "$scheme $1$2 (open) with Outhaul stopped: want 200" "status=$code" "$(cat "$work/b")"
+			fi
+		done
+	done
+	echo "You can start Outhaul again."
+}
+
+if [ "$mode" = outhaul ]; then
+	outhaul_checks
+	echo
+	finish
+	exit
+fi
 
 tid=0
 echo "== the labels as Docker and Traefik keep them"
@@ -430,6 +785,34 @@ for scheme in http https; do
 		pass "$scheme wiki.test/page (protected host), no cookie: the stub's 302 with Set-Cookie"
 	else
 		fail "$scheme wiki.test/page, no cookie: want the stub's 302 with Set-Cookie" "status=$code" "$(cat "$work/b")"
+	fi
+
+	# Whether Traefik passes a WebSocket handshake's Upgrade to the gate. If it
+	# doesn't, the gate's Accept test alone refuses a handshake.
+	tid=$((tid + 1))
+	code=$(req "$scheme" wiki.test /socket --http1.1 -H 'Accept:' -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+		-H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' -H "X-Gatetest-Id: $tid")
+	lines=$(gate_lines "$tid")
+	if [ -n "$lines" ] && [ "$code" = 302 ]; then
+		pass "$scheme a WebSocket handshake to wiki.test (protected host) goes to the gate"
+		if [ "$(count_lines "$lines" 'h upgrade: websocket')" = 1 ]; then
+			info "$scheme Traefik passes Upgrade: websocket to the gate"
+		else
+			info "$scheme Traefik doesn't pass Upgrade to the gate, so the gate's Accept test is what refuses a handshake"
+		fi
+	else
+		fail "$scheme a WebSocket handshake to wiki.test: want the gate asked, and its 302 back" "status=$code" "gate saw: $lines"
+	fi
+
+	# A path that starts with // reaches the gate, and what Traefik says it is.
+	tid=$((tid + 1))
+	code=$(req "$scheme" wiki.test //evil.example/ --path-as-is -H 'Accept: text/html' -H "X-Gatetest-Id: $tid")
+	uri=$(gate_lines "$tid" | sed -n 's/^h x-forwarded-uri: //p')
+	if [ "$code" = 302 ] && [ -n "$uri" ]; then
+		pass "$scheme wiki.test//evil.example/ (protected host), no cookie: the gate is asked, and answers"
+		info "$scheme for wiki.test//evil.example/, Traefik gives the gate X-Forwarded-Uri: $uri"
+	else
+		fail "$scheme wiki.test//evil.example/: want the gate asked, and its 302 back" "status=$code" "gate saw: $(gate_lines "$tid")"
 	fi
 
 	# A 200 from the stub forwards X-Outhaul-User: dana, replacing a forged value.
@@ -648,5 +1031,4 @@ echo "Traefik's errors:"
 docker logs "$traefik_c" 2>&1 | grep -e ' ERR ' -e ' FTL ' | sed 's/^/  /' | tail -8
 echo
 
-printf '%d passed, %d failed\n' "$passed" "$failed"
-[ "$failed" -eq 0 ]
+finish
