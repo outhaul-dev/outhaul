@@ -136,7 +136,7 @@ fixed in five batches. All five are on `main`.
   project member's code still runs on the same server. New routes go in
   `routes()` with an access level; a route without one fails at startup. The
   last password system admin can't be removed or demoted, because there is no
-  recovery command. A `git push` over SSH follows the same rule as the web:
+  recovery command. A `git push`, fetch or clone over SSH follows the same rule as the web:
   the key's owner must be a system admin, or project member or above on the
   app's project.
 - **Login.** There is no per-IP or per-user backoff. Behind Traefik every

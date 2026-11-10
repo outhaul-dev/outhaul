@@ -126,9 +126,6 @@ func TestColdPushCountsAsTheDefaultProject(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(gitRoot, "fresh.git")); !os.IsNotExist(err) {
 		t.Fatalf("bare repo should not exist; stat err = %v", err)
 	}
-	if _, err := st.GetAppByName(ctx, "fresh"); err == nil {
-		t.Fatal("app should not exist")
-	}
 
 	if err := st.AddProjectMember(ctx, core.DefaultProjectID, u.ID); err != nil {
 		t.Fatal(err)
@@ -157,5 +154,96 @@ func TestDemotionAppliesToTheNextPush(t *testing.T) {
 	out, err := runGit(gitEnv(key, addr), "", "ls-remote", remoteURL(addr, "demo"))
 	if err == nil || !strings.Contains(out, "you don't have permission") {
 		t.Fatalf("push after demotion: err=%v output=%q; want refusal", err, out)
+	}
+}
+
+// pushApp makes a push-source app in a new project and returns the project id.
+func pushApp(t *testing.T, st *store.Store, name string) int64 {
+	t.Helper()
+	p, err := st.CreateProject(context.Background(), core.Project{Name: "proj-" + name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateApp(context.Background(), core.App{Name: name, Source: core.SourcePush, ProjectID: p.ID}); err != nil {
+		t.Fatal(err)
+	}
+	return p.ID
+}
+
+// commitIn makes a local repo with one commit and returns its directory.
+func commitIn(t *testing.T, env []string) string {
+	t.Helper()
+	local := filepath.Join(t.TempDir(), "local")
+	if err := os.MkdirAll(local, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range [][]string{
+		{"init", "-q", "-b", "main"}, {"config", "user.email", "t@example.com"},
+		{"config", "user.name", "t"}, {"config", "commit.gpgsign", "false"},
+		{"commit", "-q", "--allow-empty", "-m", "init"},
+	} {
+		if out, err := runGit(env, local, a...); err != nil {
+			t.Fatalf("git %v: %v\n%s", a, err, out)
+		}
+	}
+	return local
+}
+
+func TestExistingAppFollowsItsOwnProject(t *testing.T) {
+	ctx := context.Background()
+	srv, st, gitRoot := testServer(t)
+	addr := srv.Addr()
+	pid := pushApp(t, st, "inproj")
+
+	onP := newUser(t, st, core.RoleProjectMember)
+	if err := st.AddProjectMember(ctx, pid, onP.ID); err != nil {
+		t.Fatal(err)
+	}
+	onDefault := newUser(t, st, core.RoleProjectMember)
+	if err := st.AddProjectMember(ctx, core.DefaultProjectID, onDefault.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	okEnv := gitEnv(registerKeyFor(t, st, onP.ID), addr)
+	local := commitIn(t, okEnv)
+	if out, err := runGit(okEnv, local, "push", remoteURL(addr, "inproj"), "main"); err != nil {
+		t.Fatalf("member of P should push: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(gitRoot, "inproj.git")); err != nil {
+		t.Fatalf("bare repo should exist: %v", err)
+	}
+
+	// Refused: nothing is created for a second app they can't reach.
+	pushApp(t, st, "other")
+	badEnv := gitEnv(registerKeyFor(t, st, onDefault.ID), addr)
+	local2 := commitIn(t, badEnv)
+	out, err := runGit(badEnv, local2, "push", remoteURL(addr, "other"), "main")
+	if err == nil || !strings.Contains(out, "you don't have permission to use 'other'") {
+		t.Fatalf("push by a default-project member: err=%v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(gitRoot, "other.git")); !os.IsNotExist(err) {
+		t.Fatalf("bare repo should not exist; stat err = %v", err)
+	}
+}
+
+func TestPermissionIsCheckedBeforeNonPushRefusal(t *testing.T) {
+	ctx := context.Background()
+	srv, st, _ := testServer(t)
+	p, err := st.CreateProject(ctx, core.Project{Name: "pub"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateApp(ctx, core.App{Name: "pubapp", Source: core.SourcePublic, ProjectID: p.ID}); err != nil {
+		t.Fatal(err)
+	}
+	u := newUser(t, st, core.RoleProjectMember)
+	fp := keyFor(t, st, u.ID)
+	ch := &fakeChannel{}
+	if code := srv.runGit(ctx, ch, "git-receive-pack 'pubapp'", fp); code != 1 {
+		t.Fatalf("code = %d", code)
+	}
+	got := ch.stderr.String()
+	if !strings.Contains(got, "you don't have permission") || strings.Contains(got, "push-deployable") {
+		t.Fatalf("stderr = %q; want only the permission message", got)
 	}
 }

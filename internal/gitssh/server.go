@@ -260,12 +260,9 @@ func (s *Server) runGit(ctx context.Context, ch ssh.Channel, command, fp string)
 	}
 	log.Printf("gitssh: %s -> %s %s", fp, verb, repo)
 	app, aerr := s.keyring.GetAppByName(ctx, repo)
-	switch {
-	case aerr == nil && app.Source != core.SourcePush:
-		fmt.Fprintf(ch.Stderr(), "outhaul: app '%s' is not push-deployable\n", repo)
-		return 1
-	case aerr != nil && !errors.Is(aerr, sql.ErrNoRows):
-		fmt.Fprintf(ch.Stderr(), "outhaul: %v\n", aerr)
+	if aerr != nil && !errors.Is(aerr, sql.ErrNoRows) {
+		log.Printf("gitssh: look up app %s: %v", repo, aerr)
+		fmt.Fprintf(ch.Stderr(), "outhaul: could not look up '%s'\n", repo)
 		return 1
 	}
 	// A cold push lands in the default project, where githook creates the app.
@@ -273,11 +270,16 @@ func (s *Server) runGit(ctx context.Context, ch ssh.Channel, command, fp string)
 	if aerr == nil {
 		projectID = app.ProjectID
 	}
+	// Permission comes first, so nobody learns which app names exist.
 	if err := s.authorize(ctx, fp, projectID); err != nil {
 		if !errors.Is(err, errPushDenied) {
 			log.Printf("gitssh: authorize %s for %s: %v", fp, repo, err)
 		}
 		fmt.Fprintf(ch.Stderr(), "outhaul: you don't have permission to use '%s'\n", repo)
+		return 1
+	}
+	if aerr == nil && app.Source != core.SourcePush {
+		fmt.Fprintf(ch.Stderr(), "outhaul: app '%s' is not push-deployable\n", repo)
 		return 1
 	}
 	// aerr == nil (push app) or ErrNoRows (cold push): proceed to lazy Init.

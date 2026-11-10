@@ -289,8 +289,14 @@ func TestRunGitRejectsNonPushApp(t *testing.T) {
 	signer, _ := ssh.ParsePrivateKey([]byte(priv))
 	srv := New(signer, st, repos)
 
+	admin, err := st.CreatePasswordAccount(ctx, "root", core.RoleSystemAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fp := keyFor(t, st, admin.ID)
+
 	ch := &fakeChannel{}
-	code := srv.runGit(ctx, ch, "git-receive-pack 'pub'", "SHA256:test")
+	code := srv.runGit(ctx, ch, "git-receive-pack 'pub'", fp)
 	if code != 1 {
 		t.Fatalf("runGit returned %d; want 1", code)
 	}

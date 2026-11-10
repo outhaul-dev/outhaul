@@ -453,7 +453,7 @@ itself. `internal/gitrepo` owns a bare repo per push app plus its
 the `ssh_addr` setting) that authenticates `git push` against registered
 **push keys** — SHA256-fingerprinted SSH public keys, each owned by an
 account and managed from its Account page — rather than per-app deploy keys,
-since the repo is local. A push is allowed only if the key owner's role can
+since the repo is local. A push, fetch or clone is allowed only if the key owner's role can
 change the app's project (a cold push counts as the default project), checked
 at each push before anything is created. A push
 runs the hook, which relays over a unix socket (`internal/githook`) to the

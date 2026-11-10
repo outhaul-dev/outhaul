@@ -68,7 +68,7 @@ one-time setup URL. Developers with a local checkout can run
 - **Automatic disk cleanup** — keeps the newest images per app for rollback (`OUTHAUL_IMAGE_KEEP`) while a nightly sweep reclaims old images, dangling layers left by its own builds, and (unless `OUTHAUL_PRUNE_BUILD_CACHE=no`) stale build cache.
 
 > See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the design and what's
-> intentionally out of scope for now (multiple users, metrics history/alerts,
+> intentionally out of scope for now (metrics history/alerts,
 > multi-server).
 
 ## Running locally
