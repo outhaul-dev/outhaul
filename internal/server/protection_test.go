@@ -1520,6 +1520,7 @@ func TestProtectingAHostRedeploysLeftoverRoutes(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			e, _ := newProtectionEnv(t)
+			protectSomewhere(t, e)
 			var hooks core.App
 			var web core.App
 			var row core.Domain
@@ -1567,6 +1568,7 @@ func TestProtectingAHostRedeploysLeftoverRoutes(t *testing.T) {
 // of it. The page names only what is on this app's own hosts.
 func TestLeftoverRoutesOfAppsYouDontShare(t *testing.T) {
 	e, _ := newProtectionEnv(t)
+	protectSomewhere(t, e)
 	ctx := context.Background()
 	web, row, _ := liveWeb(t, e, "img:1")
 	web, err := e.store.GetApp(ctx, web.ID)
@@ -1663,11 +1665,70 @@ func TestLeftoverRoutesOfAppsYouDontShare(t *testing.T) {
 	wantStatus(t, "the new row, from the refusal's page", e.postAs(t, mina, "/apps/"+itoa(web.ID)+"/domains", add), http.StatusSeeOther)
 }
 
+// While nothing on the server requires sign-in, the app page doesn't look for
+// other apps' old routes: it lists neither every managed container nor every
+// domain. The first save that turns sign-in on finds them, and is refused
+// naming them; saved again from that page, it redeploys them. Once something
+// requires sign-in, the page looks for them again.
+func TestLeftoverRoutesAreLookedForOnceSomethingIsProtected(t *testing.T) {
+	e, _ := newProtectionEnv(t)
+	web, row, _ := liveWeb(t, e, "img:1")
+	hooks := leftoverHooks(t, e, []core.Domain{{Host: "web.test", Path: "/hooks"}}, nil)
+	also := "Requiring sign-in on web.test also redeploys hooks, which still serves an old route there."
+	listedAll := func() bool {
+		for _, m := range e.runtime.listMatches {
+			if m["outhaul.managed"] == "true" {
+				return true
+			}
+		}
+		return false
+	}
+	e.runtime.listMatches = nil
+	if page := html.UnescapeString(body(t, e.get(t, "/apps/"+itoa(web.ID)))); strings.Contains(page, also) || listedAll() {
+		t.Errorf("nothing requires sign-in: the page listed every managed container (%v) or named hooks", listedAll())
+	}
+
+	hooksBefore := len(deploymentsOf(t, e, hooks.ID))
+	f := domainForm(row, true)
+	f.Set("others_was", othersWasOf(t, e, web.ID))
+	refused := wantStatus(t, "the first save", e.saveDomain(t, web.ID, row, f), http.StatusConflict)
+	if !strings.Contains(html.UnescapeString(refused), also) || domainOf(t, e, row).Protected {
+		t.Fatalf("the first save should change nothing and name hooks: %q", refused)
+	}
+	m := regexp.MustCompile(`name="others_was" value="([^"]*)"`).FindStringSubmatch(refused)
+	if m == nil {
+		t.Fatal("the refusal's dialog has no others_was")
+	}
+	f.Set("others_was", html.UnescapeString(m[1]))
+	wantStatus(t, "the save from the refusal's page", e.saveDomain(t, web.ID, row, f), http.StatusSeeOther)
+	if n := len(deploymentsOf(t, e, hooks.ID)); n != hooksBefore+1 {
+		t.Errorf("hooks' deployments %d -> %d, want one queued", hooksBefore, n)
+	}
+
+	e.runtime.listMatches = nil
+	body(t, e.get(t, "/apps/"+itoa(web.ID)))
+	if !listedAll() {
+		t.Error("web.test requires sign-in now: the page should look for other apps' old routes")
+	}
+}
+
+// protectSomewhere gives the server a protected route on a host nothing else
+// uses, so the app page looks for other apps' old routes on its hosts.
+func protectSomewhere(t *testing.T, e *testEnv) {
+	t.Helper()
+	a, err := e.store.CreateApp(context.Background(), core.App{Name: "sentinel", RepoURL: "https://x/sentinel.git"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addRow(t, e, core.Domain{AppID: a.ID, Host: "sentinel.test", Protected: true})
+}
+
 // The dialog names the other apps a save would redeploy before it is made;
 // a save whose page didn't is refused, and so is one when they can't be
 // worked out.
 func TestLeftoverRoutesAreWarnedOf(t *testing.T) {
 	e, px := newProtectionEnv(t)
+	protectSomewhere(t, e)
 	web, row, _ := liveWeb(t, e, "img:1")
 	hooks := leftoverHooks(t, e, []core.Domain{{Host: "web.test", Path: "/hooks"}}, nil)
 	seedFinishedDeploy(t, e, hooks.ID, "") // hooks' next deploy builds

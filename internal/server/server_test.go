@@ -108,18 +108,19 @@ func (f *fakeBackups) TestDestination(_ context.Context, d core.Destination) err
 }
 
 type fakeRuntime struct {
-	container *docker.Container
-	stack     []docker.Container // returned by ListContainers (compose apps)
-	listErr   error              // returned by ListContainers when set
-	listErrOf map[string]error   // by app name: returned when listing that app's containers (outhaul.app)
-	listCalls int                // ListContainers calls
-	started   []string
-	stopped   []string
-	removed   []string
-	logs      map[string]string       // container ID -> content for ContainerLogs
-	follow    io.ReadCloser           // when set, ContainerLogs returns it (a follow stream)
-	logTails  []int                   // tail values passed to ContainerLogs
-	stats     map[string]docker.Stats // container ID -> sample for ContainerStats
+	container   *docker.Container
+	stack       []docker.Container  // returned by ListContainers (compose apps)
+	listErr     error               // returned by ListContainers when set
+	listErrOf   map[string]error    // by app name: returned when listing that app's containers (outhaul.app)
+	listCalls   int                 // ListContainers calls
+	listMatches []map[string]string // each ListContainers call's label filter, in order
+	started     []string
+	stopped     []string
+	removed     []string
+	logs        map[string]string       // container ID -> content for ContainerLogs
+	follow      io.ReadCloser           // when set, ContainerLogs returns it (a follow stream)
+	logTails    []int                   // tail values passed to ContainerLogs
+	stats       map[string]docker.Stats // container ID -> sample for ContainerStats
 
 	removedImages []string // refs passed to RemoveImage
 
@@ -136,6 +137,7 @@ func (f *fakeRuntime) FindContainer(_ context.Context, name string) (*docker.Con
 // key=value in match, as Docker's label filter does.
 func (f *fakeRuntime) ListContainers(_ context.Context, match map[string]string) ([]docker.Container, error) {
 	f.listCalls++
+	f.listMatches = append(f.listMatches, match)
 	if f.listErr != nil {
 		return nil, f.listErr
 	}

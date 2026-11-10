@@ -915,9 +915,18 @@ func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, status in
 			log.Printf("app page: read the person's projects: %v", err)
 			scope = projectScope{} // names no other app
 		}
-		others, err := s.leftoverRoutes(r.Context(), app, hosts, scope)
-		if err != nil {
-			log.Printf("app page: other apps' old routes: %v", err)
+		// While nothing on the server requires sign-in, no other app's old
+		// route can be left open on a protected host, so they aren't looked
+		// for: a save that turns sign-in on finds them itself, and is refused
+		// with this page, for alsoHost, which does look, so it names them.
+		var others []otherRedeploy
+		if anyProtected, err := s.store.AnyDomainProtected(r.Context()); err != nil || anyProtected || alsoHost != "" {
+			if err != nil {
+				log.Printf("app page: read whether any route requires sign-in: %v", err)
+			}
+			if others, err = s.leftoverRoutes(r.Context(), app, hosts, scope); err != nil {
+				log.Printf("app page: other apps' old routes: %v", err)
+			}
 		}
 		// Its previews get the same protection, and are named the same way.
 		previews, err := s.previewRedeploys(r.Context(), app)
