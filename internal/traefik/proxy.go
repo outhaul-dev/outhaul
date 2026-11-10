@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -146,6 +147,32 @@ func EnsureProxy(ctx context.Context, dc docker.Client, pc ProxyConfig, logOut i
 		return fmt.Errorf("start traefik: %w", err)
 	}
 	return nil
+}
+
+// ProxyMapsGateHost reports whether the running Traefik maps the gate's host
+// (host.docker.internal) to the host gateway, and whether that is known: its
+// config hash must be the one pc gives with ProtectedRoutes on or off.
+// Otherwise (no Traefik, a lookup that fails, a config that differs in
+// something else) it is unknown.
+func ProxyMapsGateHost(ctx context.Context, dc docker.Client, pc ProxyConfig) (mapped, known bool) {
+	if pc.DockerSocket == "" {
+		pc.DockerSocket = DefaultDockerSocket
+	}
+	existing, err := dc.FindContainer(ctx, pc.ContainerName)
+	if err != nil || existing == nil {
+		return false, false
+	}
+	have := existing.Labels["outhaul.config-hash"]
+	pc.ProtectedRoutes = true
+	on := proxySpec(pc)
+	if have == on.Labels["outhaul.config-hash"] {
+		return slices.Contains(on.ExtraHosts, "host.docker.internal:host-gateway"), true
+	}
+	pc.ProtectedRoutes = false
+	if have == proxySpec(pc).Labels["outhaul.config-hash"] {
+		return false, true
+	}
+	return false, false
 }
 
 // proxySpec builds the desired Traefik container spec (deterministic), stamping a

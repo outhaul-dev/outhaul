@@ -402,7 +402,7 @@ func (ic *infraController) reconcile(ctx context.Context) error {
 		return fmt.Errorf("read which routes require sign-in: %w", err)
 	}
 	if !protected {
-		protected = ic.gatedContainersRemain(ctx)
+		protected = ic.gatedContainersRemain(ctx, tunnelOn)
 	}
 	if tunnelOn {
 		// Bring the tunnel up before flipping Traefik to its portless posture,
@@ -432,12 +432,19 @@ func (ic *infraController) reconcile(ctx context.Context) error {
 // gate. One deployed while a row was protected calls the gate until it is
 // replaced, even once no row is protected (the row was turned off or deleted,
 // or the redeploy failed), so the gate's host stays mapped until then. When
-// the containers can't be listed, the answer is yes: the mapping is kept.
-func (ic *infraController) gatedContainersRemain(ctx context.Context) bool {
+// the containers can't be listed, the answer is what the running Traefik
+// already has (traefik.ProxyMapsGateHost), so that alone doesn't recreate it;
+// when that can't be read either, the answer is yes.
+func (ic *infraController) gatedContainersRemain(ctx context.Context, tunnelOn bool) bool {
 	cs, err := ic.dc.ListContainers(ctx, map[string]string{"outhaul.managed": "true"})
 	if err != nil {
-		log.Printf("reconcile: could not list containers, so the gate's host stays mapped: %v", err)
-		return true
+		mapped, known := traefik.ProxyMapsGateHost(ctx, ic.dc, ic.proxyConfig(ctx, tunnelOn, false))
+		if !known {
+			log.Printf("reconcile: could not list containers, so the gate's host stays mapped: %v", err)
+			return true
+		}
+		log.Printf("reconcile: could not list containers, so the gate's host stays as the proxy has it (mapped: %v): %v", mapped, err)
+		return mapped
 	}
 	for _, c := range cs {
 		if traefik.HasGateLabel(c.Labels) {

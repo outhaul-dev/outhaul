@@ -602,3 +602,49 @@ func TestProtectedRoutesMapTheGateHost(t *testing.T) {
 		t.Errorf("admin route and a protected route: extra hosts = %v, want the host gateway once", hosts)
 	}
 }
+
+// findFails is a Docker that can't look up a container.
+type findFails struct{ *docker.Fake }
+
+func (findFails) FindContainer(context.Context, string) (*docker.Container, error) {
+	return nil, errors.New("docker unreachable")
+}
+
+// ProxyMapsGateHost reads whether the running Traefik maps the gate's host,
+// from its config hash: the one pc gives it with ProtectedRoutes on, or off.
+// Anything else (no Traefik, a lookup that fails, a config that has drifted
+// otherwise) is unknown.
+func TestProxyMapsGateHost(t *testing.T) {
+	ctx := context.Background()
+	for _, on := range []bool{false, true} {
+		dc := docker.NewFake()
+		pc := testProxyConfig()
+		pc.ProtectedRoutes = on
+		if err := EnsureProxy(ctx, dc, pc, os.Stdout); err != nil {
+			t.Fatal(err)
+		}
+		pc.ProtectedRoutes = !on // what is asked about doesn't matter
+		if mapped, known := ProxyMapsGateHost(ctx, dc, pc); !known || mapped != on {
+			t.Errorf("Traefik made with ProtectedRoutes %v: ProxyMapsGateHost = %v, %v; want %v, true", on, mapped, known, on)
+		}
+		pc.Image = "traefik:v9"
+		if _, known := ProxyMapsGateHost(ctx, dc, pc); known {
+			t.Error("a Traefik whose config differs otherwise: want unknown")
+		}
+		if _, known := ProxyMapsGateHost(ctx, findFails{dc}, testProxyConfig()); known {
+			t.Error("a lookup that fails: want unknown")
+		}
+	}
+	if _, known := ProxyMapsGateHost(ctx, docker.NewFake(), testProxyConfig()); known {
+		t.Error("no Traefik: want unknown")
+	}
+	// With the admin route, the host is mapped either way.
+	dc := docker.NewFake()
+	pc := tunnelProxyConfig(t)
+	if err := EnsureProxy(ctx, dc, pc, os.Stdout); err != nil {
+		t.Fatal(err)
+	}
+	if mapped, known := ProxyMapsGateHost(ctx, dc, pc); !known || !mapped {
+		t.Errorf("admin route: ProxyMapsGateHost = %v, %v; want true, true", mapped, known)
+	}
+}
