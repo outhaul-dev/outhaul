@@ -50,7 +50,11 @@ it.
   (`internal/store/migrate_webhook_token_test.go`).
 - **Values sealed with `secret.key`.** When you add a sealed column, also add
   it to `sealedQueries` in `internal/store/sealed.go`. Startup uses that list
-  to refuse to replace a lost key while values encrypted with it exist.
+  to refuse to replace a lost key while values encrypted with it exist. The
+  SSO client secret (`sso_client_secret`) is one example.
+- **SSO accounts** are keyed by issuer and subject and are never linked by
+  email. An SSO account has no password and can't use the password form. See
+  `docs/SSO.md`.
 - **Long-lived HTTP handlers** (SSE) must wait on `s.streamContext(r)`, not
   `r.Context()`. Otherwise shutdown waits out its whole timeout.
 - **New `OUTHAUL_*` settings** go through the `parser` in

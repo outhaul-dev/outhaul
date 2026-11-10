@@ -35,7 +35,12 @@ right here before writing the worker.
 - **Auth.** Several accounts, with a role per person managed in Outhaul
   (system admin, project admin, project member, project viewer, or no role).
   argon2id password hash, session cookie. The first account, a system admin, is
-  created on first boot via a printed one-time setup URL.
+  created on first boot via a printed one-time setup URL. People can also sign
+  in through any OIDC provider (SSO), configured on Settings; see `docs/SSO.md`.
+  An SSO account is keyed by the provider's issuer and subject, never linked by
+  email, has no password, and starts with no role. SSO sessions last 8 hours;
+  password sessions last 7 days. The last system admin who can sign in with a
+  password can't be demoted or removed.
 - **Config.** Single `/var/lib/outhaul/` data dir. Env-var overrides. No YAML.
 
 ### Milestone 1 scope (this session)
@@ -504,6 +509,7 @@ outhaul/
   ARCHITECTURE.md
 
   internal/
+    sso/                      # OIDC sign-in: discovery, authorization code flow with PKCE, ID token verification (go-oidc)
     config/                   # data dir resolution, env-var overrides, defaults
         config.go
 
@@ -601,6 +607,8 @@ outhaul/
     server/
         server.go             # http.ServeMux, route table, middleware, graceful Shutdown
         auth.go               # argon2id, session cookies, first-boot setup token
+        sso_settings.go       # SSO panel: save/remove settings, cached provider discovery
+        sso_login.go          # SSO sign-in: start and callback, the flow cookie
         access.go             # per-route access levels and the guard that checks role and project
         routes.go             # the route table: every route states its access level
         users.go              # Users page: accounts, roles, setup links

@@ -56,6 +56,7 @@ one-time setup URL. Developers with a local checkout can run
 - **Shared environment variables** — project-level values apps reference as `${{project.KEY}}`.
 - **Secrets encrypted at rest** — env vars and generated credentials are sealed on disk.
 - **App lifecycle** — stop, restart, and delete from the UI.
+- **Single sign-on** — let people sign in through any OpenID Connect provider (Okta, Keycloak, Entra ID and others) next to passwords; see [docs/SSO.md](docs/SSO.md).
 
 ### Batteries included
 - **Managed databases** — one click provisions PostgreSQL, MySQL, or Redis with generated credentials and persistent storage, reachable over the internal network (and optionally on a published host port).
