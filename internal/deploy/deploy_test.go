@@ -185,7 +185,7 @@ func TestPipelineHappyPath(t *testing.T) {
 	if c == nil || !c.Running() {
 		t.Fatalf("app container not running: %+v", c)
 	}
-	if c.Labels["traefik.http.routers.outhaul-web-d1.rule"] != "Host(`web.test`)" {
+	if c.Labels["traefik.http.routers.outhaul-web-d1.rule"] != traefik.Rule("web.test", "") {
 		t.Errorf("missing/incorrect traefik rule label: %v", c.Labels)
 	}
 	spec := lastCreatedNamed(t, h, "outhaul-app-web")

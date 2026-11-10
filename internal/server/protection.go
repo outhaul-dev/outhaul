@@ -144,9 +144,9 @@ func staleOpenRoute(domains []core.Domain, appName string, containers []docker.C
 // own row routers count, and only when their host can be read from their
 // rule.
 func staleOpenHosts(domains []core.Domain, appName string, containers []docker.Container) map[string]bool {
-	current := make(map[string]string, len(domains)) // router -> rule
+	current := make(map[string]core.Domain, len(domains)) // by router
 	for _, d := range domains {
-		current[traefik.RouterName(appName, d.ID)] = traefik.Rule(d.Host, d.Path)
+		current[traefik.RouterName(appName, d.ID)] = d
 	}
 	hosts := map[string]bool{}
 	const prefix, suffix = "traefik.http.routers.", ".rule"
@@ -160,14 +160,14 @@ func staleOpenHosts(domains []core.Domain, appName string, containers []docker.C
 			if !strings.HasPrefix(router, ours) {
 				continue
 			}
-			if want, ok := current[router]; ok && want == rule {
+			if d, ok := current[router]; ok && traefik.SameAddress(rule, d.Host, d.Path) {
 				continue
 			}
 			if traefik.RowHasGate(c.Labels, router) {
 				continue
 			}
-			if h := strings.ToLower(traefik.RuleHost(rule)); h != "" {
-				hosts[h] = true
+			if h, _, ok := traefik.RuleAddress(rule); ok {
+				hosts[strings.ToLower(h)] = true
 			}
 		}
 	}

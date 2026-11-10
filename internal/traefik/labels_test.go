@@ -1,6 +1,8 @@
 package traefik
 
 import (
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -11,7 +13,7 @@ func router(app string, id int64) string { return RouterName(app, id) }
 
 func TestRouteLabelsHostOnly(t *testing.T) {
 	got := RouteLabels("r", "web.example.com", 8080, "", "", false, "", false, "addr")
-	if got["traefik.http.routers.r.rule"] != "Host(`web.example.com`)" {
+	if got["traefik.http.routers.r.rule"] != Rule("web.example.com", "") {
 		t.Errorf("rule = %q", got["traefik.http.routers.r.rule"])
 	}
 	if got["traefik.http.services.r.loadbalancer.server.port"] != "8080" {
@@ -24,7 +26,7 @@ func TestRouteLabelsHostOnly(t *testing.T) {
 
 func TestRouteLabelsPathPrefixNoRewrite(t *testing.T) {
 	got := RouteLabels("r", "web.example.com", 8080, "/api", "", false, "", false, "addr")
-	if got["traefik.http.routers.r.rule"] != "Host(`web.example.com`) && PathPrefix(`/api`)" {
+	if got["traefik.http.routers.r.rule"] != Rule("web.example.com", "/api") {
 		t.Errorf("rule = %q", got["traefik.http.routers.r.rule"])
 	}
 	if got["traefik.http.routers.r.middlewares"] != "r-noident" {
@@ -66,7 +68,7 @@ func TestRouteLabelsTLSMirrorsRuleAndMiddlewares(t *testing.T) {
 	if got["traefik.http.routers.r-tls.tls.certresolver"] != "le" {
 		t.Errorf("certresolver not set: %v", got)
 	}
-	if got["traefik.http.routers.r-tls.rule"] != "Host(`web.example.com`) && PathPrefix(`/api`)" {
+	if got["traefik.http.routers.r-tls.rule"] != Rule("web.example.com", "/api") {
 		t.Errorf("secure rule = %q", got["traefik.http.routers.r-tls.rule"])
 	}
 	if got["traefik.http.routers.r-tls.middlewares"] != "r-noident,r-strip" {
@@ -87,10 +89,10 @@ func TestAppLabelsOneRouterPerDomain(t *testing.T) {
 	if got["traefik.enable"] != "true" || got["outhaul.app"] != "web" {
 		t.Errorf("ownership markers missing: %v", got)
 	}
-	if got["traefik.http.routers."+router("web", 1)+".rule"] != "Host(`a.example.com`)" {
+	if got["traefik.http.routers."+router("web", 1)+".rule"] != Rule("a.example.com", "") {
 		t.Errorf("router for domain 1 wrong: %v", got)
 	}
-	if got["traefik.http.routers."+router("web", 2)+".rule"] != "Host(`b.example.com`)" {
+	if got["traefik.http.routers."+router("web", 2)+".rule"] != Rule("b.example.com", "") {
 		t.Errorf("router for domain 2 wrong: %v", got)
 	}
 }
@@ -420,21 +422,92 @@ func TestHasGateLabel(t *testing.T) {
 	}
 }
 
-// RuleHost reads back the host of the rule RouteLabels writes, with or
-// without a path; anything else has no host.
-func TestRuleHost(t *testing.T) {
+// RuleAddress reads back the host and path of the rule RouteLabels writes, and
+// of the rule an older Outhaul wrote (without the traversal term); anything
+// else has no address.
+func TestRuleAddress(t *testing.T) {
 	for _, c := range []struct{ host, path string }{{"wiki.example.com", ""}, {"wiki.example.com", "/webhooks"}} {
 		rule := RouteLabels("r", c.host, 8080, c.path, "", false, "", false, "")["traefik.http.routers.r.rule"]
 		if rule != Rule(c.host, c.path) {
 			t.Errorf("Rule(%q, %q) = %q, but RouteLabels wrote %q", c.host, c.path, Rule(c.host, c.path), rule)
 		}
-		if got := RuleHost(rule); got != c.host {
-			t.Errorf("RuleHost(%q) = %q, want %q", rule, got, c.host)
+		old := "Host(`" + c.host + "`)"
+		if c.path != "" {
+			old += " && PathPrefix(`" + c.path + "`)"
+		}
+		for _, r := range []string{rule, old} {
+			host, path, ok := RuleAddress(r)
+			if !ok || host != c.host || path != c.path {
+				t.Errorf("RuleAddress(%q) = %q, %q, %v, want %q, %q, true", r, host, path, ok, c.host, c.path)
+			}
 		}
 	}
-	for _, rule := range []string{"", "PathPrefix(`/x`)", "Host(`unterminated"} {
-		if got := RuleHost(rule); got != "" {
-			t.Errorf("RuleHost(%q) = %q, want none", rule, got)
+	for _, rule := range []string{
+		"", "PathPrefix(`/x`)", "Host(`unterminated", "Host(``)",
+		"Host(`h`) && PathPrefix(``)",
+		"Host(`h`) || Host(`evil`)",
+		"Host(`h`) && PathPrefix(`/x`) && Method(`GET`)",
+		"Host(`h`) && !PathRegexp(`.*`)",
+		"Host(`h`) && PathPrefix(`/x`)" + traversalTerm + traversalTerm,
+	} {
+		if host, path, ok := RuleAddress(rule); ok {
+			t.Errorf("RuleAddress(%q) = %q, %q, true, want no address", rule, host, path)
+		}
+	}
+}
+
+// Every rule refuses a path with a ".." segment in any spelling, so no row's
+// router, open or protected, can be handed a path that leaves its prefix once
+// an app decodes it.
+func TestRuleRefusesTraversal(t *testing.T) {
+	const term = " && !PathRegexp(`(?i)(^|/|%2f|\\\\|%5c)(\\.|%2e){2}(/|%2f|\\\\|%5c|;|%3b|$)`)"
+	if got, want := Rule("wiki.example.com", ""), "Host(`wiki.example.com`)"+term; got != want {
+		t.Errorf("Rule(host) = %q, want %q", got, want)
+	}
+	if got, want := Rule("wiki.example.com", "/webhooks"), "Host(`wiki.example.com`) && PathPrefix(`/webhooks`)"+term; got != want {
+		t.Errorf("Rule(host, path) = %q, want %q", got, want)
+	}
+	re := regexp.MustCompile(traversalPattern)
+	// Paths as Traefik's PathRegexp sees them: escaped, with %2e already
+	// decoded and the hex upper-cased (checked on traefik:v3.7.6 by
+	// deploy/test/integration_gate.sh), and in other spellings too.
+	for _, p := range []string{
+		"/webhooks%2F..%2Fpage", "/webhooks/..%2Fpage", "/x/..%2Fadmin", "/x/..%2fadmin",
+		"/x/%2e%2e%2fadmin", "/x/%2E%2E%2Fadmin", "/x/.%2e/admin", "/x/..;/admin", "/x/..%3Badmin",
+		"/x/..%5Cadmin", `/x/..\admin`, `\..\x`, "/x/../admin", "/x/..", "/..", "/webhooks/..%3B",
+	} {
+		if !re.MatchString(p) {
+			t.Errorf("the traversal pattern lets %q through", p)
+		}
+	}
+	for _, p := range []string{
+		"/", "/a%2Fb", "/file..txt", "/.well-known/x", "/a/.../b", "/..foo", "/webhooks/x", "/x/..foo/y", "/a.b", "/%2e%2efoo",
+	} {
+		if re.MatchString(p) {
+			t.Errorf("the traversal pattern refuses %q", p)
+		}
+	}
+}
+
+// Traefik orders routers by rule length unless told otherwise, and the
+// traversal term makes every rule longer. Each router names, as its priority,
+// the length of its rule without the term, which is the priority a container
+// deployed before the term had, so old and new containers on one host order
+// as they did.
+func TestRoutersKeepTheirPriority(t *testing.T) {
+	for _, c := range []struct{ host, path string }{{"wiki.example.com", ""}, {"wiki.example.com", "/webhooks"}} {
+		old := "Host(`" + c.host + "`)"
+		if c.path != "" {
+			old += " && PathPrefix(`" + c.path + "`)"
+		}
+		want := strconv.Itoa(len(old))
+		for _, protected := range []bool{false, true} {
+			l := RouteLabels("r", c.host, 8080, c.path, "", true, "le", protected, "addr")
+			for _, r := range []string{"r", "r-tls"} {
+				if got := l["traefik.http.routers."+r+".priority"]; got != want {
+					t.Errorf("%s%s (protected %v): routers.%s.priority = %q, want %q (the length of %s)", c.host, c.path, protected, r, got, want, old)
+				}
+			}
 		}
 	}
 }

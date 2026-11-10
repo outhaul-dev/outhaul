@@ -218,6 +218,9 @@ Paths match as plain prefixes, not whole path segments: `/admin` also covers
 `/administrator`, and `/webhooks` also covers `/webhooks-old`. Choose paths with that
 in mind.
 
+Outhaul's routes don't accept a path that contains a `..` segment, however it is
+encoded.
+
 ## Scripts, API calls and WebSockets
 
 Only a page load in a browser is sent to sign in: a `GET` or `HEAD` request that

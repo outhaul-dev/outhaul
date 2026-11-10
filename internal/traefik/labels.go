@@ -59,11 +59,18 @@ func AppLabels(app core.App, domains []core.Domain, port int, globalTLS bool, ce
 // path rewrite, so the gate sees the URL the visitor asked for.
 func RouteLabels(router, host string, port int, urlPath, internalPath string, tlsEnabled bool, certResolver string, protected bool, gateAddress string) map[string]string {
 	rule := Rule(host, urlPath)
+	// Traefik ranks routers by the length of their rule unless one names a
+	// priority. The traversal term lengthens every rule, so each router names
+	// the length of its rule without it: the rank a container deployed before
+	// the term has, so that one and a redeployed one on the same host still
+	// order by path as they did.
+	priority := strconv.Itoa(len(addressRule(host, urlPath)))
 	// The router names its service explicitly: a container with several
 	// domains defines several services, and Traefik's Docker provider drops
 	// any router it cannot link to exactly one.
 	labels := map[string]string{
 		"traefik.http.routers." + router + ".rule":                      rule,
+		"traefik.http.routers." + router + ".priority":                  priority,
 		"traefik.http.routers." + router + ".entrypoints":               "web",
 		"traefik.http.routers." + router + ".service":                   router,
 		"traefik.http.services." + router + ".loadbalancer.server.port": strconv.Itoa(port),
@@ -74,6 +81,7 @@ func RouteLabels(router, host string, port int, urlPath, internalPath string, tl
 	if tlsEnabled {
 		tls := router + "-tls"
 		labels["traefik.http.routers."+tls+".rule"] = rule
+		labels["traefik.http.routers."+tls+".priority"] = priority
 		labels["traefik.http.routers."+tls+".entrypoints"] = "websecure"
 		labels["traefik.http.routers."+tls+".tls"] = "true"
 		if certResolver != "" {
@@ -198,9 +206,21 @@ func RouterName(appName string, domainID int64) string {
 	return fmt.Sprintf("outhaul-%s-d%d", appName, domainID)
 }
 
-// Rule is the router rule RouteLabels writes for a route on host, under
-// urlPath when it has one.
-func Rule(host, urlPath string) string {
+// traversalPattern matches a path with a ".." segment, in any mix of literal
+// and percent-encoded spellings, in any case: a start or separator ("/",
+// "%2f", "\", "%5c"), two dots ("." or "%2e"), then a separator, ";",
+// "%3b", or the end. PathRegexp sees the path still escaped, after Traefik's
+// own clean-up has resolved the plain "/../" forms (checked on traefik:v3.7.6
+// by deploy/test/integration_gate.sh).
+const traversalPattern = `(?i)(^|/|%2f|\\|%5c)(\.|%2e){2}(/|%2f|\\|%5c|;|%3b|$)`
+
+// traversalTerm is the part of every Rule that refuses such a path.
+const traversalTerm = " && !PathRegexp(`" + traversalPattern + "`)"
+
+// addressRule is the part of a Rule that names its address: host, and
+// urlPath when it has one. It is the whole rule an Outhaul before the
+// traversal term wrote.
+func addressRule(host, urlPath string) string {
 	rule := fmt.Sprintf("Host(`%s`)", host)
 	if urlPath != "" {
 		rule += fmt.Sprintf(" && PathPrefix(`%s`)", urlPath)
@@ -208,15 +228,45 @@ func Rule(host, urlPath string) string {
 	return rule
 }
 
-// RuleHost returns the host a Rule names, or "" when rule isn't one.
-func RuleHost(rule string) string {
+// Rule is the router rule RouteLabels writes for a route on host, under
+// urlPath when it has one. It matches no path with a ".." segment in any
+// spelling: an app that decodes such a path before resolving it would serve
+// something outside the route, which may be a protected page, so the request
+// isn't routed at all.
+func Rule(host, urlPath string) string {
+	return addressRule(host, urlPath) + traversalTerm
+}
+
+// RuleAddress returns the host and path (or "") a router's rule names, when
+// it is a rule RouteLabels writes, or one an older Outhaul wrote without the
+// traversal term. Anything else has no address (ok is false). Two rules with
+// the same address serve the same requests a row is about, so callers that
+// match a container's router to a row compare addresses, not strings.
+func RuleAddress(rule string) (host, urlPath string, ok bool) {
 	rest, ok := strings.CutPrefix(rule, "Host(`")
 	if !ok {
-		return ""
+		return "", "", false
 	}
-	host, _, ok := strings.Cut(rest, "`)")
-	if !ok {
-		return ""
+	host, rest, ok = strings.Cut(rest, "`)")
+	if !ok || host == "" || strings.Contains(host, "`") {
+		return "", "", false
 	}
-	return host
+	if p, found := strings.CutPrefix(rest, " && PathPrefix(`"); found {
+		urlPath, rest, ok = strings.Cut(p, "`)")
+		if !ok || urlPath == "" || strings.Contains(urlPath, "`") {
+			return "", "", false
+		}
+	}
+	if rest != "" && rest != traversalTerm {
+		return "", "", false
+	}
+	return host, urlPath, true
+}
+
+// SameAddress reports whether rule (a router's rule label) names host and
+// urlPath: its host equal ignoring case, as Traefik's Host matcher compares
+// hosts, and its path exactly, as PathPrefix compares paths.
+func SameAddress(rule, host, urlPath string) bool {
+	h, p, ok := RuleAddress(rule)
+	return ok && strings.EqualFold(h, host) && p == urlPath
 }

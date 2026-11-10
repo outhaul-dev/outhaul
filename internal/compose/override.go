@@ -80,10 +80,13 @@ func Override(app core.App, domains []core.Domain, network string, tlsEnabled bo
 }
 
 // quoteYAML renders s as a double-quoted YAML scalar. Backslash and double
-// quote are the only characters needing escapes for the values we emit
-// (domains, label keys, Traefik rules with backticks).
+// quote are the only characters needing YAML escapes for the values we emit
+// (domains, label keys, Traefik rules with backticks). Compose then
+// interpolates $ in every value, so a literal $ (a rule's regexp anchor) is
+// written $$, which it reads back as $.
 func quoteYAML(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, "$", "$$")
 	return `"` + s + `"`
 }

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/traefik"
 )
 
 func TestBuildArgs(t *testing.T) {
@@ -61,7 +62,7 @@ func TestOverride(t *testing.T) {
 		"      default: {}\n",
 		`"traefik.enable": "true"`,
 		`"traefik.docker.network": "outhaul"`,
-		"\"traefik.http.routers.outhaul-shop-d1.rule\": \"Host(`shop.example.com`)\"",
+		`"traefik.http.routers.outhaul-shop-d1.rule": ` + quoteYAML(traefik.Rule("shop.example.com", "")),
 		`"traefik.http.services.outhaul-shop-d1.loadbalancer.server.port": "3000"`,
 		"networks:\n  \"outhaul\":\n    external: true\n",
 	} {
@@ -110,9 +111,9 @@ func TestOverrideMultipleDomains(t *testing.T) {
 	got := string(Override(app, domains, "outhaul", false, "", "addr"))
 
 	for _, want := range []string{
-		"\"traefik.http.routers.outhaul-shop-d7.rule\": \"Host(`shop.example.com`)\"",
-		"\"traefik.http.routers.outhaul-shop-d8.rule\": \"Host(`www.example.com`)\"",
-		"\"traefik.http.routers.outhaul-shop-d9.rule\": \"Host(`api.example.com`)\"",
+		`"traefik.http.routers.outhaul-shop-d7.rule": ` + quoteYAML(traefik.Rule("shop.example.com", "")),
+		`"traefik.http.routers.outhaul-shop-d8.rule": ` + quoteYAML(traefik.Rule("www.example.com", "")),
+		`"traefik.http.routers.outhaul-shop-d9.rule": ` + quoteYAML(traefik.Rule("api.example.com", "")),
 		`"traefik.http.services.outhaul-shop-d9.loadbalancer.server.port": "8080"`,
 	} {
 		if !strings.Contains(got, want) {
@@ -166,6 +167,48 @@ func TestComposeOverrideCarriesGate(t *testing.T) {
 	}
 	if strings.Contains(got, "@file") {
 		t.Errorf("override references the file provider:\n%s", got)
+	}
+}
+
+// A Compose app's routers refuse ".." paths and keep their priority, as a
+// single-container app's do: the override carries the same rule and priority
+// labels, quoted so YAML gives back the rule's backslashes unchanged.
+func TestComposeOverrideRefusesTraversal(t *testing.T) {
+	app := core.App{Name: "wiki"}
+	domains := []core.Domain{
+		{ID: 1, Host: "wiki.example.com", Service: "web", Port: 3000, TLS: true, Protected: true},
+		{ID: 2, Host: "wiki.example.com", Service: "web", Port: 3000, Path: "/webhooks", TLS: true},
+	}
+	got := string(Override(app, domains, "outhaul", true, "le", "addr"))
+	for _, want := range []string{
+		`"traefik.http.routers.outhaul-wiki-d1.rule": ` + quoteYAML(traefik.Rule("wiki.example.com", "")),
+		`"traefik.http.routers.outhaul-wiki-d1-tls.rule": ` + quoteYAML(traefik.Rule("wiki.example.com", "")),
+		`"traefik.http.routers.outhaul-wiki-d2.rule": ` + quoteYAML(traefik.Rule("wiki.example.com", "/webhooks")),
+		`"traefik.http.routers.outhaul-wiki-d1.priority": "24"`,
+		`"traefik.http.routers.outhaul-wiki-d1-tls.priority": "24"`,
+		`"traefik.http.routers.outhaul-wiki-d2.priority": "51"`,
+		`"traefik.http.routers.outhaul-wiki-d2-tls.priority": "51"`,
+		`!PathRegexp(` + "`" + `(?i)(^|/|%2f|\\\\|%5c)(\\.|%2e){2}`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("override missing %s; got:\n%s", want, got)
+		}
+	}
+}
+
+// Compose interpolates $ in every value of the files it reads, so the
+// override writes a literal $ (the rule's "$" anchor) as $$, which Compose
+// reads back as $.
+func TestOverrideEscapesDollar(t *testing.T) {
+	got := string(Override(core.App{Name: "wiki"}, []core.Domain{{ID: 1, Host: "wiki.example.com", Service: "web", Port: 3000}}, "outhaul", false, "", "addr"))
+	if !strings.Contains(got, "%3b|$$)") {
+		t.Errorf("the rule's $ should be written $$:\n%s", got)
+	}
+	if strings.Contains(strings.ReplaceAll(got, "$$", ""), "$") {
+		t.Errorf("a lone $ is left for Compose to interpolate:\n%s", got)
+	}
+	if q := quoteYAML(`a$b\"c`); q != `"a$$b\\\"c"` {
+		t.Errorf("quoteYAML = %s", q)
 	}
 }
 

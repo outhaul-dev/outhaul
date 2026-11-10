@@ -25,6 +25,14 @@
 #     otherwise a 302 with a Set-Cookie. It logs every header it receives.
 #   - a second stub holding the network alias host.docker.internal, answering
 #     200 with X-Outhaul-User: eve. The gate checks must reach the first one.
+#   - two more echo backends for the priority checks: "new", with the labels
+#     Outhaul writes now, and "old", with labels written by hand the way an
+#     Outhaul before the traversal term wrote them (no term, no priority). On
+#     mix1.test the old one holds /api and the new one the host; on mix2.test
+#     the reverse. "old" also has probe routers on re.test, which show whether
+#     PathRegexp sees a path escaped or decoded.
+#   - a container Compose creates from the override gatelabels -compose
+#     prints, never started, whose labels are compared with the ones above.
 #   - four Traefiks (GATETEST_TRAEFIK_IMAGE, default traefik:v3.7.6), on
 #     loopback ports only:
 #       main      web and websecure side by side, with no redirect, so each
@@ -44,9 +52,15 @@
 # that exposes only containers labelled traefik.enable=true (Outhaul's own)
 # ignores them all.
 #
-# Every container and the network are named outhaul-gatetest-*, and are removed
-# on exit, failure included. Prints one PASS or FAIL line per assertion and
-# exits non-zero if any fails.
+# Paths are sent exactly as written (curl --path-as-is) to check that no row's
+# router takes a path with a ".." segment in any spelling, in both directions
+# (an open path under a protected host, a protected path under an open one),
+# and that paths which only look like one still get through.
+#
+# Every container and the networks are named outhaul-gatetest-*, and are
+# removed on exit, failure included. Prints one PASS or FAIL line per
+# assertion, and INFO lines for what a run finds out, and exits non-zero if
+# any assertion fails.
 #
 # With a running Outhaul (--outhaul HOST:PORT)
 #
@@ -141,9 +155,12 @@ trusting_c=outhaul-gatetest-traefik-trusting
 redirect_c=outhaul-gatetest-traefik-redirect
 unmapped_c=outhaul-gatetest-traefik-unmapped
 app_c=outhaul-gatetest-app
+old_c=outhaul-gatetest-old
+new_c=outhaul-gatetest-new
 gate_c=outhaul-gatetest-gate
 alias_c=outhaul-gatetest-alias
 probe_c=outhaul-gatetest-probe
+compose_c=outhaul-gatetest-compose-web-1
 traefik_image=${GATETEST_TRAEFIK_IMAGE:-traefik:v3.7.6}
 python_image=python:3-slim
 admin_port=8080
@@ -164,7 +181,8 @@ fi
 
 work=$(mktemp -d)
 cleanup() {
-	docker rm -f "$traefik_c" "$trusting_c" "$redirect_c" "$unmapped_c" "$app_c" "$gate_c" "$alias_c" "$probe_c" >/dev/null 2>&1 || true
+	docker rm -f "$traefik_c" "$trusting_c" "$redirect_c" "$unmapped_c" "$app_c" "$old_c" "$new_c" "$gate_c" "$alias_c" "$probe_c" "$compose_c" >/dev/null 2>&1 || true
+	docker network rm outhaul-gatetest-compose_default >/dev/null 2>&1 || true
 	docker network rm "$net" >/dev/null 2>&1 || true
 	rm -rf "$work"
 }
@@ -226,13 +244,48 @@ fi
 printf 'outhaul.gatetest=true\n' >>"$work/labels"
 echo "labels on the backend:"
 sed 's/^/  /' "$work/labels"
+if [ "$mode" = stub ]; then
+	# Two more backends, for the priority checks: "new" carries the labels
+	# Outhaul writes now, and "old" the labels an Outhaul before the traversal
+	# term wrote (no term, no priority label), written out here by hand. On
+	# mix1.test the old one holds /api and the new one the host; on mix2.test
+	# the reverse. "old" also carries two probe routers on re.test, which show
+	# whether PathRegexp sees a path escaped or decoded.
+	"$work/gatelabels" -port 8000 'gt-mixnew-host,mix1.test,,,open' 'gt-mixnew-api,mix2.test,/api,,open' >"$work/labels-new" ||
+		die "gatelabels"
+	printf 'outhaul.gatetest=true\n' >>"$work/labels-new"
+	old_router() { # name rule
+		printf 'traefik.http.routers.%s.rule=%s\n' "$1" "$2"
+		printf 'traefik.http.routers.%s.entrypoints=web\n' "$1"
+		printf 'traefik.http.routers.%s.service=%s\n' "$1" "$1"
+		printf 'traefik.http.services.%s.loadbalancer.server.port=8000\n' "$1"
+	}
+	{
+		old_router gt-mixold-api 'Host(`mix1.test`) && PathPrefix(`/api`)'
+		old_router gt-mixold-host 'Host(`mix2.test`)'
+		old_router gt-re-raw 'Host(`re.test`) && PathRegexp(`(?i)%2f`)'
+		old_router gt-re-decoded 'Host(`re.test`) && PathRegexp(`^/a/b$`)'
+		old_router gt-re-host 'Host(`re.test`)'
+		printf 'traefik.http.routers.gt-re-raw.priority=200\n'
+		printf 'traefik.http.routers.gt-re-raw.middlewares=gt-re-raw-h\n'
+		printf 'traefik.http.middlewares.gt-re-raw-h.headers.customrequestheaders.X-Gatetest-Router=raw\n'
+		printf 'traefik.http.routers.gt-re-decoded.priority=100\n'
+		printf 'traefik.http.routers.gt-re-decoded.middlewares=gt-re-decoded-h\n'
+		printf 'traefik.http.middlewares.gt-re-decoded-h.headers.customrequestheaders.X-Gatetest-Router=decoded\n'
+		printf 'outhaul.gatetest=true\n'
+	} >"$work/labels-old"
+	echo "labels on the new backend:"
+	sed 's/^/  /' "$work/labels-new"
+	echo "labels on the old backend:"
+	sed 's/^/  /' "$work/labels-old"
+fi
 
 echo_py=$(
 	cat <<'EOF'
-import http.server
+import http.server, os
 class H(http.server.BaseHTTPRequestHandler):
     def answer(self):
-        lines = ["path: " + self.path]
+        lines = ["backend: " + os.environ.get("GATETEST_NAME", "app"), "path: " + self.path]
         lines += ["h %s: %s" % (k.lower(), v) for k, v in self.headers.items()]
         body = ("\n".join(lines) + "\n").encode()
         self.send_response(200)
@@ -331,6 +384,12 @@ probe_outhaul() {
 }
 docker run -d --name "$app_c" --network "$net" --label-file "$work/labels" \
 	"$python_image" python -u -c "$echo_py" >/dev/null || die "start the echo backend"
+if [ "$mode" = stub ]; then
+	for b in old new; do
+		docker run -d --name "outhaul-gatetest-$b" --network "$net" --label-file "$work/labels-$b" -e "GATETEST_NAME=$b" \
+			"$python_image" python -u -c "$echo_py" >/dev/null || die "start the $b backend"
+	done
+fi
 start_traefik() { # name, mapped|unmapped, extra Traefik arguments...
 	name=$1
 	if [ "$2" = mapped ]; then hosts="host.docker.internal:$gate_ip"; else hosts=; fi
@@ -428,7 +487,8 @@ for via in $vias; do
 	ready=no
 	i=0
 	while [ $i -lt 30 ]; do
-		if [ "$(req "$first" shop.test /)" = 200 ] && [ "$(req https shop.test /)" = 200 ]; then
+		if [ "$(req "$first" shop.test /)" = 200 ] && [ "$(req https shop.test /)" = 200 ] &&
+			{ [ "$mode" = outhaul ] || [ "$via" = redirect ] || [ "$(req http mix2.test /)" = 200 ]; }; then
 			ready=yes
 			break
 		fi
@@ -649,7 +709,7 @@ fi
 
 tid=0
 echo "== the labels as Docker and Traefik keep them"
-for c in "$traefik_c" "$trusting_c" "$redirect_c" "$unmapped_c" "$app_c" "$gate_c" "$alias_c"; do
+for c in "$traefik_c" "$trusting_c" "$redirect_c" "$unmapped_c" "$app_c" "$old_c" "$new_c" "$gate_c" "$alias_c"; do
 	enable=$(docker inspect --format '{{range $k, $v := .Config.Labels}}{{if eq $k "traefik.enable"}}{{$k}}={{$v}}{{end}}{{end}}' "$c")
 	if [ -z "$enable" ]; then
 		pass "$c carries no traefik.enable label, so a Traefik that doesn't expose by default ignores it"
@@ -734,6 +794,28 @@ for want in \
 		fail "docker compose keeps $want" "$(printf '%s\n' "$merged" | grep -i -e outhaul_user -e outhaul-user -e trustforward -e d3-tls -e error | head -8)"
 	fi
 done
+# A container Compose makes from the override (created, never started, so
+# no Traefik routes to it) carries each rule and priority exactly as a
+# single-container app's labels do: the rule's backslashes survive YAML, and
+# its $ survives Compose's interpolation.
+if docker compose -p outhaul-gatetest-compose -f "$work/compose.yml" -f "$work/override.yml" create >"$work/err" 2>&1; then
+	for pair in 'outhaul-gt-d1 gt-wiki' 'outhaul-gt-d1-tls gt-wiki-tls' 'outhaul-gt-d2 gt-hooks' 'outhaul-gt-d2-tls gt-hooks-tls'; do
+		set -- $pair
+		for key in rule priority; do
+			want=$(sed -n "s/^traefik\\.http\\.routers\\.$2\\.$key=//p" "$work/labels")
+			got=$(docker inspect --format "{{index .Config.Labels \"traefik.http.routers.$1.$key\"}}" "$compose_c")
+			if [ -n "$want" ] && [ "$got" = "$want" ]; then
+				pass "the Compose container's $1 $key is exactly the single-container label: $got"
+			else
+				fail "the Compose container's $1 $key is exactly the single-container label" "got:  $got" "want: $want"
+			fi
+		done
+	done
+else
+	fail "docker compose creates a container from the override" "$(cat "$work/err")"
+fi
+docker rm -f "$compose_c" >/dev/null 2>&1
+docker network rm outhaul-gatetest-compose_default >/dev/null 2>&1
 echo
 
 echo "== which host.docker.internal answers for the gate"
@@ -937,6 +1019,168 @@ for scheme in http https; do
 	via=main
 	echo
 done
+
+# Paths sent exactly as written (--path-as-is), where a client, Traefik and an
+# app could read a path differently. probe SCHEME HOST PATH [curl args...]
+# sends one, and sets code, gated (yes when the gate stub was asked), seen (the
+# path the backend got, or "" when the request never reached it) and backend
+# (which backend container answered).
+probe() {
+	tid=$((tid + 1))
+	probe_scheme=$1 probe_host=$2 probe_path=$3
+	shift 3
+	code=$(req "$probe_scheme" "$probe_host" "$probe_path" --path-as-is -H 'Accept: text/html' -H "X-Gatetest-Id: $tid" "$@")
+	if [ -n "$(gate_lines "$tid")" ]; then gated=yes; else gated=no; fi
+	seen=$(sed -n 's/^path: //p' "$work/b" | head -1)
+	backend=$(sed -n 's/^backend: //p' "$work/b" | head -1)
+}
+# what the last probe did, in words
+probe_said() {
+	if [ -n "$seen" ]; then
+		printf 'status %s, gate asked: %s, the %s backend got %s' "$code" "$gated" "$backend" "$seen"
+	else
+		printf 'status %s, gate asked: %s, the backend got nothing' "$code" "$gated"
+	fi
+}
+for scheme in http https; do
+	echo "== $scheme, paths as written"
+	# Every router refuses a path with a ".." segment in any spelling, so none
+	# reaches the app through a row's router: Traefik's own clean-up resolves
+	# the plain forms first and sends them to the row they name (here the
+	# gate), and no router takes the rest. Both directions: open /webhooks
+	# under the protected wiki.test, and the protected /admin under the open
+	# shop.test.
+	for target in \
+		'wiki.test /webhooks/../page' 'wiki.test /webhooks/%2e%2e/page' \
+		'wiki.test /webhooks%2f..%2fpage' 'wiki.test /webhooks/..%2fpage' 'wiki.test /webhooks/%2e%2e%2fpage' \
+		'wiki.test /webhooks/..;/page' 'wiki.test /webhooks/..%3bpage' 'wiki.test /webhooks/..%5cpage' \
+		'wiki.test /webhooks/..\page' \
+		'shop.test /x/../admin' 'shop.test /x/%2e%2e/admin' \
+		'shop.test /x/..%2fadmin' 'shop.test /x/%2e%2e%2fadmin' 'shop.test /x/..%2Fadmin' \
+		'shop.test /x/..;/admin' 'shop.test /x/..%3badmin' 'shop.test /x/..%5cadmin' 'shop.test /x/..\admin'; do
+		set -- $target
+		probe "$scheme" "$1" "$2"
+		said=$(probe_said)
+		if [ -n "$seen" ]; then
+			fail "$scheme $1$2 (a .. segment): reached the backend" "$said"
+		elif [ "$gated" = yes ] && [ "$code" = 302 ]; then
+			pass "$scheme $1$2 (a .. segment): Traefik resolved it, and the gate was asked ($said)"
+		elif [ "$gated" = no ] && [ "$code" = 404 ]; then
+			pass "$scheme $1$2 (a .. segment): no router takes it, 404 ($said)"
+		else
+			fail "$scheme $1$2 (a .. segment): want the gate's 302 or a 404" "$said" "$(cat "$work/b")"
+		fi
+	done
+	# Paths that only look like one still reach the app: open rows with no
+	# gate call, the protected row through the gate.
+	for target in \
+		'shop.test /a%2Fb' 'shop.test /file..txt' 'shop.test /.well-known/x' 'shop.test /a/.../b' 'shop.test /..foo' \
+		'wiki.test /webhooks/a%2Fb' 'wiki.test /webhooks/file..txt' 'wiki.test /webhooks/.well-known/x' \
+		'wiki.test /webhooks/a/.../b' 'wiki.test /webhooks/..foo'; do
+		set -- $target
+		probe "$scheme" "$1" "$2"
+		if [ "$code" = 200 ] && [ "$gated" = no ] && [ "$seen" = "$2" ]; then
+			pass "$scheme $1$2 (open): reaches the app as $2, with no gate call"
+		else
+			fail "$scheme $1$2 (open): want 200 from the app on $2, with no gate call" "$(probe_said)"
+		fi
+	done
+	for p in /a%2Fb /file..txt /.well-known/x /a/.../b /..foo; do
+		probe "$scheme" wiki.test "$p" -H 'Cookie: gatetest=ok'
+		if [ "$code" = 200 ] && [ "$gated" = yes ] && [ "$seen" = "$p" ]; then
+			pass "$scheme wiki.test$p (protected, signed in): reaches the app as $p, through the gate"
+		else
+			fail "$scheme wiki.test$p (protected, signed in): want 200 from the app on $p, through the gate" "$(probe_said)"
+		fi
+	done
+	# PathPrefix compares case: /ADMIN isn't the protected /admin row, so the
+	# open row serves it. The docs say so, and recommend protecting the whole
+	# address and opening named paths.
+	probe "$scheme" shop.test /ADMIN/x
+	if [ "$code" = 200 ] && [ "$gated" = no ] && [ "$seen" = /ADMIN/x ]; then
+		pass "$scheme shop.test/ADMIN/x: the open row serves it, with no gate call (PathPrefix compares case, as the docs say)"
+	else
+		fail "$scheme shop.test/ADMIN/x: expected the open row to serve it" "$(probe_said)"
+	fi
+	for p in /admin%2fx /./admin/x; do
+		probe "$scheme" shop.test "$p"
+		if [ -z "$seen" ] && [ "$gated" = yes ] && [ "$code" = 302 ]; then
+			pass "$scheme shop.test$p (protected /admin under an open host): the gate is asked ($(probe_said))"
+		else
+			fail "$scheme shop.test$p (protected /admin under an open host): want the gate's 302" "$(probe_said)"
+		fi
+	done
+	# A client naming the identity header in Connection asks Traefik to drop
+	# it as hop-by-hop. Signed in, the backend must still get the gate's
+	# answer, and never a value of the client's.
+	tid=$((tid + 1))
+	code=$(req "$scheme" wiki.test /page --http1.1 -H 'Cookie: gatetest=ok' -H 'Connection: X-Outhaul-User' \
+		-H 'X-Outhaul-User: mallory' -H "X-Gatetest-Id: $tid")
+	body=$(cat "$work/b")
+	if [ "$code" = 200 ] && [ "$(count_lines "$body" 'h x-outhaul-user: dana')" = 1 ] &&
+		[ "$(printf '%s\n' "$body" | grep -ci '^h x-outhaul-user: ')" = 1 ]; then
+		pass "$scheme wiki.test/page signed in, with Connection: X-Outhaul-User: the backend still gets X-Outhaul-User: dana, and only that"
+	else
+		fail "$scheme wiki.test/page signed in, with Connection: X-Outhaul-User: want X-Outhaul-User: dana at the backend" \
+			"status=$code" "$body"
+	fi
+	echo
+done
+
+echo "== what PathRegexp sees"
+probe http re.test /a%2fb
+case $(sed -n 's/^h x-gatetest-router: //p' "$work/b") in
+raw) info "PathRegexp sees the path still escaped: /a%2fb matched PathRegexp(\`(?i)%2f\`), and the app got $seen" ;;
+decoded) info "PathRegexp sees the path decoded: /a%2fb matched PathRegexp(\`^/a/b\$\`), and the app got $seen" ;;
+*) info "PathRegexp: /a%2fb matched neither probe router ($(probe_said))" ;;
+esac
+probe http re.test /a%2eb
+info "an escaped dot: /a%2eb reaches the app as $seen"
+echo
+
+# A row's router names its priority: the length of its rule without the
+# traversal term, which is the priority Traefik gave a container deployed
+# before the term. On mix1.test the old container holds /api and the new one
+# the host; on mix2.test the reverse. The path row wins for its prefix either
+# way, as before.
+echo "== priority, between containers deployed before and after the traversal term"
+for target in 'mix1.test /api/x old' 'mix1.test /other new' 'mix2.test /api/x new' 'mix2.test /other old'; do
+	set -- $target
+	probe http "$1" "$2"
+	if [ "$code" = 200 ] && [ "$backend" = "$3" ] && [ "$seen" = "$2" ]; then
+		pass "http $1$2: the $3 container answers ($(probe_said))"
+	else
+		fail "http $1$2: want the $3 container" "$(probe_said)"
+	fi
+done
+# api_priority ROUTER: the priority Traefik's API gives it
+api_priority() { api "routers/$1" | sed -n 's/.*"priority":\([0-9-][0-9]*\).*/\1/p'; }
+for target in 'gt-wiki wiki.test -' 'gt-wiki-tls wiki.test -' 'gt-hooks wiki.test /webhooks' 'gt-hooks-tls wiki.test /webhooks' \
+	'gt-admin shop.test /admin' 'gt-admin-tls shop.test /admin' 'gt-mixold-api mix1.test /api' 'gt-mixold-host mix2.test -'; do
+	set -- $target
+	rule="Host(\`$2\`)"
+	if [ "$3" != - ]; then rule="$rule && PathPrefix(\`$3\`)"; fi
+	got=$(api_priority "$1@docker")
+	if [ "$got" = "${#rule}" ]; then
+		pass "router $1 has priority $got, the length of $rule"
+	else
+		fail "router $1 has priority ${#rule}, the length of $rule" "API: $(api "routers/$1@docker")"
+	fi
+done
+# The routers outside the rows: the redirect Traefik's entrypoint redirect and
+# what the API lists of its own.
+redirect_api_port=$(host_port "$redirect_c" 8080)
+redirect_api() { curl -sS --max-time 5 "http://127.0.0.1:$redirect_api_port/api/http/$1" 2>/dev/null; }
+internal=$(redirect_api routers | grep -o '"name":"[^"]*@internal"' | sed 's/^"name":"//; s/"$//')
+if [ -z "$internal" ]; then
+	info "the redirect Traefik's API lists no internal routers"
+fi
+for name in $internal; do
+	obj=$(redirect_api "routers/$name")
+	prio=$(printf '%s' "$obj" | sed -n 's/.*"priority":\([0-9-]*\).*/\1/p')
+	info "the redirect Traefik's internal router $name has priority ${prio:-unset}"
+done
+echo
 
 # Under TLS, Outhaul's web entrypoint redirects every request to websecure, so
 # only HTTPS routers serve. The protected /admin row's own TLS flag is off: it
