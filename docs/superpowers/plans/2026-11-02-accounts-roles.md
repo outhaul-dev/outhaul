@@ -16,9 +16,10 @@
 - Migrations are numbered, embedded and never edited after shipping. This plan adds `0027`.
 - No JS build step. No web framework. CGO stays off.
 - Role labels are exactly: `System admin`, `Project admin`, `Project member`, `Project viewer`, `No role`.
-- Commits look like `feat(scope): summary`. The body says what the user saw go wrong, and what changed. End every commit message with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- Commits look like `feat(scope): summary`. The body says what the user saw go wrong, and what changed. End every commit message with `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>`.
 - `go vet ./...` and `go test -race ./...` pass before a task is called done.
 - The repository is public: don't describe unfixed security issues in `AGENTS.md` or `ARCHITECTURE.md`.
+- Every new route goes in `routes()` with a level. A new public route is also added to `TestPublicRoutesAreExactlyThese`, and a new path wildcard to the value map in `TestEveryRouteRefusesTheWrongPeople` (both in `internal/server/access_test.go`).
 
 ## Review Focus
 
@@ -537,7 +538,7 @@ git commit -m "feat(users): system admins manage accounts and roles"
 
 **Files:**
 - Create: `internal/server/account.go`, `internal/server/templates/account.tmpl`
-- Modify: `internal/server/projects.go`, `internal/server/templates/project.tmpl`, `internal/server/routes.go`, `internal/server/settings.go`, `internal/server/templates/settings.tmpl`, `internal/server/templates/app.tmpl:166`, `internal/server/settings_test.go`, `internal/store/pushkeys.go`
+- Modify: `internal/server/projects.go`, `internal/server/templates/project.tmpl`, `internal/server/routes.go`, `internal/server/settings.go`, `internal/server/templates/settings.tmpl`, `internal/server/templates/app.tmpl` (the link to `/settings`, near line 168), `internal/server/settings_test.go`, `internal/server/access_test.go`, `internal/store/pushkeys.go`
 - Test: `internal/server/account_test.go`, `internal/server/projects_share_test.go`
 
 **Interfaces:**
@@ -558,6 +559,17 @@ func TestCannotShareWithNoRoleAccount(t *testing.T) {
 
 func TestMemberCannotShare(t *testing.T) { /* project member POST members => 403 */ }
 
+func TestSharingRefusesPeopleWhoCantBeListed(t *testing.T) {
+	// POST members with a system admin's id, an unknown id, or no id => 400; no row is added.
+	// Adding someone twice => 303 and one row.
+}
+
+func TestProjectAdminCanLeaveAProject(t *testing.T) {
+	// A project admin removes themselves => 303 to /projects, not to the project page they can no longer open.
+}
+
+func TestProjectAdminOnAnotherProjectCannotShareThisOne(t *testing.T) { /* => 404 */ }
+
 func TestAccountPageWorksWithNoRole(t *testing.T) {
 	// A password account with RoleNone: GET /account => 200 with the Change password panel.
 	// The sidebar has no href="/apps" or "/projects".
@@ -577,12 +589,12 @@ Move the existing `TestChangePassword*` tests to `/account/password`, redirectin
 
 - [ ] **Step 2: Run the tests and watch them fail**
 
-Run: `go test ./internal/server/ -run 'TestProjectAdminShares|TestCannotShare|TestMemberCannotShare|TestAccountPage|TestPushKeysBelong|TestSettingsNoLonger|TestChangePassword'`
+Run: `go test ./internal/server/ -run 'TestProjectAdminShares|TestCannotShare|TestMemberCannotShare|TestSharingRefuses|TestProjectAdminCan|TestProjectAdminOnAnother|TestAccountPage|TestPushKeysBelong|TestSettingsNoLonger|TestChangePassword'`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement**
 
-Move `handleChangePassword`, `handleAddPushKey` and `handleDeletePushKey` to `account.go`, unchanged apart from their paths and owner. A new key's `UserID` is the signed-in user, and deletes use `DeletePushKeyForUser`. Delete `ListPushKeys`. Cut both panels from `settings.tmpl` into `account.tmpl`, and fix the `app.tmpl:166` link. People panel copy comes from the mockup, including "System admins can see every project and aren't listed here." Controls need `.CanManage`.
+Move `handleChangePassword`, `handleAddPushKey` and `handleDeletePushKey` to `account.go`, unchanged apart from their paths and owner. A new key's `UserID` is the signed-in user, and deletes use `DeletePushKeyForUser`. Delete `ListPushKeys`. Cut both panels from `settings.tmpl` into `account.tmpl`, and fix the `app.tmpl` link to `/settings`. Add the `{userID}` wildcard to `TestEveryRouteRefusesTheWrongPeople`. The sidebar and `noaccess.tmpl` already link to `/account`, and the Users page's self-reset message points there, so check each now leads somewhere. People panel copy comes from the mockup, including "System admins can see every project and aren't listed here." Controls need `.CanManage`.
 
 - [ ] **Step 4: Run the tests and watch them pass**
 

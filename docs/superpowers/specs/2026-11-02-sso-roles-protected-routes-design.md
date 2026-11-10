@@ -212,7 +212,8 @@ connected, and is unchanged when none is.
   refreshed at each sign-in, and never grants access by itself. Two accounts may show
   the same email.
 - Use the `email` claim, falling back to `preferred_username`. Refuse sign-in if there
-  is neither.
+  is neither. An `email` that the provider marks `email_verified: false` is not used,
+  because protected apps receive this name as the person's identity.
 - Never link accounts automatically by email. The first-boot admin stays a password
   account. To become an SSO system admin, a person signs in with SSO once, then uses
   the password account to change that role.
@@ -285,8 +286,11 @@ protected host gets its own cookie, through a one-time code:
 3. Otherwise, a page navigation is redirected to a gate-start page on Outhaul's public URL with
    the original URL. Anything else (a non-`GET`/`HEAD` method, no `text/html` in `Accept`, or a
    WebSocket upgrade) gets a 401.
-4. Gate-start refuses any URL unless its host has a row with protection on. It always builds
-   `https://` URLs, because `X-Forwarded-Proto` isn't reliable in tunnel mode.
+4. Gate-start refuses any URL unless the row Traefik would route it to has protection on: of the
+   rows on that host whose path is a prefix of the URL's path, the longest. Checking only the host
+   isn't enough. An open path under a protected host would receive the one-time code unredeemed,
+   and whoever held it could sign in as that person. It always builds `https://` URLs, because
+   `X-Forwarded-Proto` isn't reliable in tunnel mode.
 5. A valid gateway session (below) skips straight to step 7. Otherwise the person sees the login
    page, naming the destination, with the same SSO button and password form.
 6. Signing in creates a gateway session in its own cookie on the Outhaul host.
@@ -294,7 +298,8 @@ protected host gets its own cookie, through a one-time code:
    the original URL with the code in a reserved query parameter. The original path always falls
    under the protected router, so no extra Traefik route is needed.
 8. Gate-check sees the parameter, redeems the code, sets the route cookie and redirects to the URL
-   without the parameter. Traefik returns a non-2xx forward-auth response to the browser as it is.
+   without the parameter, as an absolute `https://` URL on that host. A relative redirect built from
+   a path such as `//evil.example/` would send the browser to another site. Traefik returns a non-2xx forward-auth response to the browser as it is.
 
 Properties to keep:
 

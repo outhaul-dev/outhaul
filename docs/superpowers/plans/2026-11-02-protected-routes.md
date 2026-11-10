@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Test first. Commits look like `feat(scope): summary`, and every commit message ends with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
+- Test first. Commits look like `feat(scope): summary`, and every commit message ends with `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>`.
 - The gate is defined **in labels**, never in the file provider. A router referencing an undefined `@file` middleware falls through to an open router, which was tested on `traefik:v3.7.6`.
 - Header name: `X-Outhaul-User`. Reserved query parameter: `__outhaul_code`. Route cookie: `__Host-outhaul_route`. Gateway cookie: `outhaul_gate`.
 - Route sessions and gateway sessions last 8 hours. One-time codes last 60 seconds and work once.
@@ -20,6 +20,9 @@
 - Long-lived handlers aren't involved: `/gate/check` must answer quickly and never stream.
 - The UI says "SSO", and the switch reads exactly `Require sign-in`.
 - This migration is `0028`. Existing rows default to open, and no app redeploys on upgrade.
+- Every new route goes in `routes()` with a level. A new public route is also added to `TestPublicRoutesAreExactlyThese`, and a new path wildcard to the value map in `TestEveryRouteRefusesTheWrongPeople` (both in `internal/server/access_test.go`).
+- Docker: only Tasks 1 and 8 start containers, and only ones named `outhaul-gatetest-*`. Nothing touches `outhaul-traefik` or the `outhaul` network.
+- A one-time code is only ever sent to a URL the gate will answer. Whoever holds an unredeemed code can sign in as that person on that host.
 
 ## Review Focus
 
@@ -28,20 +31,22 @@
 - During a cutover, an old container without the gate runs next to a new one with it: the row doesn't show as protected until the old one has gone. Pinned in Task 6.
 - `/gate/start` receives a URL for an unprotected host, `http://`, `//evil.example`, a host with a port or different case, or no URL at all: refused unless its normalized host has a protected row. Pinned in Task 4.
 - A row is turned off while the app still trusts the header: the open route strips a forged `X-Outhaul-User`. Pinned in Tasks 1 and 8.
+- `/gate/start` receives a URL on a protected host whose path belongs to an open row, maybe another app's: refused, or the code would reach that app unredeemed. Pinned in Tasks 1 and 4.
+- A request for `https://wiki.example.com//evil.example/` reaches the gate from someone signed in: the redirect stays on `wiki.example.com`. Pinned in Task 3.
 
 ---
 
 ### Task 1: The column and the labels
 
 **Files:**
-- Create: `internal/store/migrations/0028_protected_routes.sql`
+- Create: `internal/store/migrations/0028_protected_routes.sql`, `deploy/test/integration_gate.sh`, `deploy/test/gatelabels/main.go`
 - Modify: `internal/core/app.go`, `internal/store/domains.go`, `internal/traefik/labels.go`, `internal/compose/override.go`, `internal/deploy/pipeline.go`, `internal/deploy/pipeline_compose.go`, `internal/config/config.go`
 - Test: `internal/traefik/labels_test.go`, `internal/compose/compose_test.go`, `internal/store/domains_test.go`, `internal/config/config_test.go`
 
 **Interfaces:**
 - Produces:
   - `core.Domain.Protected bool`
-  - `(*Store) HostIsProtected(ctx, host string) (bool, error)`
+  - `(*Store) RouteIsProtected(ctx, host, urlPath string) (bool, error)`: looks at every app's rows on that host (compared lower-cased) whose `path` is a plain string prefix of `urlPath`, the way Traefik's `PathPrefix` matches, and reports whether the one with the longest path is protected. No matching row gives false.
   - `(*Store) SetDomainProtected(ctx, appID, domainID int64, protected bool) error`
   - `func (c config.Config) GateAddress() string`: `"http://host.docker.internal:" + c.AdminPort() + "/gate/check"`
   - `traefik.RouteLabels(router, host string, port int, urlPath, internalPath string, tlsEnabled bool, certResolver string, protected bool, gateAddress string) map[string]string`
@@ -90,14 +95,28 @@ func TestComposeOverrideCarriesGate(t *testing.T) {
 	// A protected row gives the service the forwardauth labels; the empty strip value renders as "" in YAML.
 }
 
-func TestHostIsProtected(t *testing.T) {
-	// One protected and one open row on separate hosts; a path row on a host also counts.
+func TestRouteIsProtected(t *testing.T) {
+	// Rows: wiki.example.com "" protected; wiki.example.com "/webhooks" open, on ANOTHER app;
+	// shop.example.com "" open; shop.example.com "/admin" protected.
+	// wiki "/" and "/page" => true;  wiki "/webhooks", "/webhooks/x", "/webhooksfoo" => false
+	// shop "/admin", "/admin/x", "/administrator" => true;  shop "/" and "/cart" => false
+	// "WIKI.example.com" "/page" => true;  an unknown host => false
 }
 
 func TestGateAddress(t *testing.T) { /* ListenAddr ":9000" => ".../host.docker.internal:9000/gate/check" */ }
 ```
 
 Update existing label and pipeline assertions for the new `r-noident` middleware and the changed signatures.
+
+The labels then have to be proved on real Traefik in this task, before seven more tasks are built on them. An empty label value is how the header is removed, and whether Traefik's Docker provider keeps an empty value has to be seen, not assumed. Write `deploy/test/integration_gate.sh`: POSIX `sh`, not run by CI, cleaning up with a `trap`. Every container and network it creates is named `outhaul-gatetest-*`. It starts `traefik:v3.7.6` on a loopback port, an echo backend, and a small `python:3-slim` gate stub on a scratch Docker network. Labels come from `deploy/test/gatelabels/main.go`, which prints `traefik.RouteLabels` output, so the test covers the real label code. Assert:
+- a protected path under an open host returns the stub's 302 with its `Set-Cookie` reaching the client;
+- a 200 from the stub forwards `X-Outhaul-User: dana`, and a client-sent forged value is replaced;
+- an open row strips a client-sent `X-Outhaul-User`, and still serves;
+- `/webhooks` open under a protected host reaches the backend with no gate call, and so does `/webhooksfoo` (this pins the prefix rule `RouteIsProtected` copies);
+- the stub receives the browser's `Cookie` and `Accept` headers, and `X-Forwarded-Host`, `-Uri` and `-Method` that a client-sent value can't override;
+- with the stub stopped, a protected path returns 500 and an open path still returns 200.
+
+If Traefik drops the empty header value, don't work round it silently: report it, because the design for stripping the header has to change.
 
 - [ ] **Step 2: Run the tests and watch them fail**
 
@@ -110,13 +129,16 @@ Migration: `ALTER TABLE domains ADD COLUMN protected INTEGER NOT NULL DEFAULT 0`
 
 - [ ] **Step 4: Run the tests and watch them pass**
 
-Run: `go test ./internal/...`
-Expected: PASS.
+Run: `go test ./internal/... && sh deploy/test/integration_gate.sh`
+Expected: PASS, and `docker ps -a --filter name=outhaul-gatetest` shows nothing left over.
+
+Run: `docker run --rm -v "$PWD:/mnt" koalaman/shellcheck:v0.9.0 -s sh --severity=warning /mnt/deploy/test/integration_gate.sh`
+Expected: no output.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add internal
+git add internal deploy/test/integration_gate.sh deploy/test/gatelabels
 git commit -m "feat(traefik): protected rows carry a forward-auth gate in their labels"
 ```
 
@@ -220,7 +242,7 @@ func TestGateCheckGives401ToNonBrowsers(t *testing.T) {
 	// Each => 401, no Location: POST with Accept text/html; GET with Accept application/json; GET with Upgrade: websocket.
 }
 func TestGateCheckRedeemsCode(t *testing.T) {
-	// X-Forwarded-Uri "/page?x=1&__outhaul_code=C" => 302 to "/page?x=1" with Set-Cookie:
+	// X-Forwarded-Uri "/page?x=1&__outhaul_code=C" => 302 to "https://wiki.example.com/page?x=1" with Set-Cookie:
 	// name __Host-outhaul_route, Path=/, Secure, HttpOnly, SameSite=Lax, no Domain.
 	// Max-Age matches 8h.
 }
@@ -229,6 +251,13 @@ func TestGateCheckBadCodeRestartsSignIn(t *testing.T) {
 	// The same bad code with a valid route cookie: 302 to the URL without the code, no sign-in.
 }
 func TestGateCheckFailsClosedWithoutPublicURL(t *testing.T) { /* publicURL "" and no cookie => 503 */ }
+func TestGateCheckNeverRedirectsOffTheHost(t *testing.T) {
+	// X-Forwarded-Uri "//evil.example/?__outhaul_code=C" and "/\\evil.example/?__outhaul_code=C",
+	// each with a good code, and with a bad code plus a valid cookie:
+	// Location starts with "https://wiki.example.com/" every time.
+	// The parameter given twice is removed both times.
+}
+func TestGateCheckRepliesArentCached(t *testing.T) { /* every 302 and 401 carries Cache-Control: no-store */ }
 ```
 
 - [ ] **Step 2: Run the tests and watch them fail**
@@ -238,7 +267,7 @@ Expected: FAIL with 404.
 
 - [ ] **Step 3: Implement in this order**
 
-A code parameter is handled first. Then the cookie. Then the browser test: method `GET` or `HEAD`, `Accept` containing `text/html`, and no `Upgrade` header. Traefik may drop `Upgrade` before calling the gate, so the `Accept` test has to catch WebSockets by itself: browsers don't send `text/html` on a WebSocket handshake. Never log tokens or codes. Trust `X-Forwarded-Host`, `-Uri` and `-Method` because Traefik overwrites them; this is safe because a caller who reaches the port directly gains nothing without a valid cookie for that host.
+A code parameter is handled first. Then the cookie. Then the browser test: method `GET` or `HEAD`, `Accept` containing `text/html`, and no `Upgrade` header. Traefik may drop `Upgrade` before calling the gate, so the `Accept` test has to catch WebSockets by itself: browsers don't send `text/html` on a WebSocket handshake. Every redirect to the app's host is absolute, built as `"https://" + normalizeHost(host) + uri`, never the bare URI: a path beginning `//` would be read as another site. Never log tokens or codes. Trust `X-Forwarded-Host`, `-Uri` and `-Method` because Traefik overwrites them; this is safe because a caller who reaches the port directly gains nothing without a valid cookie for that host.
 
 - [ ] **Step 4: Run the tests and watch them pass**
 
@@ -260,7 +289,7 @@ git commit -m "feat(gate): answer Traefik's forward-auth check"
 - Test: `internal/server/gate_signin_test.go`
 
 **Interfaces:**
-- Consumes: Task 2's store methods, `HostIsProtected`, `ssoFlow.Return`.
+- Consumes: Task 2's store methods, `RouteIsProtected`, `ssoFlow.Return`.
 - Produces:
   - Routes at `levelPublic`: `GET /gate/start`, `POST /gate/sign-in`, `GET /gate/sign-out`, `POST /gate/sign-out`
   - `const gateCookie = "outhaul_gate"`, `const gateCodeTTL = 60 * time.Second`
@@ -276,6 +305,14 @@ func TestGateStartRefusesBadReturnURLs(t *testing.T) {
 	// //evil.example/; https://unprotected.example.com/; https://evil.example/wiki.example.com;
 	// https://wiki.example.com@evil.example/.
 	// https://WIKI.example.com:443/x is accepted.
+}
+func TestGateStartRefusesOpenPathsOnAProtectedHost(t *testing.T) {
+	// wiki.example.com protected, with /webhooks open on another app; shop.example.com open with /admin protected.
+	// Refused: https://wiki.example.com/webhooks/x, https://shop.example.com/, https://shop.example.com/cart,
+	// https://shop.example.com/admin/../cart, https://shop.example.com/admin/%2e%2e/cart,
+	// https://shop.example.com/admin%2f..%2fcart, https://shop.example.com/admin\..\cart.
+	// Accepted: https://wiki.example.com/page, https://shop.example.com/admin/users?tab=1.
+	// Refused even with a valid outhaul_gate cookie: no code is minted.
 }
 func TestGateStartShowsLoginNamingTheDestination(t *testing.T) {
 	// Body has "Sign in to continue to", "wiki.example.com", and the SSO button when connected.
@@ -294,6 +331,10 @@ func TestSSORouteVisitCreatesNoAccount(t *testing.T) {
 	// ListUsers unchanged, no sessions row.
 }
 func TestSSOStartRefusesBadReturnURL(t *testing.T) { /* unprotected rd => 400 */ }
+func TestSSOCallbackChecksReturnURLAgain(t *testing.T) {
+	// A flow cookie edited to return to https://wiki.example.com/webhooks/x (open): no code is minted.
+	// A row turned off between start and callback: the same.
+}
 func TestSSOFailureOnRouteVisitKeepsDestination(t *testing.T) {
 	// A flow with a return URL, then Exchange fails: 303 to /gate/start?rd=...&error=..., showing the error
 	// and still naming the destination.
@@ -308,12 +349,12 @@ func TestRemovedAccountLosesRouteAccessAtOnce(t *testing.T) { /* POST /users/{id
 
 - [ ] **Step 2: Run the tests and watch them fail**
 
-Run: `go test ./internal/server/ -run 'TestGateStart|TestPasswordSignInForRoute|TestExistingGateway|TestAdminLogin|TestSSORouteVisit|TestSSOStartRefuses|TestSSOFailureOnRouteVisit|TestSignOut|TestLogoutEnds|TestRemovedAccount'`
+Run: `go test ./internal/server/ -run 'TestGateStart|TestPasswordSignInForRoute|TestExistingGateway|TestAdminLogin|TestSSORouteVisit|TestSSOStartRefuses|TestSSOCallbackChecks|TestSSOFailureOnRouteVisit|TestSignOut|TestLogoutEnds|TestRemovedAccount'`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement**
 
-`validReturnURL` parses with `net/url`, requires scheme `https`, an empty `User`, and a non-empty host, then checks `HostIsProtected(normalizeHost(u.Host))`. Move password checking out of `handleLoginSubmit` into a helper that `/gate/sign-in` also calls, including the hash slots and the refusal of SSO accounts. `s.login` also starts a gateway session. The SSO callback branches on `flow.Return`: when set, it starts a gateway session with subject `core.SSOGateSubject(issuer, subject)` and redirects with a code; when empty, it behaves as in part 2 and also starts a gateway session. A failed callback whose flow has a return URL goes back to `/gate/start`; one with no usable flow goes to `/login`. The gateway cookie is `HttpOnly`, `SameSite=Lax`, `Path=/`, 8 hours, `Secure` from `requestIsHTTPS`.
+`validReturnURL` parses with `net/url`, requires scheme `https`, an empty `User`, and a non-empty host. It refuses a path the browser or Traefik might read differently from Outhaul: `u.EscapedPath()` containing `\`, `%2e`, `%2f` or `%5c` in either case, or a `u.Path` that `path.Clean` would change (a trailing slash aside). An empty path counts as `/`. Then it checks `RouteIsProtected(normalizeHost(u.Host), u.Path)`. `redirectWithCode` calls `validReturnURL` itself, so no caller can mint a code for a URL that wasn't checked. Move password checking out of `handleLoginSubmit` into a helper that `/gate/sign-in` also calls, including the hash slots and the refusal of SSO accounts. `s.login` also starts a gateway session. The SSO callback branches on `flow.Return`: when set, it starts a gateway session with subject `core.SSOGateSubject(issuer, subject)` and redirects with a code; when empty, it behaves as in part 2 and also starts a gateway session. A failed callback whose flow has a return URL goes back to `/gate/start`; one with no usable flow goes to `/login`. The gateway cookie is `HttpOnly`, `SameSite=Lax`, `Path=/`, 8 hours, `Secure` from `requestIsHTTPS`.
 
 Update copy now that routes exist: `noaccess.tmpl` adds "You can still use apps on protected routes.", and the Users note reads `"No role" means the person can pass protected routes but can't use Outhaul.`
 
@@ -540,21 +581,20 @@ git commit -m "feat(previews): previews inherit protection from their parent"
 ### Task 8: Check against real Traefik, and write it down
 
 **Files:**
-- Create: `deploy/test/integration_gate.sh`, `deploy/test/gatelabels/main.go`, `docs/PROTECTED-ROUTES.md`
-- Modify: `ARCHITECTURE.md`, `AGENTS.md`, `README.md`, `docs/SSO.md`
+- Create: `docs/PROTECTED-ROUTES.md`
+- Modify: `deploy/test/integration_gate.sh`, `ARCHITECTURE.md`, `AGENTS.md`, `README.md`, `docs/SSO.md`
 
-- [ ] **Step 1: Write `deploy/test/integration_gate.sh`**
+- [ ] **Step 1: Point the Traefik test at the real gate**
 
-POSIX `sh`, not run by CI, and cleaning up with a `trap`. Every container and network it creates is named `outhaul-gatetest-*`, and it never touches `outhaul-traefik` or the `outhaul` network. It starts `traefik:v3.7.6` on a loopback port, an echo backend, and a small `python:3-slim` gate stub on a scratch Docker network. Labels come from `deploy/test/gatelabels/main.go`, which prints `traefik.RouteLabels` output, so the test covers the real label code. Assert:
-- a protected path under an open host returns the stub's 302 with its `Set-Cookie` reaching the client;
-- a 200 from the stub forwards `X-Outhaul-User: dana`, and a client-sent forged value is replaced;
-- an open row strips a client-sent `X-Outhaul-User`;
-- `/webhooks` open under a protected host reaches the backend with no gate call;
-- with the stub stopped, a protected path returns 500 and an open path still returns 200.
+Task 1 wrote `deploy/test/integration_gate.sh` against a stub. Add a second mode, `sh deploy/test/integration_gate.sh --outhaul <address>`, that uses a running Outhaul's `/gate/check` in place of the stub, and asserts:
+- a browser-style `GET` with no cookie gets a 302 to `/gate/start` on the public URL;
+- a `POST`, and a `GET` with `Accept: application/json`, get a 401;
+- a WebSocket handshake with no cookie gets a 401, which shows whether Traefik passes `Upgrade` to the gate or the `Accept` test is what catches it;
+- `GET //evil.example/` with a valid route cookie stays on the host.
 
-- [ ] **Step 2: Run it, and shellcheck it**
+- [ ] **Step 2: Run both modes, and shellcheck it**
 
-Run: `sh deploy/test/integration_gate.sh`
+Run: `sh deploy/test/integration_gate.sh`, then the `--outhaul` mode against the Outhaul started in Step 3.
 Expected: every assertion passes, and `docker ps -a --filter name=outhaul-gatetest` shows nothing left over.
 
 Run: `docker run --rm -v "$PWD:/mnt" koalaman/shellcheck:v0.9.0 -s sh --severity=warning /mnt/deploy/test/integration_gate.sh`
@@ -568,6 +608,7 @@ Use the Dex setup from part 2, and a real app with a TLS domain, ideally on the 
 - visiting the protected route goes through SSO and reaches the app;
 - the app sees `X-Outhaul-User`;
 - a second protected host needs no second prompt;
+- an open path under the protected host can't be used as the return address at `/gate/start`;
 - `/gate/sign-out` ends access to both;
 - turning the switch off redeploys and leaves the route open;
 - a tunnel-mode request works, if a tunnel is available.
@@ -576,7 +617,7 @@ Record what was and wasn't checked in the task's report. Don't claim a check tha
 
 - [ ] **Step 4: Write `docs/PROTECTED-ROUTES.md`**
 
-Cover: what the switch does; the `X-Outhaul-User` contract, and that it's only trustworthy through Traefik; the open-path pattern and the protected-path-under-open-host pattern; `/gate/sign-out`; the 401 for scripts; the requirements; what happens when Outhaul restarts; the warning that everyone who can sign in reaches every protected route.
+Cover: what the switch does; the `X-Outhaul-User` contract, and that it's only trustworthy through Traefik; the open-path pattern and the protected-path-under-open-host pattern; `/gate/sign-out`; the 401 for scripts; the requirements; what happens when Outhaul restarts; the warning that everyone who can sign in reaches every protected route; that the app can read the route cookie, which works only on its own host; that the name in the header is whatever the provider sends.
 
 - [ ] **Step 5: Update the other docs**
 
@@ -590,6 +631,6 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add deploy/test/integration_gate.sh deploy/test/gatelabels docs ARCHITECTURE.md AGENTS.md README.md
+git add deploy/test/integration_gate.sh docs ARCHITECTURE.md AGENTS.md README.md
 git commit -m "docs(gate): protected routes, checked against real Traefik"
 ```
