@@ -759,7 +759,9 @@ func TestChildObjectsMustBelongToTheApp(t *testing.T) {
 		{onA + "/volumes/" + itoa(b.Volume.ID) + "/delete", nil, http.StatusSeeOther},
 		{onA + "/volumes/" + itoa(b.Volume.ID), url.Values{"mount_path": {"/stolen"}}, http.StatusNotFound},
 		{onA + "/attachments/" + itoa(b.Attachment.ID) + "/delete", nil, http.StatusSeeOther},
-		{onA + "/previews/" + itoa(preview.ID) + "/destroy", nil, http.StatusInternalServerError},
+		{onA + "/previews/" + itoa(preview.ID) + "/destroy", nil, http.StatusNotFound},
+		{onA + "/previews/99999/destroy", nil, http.StatusNotFound},
+		{onA + "/previews/" + itoa(b.App.ID) + "/destroy", nil, http.StatusNotFound}, // an app, not a preview
 		{onA + "/attachments", url.Values{"database_id": {itoa(b.Database.ID)}, "env_var": {"STOLEN_URL"}}, http.StatusNotFound},
 	} {
 		resp := e.postAs(t, member, tc.path, tc.form)

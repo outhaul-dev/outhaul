@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
@@ -176,5 +177,43 @@ func TestDisablingForkPRsTearsDownForkPreviews(t *testing.T) {
 	}
 	if _, err := e.store.GetApp(ctx, sameRepo.ID); err != nil {
 		t.Errorf("same-repo preview was torn down too: %v", err)
+	}
+}
+
+// The destroy button on the app page reaches the manager for its own preview,
+// and only for that.
+func TestDestroyPreviewButton(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	ctx := context.Background()
+	prev := &destroyingPreviews{st: e.store}
+	e.srv.previews = prev
+	parent, err := e.store.CreateApp(ctx, core.App{Name: "web", Source: core.SourceGithub, GithubRepo: "me/web", Branch: "main"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := e.store.CreateApp(ctx, core.App{
+		Name: core.PreviewAppName("web", 3), Source: core.SourceGithub, GithubRepo: "me/web",
+		Branch: "feature", ParentID: parent.ID, PRNumber: 3, Ephemeral: true, PreviewStatus: core.PreviewReady,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := e.postForm(t, "/apps/"+itoa(parent.ID)+"/previews/"+itoa(child.ID)+"/destroy", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/apps/"+itoa(parent.ID) {
+		t.Fatalf("destroy = %d to %q, want 303 to the app", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if len(prev.destroyed) != 1 || prev.destroyed[0] != child.ID || prev.parentIDs[0] != parent.ID {
+		t.Fatalf("DestroyByID calls = parents %v children %v", prev.parentIDs, prev.destroyed)
+	}
+	// Gone now: a second press is a 404 and doesn't reach the manager.
+	resp = e.postForm(t, "/apps/"+itoa(parent.ID)+"/previews/"+itoa(child.ID)+"/destroy", nil)
+	page := body(t, resp)
+	if resp.StatusCode != http.StatusNotFound || strings.Contains(page, "preview of app") {
+		t.Errorf("second destroy = %d %q, want a plain 404", resp.StatusCode, page)
+	}
+	if len(prev.destroyed) != 1 {
+		t.Errorf("the manager was called again: %v", prev.destroyed)
 	}
 }

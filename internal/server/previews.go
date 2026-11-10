@@ -2,7 +2,10 @@ package server
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -80,6 +83,18 @@ func (s *Server) handleDestroyPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.previews == nil {
 		http.Error(w, "previews are not enabled on this server", http.StatusServiceUnavailable)
+		return
+	}
+	// A preview that is gone, or isn't this app's, answers like any other
+	// object that isn't there.
+	child, err := s.store.GetApp(r.Context(), previewID)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && (child.ParentID != id || !child.Ephemeral)) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		log.Printf("server: destroy preview %d of app %d: %v", previewID, id, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	if err := s.previews.DestroyByID(r.Context(), id, previewID); err != nil {
