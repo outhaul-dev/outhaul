@@ -62,6 +62,20 @@ func TestSyncMintsLeafsAndWritesDynamicConfig(t *testing.T) {
 	}
 }
 
+// A protected row is served over HTTPS whatever its own TLS flag (its HTTP
+// router never serves behind the redirect), so it gets a leaf too.
+func TestSyncMintsLeafForProtectedRowWithTLSOff(t *testing.T) {
+	row := domainRow("admin.local", false)
+	row.Protected = true
+	m, certsDir, _ := testManager(t, &fakeLister{rows: []core.DomainListing{row}})
+	if err := m.Sync(context.Background()); err != nil {
+		t.Fatalf("Sync: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(certsDir, "admin.local.pem")); err != nil {
+		t.Errorf("protected row with its TLS flag off got no leaf: %v", err)
+	}
+}
+
 func TestSyncPrunesRemovedDomains(t *testing.T) {
 	lister := &fakeLister{rows: []core.DomainListing{domainRow("app.local", true)}}
 	m, certsDir, _ := testManager(t, lister)

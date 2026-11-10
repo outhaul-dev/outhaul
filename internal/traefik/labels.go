@@ -15,7 +15,8 @@ import (
 // app (nixpacks/dockerfile) from its domain rows: the ownership markers once,
 // plus one router per domain against the container's port. globalTLS is the
 // server-wide switch (ACME configured or local CA active); a row is served
-// over HTTPS only when its own TLS flag and globalTLS are both true.
+// over HTTPS only when globalTLS is true and the row wants TLS: its own TLS
+// flag is on, or it is protected (core.Domain.WantsTLS).
 // certResolver is "le" under ACME and empty under the local CA, where the
 // file provider supplies certs by SNI instead of a resolver. gateAddress is
 // the forward-auth address protected rows call (config.GateAddress). With no
@@ -31,7 +32,7 @@ func AppLabels(app core.App, domains []core.Domain, port int, globalTLS bool, ce
 		return labels
 	}
 	for _, d := range domains {
-		for k, v := range RouteLabels(RouterName(app.Name, d.ID), d.Host, port, d.Path, d.InternalPath, d.TLS && globalTLS, certResolver, d.Protected, gateAddress) {
+		for k, v := range RouteLabels(RouterName(app.Name, d.ID), d.Host, port, d.Path, d.InternalPath, d.WantsTLS() && globalTLS, certResolver, d.Protected, gateAddress) {
 			labels[k] = v
 		}
 	}

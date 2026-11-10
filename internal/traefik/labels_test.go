@@ -345,3 +345,53 @@ func TestAppLabelsCarryGateForProtectedRows(t *testing.T) {
 		t.Errorf("open row 2 should strip the identity header: %v", got)
 	}
 }
+
+// On a TLS server the web entrypoint redirects everything to websecure, so a
+// protected row's plain router never serves. Without its own HTTPS router an
+// open HTTPS row on the same host would answer the path, ungated.
+func TestProtectedRowGetsHTTPSRouterOnATLSServer(t *testing.T) {
+	app := core.App{Name: "shop"}
+	domains := []core.Domain{
+		{ID: 1, Host: "shop.example.com", TLS: true},
+		{ID: 2, Host: "shop.example.com", Path: "/admin", TLS: false, Protected: true},
+		{ID: 3, Host: "plain.example.com", TLS: false},
+	}
+	got := AppLabels(app, domains, 8080, true, "le", "addr")
+	admin := router("shop", 2)
+	if got["traefik.http.routers."+admin+"-tls.entrypoints"] != "websecure" ||
+		got["traefik.http.routers."+admin+"-tls.tls.certresolver"] != "le" {
+		t.Errorf("protected row with its TLS flag off has no HTTPS router: %v", got)
+	}
+	if !RowHasGate(got, admin) {
+		t.Errorf("protected row lacks its gate: %v", got)
+	}
+	if _, ok := got["traefik.http.routers."+router("shop", 3)+"-tls.rule"]; ok {
+		t.Error("an open row with its TLS flag off should still get no HTTPS router")
+	}
+	// No TLS on the server (HTTP only, or the tunnel): no HTTPS routers at all.
+	off := AppLabels(app, domains, 8080, false, "", "addr")
+	if _, ok := off["traefik.http.routers."+admin+"-tls.rule"]; ok {
+		t.Error("no HTTPS router expected when the server has no TLS")
+	}
+	if !RowHasGate(off, admin) {
+		t.Errorf("protected row lacks its gate without TLS: %v", off)
+	}
+}
+
+// A protected row with no gate address still puts the gate first, so Traefik
+// fails the route closed, and RowHasGate never reports it as gated.
+func TestEmptyGateAddressFailsClosed(t *testing.T) {
+	l := RouteLabels("r", "h", 8080, "", "", true, "", true, "")
+	for _, r := range []string{"r", "r-tls"} {
+		first, _, _ := strings.Cut(l["traefik.http.routers."+r+".middlewares"], ",")
+		if first != "r-gate" {
+			t.Errorf("routers.%s.middlewares = %q, want the gate first", r, l["traefik.http.routers."+r+".middlewares"])
+		}
+	}
+	if _, ok := l["traefik.http.middlewares.r-noident.headers.customrequestheaders."+IdentityHeader]; ok {
+		t.Error("a protected row with no gate address must not be treated as open")
+	}
+	if RowHasGate(l, "r") {
+		t.Error("RowHasGate = true for a gate with no address")
+	}
+}

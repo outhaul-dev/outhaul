@@ -168,3 +168,25 @@ func TestComposeOverrideCarriesGate(t *testing.T) {
 		t.Errorf("override references the file provider:\n%s", got)
 	}
 }
+
+// The Compose override follows the same rule as single-container apps: on a
+// TLS server a protected row gets its HTTPS router whatever its own TLS flag.
+func TestComposeOverrideProtectedRowGetsHTTPSRouter(t *testing.T) {
+	app := core.App{Name: "shop"}
+	domains := []core.Domain{
+		{ID: 1, Host: "shop.example.com", Service: "web", Port: 3000, TLS: true},
+		{ID: 2, Host: "shop.example.com", Service: "web", Port: 3000, Path: "/admin", Protected: true},
+	}
+	got := string(Override(app, domains, "outhaul", true, "le", "addr"))
+	for _, want := range []string{
+		`"traefik.http.routers.outhaul-shop-d2-tls.middlewares": "outhaul-shop-d2-gate,outhaul-shop-d2-noalias"`,
+		`"traefik.http.routers.outhaul-shop-d2-tls.tls.certresolver": "le"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("override missing %s; got:\n%s", want, got)
+		}
+	}
+	if off := string(Override(app, domains, "outhaul", false, "", "addr")); strings.Contains(off, "outhaul-shop-d2-tls") {
+		t.Errorf("no HTTPS router expected without TLS on the server:\n%s", off)
+	}
+}

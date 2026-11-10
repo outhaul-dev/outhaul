@@ -54,7 +54,7 @@ func Override(app core.App, domains []core.Domain, network string, tlsEnabled bo
 			"traefik.docker.network": network,
 		}
 		for _, d := range byService[svc] {
-			for k, v := range traefik.RouteLabels(traefik.RouterName(app.Name, d.ID), d.Host, d.Port, d.Path, d.InternalPath, d.TLS && tlsEnabled, certResolver, d.Protected, gateAddress) {
+			for k, v := range traefik.RouteLabels(traefik.RouterName(app.Name, d.ID), d.Host, d.Port, d.Path, d.InternalPath, d.WantsTLS() && tlsEnabled, certResolver, d.Protected, gateAddress) {
 				labels[k] = v
 			}
 		}

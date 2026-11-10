@@ -70,7 +70,7 @@ func (m *Manager) Sync(ctx context.Context) error {
 	// Which host gets which IP SANs: only the default host carries them.
 	wanted := map[string][]net.IP{m.defaultHost: m.hostIPs()}
 	for _, r := range rows {
-		if r.TLS && r.Host != m.defaultHost {
+		if r.WantsTLS() && r.Host != m.defaultHost {
 			wanted[r.Host] = nil
 		}
 	}

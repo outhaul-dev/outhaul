@@ -92,6 +92,12 @@ type Domain struct {
 	CreatedAt time.Time
 }
 
+// WantsTLS reports whether the route is served over HTTPS when the server has
+// TLS: when its own TLS flag is on, or when it is protected. With TLS on, the
+// HTTP entrypoint redirects everything to HTTPS, so a protected route without
+// an HTTPS router of its own would be answered by an open one on its host.
+func (d Domain) WantsTLS() bool { return d.TLS || d.Protected }
+
 // DomainListing is a Domain plus its app's identity, for the global Domains tab.
 type DomainListing struct {
 	Domain

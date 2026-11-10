@@ -1,12 +1,15 @@
 // Command gatelabels prints the Traefik labels Outhaul gives domain rows, for
 // deploy/test/integration_gate.sh to put on a real container. It calls
-// traefik.RouteLabels, so the integration test covers the real label code.
+// traefik.RouteLabels, and decides each row's HTTPS router as
+// traefik.AppLabels does (core.Domain.WantsTLS), so the integration test
+// covers the real label code.
 //
 //	gatelabels [-port 8000] [-tls] [-admin-port 8080 | -gate URL] ROUTE...
 //	gatelabels -compose [-port 8000] [-tls] [-admin-port 8080 | -gate URL] ROUTE...
 //
-// Each ROUTE is "router,host,path,internalPath,open|protected"; an empty path
-// or internal path is allowed. The default output is a Docker label file (one
+// Each ROUTE is "router,host,path,internalPath,open|protected[,notls]"; an
+// empty path or internal path is allowed. notls turns the row's own TLS flag
+// off (it is on otherwise); -tls is the server-wide switch. The default output is a Docker label file (one
 // key=value per line, sorted). With -compose, the routes become rows of a
 // Compose app named by their router, on service "web", and the output is the
 // Compose override Outhaul writes for them.
@@ -27,15 +30,24 @@ import (
 
 type route struct {
 	router, host, path, internalPath string
-	protected                        bool
+	protected, notls                 bool
+}
+
+// domain is the row as the store would hold it.
+func (r route) domain() core.Domain {
+	return core.Domain{Host: r.host, Path: r.path, InternalPath: r.internalPath, TLS: !r.notls, Protected: r.protected}
 }
 
 func parseRoute(s string) (route, error) {
 	f := strings.Split(s, ",")
-	if len(f) != 5 || f[0] == "" || f[1] == "" {
-		return route{}, fmt.Errorf("route %q: want router,host,path,internalPath,open|protected", s)
+	notls := len(f) == 6 && f[5] == "notls"
+	if notls {
+		f = f[:5]
 	}
-	r := route{router: f[0], host: f[1], path: f[2], internalPath: f[3]}
+	if len(f) != 5 || f[0] == "" || f[1] == "" {
+		return route{}, fmt.Errorf("route %q: want router,host,path,internalPath,open|protected[,notls]", s)
+	}
+	r := route{router: f[0], host: f[1], path: f[2], internalPath: f[3], notls: notls}
 	switch f[4] {
 	case "protected":
 		r.protected = true
@@ -77,10 +89,9 @@ func main() {
 		// first route and its rows are numbered in order.
 		var domains []core.Domain
 		for i, r := range routes {
-			domains = append(domains, core.Domain{
-				ID: int64(i + 1), Host: r.host, Service: "web", Port: *port,
-				Path: r.path, InternalPath: r.internalPath, TLS: *tls, Protected: r.protected,
-			})
+			d := r.domain()
+			d.ID, d.Service, d.Port = int64(i+1), "web", *port
+			domains = append(domains, d)
 		}
 		os.Stdout.Write(compose.Override(core.App{Name: routes[0].router}, domains, "outhaul-gatetest-net", *tls, "", address))
 		return
@@ -88,7 +99,8 @@ func main() {
 
 	labels := map[string]string{}
 	for _, r := range routes {
-		for k, v := range traefik.RouteLabels(r.router, r.host, *port, r.path, r.internalPath, *tls, "", r.protected, address) {
+		https := *tls && r.domain().WantsTLS()
+		for k, v := range traefik.RouteLabels(r.router, r.host, *port, r.path, r.internalPath, https, "", r.protected, address) {
 			labels[k] = v
 		}
 	}
