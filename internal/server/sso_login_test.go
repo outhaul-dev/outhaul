@@ -451,6 +451,12 @@ func TestCallbackRefusals(t *testing.T) {
 			secrets = append(secrets, state)
 			return b.callback(t, url.Values{"state": {state}, "error": {"access_denied"}, "error_description": {"<b>provider says no</b>"}})
 		}},
+		{"provider error with a code", "sso_failed", func(t *testing.T, e *testEnv, fake *sso.Fake) *http.Response {
+			b := newBrowser(e)
+			state := b.start(t)
+			secrets = append(secrets, state)
+			return b.callback(t, url.Values{"state": {state}, "code": {"C1"}, "error": {"access_denied"}})
+		}},
 		{"no code", "sso_failed", func(t *testing.T, e *testEnv, fake *sso.Fake) *http.Response {
 			b := newBrowser(e)
 			state := b.start(t)
@@ -472,12 +478,22 @@ func TestCallbackRefusals(t *testing.T) {
 			return b.callback(t, url.Values{"state": {state}, "code": {"C1"}})
 		}},
 	}
+	// The cases whose callback carried the flow's cookie: it is cleared
+	// whatever the outcome.
+	sentCookie := map[string]bool{
+		"state mismatch": true, "expired flow": true, "cookie not base64": true, "cookie not JSON": true,
+		"cookie too large": true, "provider error": true, "provider error with a code": true, "no code": true,
+		"exchange error": true, "no email": true,
+	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			fake := fakeIdentity("sub-1", "dana@example.com")
 			e := ssoLoginEnv(t, fake)
 			resp := c.run(t, e, fake)
 			resp.Body.Close()
+			if sentCookie[c.name] && !flowCookieCleared(resp) {
+				t.Errorf("the flow cookie wasn't cleared: %v", resp.Header.Values("Set-Cookie"))
+			}
 			if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login?error="+c.want {
 				t.Fatalf("callback = %d to %q, want 303 to /login?error=%s", resp.StatusCode, resp.Header.Get("Location"), c.want)
 			}
@@ -512,19 +528,41 @@ func TestCallbackRefusals(t *testing.T) {
 	}
 }
 
-// rawCallback sends a callback carrying exactly one cookie.
+// rawCallback sends a plain-HTTP callback carrying exactly one cookie.
 func rawCallback(t *testing.T, e *testEnv, name, value string, query url.Values) *http.Response {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodGet, e.http.URL+"/auth/sso/callback?"+query.Encode(), nil)
+	return rawGet(t, e, "/auth/sso/callback?"+query.Encode(), false, name+"="+value)
+}
+
+// rawGet sends a GET with exactly this Cookie header ("" for none). https
+// makes it look like it came through Traefik over HTTPS.
+func rawGet(t *testing.T, e *testEnv, path string, https bool, cookie string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, e.http.URL+path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("Cookie", name+"="+value)
+	if https {
+		req.Header.Set("X-Forwarded-Proto", "https")
+	}
+	if cookie != "" {
+		req.Header.Set("Cookie", cookie)
+	}
 	resp, err := accountClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return resp
+}
+
+// flowCookieCleared reports whether resp deletes a flow cookie.
+func flowCookieCleared(resp *http.Response) bool {
+	for _, c := range resp.Cookies() {
+		if (strings.HasPrefix(c.Name, ssoStateCookiePrefix) || strings.HasPrefix(c.Name, "__Host-"+ssoStateCookiePrefix)) && c.MaxAge < 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // The flow cookie is gone after the first callback, so the same state and code
@@ -684,19 +722,73 @@ func TestSSOSignInReplacesAnOldSession(t *testing.T) {
 	}
 }
 
+// Over HTTPS the flow cookie is a __Host- cookie, which a sibling subdomain
+// can't set, and the whole sign-in still works.
 func TestFlowCookieIsSecureOverHTTPS(t *testing.T) {
-	e := ssoLoginEnv(t, fakeIdentity("sub-1", "dana@example.com"))
-	req, _ := http.NewRequest(http.MethodGet, e.http.URL+"/auth/sso/start", nil)
-	req.Header.Set("X-Forwarded-Proto", "https")
-	resp, err := accountClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	fake := fakeIdentity("sub-1", "dana@example.com")
+	e := ssoLoginEnv(t, fake)
+	resp := rawGet(t, e, "/auth/sso/start", true, "")
 	resp.Body.Close()
+	state := fake.LastAuthState
+	if resp.StatusCode != http.StatusFound || state == "" {
+		t.Fatalf("start = %d, state %q", resp.StatusCode, state)
+	}
+	var flow *http.Cookie
 	for _, c := range resp.Cookies() {
-		if strings.HasPrefix(c.Name, ssoStateCookiePrefix) && !c.Secure {
-			t.Errorf("flow cookie %s isn't Secure over HTTPS", c.Name)
+		if strings.Contains(c.Name, ssoStateCookiePrefix) {
+			flow = c
 		}
+	}
+	if flow == nil {
+		t.Fatalf("no flow cookie in %v", resp.Header.Values("Set-Cookie"))
+	}
+	if flow.Name != "__Host-"+ssoStateCookiePrefix+state[:12] || flow.Path != "/" || !flow.Secure || flow.Domain != "" ||
+		!flow.HttpOnly || flow.SameSite != http.SameSiteLaxMode || flow.MaxAge != 600 {
+		t.Errorf("flow cookie = %+v; want __Host-%s%s, Path /, Secure, no Domain, HttpOnly, Lax, 10 minutes", flow, ssoStateCookiePrefix, state[:12])
+	}
+
+	resp = rawGet(t, e, "/auth/sso/callback?"+url.Values{"state": {state}, "code": {"C"}}.Encode(), true, flow.Name+"="+flow.Value)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/" {
+		t.Fatalf("callback = %d to %q, want 303 to /", resp.StatusCode, resp.Header.Get("Location"))
+	}
+	cleared := false
+	for _, c := range resp.Cookies() {
+		if c.Name == flow.Name && c.MaxAge < 0 && c.Path == "/" && c.Secure {
+			cleared = true
+		}
+	}
+	if !cleared {
+		t.Errorf("the __Host- flow cookie wasn't cleared: %v", resp.Header.Values("Set-Cookie"))
+	}
+	if sc, ok := sessionCookieIn(resp); !ok || !sc.Secure {
+		t.Errorf("session cookie = %+v, want a Secure one", sc)
+	}
+}
+
+// The callback looks only for the cookie name of its own scheme: over HTTPS a
+// plain-named cookie, which a sibling subdomain could toss in, is ignored.
+func TestFlowCookieMustMatchTheScheme(t *testing.T) {
+	fake := fakeIdentity("sub-1", "dana@example.com")
+	e := ssoLoginEnv(t, fake)
+	state := NewToken()
+	v := encodeSSOFlow(ssoFlow{State: state, Nonce: NewToken(), Verifier: NewToken(), Expires: time.Now().Add(time.Minute)})
+	q := "/auth/sso/callback?" + url.Values{"state": {state}, "code": {"C"}}.Encode()
+	for _, c := range []struct {
+		https  bool
+		cookie string
+	}{
+		{true, ssoStateCookiePrefix + state[:12] + "=" + v},
+		{false, "__Host-" + ssoStateCookiePrefix + state[:12] + "=" + v},
+	} {
+		resp := rawGet(t, e, q, c.https, c.cookie)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login?error=sso_failed" {
+			t.Errorf("https=%v with %.30s… = %d to %q, want 303 to /login?error=sso_failed", c.https, c.cookie, resp.StatusCode, resp.Header.Get("Location"))
+		}
+	}
+	if fake.LastExchangeCode != "" || len(ssoAccounts(t, e)) != 0 {
+		t.Error("a cookie for the other scheme was used")
 	}
 }
 

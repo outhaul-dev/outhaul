@@ -25,8 +25,11 @@ const ssoFlowTTL = 10 * time.Minute
 
 // ssoStateCookiePrefix names a sign-in's own cookie. The rest of the name is
 // the first ssoFlowKeyLen characters of its state, so two tabs signing in at
-// once each keep theirs.
+// once each keep theirs. Over HTTPS the name also starts with
+// ssoHostCookiePrefix (see ssoFlowCookie).
 const ssoStateCookiePrefix = "outhaul_sso_"
+
+const ssoHostCookiePrefix = "__Host-"
 
 const (
 	ssoFlowKeyLen    = 12
@@ -72,19 +75,28 @@ func decodeSSOFlow(v string) (ssoFlow, bool) {
 	return f, true
 }
 
-// ssoFlowCookieName is the cookie a flow with this state lives in. States are
-// hex (NewToken), so anything else names no cookie.
-func ssoFlowCookieName(state string) (string, bool) {
+// ssoFlowCookie names and scopes the cookie a flow with this state lives in.
+// States are hex (NewToken), so anything else names no cookie.
+//
+// Over HTTPS it is a __Host- cookie: a browser accepts one only from this
+// host itself, Secure, with Path=/ and no Domain, so a sibling subdomain (a
+// preview or an app) can't toss one in. Plain HTTP, for local development,
+// can't use the prefix, so it keeps the plain name scoped to /auth/sso. The
+// callback looks only for the name of its own scheme.
+func ssoFlowCookie(r *http.Request, state string) (name, path string, ok bool) {
 	if len(state) < ssoFlowKeyLen {
-		return "", false
+		return "", "", false
 	}
 	key := state[:ssoFlowKeyLen]
 	for i := 0; i < len(key); i++ {
 		if c := key[i]; !('0' <= c && c <= '9' || 'a' <= c && c <= 'f') {
-			return "", false
+			return "", "", false
 		}
 	}
-	return ssoStateCookiePrefix + key, true
+	if requestIsHTTPS(r) {
+		return ssoHostCookiePrefix + ssoStateCookiePrefix + key, "/", true
+	}
+	return ssoStateCookiePrefix + key, ssoFlowPath, true
 }
 
 // ssoLoginErrors are the only messages a failed SSO sign-in can put on the
@@ -139,11 +151,11 @@ func (s *Server) handleSSOStart(w http.ResponseWriter, r *http.Request) {
 		Verifier: oauth2.GenerateVerifier(),
 		Expires:  time.Now().Add(ssoFlowTTL),
 	}
-	name, _ := ssoFlowCookieName(f.State)
+	name, path, _ := ssoFlowCookie(r, f.State)
 	http.SetCookie(w, &http.Cookie{
 		Name:     name,
 		Value:    encodeSSOFlow(f),
-		Path:     ssoFlowPath,
+		Path:     path,
 		MaxAge:   int(ssoFlowTTL / time.Second),
 		HttpOnly: true,
 		Secure:   requestIsHTTPS(r),
@@ -156,7 +168,7 @@ func (s *Server) handleSSOStart(w http.ResponseWriter, r *http.Request) {
 // happens next, and decodes it. The provider accepts a code once and the
 // cookie is gone after the first callback, so a replay has nothing to use.
 func takeSSOFlow(w http.ResponseWriter, r *http.Request, state string) (ssoFlow, bool) {
-	name, ok := ssoFlowCookieName(state)
+	name, path, ok := ssoFlowCookie(r, state)
 	if !ok {
 		return ssoFlow{}, false
 	}
@@ -167,7 +179,7 @@ func takeSSOFlow(w http.ResponseWriter, r *http.Request, state string) (ssoFlow,
 	http.SetCookie(w, &http.Cookie{
 		Name:     name,
 		Value:    "",
-		Path:     ssoFlowPath,
+		Path:     path,
 		MaxAge:   -1,
 		HttpOnly: true,
 		Secure:   requestIsHTTPS(r),
