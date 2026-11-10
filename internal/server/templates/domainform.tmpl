@@ -83,9 +83,12 @@
             <span>Require sign-in</span>
           </label>
           <p class="muted">People must sign in to Outhaul before they reach this address. Everyone who can sign in gets through, and the app receives their name in the <span class="mono">X-Outhaul-User</span> header.</p>
-          {{if not .ProtectionAvailable}}<p class="env-note">{{.ProtectionReason}}</p>{{end}}
+          {{if not .ProtectionAvailable}}
+          <p class="env-note" id="domain-protect-reason">{{.ProtectionReason}}</p>
+          <p class="env-note" id="domain-protect-reason-on" hidden>Sign-in isn't available right now, so nobody can get through this address. You can turn this off to open it, or fix the cause: {{.ProtectionReason}}</p>
+          {{end}}
           <div class="alert alert-warn protect-note" id="domain-protect-note">
-            Turning sign-in on or off, or changing the host or path of a domain that requires it, redeploys this app if it is running.{{if .TLSAvailable}} A domain that requires sign-in is always served over HTTPS, even with Automate HTTPS off.{{end}}
+            Turning sign-in on or off redeploys this app if it is running, and so does changing the host or path of a domain on a host that requires sign-in.{{if .TLSAvailable}} A domain that requires sign-in is always served over HTTPS, even with Automate HTTPS off.{{end}}
             {{with .ProtectionWarning}}<strong>{{.}}</strong>{{end}}
           </div>
         </div>
@@ -168,15 +171,41 @@
     });
 
     // The redeploy note and the warning of what will ship show while the switch
-    // is on, or when the row being edited was protected (turning it off
-    // redeploys too). Without JS they stay visible.
+    // is on, when the row being edited was protected (turning it off redeploys
+    // too), or when it is an open row on a host that requires sign-in and its
+    // host or path has changed. Without JS they stay visible.
+    //
+    // When sign-in is unavailable the server renders the switch disabled, for
+    // a new or open row; a protected row's switch is enabled, so it can be
+    // turned off, with its own reason.
     var protect = document.getElementById('domain-protected');
     var protectNote = document.getElementById('domain-protect-note');
-    var editedProtected = false;
+    var reasonOff = document.getElementById('domain-protect-reason');
+    var reasonOn = document.getElementById('domain-protect-reason-on');
+    var protectLocked = !!(protect && protect.disabled);
+    var hostInput = document.getElementById('domain-host');
+    var pathInput = form.querySelector('input[name="path"]');
+    var editedProtected = false, editedException = false, origHost = '', origPath = '';
+    function moved() {
+      var kind = dialog.querySelector('input[name="host_kind"]:checked');
+      if (kind && kind.value !== 'custom') return true;
+      var host = hostInput ? hostInput.value.trim().toLowerCase() : '';
+      var path = pathInput ? pathInput.value.trim() : '';
+      return host !== origHost || path !== origPath;
+    }
     function applyProtect() {
-      if (protectNote) protectNote.hidden = !((protect && protect.checked) || editedProtected);
+      if (protectNote) protectNote.hidden = !((protect && protect.checked) || editedProtected || (editedException && moved()));
     }
     if (protect) protect.addEventListener('change', applyProtect);
+    [hostInput, pathInput].forEach(function (el) { if (el) el.addEventListener('input', applyProtect); });
+    dialog.querySelectorAll('input[name="host_kind"]').forEach(function (r) {
+      r.addEventListener('change', applyProtect);
+    });
+    function applyLock() {
+      if (protect) protect.disabled = protectLocked && !editedProtected;
+      if (reasonOff) reasonOff.hidden = editedProtected;
+      if (reasonOn) reasonOn.hidden = !editedProtected;
+    }
 
     applyHostKind();
     applyProtect();
@@ -206,9 +235,10 @@
         setField('internal_path', row.internal_path || '');
         var tls = document.getElementById('domain-tls');
         if (tls && !tls.disabled) tls.checked = row.tls === '1';
-        // Set even when the switch is disabled, so it shows the row's state;
-        // a disabled switch submits nothing and the row keeps its protection.
         editedProtected = row.protected === '1';
+        editedException = row.exception === '1';
+        origHost = (row.host || '').toLowerCase();
+        origPath = row.path || '';
         if (protect) protect.checked = editedProtected;
       } else {
         title.textContent = 'New domain';
@@ -216,8 +246,10 @@
         form.setAttribute('action', addAction);
         form.reset();
         editedProtected = false;
+        editedException = false;
         applyHostKind();
       }
+      applyLock();
       applyProtect();
       show(0);
       dialog.showModal();

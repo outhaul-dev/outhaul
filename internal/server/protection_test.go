@@ -232,6 +232,50 @@ func TestRowGate(t *testing.T) {
 	}
 }
 
+// staleOpenRoute finds an app's own router, without the gate, whose row is
+// gone or now names another host or path, on a host that requires sign-in.
+func TestStaleOpenRoute(t *testing.T) {
+	app := core.App{Name: "web"}
+	shut := core.Domain{ID: 1, Host: "web.test", Protected: true, TLS: true}
+	hook := core.Domain{ID: 2, Host: "web.test", Path: "/hooks", TLS: true}
+	moved := hook
+	moved.Path = "/webhooks"
+	gatedHook := hook
+	gatedHook.Protected = true
+	protected := map[string]bool{"web.test": true}
+	with := func(rows []core.Domain, extra map[string]string) []docker.Container {
+		c := labelled("c1", app, rows, "exited")
+		for k, v := range extra {
+			c.Labels[k] = v
+		}
+		return []docker.Container{c}
+	}
+	for _, c := range []struct {
+		name  string
+		rows  []core.Domain // the rows now
+		cs    []docker.Container
+		hosts map[string]bool
+		want  bool
+	}{
+		{"labels match the rows", []core.Domain{shut, hook}, with([]core.Domain{shut, hook}, nil), protected, false},
+		{"an open path removed", []core.Domain{shut}, with([]core.Domain{shut, hook}, nil), protected, true},
+		{"an open path moved", []core.Domain{shut, moved}, with([]core.Domain{shut, hook}, nil), protected, true},
+		{"an open path removed, its host open", []core.Domain{}, with([]core.Domain{hook}, nil), map[string]bool{}, false},
+		{"a gated path removed", []core.Domain{shut}, with([]core.Domain{shut, gatedHook}, nil), protected, false},
+		{"another app's router", []core.Domain{shut}, with([]core.Domain{shut}, map[string]string{
+			"traefik.http.routers.custom.rule": "Host(`web.test`)"}), protected, false},
+		{"a rule with no host", []core.Domain{shut}, with([]core.Domain{shut}, map[string]string{
+			"traefik.http.routers." + traefik.RouterName(app.Name, 9) + ".rule": "PathPrefix(`/x`)"}), protected, false},
+	} {
+		if got := staleOpenRoute(c.rows, app.Name, c.cs, c.hosts); got != c.want {
+			t.Errorf("%s: staleOpenRoute = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// While sign-in is unavailable only turning it on is refused: adding a
+// protected row, or turning an open one on. A protected row can still be
+// saved with its switch on, and turned off.
 func TestSavingRefusesUnavailableSwitch(t *testing.T) {
 	e, px := newProtectionEnv(t)
 	app, row, _ := liveWeb(t, e, "img:1")
@@ -262,6 +306,16 @@ func TestSavingRefusesUnavailableSwitch(t *testing.T) {
 	if n := len(deploymentsOf(t, e, app.ID)); n != before || px.calls != 0 {
 		t.Errorf("deployments %d -> %d, proxy reconciles %d; a refused save should do neither", before, n, px.calls)
 	}
+
+	shut := setProtected(t, e, row, true)
+	wantStatus(t, "save a protected row with its switch on, no HTTPS", e.saveDomain(t, app.ID, shut, domainForm(shut, true)), http.StatusSeeOther)
+	if !domainOf(t, e, row).Protected {
+		t.Error("a protected row saved with its switch on was opened")
+	}
+	wantStatus(t, "turn a protected row off, no HTTPS", e.saveDomain(t, app.ID, shut, domainForm(shut, false)), http.StatusSeeOther)
+	if domainOf(t, e, row).Protected {
+		t.Error("a protected row couldn't be turned off while sign-in is unavailable")
+	}
 }
 
 // Note 4: on a TLS server a protected row is served over HTTPS even with its
@@ -281,25 +335,41 @@ func TestProtectedRowWithTLSOffIsAccepted(t *testing.T) {
 	}
 }
 
+// While sign-in is unavailable a protected row keeps requiring it (nobody
+// gets through) until someone turns it off. Its switch stays on and enabled,
+// with the reason beside it; turning it off opens the row and redeploys.
 func TestUnavailableRowKeepsItsProtection(t *testing.T) {
 	e, _ := newProtectionEnv(t)
-	app, row, _ := liveWeb(t, e, "img:1")
+	app, row, live := liveWeb(t, e, "img:1")
 	row = setProtected(t, e, row, true)
 	e.runContainers(labelled("c1", app, []core.Domain{row}, "running"))
 	before := len(deploymentsOf(t, e, app.ID))
 
-	e.srv.tlsEnabled = false // HTTPS is gone, so the switch is disabled and submits nothing
-	wantStatus(t, "edit with the switch disabled", e.saveDomain(t, app.ID, row, domainForm(row, false)), http.StatusSeeOther)
+	e.srv.tlsEnabled = false // HTTPS is gone, so sign-in can't be turned on
+	wantStatus(t, "save with the switch left on", e.saveDomain(t, app.ID, row, domainForm(row, true)), http.StatusSeeOther)
 	if got := domainOf(t, e, row); !got.Protected {
-		t.Error("an edit with the switch disabled turned protection off")
+		t.Error("a save with the switch left on turned protection off")
 	}
 	if n := len(deploymentsOf(t, e, app.ID)); n != before {
 		t.Errorf("deployments %d -> %d; nothing changed, so nothing should deploy", before, n)
 	}
 	page := html.UnescapeString(body(t, e.get(t, "/apps/"+itoa(app.ID))))
-	if !strings.Contains(page, "Visitors can't get through to the domains that require sign-in") ||
-		!strings.Contains(page, "Protected routes need HTTPS") {
-		t.Error("the app page should warn that its protected rows can't be reached, and say why")
+	for _, want := range []string{
+		"Visitors can't get through to the domains that require sign-in",
+		"Sign-in isn't available right now, so nobody can get through this address. You can turn this off to open it, or fix the cause: Protected routes need HTTPS. Turn on HTTPS for the server, or use a tunnel.",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the app page lacks %q", want)
+		}
+	}
+
+	wantStatus(t, "turn the switch off", e.saveDomain(t, app.ID, row, domainForm(row, false)), http.StatusSeeOther)
+	if got := domainOf(t, e, row); got.Protected {
+		t.Error("turning the switch off while sign-in is unavailable left the row protected")
+	}
+	deps := deploymentsOf(t, e, app.ID)
+	if len(deps) != before+1 || deps[0].Image != "img:1" || deps[0].RollbackOf != live.ID {
+		t.Errorf("deployments = %+v, want a reuse of img:1 queued to open the row", deps)
 	}
 }
 
@@ -390,6 +460,17 @@ func TestStoppedOrNeverDeployedQueuesNothing(t *testing.T) {
 			t.Errorf("deployments = %+v, want only the old one", deps)
 		}
 	})
+	t.Run("stopped: remove an open path on a protected host", func(t *testing.T) {
+		e, _ := newProtectionEnv(t)
+		app, row, _ := liveWeb(t, e, "img:1")
+		row = setProtected(t, e, row, true)
+		hook := addRow(t, e, core.Domain{AppID: app.ID, Host: row.Host, Path: "/hooks"})
+		e.runContainers(labelled("c1", app, []core.Domain{row, hook}, "exited"))
+		wantStatus(t, "remove the open path", e.removeDomain(t, hook), http.StatusSeeOther)
+		if deps := deploymentsOf(t, e, app.ID); len(deps) != 1 {
+			t.Errorf("deployments = %+v, want only the old one", deps)
+		}
+	})
 }
 
 func TestInFlightDeployIsNotUndone(t *testing.T) {
@@ -434,29 +515,68 @@ func TestInFlightDeployIsNotUndone(t *testing.T) {
 	})
 }
 
+// addRow adds a row to the store directly, as an earlier save would have.
+func addRow(t *testing.T, e *testEnv, d core.Domain) core.Domain {
+	t.Helper()
+	if d.Port == 0 {
+		d.Port = deployAppPort
+	}
+	added, err := e.store.AddDomain(context.Background(), d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Protected {
+		added = setProtected(t, e, added, true)
+	}
+	return added
+}
+
+// removeDomain removes d, as its remove button does.
+func (e *testEnv) removeDomain(t *testing.T, d core.Domain) *http.Response {
+	t.Helper()
+	return e.postForm(t, "/apps/"+itoa(d.AppID)+"/domains/"+itoa(d.ID)+"/delete", url.Values{})
+}
+
 func TestWhichSavesQueueADeploy(t *testing.T) {
 	type save struct {
 		name      string
 		compose   bool
-		protected bool                            // the row before the save
+		protected bool                            // the app's first row, before the save
+		hooks     bool                            // the save is to an open row on the first row's host, under /hooks
 		add       bool                            // add a new row instead of editing
+		remove    bool                            // remove the row instead of editing
 		change    func(d core.Domain) core.Domain // the submitted row
 		on        bool                            // the submitted switch
 		want      bool
 	}
 	same := func(d core.Domain) core.Domain { return d }
 	newRow := func(core.Domain) core.Domain { return core.Domain{Host: "new.test"} }
+	moveHost := func(d core.Domain) core.Domain { d.Host = "moved.test"; return d }
+	movePath := func(d core.Domain) core.Domain { d.Path = "/webhooks"; return d }
 	cases := []save{
 		{name: "add a protected row", add: true, change: newRow, on: true, want: true},
 		{name: "add an open row", add: true, change: newRow, on: false, want: false},
 		{name: "turn the switch on", change: same, on: true, want: true},
 		{name: "turn the switch off", protected: true, change: same, on: false, want: true},
-		{name: "edit the host of a protected row", protected: true, change: func(d core.Domain) core.Domain { d.Host = "moved.test"; return d }, on: true, want: true},
+		{name: "edit the host of a protected row", protected: true, change: moveHost, on: true, want: true},
 		{name: "edit the path of a protected row", protected: true, change: func(d core.Domain) core.Domain { d.Path = "/docs"; return d }, on: true, want: true},
 		{name: "save a protected row unchanged", protected: true, change: same, on: true, want: false},
-		{name: "edit the host of an open row", change: func(d core.Domain) core.Domain { d.Host = "moved.test"; return d }, on: false, want: false},
+		{name: "edit the host of an open row", change: moveHost, on: false, want: false},
 		{name: "edit the port of an open row", compose: true, change: func(d core.Domain) core.Domain { d.Port = 4000; return d }, on: false, want: false},
 		{name: "edit the port of a protected row", compose: true, protected: true, change: func(d core.Domain) core.Domain { d.Port = 4000; return d }, on: true, want: false},
+
+		// The old container answers a removed or moved open row's old route,
+		// with no gate, until a deploy replaces it. On a host that requires
+		// sign-in that is a hole; a protected row's old route keeps its gate.
+		{name: "remove a protected row", protected: true, remove: true, want: false},
+		{name: "remove an open row", remove: true, want: false},
+		{name: "remove an open path on a protected host", protected: true, hooks: true, remove: true, want: true},
+		{name: "remove an open path on a protected host, compose", compose: true, protected: true, hooks: true, remove: true, want: true},
+		{name: "move an open path on a protected host to another host", protected: true, hooks: true, change: moveHost, on: false, want: true},
+		{name: "move an open path on a protected host to another path", protected: true, hooks: true, change: movePath, on: false, want: true},
+		{name: "edit the internal path of an open path on a protected host", protected: true, hooks: true, change: func(d core.Domain) core.Domain { d.InternalPath = "/"; return d }, on: false, want: false},
+		{name: "remove an open path on an open host", hooks: true, remove: true, want: false},
+		{name: "move an open path on an open host", hooks: true, change: movePath, on: false, want: false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -474,20 +594,60 @@ func TestWhichSavesQueueADeploy(t *testing.T) {
 			if c.protected {
 				row = setProtected(t, e, row, true)
 			}
+			rows := []core.Domain{row}
+			edited := row
+			if c.hooks {
+				edited = addRow(t, e, core.Domain{AppID: app.ID, Host: row.Host, Path: "/hooks", Service: row.Service, Port: row.Port})
+				rows = append(rows, edited)
+			}
 			if !c.compose {
-				e.runContainers(labelled("c1", app, []core.Domain{row}, "running"))
+				e.runContainers(labelled("c1", app, rows, "running"))
 			}
 			before := len(deploymentsOf(t, e, app.ID))
-			target := row
-			if c.add {
-				target = core.Domain{}
+			var resp *http.Response
+			switch {
+			case c.remove:
+				resp = e.removeDomain(t, edited)
+			case c.add:
+				resp = e.saveDomain(t, app.ID, core.Domain{}, domainForm(c.change(edited), c.on))
+			default:
+				resp = e.saveDomain(t, app.ID, edited, domainForm(c.change(edited), c.on))
 			}
-			wantStatus(t, c.name, e.saveDomain(t, app.ID, target, domainForm(c.change(row), c.on)), http.StatusSeeOther)
+			wantStatus(t, c.name, resp, http.StatusSeeOther)
 			if got := len(deploymentsOf(t, e, app.ID)) > before; got != c.want {
 				t.Errorf("queued a deploy = %v, want %v", got, c.want)
 			}
 		})
 	}
+
+	// App A requires sign-in on web.test; app B serves web.test/hooks openly.
+	// Removing or moving B's row redeploys B, whose container serves it; A's
+	// containers have nothing to change.
+	t.Run("an open path on another app's protected host", func(t *testing.T) {
+		e, _ := newProtectionEnv(t)
+		a, row, _ := liveWeb(t, e, "img:1")
+		row = setProtected(t, e, row, true)
+		b, err := e.store.CreateApp(context.Background(), core.App{Name: "hooks", RepoURL: "https://x/hooks.git"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		seedFinishedDeploy(t, e, b.ID, "hooks:1")
+		hook := addRow(t, e, core.Domain{AppID: b.ID, Host: "web.test", Path: "/hooks"})
+		e.runContainers(labelled("c1", a, []core.Domain{row}, "running"), labelled("c2", b, []core.Domain{hook}, "running"))
+		aBefore, bBefore := len(deploymentsOf(t, e, a.ID)), len(deploymentsOf(t, e, b.ID))
+
+		wantStatus(t, "move B's open path", e.saveDomain(t, b.ID, hook, domainForm(movePath(hook), false)), http.StatusSeeOther)
+		if da, db := len(deploymentsOf(t, e, a.ID)), len(deploymentsOf(t, e, b.ID)); da != aBefore || db != bBefore+1 {
+			t.Errorf("moving B's row: deployments A %d -> %d, B %d -> %d; want only B redeployed", aBefore, da, bBefore, db)
+		}
+		wantStatus(t, "remove B's open path", e.removeDomain(t, hook), http.StatusSeeOther)
+		if da, db := len(deploymentsOf(t, e, a.ID)), len(deploymentsOf(t, e, b.ID)); da != aBefore || db != bBefore+2 {
+			t.Errorf("removing B's row: deployments A %d -> %d, B %d -> %d; want only B redeployed", aBefore, da, bBefore, db)
+		}
+		if rows := domainsOf(t, e, b.ID); len(rows) != 0 {
+			t.Errorf("B's rows = %+v, want the row removed", rows)
+		}
+	})
 }
 
 func TestRestartRedeploysOnMismatch(t *testing.T) {
@@ -606,6 +766,75 @@ func TestRestartRedeploysOnMismatch(t *testing.T) {
 		}
 		restarted(t, e, app)
 	})
+	// A removed or moved open row's old route, on a host that requires sign-in:
+	// the stopped container would answer it again with no gate.
+	t.Run("an open path removed from a protected host", func(t *testing.T) {
+		e, _ := newProtectionEnv(t)
+		app, row, _ := liveWeb(t, e, "img:1")
+		row = setProtected(t, e, row, true)
+		hook := addRow(t, e, core.Domain{AppID: app.ID, Host: row.Host, Path: "/hooks"})
+		e.runContainers(labelled("c1", app, []core.Domain{row, hook}, "exited"))
+		if err := e.store.DeleteDomain(context.Background(), app.ID, hook.ID); err != nil {
+			t.Fatal(err)
+		}
+		before := len(deploymentsOf(t, e, app.ID))
+		redeployed(t, e, app, before, restart(t, e, app))
+	})
+	t.Run("an open path moved off a protected host", func(t *testing.T) {
+		e, _ := newProtectionEnv(t)
+		app, row, _ := liveWeb(t, e, "img:1")
+		row = setProtected(t, e, row, true)
+		hook := addRow(t, e, core.Domain{AppID: app.ID, Host: row.Host, Path: "/hooks"})
+		e.runContainers(labelled("c1", app, []core.Domain{row, hook}, "exited"))
+		moved := hook
+		moved.Host = "elsewhere.test"
+		if err := e.store.UpdateDomain(context.Background(), moved); err != nil {
+			t.Fatal(err)
+		}
+		before := len(deploymentsOf(t, e, app.ID))
+		redeployed(t, e, app, before, restart(t, e, app))
+	})
+	t.Run("an open path removed from another app's protected host", func(t *testing.T) {
+		e, _ := newProtectionEnv(t)
+		a, row, _ := liveWeb(t, e, "img:1")
+		setProtected(t, e, row, true)
+		b, err := e.store.CreateApp(context.Background(), core.App{Name: "hooks", RepoURL: "https://x/hooks.git"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		seedFinishedDeploy(t, e, b.ID, "hooks:1")
+		hook := addRow(t, e, core.Domain{AppID: b.ID, Host: "web.test", Path: "/hooks"})
+		e.runContainers(labelled("c1", b, []core.Domain{hook}, "exited"))
+		if err := e.store.DeleteDomain(context.Background(), b.ID, hook.ID); err != nil {
+			t.Fatal(err)
+		}
+		before := len(deploymentsOf(t, e, b.ID))
+		redeployed(t, e, b, before, restart(t, e, b))
+		if n := len(deploymentsOf(t, e, a.ID)); n != 1 {
+			t.Errorf("A's deployments = %d, want only its old one", n)
+		}
+	})
+	t.Run("an open path removed from an open host", func(t *testing.T) {
+		e, _ := newProtectionEnv(t)
+		app, row, _ := liveWeb(t, e, "img:1")
+		hook := addRow(t, e, core.Domain{AppID: app.ID, Host: row.Host, Path: "/hooks"})
+		e.runContainers(labelled("c1", app, []core.Domain{row, hook}, "exited"))
+		if err := e.store.DeleteDomain(context.Background(), app.ID, hook.ID); err != nil {
+			t.Fatal(err)
+		}
+		restarted(t, e, app)
+	})
+	t.Run("a protected path removed from a protected host", func(t *testing.T) {
+		e, _ := newProtectionEnv(t)
+		app, row, _ := liveWeb(t, e, "img:1")
+		row = setProtected(t, e, row, true)
+		admin := addRow(t, e, core.Domain{AppID: app.ID, Host: row.Host, Path: "/admin", Protected: true})
+		e.runContainers(labelled("c1", app, []core.Domain{row, admin}, "exited"))
+		if err := e.store.DeleteDomain(context.Background(), app.ID, admin.ID); err != nil {
+			t.Fatal(err)
+		}
+		restarted(t, e, app)
+	})
 	t.Run("never deployed: nothing to restart, and nothing deploys", func(t *testing.T) {
 		e, _ := newProtectionEnv(t)
 		app, row, _ := liveWeb(t, e, "")
@@ -677,6 +906,57 @@ func TestRestartSaysItWillRedeploy(t *testing.T) {
 	page = html.UnescapeString(body(t, e.get(t, "/apps/"+itoa(app.ID))))
 	if !strings.Contains(page, "Restart will deploy") || !strings.Contains(page, "This will deploy the latest code from main") {
 		t.Error("the page should say Restart will deploy, and what will ship")
+	}
+}
+
+// Before a save that removes or moves an open path on a host that requires
+// sign-in, the page says it redeploys and what will ship: beside the remove
+// button (seen without JS), in its confirmation, and in the edit dialog.
+func TestRemovingAnOpenPathWarns(t *testing.T) {
+	e, _ := newProtectionEnv(t)
+	app, row, _ := liveWeb(t, e, "") // never deployed: a deploy builds main
+	hook := addRow(t, e, core.Domain{AppID: app.ID, Host: row.Host, Path: "/hooks"})
+	path := "/apps/" + itoa(app.ID)
+	note := "Removing this domain, or changing its host or path, redeploys this app if it is running, because web.test requires sign-in."
+	removeForm := regexp.MustCompile(`<form[^>]*action="/apps/` + itoa(app.ID) + `/domains/` + itoa(hook.ID) + `/delete"[^>]*>`)
+	editButton := `"id":"` + itoa(hook.ID) + `"`
+
+	page := html.UnescapeString(body(t, e.get(t, path)))
+	if strings.Contains(page, note) || strings.Contains(page, `"exception":"1"`) {
+		t.Error("web.test is open, yet the page warns that removing /hooks redeploys")
+	}
+
+	setProtected(t, e, row, true)
+	raw := body(t, e.get(t, path))
+	page = html.UnescapeString(raw)
+	text := html.UnescapeString(regexp.MustCompile(`<[^>]*>`).ReplaceAllString(raw, ""))
+	if !strings.Contains(text, note+" This will deploy the latest code from main.") {
+		t.Errorf("the page should say, beside /hooks, that removing it redeploys and what will ship")
+	}
+	if strings.Count(text, note) != 1 {
+		t.Errorf("the note shows %d times, want once (for /hooks, not for the protected row)", strings.Count(text, note))
+	}
+	form := html.UnescapeString(removeForm.FindString(raw))
+	if !strings.Contains(form, "redeploys") || !strings.Contains(form, "This will deploy the latest code from main.") {
+		t.Errorf("remove confirmation = %q, want it to say it redeploys and what will ship", form)
+	}
+	i := strings.Index(page, editButton)
+	if i < 0 || !strings.Contains(page[i:i+400], `"exception":"1"`) {
+		t.Error("the edit button should tell the dialog that /hooks is an open path on a protected host")
+	}
+	if !strings.Contains(page, "and so does changing the host or path of a domain on a host that requires sign-in") {
+		t.Error("the dialog's redeploy note should cover moving a domain on a host that requires sign-in")
+	}
+
+	// Another app's open path on this host is warned about on its own page.
+	b, err := e.store.CreateApp(context.Background(), core.App{Name: "hooks", RepoURL: "https://x/hooks.git"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	addRow(t, e, core.Domain{AppID: b.ID, Host: row.Host, Path: "/webhooks"})
+	text = html.UnescapeString(regexp.MustCompile(`<[^>]*>`).ReplaceAllString(body(t, e.get(t, "/apps/"+itoa(b.ID))), ""))
+	if !strings.Contains(text, note) {
+		t.Error("app B's page should warn that removing its open path on web.test redeploys B")
 	}
 }
 

@@ -236,7 +236,7 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
     <h2 class="panel-title">Domains</h2>
     {{if .CanChange}}<button type="button" class="btn btn-primary" onclick="openDomainDialog()">+ New domain</button>{{end}}
   </div>
-  {{if .ProtectionUnreachable}}<div class="alert alert-warn">Visitors can't get through to the domains that require sign-in, because signing in isn't available on this server. They keep requiring it. {{.ProtectionReason}}</div>{{end}}
+  {{if .ProtectionUnreachable}}<div class="alert alert-warn">Visitors can't get through to the domains that require sign-in, because signing in isn't available on this server. They keep requiring it until you turn sign-in off on them, or fix the cause: {{.ProtectionReason}}</div>{{end}}
   {{if .Domains}}
   <table class="table">
     <thead><tr><th>Domain</th>{{if eq .App.Kind "compose"}}<th>Service</th>{{end}}<th>Port</th><th>Path</th><th>HTTPS</th><th></th></tr></thead>
@@ -250,14 +250,20 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
         <td>{{if .TLS}}<span class="badge state-running">TLS</span>{{else}}<span class="muted">http</span>{{end}}</td>
         <td>
           {{if $.CanChange}}
+          {{$exposes := index $.OpenOnProtectedHost .ID}}
           <button type="button" class="linkbtn"
-            onclick='openDomainDialog({"id":"{{.ID}}","host":"{{.Host}}","service":"{{.Service}}","port":"{{.Port}}","path":"{{.Path}}","internal_path":"{{.InternalPath}}","tls":"{{if .TLS}}1{{else}}0{{end}}","protected":"{{if .Protected}}1{{else}}0{{end}}"})'>edit</button>
-          <form method="post" action="/apps/{{$.App.ID}}/domains/{{.ID}}/delete" class="inline" onsubmit="return confirm('Remove {{.Host}}{{.Path}}?');">
+            onclick='openDomainDialog({"id":"{{.ID}}","host":"{{.Host}}","service":"{{.Service}}","port":"{{.Port}}","path":"{{.Path}}","internal_path":"{{.InternalPath}}","tls":"{{if .TLS}}1{{else}}0{{end}}","protected":"{{if .Protected}}1{{else}}0{{end}}","exception":"{{if $exposes}}1{{else}}0{{end}}"})'>edit</button>
+          <form method="post" action="/apps/{{$.App.ID}}/domains/{{.ID}}/delete" class="inline" onsubmit="return confirm('Remove {{.Host}}{{.Path}}?{{if $exposes}} This redeploys this app if it is running, because {{.Host}} requires sign-in.{{with $.ProtectionWarning}} {{.}}{{end}}{{end}}');">
             <button type="submit" class="linkbtn">remove</button>
           </form>
           {{end}}
         </td>
       </tr>
+      {{if and $.CanChange (index $.OpenOnProtectedHost .ID)}}
+      <tr class="domain-note">
+        <td colspan="{{if eq $.App.Kind "compose"}}6{{else}}5{{end}}">Removing this domain, or changing its host or path, redeploys this app if it is running, because {{.Host}} requires sign-in. {{with $.ProtectionWarning}}<strong>{{.}}</strong>{{end}}</td>
+      </tr>
+      {{end}}
       {{end}}
     </tbody>
   </table>

@@ -419,3 +419,22 @@ func TestHasGateLabel(t *testing.T) {
 		}
 	}
 }
+
+// RuleHost reads back the host of the rule RouteLabels writes, with or
+// without a path; anything else has no host.
+func TestRuleHost(t *testing.T) {
+	for _, c := range []struct{ host, path string }{{"wiki.example.com", ""}, {"wiki.example.com", "/webhooks"}} {
+		rule := RouteLabels("r", c.host, 8080, c.path, "", false, "", false, "")["traefik.http.routers.r.rule"]
+		if rule != Rule(c.host, c.path) {
+			t.Errorf("Rule(%q, %q) = %q, but RouteLabels wrote %q", c.host, c.path, Rule(c.host, c.path), rule)
+		}
+		if got := RuleHost(rule); got != c.host {
+			t.Errorf("RuleHost(%q) = %q, want %q", rule, got, c.host)
+		}
+	}
+	for _, rule := range []string{"", "PathPrefix(`/x`)", "Host(`unterminated"} {
+		if got := RuleHost(rule); got != "" {
+			t.Errorf("RuleHost(%q) = %q, want none", rule, got)
+		}
+	}
+}

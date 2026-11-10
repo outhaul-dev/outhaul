@@ -236,6 +236,25 @@ func (s *Store) AnyDomainProtected(ctx context.Context) (bool, error) {
 	return any, err
 }
 
+// ProtectedHosts returns every host, lower-cased, on which any app has a
+// protected row, whatever its path.
+func (s *Store) ProtectedHosts(ctx context.Context) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT lower(host) FROM domains WHERE protected != 0`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	hosts := map[string]bool{}
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, err
+		}
+		hosts[h] = true
+	}
+	return hosts, rows.Err()
+}
+
 // GetDomain fetches one route scoped to its app.
 func (s *Store) GetDomain(ctx context.Context, appID, id int64) (core.Domain, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT `+domainCols+` FROM domains WHERE id = ? AND app_id = ?`, id, appID)

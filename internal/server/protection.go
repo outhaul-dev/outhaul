@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"log"
+	"strings"
 
 	"github.com/outhaul-dev/outhaul/internal/compose"
 	"github.com/outhaul-dev/outhaul/internal/core"
@@ -15,6 +16,11 @@ import (
 // puts on the app's containers, so a change on a running app queues a deploy
 // at once, and Restart, which would bring a container back with its old
 // labels, deploys instead whenever the labels and the rows disagree.
+//
+// The same holds for an open row on a host that requires sign-in (an open
+// path under a protected host, on this app or another): when it is removed,
+// or its host or path changes, the old container keeps answering its old
+// route with no gate until a deploy replaces it.
 
 // Why the switch is unavailable.
 const (
@@ -77,9 +83,11 @@ func rowGate(containers []docker.Container, router string) (defined, gated bool)
 // protectionMismatch reports whether containers' labels disagree with any of
 // the app's rows: a row is protected and some container serves it without the
 // gate, or it isn't defined (an open row on its host may be serving its path);
-// or a row is open and its router still has the gate. An open row no
-// container defines yet isn't a mismatch: nothing was protected there.
-func protectionMismatch(domains []core.Domain, appName string, containers []docker.Container) bool {
+// or a row is open and its router still has the gate; or a container serves,
+// without the gate, a route the rows no longer have, on one of protectedHosts
+// (staleOpenRoute). An open row no container defines yet isn't a mismatch:
+// nothing was protected there.
+func protectionMismatch(domains []core.Domain, appName string, containers []docker.Container, protectedHosts map[string]bool) bool {
 	for _, d := range domains {
 		defined, gated := rowGate(containers, traefik.RouterName(appName, d.ID))
 		if !d.Protected && !defined {
@@ -89,7 +97,62 @@ func protectionMismatch(domains []core.Domain, appName string, containers []dock
 			return true
 		}
 	}
+	return staleOpenRoute(domains, appName, containers, protectedHosts)
+}
+
+// staleOpenRoute reports whether any of containers routes, without the gate,
+// a host and path that none of the app's rows has any more (its row was
+// removed, or its host or path changed), on a host in protectedHosts
+// (lower-cased). Only the app's own row routers count, and only when their
+// host can be read from their rule.
+func staleOpenRoute(domains []core.Domain, appName string, containers []docker.Container, protectedHosts map[string]bool) bool {
+	current := make(map[string]string, len(domains)) // router -> rule
+	for _, d := range domains {
+		current[traefik.RouterName(appName, d.ID)] = traefik.Rule(d.Host, d.Path)
+	}
+	const prefix, suffix = "traefik.http.routers.", ".rule"
+	ours := strings.TrimSuffix(traefik.RouterName(appName, 0), "0") // a row's router, less its ID
+	for _, c := range containers {
+		for k, rule := range c.Labels {
+			if !strings.HasPrefix(k, prefix) || !strings.HasSuffix(k, suffix) {
+				continue
+			}
+			router := strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(k, prefix), suffix), "-tls")
+			if !strings.HasPrefix(router, ours) {
+				continue
+			}
+			if want, ok := current[router]; ok && want == rule {
+				continue
+			}
+			if traefik.RowHasGate(c.Labels, router) {
+				continue
+			}
+			if protectedHosts[strings.ToLower(traefik.RuleHost(rule))] {
+				return true
+			}
+		}
+	}
 	return false
+}
+
+// openOnProtectedHost reports whether d is an open row on a host in
+// protectedHosts (lower-cased): removing it, or changing its host or path,
+// leaves its old route open on that host until the app redeploys.
+func openOnProtectedHost(d core.Domain, protectedHosts map[string]bool) bool {
+	return !d.Protected && protectedHosts[strings.ToLower(d.Host)]
+}
+
+// leavesOpenRoute is openOnProtectedHost for d, against the hosts the store
+// has protected rows on now.
+func (s *Server) leavesOpenRoute(ctx context.Context, d core.Domain) (bool, error) {
+	if d.Protected {
+		return false, nil
+	}
+	hosts, err := s.store.ProtectedHosts(ctx)
+	if err != nil {
+		return false, err
+	}
+	return openOnProtectedHost(d, hosts), nil
 }
 
 // chooseProtectionDeploy picks how to deploy app so its labels follow its

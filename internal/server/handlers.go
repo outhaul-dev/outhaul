@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -842,8 +843,10 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 	data["LiveDeploymentID"] = liveID
 	// The domain dialog's "Require sign-in" switch: whether it can be turned on,
 	// and what a save that redeploys would ship. A protected row whose sign-in
-	// stopped being available keeps its gate, and the page says so. When the
-	// containers' labels disagree with the rows, Restart deploys instead.
+	// stopped being available keeps its gate until it is turned off, and the
+	// page says so. An open row on a host that requires sign-in redeploys when
+	// it is removed or moved (OpenOnProtectedHost). When the containers'
+	// labels disagree with the rows, Restart deploys instead.
 	protectOK, protectReason := s.protectionAvailability(r.Context(), core.Domain{})
 	data["ProtectionAvailable"] = protectOK
 	data["ProtectionReason"] = protectReason
@@ -852,11 +855,27 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 			data["ProtectionUnreachable"] = true
 		}
 	}
+	openOnProtected := map[int64]bool{}
+	data["OpenOnProtectedHost"] = openOnProtected
 	if canChange {
 		data["ProtectionWarning"] = protectionWarningFor(app, deployments)
+		protectedHosts, err := s.store.ProtectedHosts(r.Context())
+		if err != nil {
+			// Warn of a redeploy on every open row rather than on none.
+			log.Printf("app page: read the protected hosts: %v", err)
+			protectedHosts = map[string]bool{}
+			for _, d := range domains {
+				protectedHosts[strings.ToLower(d.Host)] = true
+			}
+		}
+		for _, d := range domains {
+			if openOnProtectedHost(d, protectedHosts) {
+				openOnProtected[d.ID] = true
+			}
+		}
 		if cs, err := s.appContainers(r.Context(), app); err != nil {
 			log.Printf("app page: list the containers of %q: %v", app.Name, err)
-		} else if len(cs) > 0 && protectionMismatch(domains, app.Name, cs) {
+		} else if len(cs) > 0 && protectionMismatch(domains, app.Name, cs, protectedHosts) {
 			data["RestartDeploys"] = true
 		}
 	}
@@ -985,26 +1004,37 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 	// See handleAddDomain.
 	ctx := context.WithoutCancel(r.Context())
 	// UpdateDomain writes Protected as given, so it is always set here: the
-	// switch's value when the form offered it and it can be used, otherwise the
-	// row's own. A disabled switch submits nothing, and a row that is protected
-	// never becomes open because sign-in stopped being available.
-	submitted := r.FormValue("protected") != ""
-	available, reason := s.protectionAvailability(ctx, d)
+	// switch's value when the form offered it, otherwise the row's own. Only
+	// turning it on needs sign-in to be available; turning it off is always
+	// allowed, so a row that nobody can get through can be opened. The dialog
+	// disables the switch only on an open row, where it then submits nothing.
 	switch {
-	case !available && submitted && !existing.Protected:
-		http.Error(w, reason, http.StatusBadRequest)
-		return
-	case !available:
-		d.Protected = existing.Protected
-	case submitted:
+	case r.FormValue("protected") != "":
+		if !existing.Protected {
+			if ok, reason := s.protectionAvailability(ctx, d); !ok {
+				http.Error(w, reason, http.StatusBadRequest)
+				return
+			}
+		}
 		d.Protected = true
 	case r.FormValue("protected_offered") != "":
 		d.Protected = false
 	default:
 		d.Protected = existing.Protected
 	}
+	// A deploy applies a change to what sign-in covers: turning it on or off,
+	// moving a protected row, or moving an open row off a route on a host that
+	// requires sign-in, which its old container would keep serving openly.
 	moved := !strings.EqualFold(existing.Host, d.Host) || existing.Path != d.Path
 	redeploy := d.Protected != existing.Protected || existing.Protected && moved
+	if !redeploy && moved {
+		leaves, err := s.leavesOpenRoute(ctx, existing)
+		if err != nil {
+			http.Error(w, "Could not update domain: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		redeploy = leaves
+	}
 	if err := s.store.UpdateDomain(ctx, d); err != nil {
 		if errors.Is(err, store.ErrHostReserved) {
 			msg := ownHostRefusal
@@ -1049,10 +1079,10 @@ func (s *Server) refuseProtection(w http.ResponseWriter, err, undo error) {
 	http.Error(w, fmt.Sprintf("Sign-in wasn't turned on: Outhaul couldn't update its proxy (%v). The domain wasn't changed.", err), http.StatusServiceUnavailable)
 }
 
-// finishDomainSave ends a saved add or edit. When the save changed what sign-in
-// covers it queues the deploy that applies it (applyProtection). Either way it
-// syncs the local CA, which mints a protected row's certificate whatever its
-// TLS flag.
+// finishDomainSave ends a saved add, edit or removal. When the save changed
+// what sign-in covers it queues the deploy that applies it (applyProtection).
+// Either way it syncs the local CA, which mints a protected row's certificate
+// whatever its TLS flag.
 func (s *Server) finishDomainSave(ctx context.Context, w http.ResponseWriter, r *http.Request, app core.App, redeploy bool) {
 	var applyErr error
 	if redeploy {
@@ -1061,12 +1091,17 @@ func (s *Server) finishDomainSave(ctx context.Context, w http.ResponseWriter, r 
 	s.syncCerts(ctx)
 	if applyErr != nil {
 		log.Printf("protected routes: queue the deploy of %q: %v", app.Name, applyErr)
-		http.Error(w, "The domain was saved, but the deploy that applies its sign-in setting couldn't be queued: "+applyErr.Error()+". Deploy the app to apply it.", http.StatusInternalServerError)
+		http.Error(w, "The domain change was saved, but the deploy that applies it to sign-in couldn't be queued: "+applyErr.Error()+". Deploy the app to apply it.", http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/apps/"+strconv.FormatInt(app.ID, 10), http.StatusSeeOther)
 }
 
+// handleDeleteDomain removes a route. Removing an open row on a host that
+// requires sign-in redeploys a running app, whose container would otherwise
+// keep serving that route with no gate; a protected row's old route keeps its
+// gate, so removing one needs no deploy. Removing a row the app doesn't have
+// does nothing.
 func (s *Server) handleDeleteDomain(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(r.PathValue("id"))
 	domainID, ok2 := parseID(r.PathValue("domainID"))
@@ -1074,16 +1109,31 @@ func (s *Server) handleDeleteDomain(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if _, err := s.store.GetApp(r.Context(), id); err != nil {
+	app, err := s.store.GetApp(r.Context(), id)
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	if err := s.store.DeleteDomain(r.Context(), id, domainID); err != nil {
+	// See handleAddDomain.
+	ctx := context.WithoutCancel(r.Context())
+	var redeploy bool
+	existing, err := s.store.GetDomain(ctx, id, domainID)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+	case err != nil:
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	default:
+		if redeploy, err = s.leavesOpenRoute(ctx, existing); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if err := s.store.DeleteDomain(ctx, id, domainID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.syncCerts(r.Context())
-	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+	s.finishDomainSave(ctx, w, r, app, redeploy)
 }
 
 // handleAddVolume attaches a persistent volume to a single-container app. The
@@ -1425,7 +1475,8 @@ func (s *Server) handleRestartApp(w http.ResponseWriter, r *http.Request) {
 // restartDeploysInstead queues a deploy, and answers, when the app's containers
 // disagree with its rows' protection (protectionMismatch). It reports whether
 // it answered. An app with no containers has nothing to restart, and is left
-// to appLifecycle. If the labels can't be read, nothing is restarted.
+// to appLifecycle. If the labels, or the hosts that have protected rows,
+// can't be read, nothing is restarted.
 func (s *Server) restartDeploysInstead(w http.ResponseWriter, r *http.Request) bool {
 	id, ok := parseID(r.PathValue("id"))
 	if !ok {
@@ -1445,7 +1496,15 @@ func (s *Server) restartDeploysInstead(w http.ResponseWriter, r *http.Request) b
 		http.Error(w, "Could not read the app's containers, so it wasn't restarted: "+err.Error(), http.StatusInternalServerError)
 		return true
 	}
-	if len(cs) == 0 || !protectionMismatch(domains, app.Name, cs) {
+	if len(cs) == 0 {
+		return false
+	}
+	protectedHosts, err := s.store.ProtectedHosts(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return true
+	}
+	if !protectionMismatch(domains, app.Name, cs, protectedHosts) {
 		return false
 	}
 	dep, err := s.queueProtectionDeploy(r.Context(), app)

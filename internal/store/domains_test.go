@@ -291,6 +291,38 @@ func TestAnyDomainProtected(t *testing.T) {
 	check(false)
 }
 
+// ProtectedHosts names every host, lower-cased, with a protected row on any
+// app, whatever that row's path.
+func TestProtectedHosts(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	wiki := testApp(t, st, "wiki", core.KindCompose, "")
+	hooks := testApp(t, st, "hooks", core.KindCompose, "")
+	add := func(appID int64, host, path string, protected bool) {
+		t.Helper()
+		d, err := st.AddDomain(ctx, core.Domain{AppID: appID, Host: host, Path: path, Service: "web", Port: 3000})
+		if err != nil {
+			t.Fatalf("AddDomain %s%s: %v", host, path, err)
+		}
+		if err := st.SetDomainProtected(ctx, appID, d.ID, protected); err != nil {
+			t.Fatalf("SetDomainProtected: %v", err)
+		}
+	}
+	add(wiki.ID, "Wiki.Example.com", "", true)
+	add(hooks.ID, "wiki.example.com", "/webhooks", false)
+	add(hooks.ID, "shop.example.com", "/admin", true)
+	add(hooks.ID, "open.example.com", "", false)
+
+	got, err := st.ProtectedHosts(ctx)
+	if err != nil {
+		t.Fatalf("ProtectedHosts: %v", err)
+	}
+	want := map[string]bool{"wiki.example.com": true, "shop.example.com": true}
+	if len(got) != len(want) || !got["wiki.example.com"] || !got["shop.example.com"] {
+		t.Errorf("ProtectedHosts = %v, want %v", got, want)
+	}
+}
+
 // Upgrading leaves every existing route open; nothing redeploys.
 func TestProtectedMigrationKeepsRowsOpen(t *testing.T) {
 	db := openMigratedBefore(t, "0028")

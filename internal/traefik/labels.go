@@ -58,10 +58,7 @@ func AppLabels(app core.App, domains []core.Domain, port int, globalTLS bool, ce
 // and the request then falls through to an open router. They run before any
 // path rewrite, so the gate sees the URL the visitor asked for.
 func RouteLabels(router, host string, port int, urlPath, internalPath string, tlsEnabled bool, certResolver string, protected bool, gateAddress string) map[string]string {
-	rule := fmt.Sprintf("Host(`%s`)", host)
-	if urlPath != "" {
-		rule += fmt.Sprintf(" && PathPrefix(`%s`)", urlPath)
-	}
+	rule := Rule(host, urlPath)
 	// The router names its service explicitly: a container with several
 	// domains defines several services, and Traefik's Docker provider drops
 	// any router it cannot link to exactly one.
@@ -199,4 +196,27 @@ func rewriteMiddlewares(router, urlPath, internalPath string, dst map[string]str
 // RouterName namespaces one domain row's Traefik router/service across apps.
 func RouterName(appName string, domainID int64) string {
 	return fmt.Sprintf("outhaul-%s-d%d", appName, domainID)
+}
+
+// Rule is the router rule RouteLabels writes for a route on host, under
+// urlPath when it has one.
+func Rule(host, urlPath string) string {
+	rule := fmt.Sprintf("Host(`%s`)", host)
+	if urlPath != "" {
+		rule += fmt.Sprintf(" && PathPrefix(`%s`)", urlPath)
+	}
+	return rule
+}
+
+// RuleHost returns the host a Rule names, or "" when rule isn't one.
+func RuleHost(rule string) string {
+	rest, ok := strings.CutPrefix(rule, "Host(`")
+	if !ok {
+		return ""
+	}
+	host, _, ok := strings.Cut(rest, "`)")
+	if !ok {
+		return ""
+	}
+	return host
 }
