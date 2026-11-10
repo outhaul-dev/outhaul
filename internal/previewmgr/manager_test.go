@@ -1,8 +1,11 @@
 package previewmgr
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -1025,8 +1028,9 @@ func TestOpenPreviewNeedsNoReconcile(t *testing.T) {
 // When the proxy can't be reconciled now (the reconcile fails, there is no
 // proxy, or the reconcile doesn't finish in time), a preview that requires
 // sign-in is still made, protected, and deployed: the parent's protected row
-// normally keeps Traefik's route to the gate. The spawn doesn't wait for the
-// reconcile longer than gateHostWait, so it holds the queue no longer.
+// normally keeps the gate's host mapped. The log says so, and what the
+// mapping is for. The spawn doesn't wait for the reconcile longer than
+// gateHostWait, so it holds the queue no longer.
 func TestProtectedPreviewSpawnsWhenTheProxyCantBeUpdated(t *testing.T) {
 	release := make(chan struct{})
 	t.Cleanup(func() { close(release) })
@@ -1045,6 +1049,9 @@ func TestProtectedPreviewSpawnsWhenTheProxyCantBeUpdated(t *testing.T) {
 			if c.proxy != nil {
 				h.mgr.SetProxyControl(c.proxy)
 			}
+			var logged bytes.Buffer
+			log.SetOutput(&logged)
+			t.Cleanup(func() { log.SetOutput(os.Stderr) })
 			parent := h.seedGithubApp(t, "web", "acme/web", nil)
 			h.protectPrimary(t, parent)
 			start := time.Now()
@@ -1067,6 +1074,10 @@ func TestProtectedPreviewSpawnsWhenTheProxyCantBeUpdated(t *testing.T) {
 				if _, left := c.proxy.seen(); left <= 0 || left > h.mgr.gateHostWait {
 					t.Errorf("the reconcile's deadline was in %v, want at most %v", left, h.mgr.gateHostWait)
 				}
+			}
+			const why = "deploying it anyway: its parent's protected row normally keeps the gate's host mapped to Outhaul; without that, Traefik would look the gate's host name up on the Docker network"
+			if !strings.Contains(logged.String(), why) {
+				t.Errorf("the log should say %q; got:\n%s", why, logged.String())
 			}
 		})
 	}

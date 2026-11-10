@@ -319,18 +319,19 @@ func previewRef(ev webhook.PullRequestEvent) string {
 }
 
 // ensureGateHost has the proxy reconciled now, with the preview's rows saved,
-// so Traefik maps the gate's host before a gated preview is deployed, as the
-// domain dialog does when sign-in is turned on. The parent's protected row
-// normally keeps the mapping, but between reading the parent's rows and
-// saving the preview's, the parent's row can be turned off and a reconcile
-// drop it, leaving this preview the only protected row. So a reconcile that
-// fails, or no proxy, doesn't stop the spawn: it is logged, and the preview
-// is deployed protected. The spawn waits for the reconcile no longer than
-// gateHostWait, on the job's context, since it holds the queue's single
-// consumer; a reconcile still running then finishes on its own.
+// so Traefik maps the gate's host to Outhaul before a gated preview is
+// deployed, as the domain dialog does when sign-in is turned on. A reconcile
+// that fails, or no proxy, doesn't stop the spawn: it is logged
+// (carryOnWhy), and the preview is deployed protected. The preview's
+// protection comes from its parent's protected row, which normally keeps the
+// mapping in place already; without the mapping, Traefik would look the
+// gate's host name up on the Docker network. The spawn waits for the
+// reconcile no longer than gateHostWait, on the job's context, since it holds
+// the queue's single consumer; a reconcile still running then finishes on
+// its own.
 func (m *Manager) ensureGateHost(ctx context.Context, child core.App) {
 	if m.proxy == nil {
-		log.Printf("previewmgr: preview %s requires sign-in, but this server has no proxy to update; deploying it anyway", child.Name)
+		log.Printf("previewmgr: preview %s requires sign-in, but this server has no proxy to update; %s", child.Name, carryOnWhy)
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, m.gateHostWait)
@@ -340,12 +341,16 @@ func (m *Manager) ensureGateHost(ctx context.Context, child core.App) {
 	select {
 	case err := <-done:
 		if err != nil {
-			log.Printf("previewmgr: preview %s requires sign-in, but Outhaul couldn't %v; deploying it anyway", child.Name, err)
+			log.Printf("previewmgr: preview %s requires sign-in, but Outhaul couldn't %v; %s", child.Name, err, carryOnWhy)
 		}
 	case <-ctx.Done():
-		log.Printf("previewmgr: preview %s requires sign-in, and updating the proxy didn't finish within %v (%v); deploying it anyway", child.Name, m.gateHostWait, ctx.Err())
+		log.Printf("previewmgr: preview %s requires sign-in, and updating the proxy didn't finish within %v (%v); %s", child.Name, m.gateHostWait, ctx.Err(), carryOnWhy)
 	}
 }
+
+// carryOnWhy ends ensureGateHost's log lines: why the spawn goes on, and what
+// the mapping it couldn't confirm is for.
+const carryOnWhy = "deploying it anyway: its parent's protected row normally keeps the gate's host mapped to Outhaul; without that, Traefik would look the gate's host name up on the Docker network"
 
 // linkScheme is the scheme a preview's link uses, by the rule the pages use:
 // https when the row's TLS flag is on, or when it is protected and protected
