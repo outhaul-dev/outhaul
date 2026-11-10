@@ -388,11 +388,32 @@ func TestDefaultProjectCannotBeDeleted(t *testing.T) {
 	e.login(t)
 	resp := e.postForm(t, "/projects/"+itoa(core.DefaultProjectID)+"/delete", url.Values{})
 	html := body(t, resp)
-	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(html, "The default project can") && strings.Contains(html, "t be deleted.") {
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(html, "The default project can&#39;t be deleted.") {
 		t.Fatalf("delete default project = %d %s, want 400 with the plain message", resp.StatusCode, html)
 	}
 	if _, err := e.store.GetProject(context.Background(), core.DefaultProjectID); err != nil {
 		t.Fatalf("default project gone: %v", err)
+	}
+}
+
+// The store refuses to delete the default project, so its page doesn't offer
+// to. Another empty project still has the button.
+func TestDefaultProjectPageOffersNoDelete(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	p, err := e.store.CreateProject(context.Background(), core.Project{Name: "empty"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := body(t, e.get(t, "/projects/"+itoa(core.DefaultProjectID)))
+	if strings.Contains(page, "Delete project") || strings.Contains(page, `action="/projects/`+itoa(core.DefaultProjectID)+`/delete"`) {
+		t.Error("the default project's page offers to delete it")
+	}
+	if !strings.Contains(page, "The default project can't be deleted.") {
+		t.Error("the default project's page doesn't say why it can't be deleted")
+	}
+	if page := body(t, e.get(t, "/projects/"+itoa(p.ID))); !strings.Contains(page, `action="/projects/`+itoa(p.ID)+`/delete"`) {
+		t.Error("an empty project's page has no Delete button")
 	}
 }
 

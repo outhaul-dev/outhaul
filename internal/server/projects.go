@@ -148,20 +148,21 @@ func (s *Server) renderProject(w http.ResponseWriter, r *http.Request, status in
 		env = viewerEnv(env)
 	}
 	data := map[string]any{
-		"Title":           p.Name,
-		"Active":          "projects",
-		"Project":         p,
-		"Apps":            rows,
-		"AppCount":        len(rows),
-		"Databases":       dbs,
-		"Env":             env,
-		"Projects":        projects,
-		"SelectedProject": p.ID,
-		"InProject":       true,
-		"Return":          "/projects/" + strconv.FormatInt(p.ID, 10),
-		"DBForm":          dbForm,
-		"Members":         members,
-		"Shareable":       shareable,
+		"Title":            p.Name,
+		"Active":           "projects",
+		"Project":          p,
+		"Apps":             rows,
+		"AppCount":         len(rows),
+		"Databases":        dbs,
+		"Env":              env,
+		"Projects":         projects,
+		"SelectedProject":  p.ID,
+		"InProject":        true,
+		"Return":           "/projects/" + strconv.FormatInt(p.ID, 10),
+		"DBForm":           dbForm,
+		"Members":          members,
+		"Shareable":        shareable,
+		"IsDefaultProject": p.ID == core.DefaultProjectID,
 	}
 	if errMsg != "" {
 		data["Error"] = errMsg

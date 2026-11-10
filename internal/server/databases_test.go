@@ -216,8 +216,18 @@ func TestProjectPageListsDatabases(t *testing.T) {
 	if !strings.Contains(page, "/projects/1/databases") {
 		t.Error("project page missing the create-database form")
 	}
-	// The delete guard must acknowledge databases too.
-	if !strings.Contains(page, "1 database") {
+	// The delete guard must acknowledge databases too. The default project
+	// can't be deleted at all, so this needs another one.
+	p, err := e.store.CreateProject(context.Background(), core.Project{Name: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.store.CreateDatabase(context.Background(), core.Database{
+		ProjectID: p.ID, Name: "shop-db", Engine: core.EnginePostgres, Image: "postgres:17", Username: "shop", DBName: "shop", Password: "pw123",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if page := body(t, e.get(t, "/projects/"+itoa(p.ID))); !strings.Contains(page, "1 database") {
 		t.Error("danger zone does not count the database")
 	}
 }
