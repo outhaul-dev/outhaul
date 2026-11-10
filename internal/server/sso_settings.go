@@ -126,11 +126,10 @@ func (s *Server) handleSaveSSO(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteSSO removes the provider and ends every SSO session, in one
 // transaction. Passwords keep working.
+//
+// It works without OUTHAUL_PUBLIC_URL, so settings saved before it was unset
+// can always be removed.
 func (s *Server) handleDeleteSSO(w http.ResponseWriter, r *http.Request) {
-	if !s.publicURLSet() {
-		s.renderSettings(w, r, http.StatusBadRequest, "Single sign-on needs OUTHAUL_PUBLIC_URL to be set.")
-		return
-	}
 	if err := s.store.ClearSSOSettings(r.Context()); err != nil {
 		log.Printf("sso: removing settings: %v", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)

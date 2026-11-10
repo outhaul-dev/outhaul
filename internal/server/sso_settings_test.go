@@ -85,11 +85,31 @@ func TestSSOPanelNeedsPublicURL(t *testing.T) {
 		t.Errorf("save status = %d, want 400", resp.StatusCode)
 	}
 	resp.Body.Close()
-	resp = e.postForm(t, "/settings/sso/delete", url.Values{})
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("delete status = %d, want 400", resp.StatusCode)
+	if strings.Contains(page, "Remove SSO") {
+		t.Error("offers to remove SSO when none is connected")
 	}
+}
+
+// Settings saved before OUTHAUL_PUBLIC_URL was unset can still be removed.
+func TestSSOCanBeRemovedWithoutPublicURL(t *testing.T) {
+	e, _ := ssoEnv(t)
+	saveSSO(t, e, "https://idp.example.com", "cid", "sec").Body.Close()
+	tok := ssoSession(t, e)
+	e.srv.publicURL = ""
+	if page := body(t, e.get(t, "/settings")); !strings.Contains(page, "Remove SSO") {
+		t.Error("no way to remove the stored settings")
+	}
+	resp := e.postForm(t, "/settings/sso/delete", url.Values{})
 	resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("delete status = %d, want 303", resp.StatusCode)
+	}
+	if _, ok, _ := e.store.GetSSOSettings(context.Background()); ok {
+		t.Error("settings remain")
+	}
+	if hasSession(e, tok) {
+		t.Error("SSO session remains")
+	}
 }
 
 func TestSaveRunsDiscovery(t *testing.T) {

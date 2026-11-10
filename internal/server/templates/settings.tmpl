@@ -171,6 +171,12 @@
   <h2 class="panel-title">Single sign-on (SSO)</h2>
   {{if .NeedsPublicURL}}
   <p class="env-note">Single sign-on needs <code>OUTHAUL_PUBLIC_URL</code> to be set to your admin UI's public HTTPS URL. Set it, then connect a provider here.</p>
+  {{if .SSO.Configured}}
+  <p class="muted env-note">Single sign-on settings are still saved, but nobody can sign in with SSO until <code>OUTHAUL_PUBLIC_URL</code> is set again.</p>
+  <form method="post" action="/settings/sso/delete" class="grid-form" onsubmit="return confirm('Remove single sign-on? Everyone signed in with SSO is signed out. Password sign-in keeps working.');">
+    <button type="submit" class="btn btn-danger">Remove SSO</button>
+  </form>
+  {{end}}
   {{else}}
   {{with .SSO}}
   <p class="muted env-note">Let people sign in to Outhaul through your identity provider (any OpenID Connect provider). Register this redirect URI at the provider: <code>{{.RedirectURI}}</code></p>
