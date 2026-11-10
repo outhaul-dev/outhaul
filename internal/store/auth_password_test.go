@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"testing"
 	"time"
 
@@ -65,5 +67,64 @@ func TestUpdateUserPasswordRevokesOtherSessions(t *testing.T) {
 		if got := err == nil; got != want {
 			t.Errorf("session %q valid = %v, want %v", token, got, want)
 		}
+	}
+}
+
+// A password sign-in checks the password, slowly, and then makes a session. A
+// reset or change that commits in between must not leave a session for the
+// old password, so the session is made only if the account still has the hash
+// that was checked.
+func TestPasswordSessionNeedsThePasswordThatWasChecked(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateUser(ctx, "admin", "h1"); err != nil {
+		t.Fatal(err)
+	}
+	bob, err := st.CreatePasswordAccount(ctx, "bob", core.RoleProjectMember)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateUserPassword(ctx, bob.ID, "b1", ""); err != nil {
+		t.Fatal(err)
+	}
+	session := func(token string) core.Session {
+		return core.Session{Token: token, UserID: bob.ID, ExpiresAt: time.Now().Add(time.Hour)}
+	}
+	refused := func(what, token, checked string) {
+		t.Helper()
+		if err := st.CreatePasswordSession(ctx, session(token), checked); !errors.Is(err, ErrPasswordChanged) {
+			t.Errorf("%s: err = %v, want ErrPasswordChanged", what, err)
+		}
+		if _, err := st.GetSession(ctx, token); !errors.Is(err, sql.ErrNoRows) {
+			t.Errorf("%s: a session was stored (err %v)", what, err)
+		}
+	}
+
+	if err := st.CreatePasswordSession(ctx, session("ok"), "b1"); err != nil {
+		t.Fatalf("with the hash that was checked: %v", err)
+	}
+	if _, err := st.GetSession(ctx, "ok"); err != nil {
+		t.Fatalf("session not stored: %v", err)
+	}
+
+	if err := st.UpdateUserPassword(ctx, bob.ID, "b2", ""); err != nil {
+		t.Fatal(err)
+	}
+	refused("after a password change", "changed", "b1")
+
+	if err := st.ResetUserPassword(ctx, bob.ID, "tok", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	refused("after a reset", "reset", "b2")
+	refused("with a blank hash", "blank", "")
+
+	if err := st.DeleteUser(ctx, bob.ID); err != nil {
+		t.Fatal(err)
+	}
+	refused("after the account is deleted", "gone", "b2")
+
+	sso := insertSSOAdmin(t, st, "dana")
+	if err := st.CreatePasswordSession(ctx, core.Session{Token: "sso", UserID: sso, ExpiresAt: time.Now().Add(time.Hour)}, ""); !errors.Is(err, ErrPasswordChanged) {
+		t.Errorf("for an SSO account: err = %v, want ErrPasswordChanged", err)
 	}
 }

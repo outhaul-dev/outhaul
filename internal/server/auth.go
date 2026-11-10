@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/store"
 )
 
 const (
@@ -76,23 +77,24 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, user core.User) e
 	return nil
 }
 
-// createSession stores a new session for the account. An SSO session lasts
-// ssoSessionTTL, a password session sessionTTL. finishLogin sets its cookie.
+// createSession stores a new session for the account. finishLogin sets its
+// cookie.
 func (s *Server) createSession(ctx context.Context, user core.User) (token string, expires time.Time, err error) {
+	sess := newSession(user)
+	if err := s.store.CreateSession(ctx, sess); err != nil {
+		return "", time.Time{}, err
+	}
+	return sess.Token, sess.ExpiresAt, nil
+}
+
+// newSession is a new session for the account, not yet stored. An SSO session
+// lasts ssoSessionTTL, a password session sessionTTL.
+func newSession(user core.User) core.Session {
 	ttl := sessionTTL
 	if user.SignIn == core.SignInSSO {
 		ttl = ssoSessionTTL
 	}
-	expires = time.Now().Add(ttl)
-	token = NewToken()
-	if err := s.store.CreateSession(ctx, core.Session{
-		Token:     token,
-		UserID:    user.ID,
-		ExpiresAt: expires,
-	}); err != nil {
-		return "", time.Time{}, err
-	}
-	return token, expires, nil
+	return core.Session{Token: NewToken(), UserID: user.ID, ExpiresAt: time.Now().Add(ttl)}
 }
 
 // finishLogin records the sign-in and sets the session cookie, which lasts
@@ -240,10 +242,20 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		s.loginFailed(w, r, errors.New("invalid credentials"))
 		return
 	}
-	if err := s.login(w, r, user); err != nil {
+	// The session is made only if the account still has the hash just
+	// checked: a reset or change that committed during the check has ended
+	// the account's sessions, and this one mustn't outlive it.
+	sess := newSession(user)
+	err = s.store.CreatePasswordSession(r.Context(), sess, user.PasswordHash)
+	if errors.Is(err, store.ErrPasswordChanged) {
+		s.loginFailed(w, r, err)
+		return
+	}
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.finishLogin(w, r, user, sess.Token, sess.ExpiresAt)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 

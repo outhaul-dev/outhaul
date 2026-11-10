@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
@@ -77,6 +78,45 @@ func (s *Store) CreateSession(ctx context.Context, sess core.Session) error {
 		`INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`,
 		sess.Token, sess.UserID, fmtTime(sess.CreatedAt), fmtTime(sess.ExpiresAt))
 	return err
+}
+
+// ErrPasswordChanged means a password sign-in's account no longer has the
+// password hash that was checked, or is gone, so no session was made.
+var ErrPasswordChanged = errors.New("store: the account's password changed during sign-in")
+
+// CreatePasswordSession stores sess for a password sign-in. Checking the
+// password is slow and happens outside any transaction, so it re-reads the
+// account in the same transaction as the insert: if its hash is no longer
+// verifiedHash (a reset or change committed meanwhile), is blank, or the
+// account is gone or isn't a password account, it returns ErrPasswordChanged
+// and stores nothing. CreatedAt defaults to now when zero.
+func (s *Store) CreatePasswordSession(ctx context.Context, sess core.Session, verifiedHash string) error {
+	if sess.CreatedAt.IsZero() {
+		sess.CreatedAt = time.Now().UTC()
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var hash string
+	err = tx.QueryRowContext(ctx,
+		`SELECT password_hash FROM users WHERE id = ? AND sign_in = 'password'`, sess.UserID).Scan(&hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrPasswordChanged
+	}
+	if err != nil {
+		return err
+	}
+	if hash == "" || hash != verifiedHash {
+		return ErrPasswordChanged
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`,
+		sess.Token, sess.UserID, fmtTime(sess.CreatedAt), fmtTime(sess.ExpiresAt)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // GetSession returns a non-expired session, or sql.ErrNoRows if missing/expired.
