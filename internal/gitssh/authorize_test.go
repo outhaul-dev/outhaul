@@ -247,3 +247,19 @@ func TestPermissionIsCheckedBeforeNonPushRefusal(t *testing.T) {
 		t.Fatalf("stderr = %q; want only the permission message", got)
 	}
 }
+
+func TestStoreFailureDuringPermissionCheckIsNotReportedAsDenial(t *testing.T) {
+	ctx := context.Background()
+	srv, st, _ := testServer(t)
+	u := newUser(t, st, core.RoleSystemAdmin)
+	fp := keyFor(t, st, u.ID)
+	srv.keyring = failingKeyring{srv.keyring}
+	ch := &fakeChannel{}
+	if code := srv.runGit(ctx, ch, "git-receive-pack 'fresh'", fp); code != 1 {
+		t.Fatalf("code = %d; want the push refused", code)
+	}
+	got := ch.stderr.String()
+	if !strings.Contains(got, "outhaul: could not check permission for 'fresh'") || strings.Contains(got, "you don't have permission") {
+		t.Fatalf("stderr = %q; want the could-not-check message", got)
+	}
+}

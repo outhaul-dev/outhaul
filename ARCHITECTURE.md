@@ -92,8 +92,7 @@ Mutually exclusive with ACME and tunnel mode. See `docs/LOCAL-CA.md`.
 ### Milestone 3 (done)
 
 Private repos and auto-deploy on push — listed above as deferred — are now
-implemented. Still deferred: multiple users/teams, databases-as-a-service,
-metrics, multi-server.
+implemented. Still deferred: databases-as-a-service, metrics, multi-server.
 
 ### Projects (done)
 
@@ -522,7 +521,7 @@ outhaul/
         migrate.go            # embedded migrations, run on startup
         migrations/*.sql
         apps.go               # App CRUD
-        projects.go           # Project CRUD (guarded delete, app counts)
+        projects.go           # Project CRUD (guarded delete, app counts), project sharing
         project_env.go        # project-level shared env vars (encrypted at rest)
         databases.go          # managed-database CRUD (password encrypted at rest, recover-on-boot)
         backups.go            # S3 destinations (secret encrypted), backup schedules, run history
@@ -604,7 +603,7 @@ outhaul/
         auth.go               # argon2id, session cookies, first-boot setup token
         access.go             # per-route access levels and the guard that checks role and project
         routes.go             # the route table: every route states its access level
-        users.go              # Users page: accounts, roles, project sharing
+        users.go              # Users page: accounts, roles, setup links
         account.go            # Account page: your own password and push keys
         handlers.go           # apps list/create, deploy trigger, deployment detail
         catalog.go            # template gallery + one-click deploy-from-template

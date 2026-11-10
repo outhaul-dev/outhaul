@@ -53,8 +53,8 @@ func TestPushKeyCRUD(t *testing.T) {
 		t.Fatalf("TouchPushKey did not stamp LastUsedAt")
 	}
 
-	if err := s.DeletePushKey(ctx, pk.ID); err != nil {
-		t.Fatalf("DeletePushKey: %v", err)
+	if err := s.DeletePushKeyForUser(ctx, owner.ID, pk.ID); err != nil {
+		t.Fatalf("DeletePushKeyForUser: %v", err)
 	}
 	keys, _ = s.ListPushKeysForUser(ctx, owner.ID)
 	if len(keys) != 0 {

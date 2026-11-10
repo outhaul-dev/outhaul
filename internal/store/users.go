@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
@@ -14,6 +15,25 @@ import (
 // ErrLastPasswordAdmin is returned when a change would leave no password
 // account that is a system admin, which would lock everyone out of recovery.
 var ErrLastPasswordAdmin = errors.New("store: this is the last password account that is a system admin")
+
+// ErrNotPasswordAccount is returned when a password operation (a setup link,
+// a reset, a new password) is asked of an account that signs in with SSO.
+var ErrNotPasswordAccount = errors.New("store: this account does not sign in with a password")
+
+// requirePasswordAccount returns sql.ErrNoRows for a missing account and
+// ErrNotPasswordAccount for one that isn't a password account.
+func requirePasswordAccount(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, id int64) error {
+	var signIn string
+	if err := q.QueryRowContext(ctx, `SELECT sign_in FROM users WHERE id = ?`, id).Scan(&signIn); err != nil {
+		return err
+	}
+	if signIn != string(core.SignInPassword) {
+		return ErrNotPasswordAccount
+	}
+	return nil
+}
 
 const userCols = `id, username, password_hash, created_at, role, sign_in, sso_issuer, sso_subject, email, last_sign_in_at`
 
@@ -69,21 +89,8 @@ func (s *Store) ListUsers(ctx context.Context) ([]core.UserRow, error) {
 	defer rows.Close()
 	var out []core.UserRow
 	for rows.Next() {
-		var (
-			r         core.UserRow
-			createdAt string
-			role      string
-			lastIn    sql.NullString
-		)
-		if err := rows.Scan(&r.ID, &r.Username, &r.PasswordHash, &createdAt, &role, &r.SignIn,
-			&r.SSOIssuer, &r.SSOSubject, &r.Email, &lastIn, &r.ProjectCount); err != nil {
-			return nil, err
-		}
-		r.Role = core.Role(role)
-		if r.CreatedAt, err = parseTime(createdAt); err != nil {
-			return nil, err
-		}
-		if r.LastSignInAt, err = scanTime(lastIn); err != nil {
+		var r core.UserRow
+		if r.User, err = scanUser(userRowScanner{rows, &r.ProjectCount}); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -91,9 +98,23 @@ func (s *Store) ListUsers(ctx context.Context) ([]core.UserRow, error) {
 	return out, rows.Err()
 }
 
+// userRowScanner lets scanUser read the user columns of a ListUsers row and
+// pick up the trailing project count in the same Scan.
+type userRowScanner struct {
+	rows  *sql.Rows
+	count *int
+}
+
+func (u userRowScanner) Scan(dest ...any) error {
+	return u.rows.Scan(append(dest, u.count)...)
+}
+
 // SetUserRole changes an account's role. It refuses to demote the last
 // password account that is a system admin.
 func (s *Store) SetUserRole(ctx context.Context, id int64, role core.Role) error {
+	if _, ok := core.ParseRole(string(role)); !ok {
+		return fmt.Errorf("store: unknown role %q", role)
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -104,8 +125,14 @@ func (s *Store) SetUserRole(ctx context.Context, id int64, role core.Role) error
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE users SET role = ? WHERE id = ?`, string(role), id); err != nil {
+	res, err := tx.ExecContext(ctx, `UPDATE users SET role = ? WHERE id = ?`, string(role), id)
+	if err != nil {
 		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return sql.ErrNoRows
 	}
 	return tx.Commit()
 }
@@ -273,6 +300,9 @@ func (s *Store) CreateSetupLink(ctx context.Context, userID int64, rawToken stri
 		return err
 	}
 	defer tx.Rollback()
+	if err := requirePasswordAccount(ctx, tx, userID); err != nil {
+		return err
+	}
 	if err := replaceSetupLink(ctx, tx, userID, rawToken, expiresAt); err != nil {
 		return err
 	}
@@ -298,7 +328,14 @@ func setupLinkUser(ctx context.Context, q interface {
 	if !time.Now().Before(exp) {
 		return core.User{}, sql.ErrNoRows
 	}
-	return scanUser(q.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE id = ?`, userID))
+	u, err := scanUser(q.QueryRowContext(ctx, `SELECT `+userCols+` FROM users WHERE id = ?`, userID))
+	if err != nil {
+		return core.User{}, err
+	}
+	if u.SignIn != core.SignInPassword {
+		return core.User{}, sql.ErrNoRows
+	}
+	return u, nil
 }
 
 // SetupLinkUser returns the account a setup link is for. It returns
@@ -320,7 +357,7 @@ func (s *Store) CompleteSetupLink(ctx context.Context, rawToken, passwordHash st
 	if err != nil {
 		return core.User{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE users SET password_hash = ? WHERE id = ?`, passwordHash, u.ID); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET password_hash = ? WHERE id = ? AND sign_in = 'password'`, passwordHash, u.ID); err != nil {
 		return core.User{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM setup_links WHERE user_id = ?`, u.ID); err != nil {
@@ -345,10 +382,13 @@ func (s *Store) ResetUserPassword(ctx context.Context, id int64, rawToken string
 		return err
 	}
 	defer tx.Rollback()
+	if err := requirePasswordAccount(ctx, tx, id); err != nil {
+		return err
+	}
 	if err := guardLastPasswordAdmin(ctx, tx, id); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE users SET password_hash = '' WHERE id = ?`, id); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET password_hash = '' WHERE id = ? AND sign_in = 'password'`, id); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, id); err != nil {

@@ -14,6 +14,10 @@ import (
 // this guard is what keeps the references sound.
 var ErrProjectNotEmpty = errors.New("store: project still has apps or databases")
 
+// ErrDefaultProject is returned by DeleteProject for the default project,
+// which new apps and push deploys fall back to.
+var ErrDefaultProject = errors.New("store: the default project cannot be deleted")
+
 // CreateProject inserts a project and returns it with ID and CreatedAt set.
 func (s *Store) CreateProject(ctx context.Context, p core.Project) (core.Project, error) {
 	p.CreatedAt = time.Now().UTC()
@@ -66,6 +70,9 @@ func (s *Store) UpdateProject(ctx context.Context, id int64, name, description s
 // refused with ErrProjectNotEmpty. Count and delete run in one transaction so
 // an app created concurrently cannot slip into a just-deleted project.
 func (s *Store) DeleteProject(ctx context.Context, id int64) error {
+	if id == core.DefaultProjectID {
+		return ErrDefaultProject
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

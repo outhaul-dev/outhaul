@@ -1350,7 +1350,8 @@ func (s *Server) handleDeleteApp(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if app.Source == core.SourcePush && s.repos != nil {
+	// Whatever the source is now, a push may once have made a repository.
+	if s.repos != nil {
 		if rerr := s.repos.Remove(app.Name); rerr != nil {
 			log.Printf("delete app %d: remove bare repo: %v", id, rerr)
 		}

@@ -20,7 +20,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 // renderSettings renders the settings page (also used to redisplay it with an
-// error after a rejected destination, push-key, or SSH-address change).
+// error after a rejected destination or SSH-address change).
 func (s *Server) renderSettings(w http.ResponseWriter, r *http.Request, status int, errMsg string) {
 	data := map[string]any{"Title": "Settings", "Active": "settings"}
 	if !s.publicURLSet() {
@@ -99,8 +99,8 @@ func (s *Server) handleSetSSHAddr(w http.ResponseWriter, r *http.Request) {
 // because the old flow never asked. Failures are logged and ignored — Display()
 // falls back to the App slug, so the page always renders.
 //
-// renderSettings (this method's only caller) also backs the destination,
-// push-key and SSH error redisplays, not just GET /settings — so a source
+// renderSettings (this method's only caller) also backs the destination
+// and SSH error redisplays, not just GET /settings — so a source
 // whose credentials are permanently broken (revoked key, App uninstalled on
 // GitHub's side) must not be re-probed on every one of those renders forever.
 // Each source is attempted at most once per process lifetime, tracked in

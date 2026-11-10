@@ -382,3 +382,37 @@ func TestAppCreateErrorReopensDialog(t *testing.T) {
 		t.Error("errored app dialog should be flagged to reopen")
 	}
 }
+
+func TestDefaultProjectCannotBeDeleted(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	resp := e.postForm(t, "/projects/"+itoa(core.DefaultProjectID)+"/delete", url.Values{})
+	html := body(t, resp)
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(html, "The default project can") && strings.Contains(html, "t be deleted.") {
+		t.Fatalf("delete default project = %d %s, want 400 with the plain message", resp.StatusCode, html)
+	}
+	if _, err := e.store.GetProject(context.Background(), core.DefaultProjectID); err != nil {
+		t.Fatalf("default project gone: %v", err)
+	}
+}
+
+func TestMissingProjectMembersRoutesAnswer404(t *testing.T) {
+	e := newTestEnv(t)
+	admin := e.signInAs(t, "root", core.RoleSystemAdmin)
+	other := e.signInAs(t, "kim", core.RoleProjectMember)
+	u, _ := e.store.GetUserByName(context.Background(), "kim")
+	_ = other
+	for _, c := range []struct {
+		path string
+		form url.Values
+	}{
+		{"/projects/9999/members", url.Values{"user_id": {itoa(u.ID)}}},
+		{"/projects/9999/members/" + itoa(u.ID) + "/delete", nil},
+	} {
+		resp := e.postAs(t, admin, c.path, c.form)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("POST %s = %d, want 404", c.path, resp.StatusCode)
+		}
+	}
+}

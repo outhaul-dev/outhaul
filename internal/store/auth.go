@@ -54,8 +54,11 @@ func (s *Store) UpdateUserPassword(ctx context.Context, id int64, passwordHash, 
 		return err
 	}
 	defer tx.Rollback()
+	if err := requirePasswordAccount(ctx, tx, id); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE users SET password_hash = ? WHERE id = ?`, passwordHash, id); err != nil {
+		`UPDATE users SET password_hash = ? WHERE id = ? AND sign_in = 'password'`, passwordHash, id); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx,

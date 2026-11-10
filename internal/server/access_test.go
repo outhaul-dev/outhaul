@@ -752,16 +752,24 @@ func TestChildObjectsMustBelongToTheApp(t *testing.T) {
 	for _, tc := range []struct {
 		path string
 		form url.Values
+		want int // deleting a row that isn't the app's is a no-op redirect
 	}{
-		{onA + "/domains/" + itoa(b.Domain.ID) + "/delete", nil},
-		{onA + "/domains/" + itoa(b.Domain.ID), url.Values{"host": {"stolen.example.com"}, "port": {"8080"}}},
-		{onA + "/volumes/" + itoa(b.Volume.ID) + "/delete", nil},
-		{onA + "/volumes/" + itoa(b.Volume.ID), url.Values{"mount_path": {"/stolen"}}},
-		{onA + "/attachments/" + itoa(b.Attachment.ID) + "/delete", nil},
-		{onA + "/previews/" + itoa(preview.ID) + "/destroy", nil},
-		{onA + "/attachments", url.Values{"database_id": {itoa(b.Database.ID)}, "env_var": {"STOLEN_URL"}}},
+		{onA + "/domains/" + itoa(b.Domain.ID) + "/delete", nil, http.StatusSeeOther},
+		{onA + "/domains/" + itoa(b.Domain.ID), url.Values{"host": {"stolen.example.com"}, "port": {"8080"}}, http.StatusNotFound},
+		{onA + "/volumes/" + itoa(b.Volume.ID) + "/delete", nil, http.StatusSeeOther},
+		{onA + "/volumes/" + itoa(b.Volume.ID), url.Values{"mount_path": {"/stolen"}}, http.StatusNotFound},
+		{onA + "/attachments/" + itoa(b.Attachment.ID) + "/delete", nil, http.StatusSeeOther},
+		{onA + "/previews/" + itoa(preview.ID) + "/destroy", nil, http.StatusInternalServerError},
+		{onA + "/attachments", url.Values{"database_id": {itoa(b.Database.ID)}, "env_var": {"STOLEN_URL"}}, http.StatusNotFound},
 	} {
-		e.postAs(t, member, tc.path, tc.form).Body.Close()
+		resp := e.postAs(t, member, tc.path, tc.form)
+		got := body(t, resp)
+		if resp.StatusCode != tc.want {
+			t.Errorf("POST %s = %d, want %d", tc.path, resp.StatusCode, tc.want)
+		}
+		if strings.Contains(got, b.Database.Name) {
+			t.Errorf("POST %s: the reply names the other project's database %q: %s", tc.path, b.Database.Name, got)
+		}
 	}
 
 	domain, err := e.store.GetDomain(ctx, b.App.ID, b.Domain.ID)

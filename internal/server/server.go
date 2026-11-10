@@ -264,6 +264,9 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, page
 	// What the person may do. A public page has no person, so these stay zero.
 	me, _ := userFrom(r)
 	data["UpdateAvailable"] = me.Role.AtLeast(core.RoleSystemAdmin) && s.updateAvailable() // the navigation badge
+
+	// No template needs the hash, so it never reaches one.
+	me.PasswordHash = ""
 	data["Me"] = me
 	data["IsSystemAdmin"] = me.Role.AtLeast(core.RoleSystemAdmin)
 	data["CanManage"] = me.Role.AtLeast(core.RoleProjectAdmin)

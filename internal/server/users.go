@@ -20,17 +20,17 @@ const setupLinkTTL = 7 * 24 * time.Hour
 
 const (
 	setupLinkGone  = "This link has expired or has already been used."
-	lastAdminError = "This is the last system admin that signs in with a password. Make another account a system admin first, or nobody could manage Outhaul if single sign-on stopped working."
+	lastAdminError = "This is the last system admin who can sign in with a password. Make another password account a system admin first, and wait until they have set their password, or nobody could manage Outhaul if single sign-on stopped working."
 )
 
 // userRow is one line of the Users page.
 type userRow struct {
 	core.UserRow
-	Name     string
-	Self     bool
-	Waiting  bool // an SSO account with no role yet
-	Password bool
-	Admin    bool // reaches every project
+	Name          string
+	Self          bool
+	Password      bool
+	NoPasswordYet bool // a password account whose owner hasn't set one
+	Admin         bool // reaches every project
 }
 
 // usersPage renders the Users page. extra carries the error or the one-time
@@ -49,11 +49,11 @@ func (s *Server) usersPage(w http.ResponseWriter, r *http.Request, status int, e
 			UserRow:  u,
 			Name:     u.Display(),
 			Self:     u.ID == me.ID,
-			Waiting:  u.SignIn == core.SignInSSO && u.Role == core.RoleNone,
 			Password: u.SignIn == core.SignInPassword,
 			Admin:    u.Role == core.RoleSystemAdmin,
 		}
-		if row.Waiting {
+		row.NoPasswordYet = row.Password && u.PasswordHash == ""
+		if u.SignIn == core.SignInSSO && u.Role == core.RoleNone {
 			waiting++
 		}
 		rows = append(rows, row)
@@ -265,10 +265,7 @@ func (s *Server) setupPage(w http.ResponseWriter, r *http.Request, status int, d
 }
 
 func setupToken(r *http.Request) string {
-	if t := r.FormValue("token"); t != "" {
-		return t
-	}
-	return r.URL.Query().Get("token")
+	return r.FormValue("token")
 }
 
 func (s *Server) handleAccountSetupForm(w http.ResponseWriter, r *http.Request) {
@@ -279,7 +276,8 @@ func (s *Server) handleAccountSetupForm(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("server: look up setup link: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	s.setupPage(w, r, http.StatusOK, map[string]any{"Token": token, "Username": user.Username})
@@ -293,7 +291,8 @@ func (s *Server) handleAccountSetupSubmit(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("server: look up setup link: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	again := func(status int, msg string) {
@@ -310,10 +309,11 @@ func (s *Server) handleAccountSetupSubmit(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("server: hash password for user %d: %v", user.ID, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	user, err = s.store.CompleteSetupLink(r.Context(), token, hash)
+	done, err := s.store.CompleteSetupLink(r.Context(), token, hash)
 	if errors.Is(err, sql.ErrNoRows) {
 		s.setupPage(w, r, http.StatusGone, map[string]any{"Invalid": true, "Message": setupLinkGone})
 		return
@@ -323,8 +323,9 @@ func (s *Server) handleAccountSetupSubmit(w http.ResponseWriter, r *http.Request
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	if err := s.login(w, r, user); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+	if err := s.login(w, r, done); err != nil {
+		log.Printf("server: sign in user %d after setup: %v", done.ID, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)

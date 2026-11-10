@@ -275,6 +275,10 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.DeleteProject(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrDefaultProject) {
+			s.renderProject(w, r, http.StatusBadRequest, p, "The default project can't be deleted.", nil)
+			return
+		}
 		if errors.Is(err, store.ErrProjectNotEmpty) {
 			apps, _ := s.store.ListAppsByProject(r.Context(), id)
 			dbs, _ := s.store.ListDatabasesByProject(r.Context(), id)
@@ -315,6 +319,10 @@ func (s *Server) handleAddProjectMember(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "Choose a person to add.", http.StatusBadRequest)
 		return
 	}
+	if _, err := s.store.GetProject(r.Context(), id); err != nil {
+		http.NotFound(w, r)
+		return
+	}
 	on, err := s.store.IsProjectMember(r.Context(), id, userID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -348,6 +356,10 @@ func (s *Server) handleRemoveProjectMember(w http.ResponseWriter, r *http.Reques
 	id, ok := parseID(r.PathValue("id"))
 	userID, ok2 := parseID(r.PathValue("userID"))
 	if !ok || !ok2 {
+		http.NotFound(w, r)
+		return
+	}
+	if _, err := s.store.GetProject(r.Context(), id); err != nil {
 		http.NotFound(w, r)
 		return
 	}

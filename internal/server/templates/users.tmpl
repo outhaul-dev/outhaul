@@ -25,7 +25,7 @@
       {{range .Users}}
       <tr>
         <td>{{.Name}}{{if .Self}} <span class="muted">(you)</span>{{end}}</td>
-        <td class="muted">{{if .Password}}Password{{else}}SSO{{end}}</td>
+        <td class="muted">{{if .Password}}Password{{if .NoPasswordYet}} <span class="muted">(Password not set yet)</span>{{end}}{{else}}SSO{{end}}</td>
         <td>
           <form method="post" action="/users/{{.ID}}/role" class="inline" data-rolechange>
             <select name="role" aria-label="Role for {{.Name}}">

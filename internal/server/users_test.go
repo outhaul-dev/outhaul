@@ -200,7 +200,7 @@ func TestResetPasswordRefusesYourselfAndTheLastAdmin(t *testing.T) {
 	}
 }
 
-const lastAdminCopy = "last system admin that signs in with a password"
+const lastAdminCopy = "last system admin who can sign in with a password"
 
 // ssoAccount inserts an SSO account directly and gives it a session.
 func ssoAccount(t *testing.T, e *testEnv, email string, role core.Role) (session string) {
@@ -352,5 +352,61 @@ func TestNewAccountRoleDefaultsToNoRole(t *testing.T) {
 	}
 	if got := selectedRoles(html); len(got) != 1 || got[0] != "project_viewer" {
 		t.Errorf("error re-render selects %v, want only project_viewer", got)
+	}
+}
+
+func TestResetPasswordRefusesSSOAccountAndMakesNoLink(t *testing.T) {
+	e := newTestEnv(t)
+	admin := e.signInAs(t, "root", core.RoleSystemAdmin)
+	id := insertSSOUser(t, e, "dana@example.com", core.RoleProjectMember)
+	resp := e.postAs(t, admin, "/users/"+itoa(id)+"/reset", nil)
+	if html := body(t, resp); resp.StatusCode != http.StatusBadRequest || setupLinkRE.MatchString(html) {
+		t.Fatalf("reset of an SSO account = %d %s, want 400 and no link", resp.StatusCode, html)
+	}
+	var links int
+	if err := e.rawDB(t).QueryRow(`SELECT COUNT(*) FROM setup_links WHERE user_id = ?`, id).Scan(&links); err != nil || links != 0 {
+		t.Fatalf("setup links for the SSO account = %d, %v; want 0", links, err)
+	}
+}
+
+func TestRemovedPersonsSessionStopsWorking(t *testing.T) {
+	e := newTestEnv(t)
+	admin := e.signInAs(t, "root", core.RoleSystemAdmin)
+	other := e.signInAs(t, "gone", core.RoleProjectViewer)
+	if got := e.getAs(t, other, "/projects").StatusCode; got != http.StatusOK {
+		t.Fatalf("before removal GET /projects = %d, want 200", got)
+	}
+	u, _ := e.store.GetUserByName(context.Background(), "gone")
+	if resp := e.postAs(t, admin, "/users/"+itoa(u.ID)+"/delete", nil); resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("remove = %d, want 303", resp.StatusCode)
+	}
+	resp := e.getAs(t, other, "/projects")
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login" {
+		t.Fatalf("after removal GET /projects = %d to %q, want 303 to /login", resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
+func TestLastAdminRefusedWhileSecondAdminHasNoPasswordYet(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	admin := e.signInAs(t, "root", core.RoleSystemAdmin)
+	root, _ := e.store.GetUserByName(ctx, "root")
+	if err := e.store.UpdateUserPassword(ctx, root.ID, "$argon2id$x", admin); err != nil {
+		t.Fatal(err)
+	}
+	createAccount(t, e, admin, "newbie", "system_admin")
+
+	page := body(t, e.getAs(t, admin, "/users"))
+	if !strings.Contains(page, "Password not set yet") {
+		t.Errorf("Users page doesn't say the new account has no password yet: %s", page)
+	}
+	if strings.Count(page, "Password not set yet") != 1 {
+		t.Errorf("want the note on one row only, got %d", strings.Count(page, "Password not set yet"))
+	}
+	resp := e.postAs(t, admin, "/users/"+itoa(root.ID)+"/role", url.Values{"role": {"project_viewer"}})
+	html := body(t, resp)
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(html, lastAdminCopy) ||
+		!strings.Contains(html, "wait until they have set their password") {
+		t.Fatalf("demote = %d %s, want 400 with the last-admin message", resp.StatusCode, html)
 	}
 }

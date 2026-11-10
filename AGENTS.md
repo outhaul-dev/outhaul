@@ -177,7 +177,6 @@ listed here, because this repository is public. Ask the maintainer.
   - fork previews created before the fork policy are not migrated;
   - the fork fetch is not pinned to the PR's head SHA.
 - From the review's low-priority list:
-  - the default project can be deleted;
   - a crash can leave a preview's status at "building";
   - deleting a branch triggers a deploy;
   - template deploys skip the certificate sync;

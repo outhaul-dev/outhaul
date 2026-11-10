@@ -71,12 +71,6 @@ func (s *Store) TouchPushKey(ctx context.Context, id int64) error {
 	return err
 }
 
-// DeletePushKey removes a key by ID.
-func (s *Store) DeletePushKey(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM push_keys WHERE id = ?`, id)
-	return err
-}
-
 // DeletePushKeyForUser removes a key only if the account owns it.
 func (s *Store) DeletePushKeyForUser(ctx context.Context, userID, id int64) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM push_keys WHERE id = ? AND user_id = ?`, id, userID)

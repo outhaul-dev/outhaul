@@ -482,3 +482,67 @@ func TestRecentDeploymentsInProjects(t *testing.T) {
 		t.Fatalf("empty count = %d, %v", n, err)
 	}
 }
+
+func TestStoreRefusesPasswordOperationsOnSSOAccount(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if _, err := s.CreateUser(ctx, "admin", "hash"); err != nil {
+		t.Fatal(err)
+	}
+	sso := insertSSOAdmin(t, s, "dana")
+	exp := time.Now().Add(time.Hour)
+
+	if err := s.CreateSetupLink(ctx, sso, "tok", exp); !errors.Is(err, ErrNotPasswordAccount) {
+		t.Fatalf("CreateSetupLink(sso) = %v, want ErrNotPasswordAccount", err)
+	}
+	if err := s.ResetUserPassword(ctx, sso, "tok", exp); !errors.Is(err, ErrNotPasswordAccount) {
+		t.Fatalf("ResetUserPassword(sso) = %v, want ErrNotPasswordAccount", err)
+	}
+	if err := s.UpdateUserPassword(ctx, sso, "hash", ""); !errors.Is(err, ErrNotPasswordAccount) {
+		t.Fatalf("UpdateUserPassword(sso) = %v, want ErrNotPasswordAccount", err)
+	}
+	for name, fn := range map[string]func() error{
+		"CreateSetupLink":    func() error { return s.CreateSetupLink(ctx, 9999, "t", exp) },
+		"ResetUserPassword":  func() error { return s.ResetUserPassword(ctx, 9999, "t", exp) },
+		"UpdateUserPassword": func() error { return s.UpdateUserPassword(ctx, 9999, "h", "") },
+	} {
+		if err := fn(); !errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("%s(missing) = %v, want sql.ErrNoRows", name, err)
+		}
+	}
+
+	// A link row that exists anyway (planted directly) must not be usable.
+	if _, err := s.db.Exec(`INSERT INTO setup_links (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)`,
+		hashSetupToken("planted"), sso, fmtTime(exp), fmtTime(time.Now().UTC())); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetupLinkUser(ctx, "planted"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("SetupLinkUser(sso) = %v, want sql.ErrNoRows", err)
+	}
+	if _, err := s.CompleteSetupLink(ctx, "planted", "newhash"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("CompleteSetupLink(sso) = %v, want sql.ErrNoRows", err)
+	}
+	var hash string
+	if err := s.db.QueryRow(`SELECT password_hash FROM users WHERE id = ?`, sso).Scan(&hash); err != nil || hash != "" {
+		t.Fatalf("sso password_hash = %q, %v; want empty", hash, err)
+	}
+}
+
+func TestSetUserRoleValidates(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if _, err := s.CreateUser(ctx, "admin", "hash"); err != nil {
+		t.Fatal(err)
+	}
+	sso := insertSSOAdmin(t, s, "eve")
+	if err := s.SetUserRole(ctx, sso, core.Role("wizard")); err == nil {
+		t.Fatal("SetUserRole with an unknown role succeeded")
+	}
+	if err := s.SetUserRole(ctx, 9999, core.RoleNone); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("SetUserRole(missing) = %v, want sql.ErrNoRows", err)
+	}
+	u, _ := s.GetUser(ctx, sso)
+	if u.Role != core.RoleSystemAdmin {
+		t.Fatalf("role changed to %q", u.Role)
+	}
+}

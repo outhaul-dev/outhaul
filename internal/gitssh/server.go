@@ -274,6 +274,8 @@ func (s *Server) runGit(ctx context.Context, ch ssh.Channel, command, fp string)
 	if err := s.authorize(ctx, fp, projectID); err != nil {
 		if !errors.Is(err, errPushDenied) {
 			log.Printf("gitssh: authorize %s for %s: %v", fp, repo, err)
+			fmt.Fprintf(ch.Stderr(), "outhaul: could not check permission for '%s'\n", repo)
+			return 1
 		}
 		fmt.Fprintf(ch.Stderr(), "outhaul: you don't have permission to use '%s'\n", repo)
 		return 1

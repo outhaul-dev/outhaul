@@ -146,3 +146,13 @@ func TestCountAppsByProject(t *testing.T) {
 		t.Errorf("ListAppsByProject = %+v", apps)
 	}
 }
+
+func TestDefaultProjectCannotBeDeleted(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.DeleteProject(context.Background(), core.DefaultProjectID); !errors.Is(err, ErrDefaultProject) {
+		t.Fatalf("DeleteProject(default) = %v, want ErrDefaultProject", err)
+	}
+	if _, err := s.GetProject(context.Background(), core.DefaultProjectID); err != nil {
+		t.Fatalf("default project gone: %v", err)
+	}
+}

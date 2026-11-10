@@ -16,13 +16,20 @@ func (s *Server) handleAttachDatabase(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if _, err := s.store.GetApp(r.Context(), id); err != nil {
+	app, err := s.store.GetApp(r.Context(), id)
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
 	dbID, ok := parseID(r.FormValue("database_id"))
 	if !ok {
 		http.Error(w, "select a database", http.StatusBadRequest)
+		return
+	}
+	// A database in another project answers like one that doesn't exist, so
+	// its name isn't disclosed.
+	if db, err := s.store.GetDatabase(r.Context(), dbID); err != nil || db.ProjectID != app.ProjectID {
+		http.NotFound(w, r)
 		return
 	}
 	envVar := strings.TrimSpace(r.FormValue("env_var"))

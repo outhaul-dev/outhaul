@@ -23,7 +23,7 @@ func (s *Server) renderAccount(w http.ResponseWriter, r *http.Request, status in
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	data := map[string]any{"Title": "Account", "Active": "account", "PushKeys": keys, "SSHAddr": s.sshAddr()}
+	data := map[string]any{"Title": "Account", "Active": "account", "PushKeys": keys}
 	if r.URL.Query().Get("ok") != "" {
 		data["Notice"] = "Password updated."
 	}
@@ -35,22 +35,19 @@ func (s *Server) renderAccount(w http.ResponseWriter, r *http.Request, status in
 
 // handleChangePassword verifies the current password and stores a new hash.
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
-	sess, ok := s.currentSession(r)
-	if !ok {
-		http.Redirect(w, r, "/login", http.StatusSeeOther)
-		return
-	}
 	current := r.FormValue("current")
 	next := r.FormValue("new")
 	if len(next) < 8 {
 		http.Error(w, "New password must be at least 8 characters.", http.StatusBadRequest)
 		return
 	}
-	user, err := s.store.GetUser(r.Context(), sess.UserID)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	// The access guard has signed the person in and loaded their account.
+	user, _ := userFrom(r)
+	var sessionToken string
+	if c, err := r.Cookie(sessionCookie); err == nil {
+		sessionToken = c.Value
 	}
+	var err error
 	var (
 		valid     bool
 		verifyErr error
@@ -75,7 +72,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	// Other sessions are revoked with the old password: a password change is
 	// how an admin locks out a leaked session.
-	if err := s.store.UpdateUserPassword(r.Context(), user.ID, hash, sess.Token); err != nil {
+	if err := s.store.UpdateUserPassword(r.Context(), user.ID, hash, sessionToken); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
