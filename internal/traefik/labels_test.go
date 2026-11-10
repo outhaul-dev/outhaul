@@ -498,7 +498,7 @@ func TestRuleAddress(t *testing.T) {
 // router, open or protected, can be handed a path that leaves its prefix once
 // an app decodes it.
 func TestRuleRefusesTraversal(t *testing.T) {
-	const term = " && !PathRegexp(`(?i)(^|/|%2f|\\\\|%5c)(\\.|%2e){2}(/|%2f|\\\\|%5c|;|%3b|$)`)"
+	const term = " && !PathRegexp(`(?i)(^|/|%2f|\\\\|%5c)(\\.|%2e){2}(/|%2f|\\\\|%5c|;|%3b|%3f|%23|%00|\\x00|$)`)"
 	if got, want := Rule("wiki.example.com", ""), "Host(`wiki.example.com`)"+term; got != want {
 		t.Errorf("Rule(host) = %q, want %q", got, want)
 	}
@@ -506,13 +506,15 @@ func TestRuleRefusesTraversal(t *testing.T) {
 		t.Errorf("Rule(host, path) = %q, want %q", got, want)
 	}
 	re := regexp.MustCompile(traversalPattern)
-	// Paths as Traefik's PathRegexp sees them: escaped, with %2e already
-	// decoded and the hex upper-cased (checked on traefik:v3.7.6 by
+	// Paths as Traefik's PathRegexp sees them: escaped, with %2e and %00
+	// already decoded and the hex upper-cased (checked on traefik:v3.7.6 by
 	// deploy/test/integration_gate.sh), and in other spellings too.
 	for _, p := range []string{
 		"/webhooks%2F..%2Fpage", "/webhooks/..%2Fpage", "/x/..%2Fadmin", "/x/..%2fadmin",
 		"/x/%2e%2e%2fadmin", "/x/%2E%2E%2Fadmin", "/x/.%2e/admin", "/x/..;/admin", "/x/..%3Badmin",
 		"/x/..%5Cadmin", `/x/..\admin`, `\..\x`, "/x/../admin", "/x/..", "/..", "/webhooks/..%3B",
+		"/webhooks/..%3Fx", "/webhooks/..%3fx", "/webhooks/..%23x", "/webhooks/..%00x", "/x/%2e%2e%3Fadmin",
+		"/x/.%2E%23admin", "/..%23", "/..%00", "/webhooks/..\x00x", "/x/%2e%2e\x00admin", "/..\x00",
 	} {
 		if !re.MatchString(p) {
 			t.Errorf("the traversal pattern lets %q through", p)
@@ -520,6 +522,7 @@ func TestRuleRefusesTraversal(t *testing.T) {
 	}
 	for _, p := range []string{
 		"/", "/a%2Fb", "/file..txt", "/.well-known/x", "/a/.../b", "/..foo", "/webhooks/x", "/x/..foo/y", "/a.b", "/%2e%2efoo",
+		"/a%3Fb", "/a%23b", "/a%00b", "/a\x00b", "/file..%3Fx", "/x/...%23y", "/..%3", "/file..\x00",
 	} {
 		if re.MatchString(p) {
 			t.Errorf("the traversal pattern refuses %q", p)

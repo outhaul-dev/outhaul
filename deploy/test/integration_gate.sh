@@ -30,7 +30,8 @@
 #     Outhaul before the traversal term wrote them (no term, no priority). On
 #     mix1.test the old one holds /api and the new one the host; on mix2.test
 #     the reverse. "old" also has probe routers on re.test, which show whether
-#     PathRegexp sees a path escaped or decoded.
+#     PathRegexp sees a path escaped or decoded, and an escaped NUL as %00 or
+#     as the byte.
 #   - a container Compose creates from the override gatelabels -compose
 #     prints, never started, whose labels are compared with the ones above.
 #   - four Traefiks (GATETEST_TRAEFIK_IMAGE, default traefik:v3.7.6), on
@@ -249,8 +250,9 @@ if [ "$mode" = stub ]; then
 	# Outhaul writes now, and "old" the labels an Outhaul before the traversal
 	# term wrote (no term, no priority label), written out here by hand. On
 	# mix1.test the old one holds /api and the new one the host; on mix2.test
-	# the reverse. "old" also carries two probe routers on re.test, which show
-	# whether PathRegexp sees a path escaped or decoded.
+	# the reverse. "old" also carries probe routers on re.test, which show
+	# whether PathRegexp sees a path escaped or decoded, and an escaped NUL as
+	# %00 or as the byte.
 	"$work/gatelabels" -port 8000 'gt-mixnew-host,mix1.test,,,open' 'gt-mixnew-api,mix2.test,/api,,open' >"$work/labels-new" ||
 		die "gatelabels"
 	printf 'outhaul.gatetest=true\n' >>"$work/labels-new"
@@ -272,6 +274,14 @@ if [ "$mode" = stub ]; then
 		printf 'traefik.http.routers.gt-re-decoded.priority=100\n'
 		printf 'traefik.http.routers.gt-re-decoded.middlewares=gt-re-decoded-h\n'
 		printf 'traefik.http.middlewares.gt-re-decoded-h.headers.customrequestheaders.X-Gatetest-Router=decoded\n'
+		old_router gt-re-nul 'Host(`re.test`) && PathRegexp(`\x00`)'
+		old_router gt-re-nulesc 'Host(`re.test`) && PathRegexp(`(?i)%00`)'
+		printf 'traefik.http.routers.gt-re-nul.priority=300\n'
+		printf 'traefik.http.routers.gt-re-nul.middlewares=gt-re-nul-h\n'
+		printf 'traefik.http.middlewares.gt-re-nul-h.headers.customrequestheaders.X-Gatetest-Router=nul\n'
+		printf 'traefik.http.routers.gt-re-nulesc.priority=310\n'
+		printf 'traefik.http.routers.gt-re-nulesc.middlewares=gt-re-nulesc-h\n'
+		printf 'traefik.http.middlewares.gt-re-nulesc-h.headers.customrequestheaders.X-Gatetest-Router=nulesc\n'
 		printf 'outhaul.gatetest=true\n'
 	} >"$work/labels-old"
 	echo "labels on the new backend:"
@@ -1082,10 +1092,12 @@ for scheme in http https; do
 		'wiki.test /webhooks/../page' 'wiki.test /webhooks/%2e%2e/page' \
 		'wiki.test /webhooks%2f..%2fpage' 'wiki.test /webhooks/..%2fpage' 'wiki.test /webhooks/%2e%2e%2fpage' \
 		'wiki.test /webhooks/..;/page' 'wiki.test /webhooks/..%3bpage' 'wiki.test /webhooks/..%5cpage' \
-		'wiki.test /webhooks/..\page' \
+		'wiki.test /webhooks/..\page' 'wiki.test /webhooks/..%3fx' 'wiki.test /webhooks/..%23x' \
+		'wiki.test /webhooks/..%00x' 'wiki.test /webhooks/..%00x%2fy' \
 		'shop.test /x/../admin' 'shop.test /x/%2e%2e/admin' \
 		'shop.test /x/..%2fadmin' 'shop.test /x/%2e%2e%2fadmin' 'shop.test /x/..%2Fadmin' \
-		'shop.test /x/..;/admin' 'shop.test /x/..%3badmin' 'shop.test /x/..%5cadmin' 'shop.test /x/..\admin'; do
+		'shop.test /x/..;/admin' 'shop.test /x/..%3badmin' 'shop.test /x/..%5cadmin' 'shop.test /x/..\admin' \
+		'shop.test /x/..%3fadmin' 'shop.test /x/..%23admin' 'shop.test /x/..%00admin'; do
 		set -- $target
 		probe "$scheme" "$1" "$2"
 		said=$(probe_said)
@@ -1103,8 +1115,9 @@ for scheme in http https; do
 	# gate call, the protected row through the gate.
 	for target in \
 		'shop.test /a%2Fb' 'shop.test /file..txt' 'shop.test /.well-known/x' 'shop.test /a/.../b' 'shop.test /..foo' \
+		'shop.test /a%3Fb' 'shop.test /a%23b' \
 		'wiki.test /webhooks/a%2Fb' 'wiki.test /webhooks/file..txt' 'wiki.test /webhooks/.well-known/x' \
-		'wiki.test /webhooks/a/.../b' 'wiki.test /webhooks/..foo'; do
+		'wiki.test /webhooks/a/.../b' 'wiki.test /webhooks/..foo' 'wiki.test /webhooks/a%3Fb' 'wiki.test /webhooks/a%23b'; do
 		set -- $target
 		probe "$scheme" "$1" "$2"
 		if [ "$code" = 200 ] && [ "$gated" = no ] && [ "$seen" = "$2" ]; then
@@ -1113,7 +1126,7 @@ for scheme in http https; do
 			fail "$scheme $1$2 (open): want 200 from the app on $2, with no gate call" "$(probe_said)"
 		fi
 	done
-	for p in /a%2Fb /file..txt /.well-known/x /a/.../b /..foo; do
+	for p in /a%2Fb /file..txt /.well-known/x /a/.../b /..foo /a%3Fb /a%23b; do
 		probe "$scheme" wiki.test "$p" -H 'Cookie: gatetest=ok'
 		if [ "$code" = 200 ] && [ "$gated" = yes ] && [ "$seen" = "$p" ]; then
 			pass "$scheme wiki.test$p (protected, signed in): reaches the app as $p, through the gate"
@@ -1164,6 +1177,28 @@ decoded) info "PathRegexp sees the path decoded: /a%2fb matched PathRegexp(\`^/a
 esac
 probe http re.test /a%2eb
 info "an escaped dot: /a%2eb reaches the app as $seen"
+# An escaped NUL, alone and beside an escaped slash: PathRegexp sees it as
+# %00 or as the byte itself, so the traversal term looks for both. Both probe
+# routers must be loaded for the answer to mean anything.
+nul_routers=
+for r in gt-re-nul gt-re-nulesc; do
+	case $(api "routers/$r@docker") in
+	*'"status":"enabled"'*) ;;
+	*) nul_routers="$nul_routers $r" ;;
+	esac
+done
+for p in /a%00b /a%00b%2fc; do
+	probe http re.test "$p"
+	if [ -n "$nul_routers" ]; then
+		info "an escaped NUL: the probe router(s)$nul_routers aren't enabled, so $p shows nothing ($(probe_said))"
+		continue
+	fi
+	case $(sed -n 's/^h x-gatetest-router: //p' "$work/b") in
+	nulesc) info "an escaped NUL: PathRegexp sees $p with %00 still escaped (both probe routers enabled), and the app got $seen" ;;
+	nul) info "an escaped NUL: PathRegexp sees $p with %00 decoded to the byte (both probe routers enabled), and the app got $seen" ;;
+	*) info "an escaped NUL: $p matched neither NUL probe router ($(probe_said))" ;;
+	esac
+done
 echo
 
 # A row's router names its priority: the length of its rule without the

@@ -220,10 +220,14 @@ func RouterName(appName string, domainID int64) string {
 // traversalPattern matches a path with a ".." segment, in any mix of literal
 // and percent-encoded spellings, in any case: a start or separator ("/",
 // "%2f", "\", "%5c"), two dots ("." or "%2e"), then a separator, ";",
-// "%3b", or the end. PathRegexp sees the path still escaped, after Traefik's
-// own clean-up has resolved the plain "/../" forms (checked on traefik:v3.7.6
-// by deploy/test/integration_gate.sh).
-const traversalPattern = `(?i)(^|/|%2f|\\|%5c)(\.|%2e){2}(/|%2f|\\|%5c|;|%3b|$)`
+// "%3b", an encoded "?", "#" or NUL ("%3f", "%23", "%00", or the NUL byte
+// itself), or the end. An app that decodes the path can end the segment at any
+// of those. PathRegexp sees the path still escaped, after Traefik's own
+// clean-up has resolved the plain "/../" forms and decoded "%2e" and "%00"
+// (to the NUL byte, even beside an escaped "/"), as checked on traefik:v3.7.6
+// by deploy/test/integration_gate.sh. "%00" is matched too, for a Traefik that
+// leaves it escaped.
+const traversalPattern = `(?i)(^|/|%2f|\\|%5c)(\.|%2e){2}(/|%2f|\\|%5c|;|%3b|%3f|%23|%00|\x00|$)`
 
 // traversalTerm is the part of every Rule that refuses such a path.
 const traversalTerm = " && !PathRegexp(`" + traversalPattern + "`)"

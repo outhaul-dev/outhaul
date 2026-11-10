@@ -207,7 +207,7 @@ func TestComposeOverrideRefusesTraversal(t *testing.T) {
 // reads back as $.
 func TestOverrideEscapesDollar(t *testing.T) {
 	got := string(Override(core.App{Name: "wiki"}, []core.Domain{{ID: 1, Host: "wiki.example.com", Service: "web", Port: 3000}}, "outhaul", false, "", "addr"))
-	if !strings.Contains(got, "%3b|$$)") {
+	if !strings.Contains(got, "%00|\\\\x00|$$)") {
 		t.Errorf("the rule's $ should be written $$:\n%s", got)
 	}
 	if strings.Contains(strings.ReplaceAll(got, "$$", ""), "$") {
