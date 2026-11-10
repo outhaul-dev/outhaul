@@ -153,7 +153,7 @@ git commit -m "feat(traefik): protected rows carry a forward-auth gate in their 
 - Produces:
   - `core.GateSession{ Subject, Kind, Display string; ExpiresAt time.Time }`; `core.SignInSSO` and `core.SignInPassword` are used as `Kind`
   - `func (u core.User) GateSubject() string`: `"user:<id>"` for a password account, `core.SSOGateSubject(u.SSOIssuer, u.SSOSubject)` for SSO
-  - `func core.SSOGateSubject(issuer, subject string) string`: `"sso:<issuer>|<subject>"`, also used for route visits, which have no account
+  - `func core.SSOGateSubject(issuer, subject string) string`: `"sso:" + hex(sha256(issuer + "\x00" + subject))`, also used for route visits, which have no account. This is the construction `ssoUsername` in `internal/store/users.go` already uses; move it to `core` so both share one function. A plain `issuer|subject` lets two identities collide.
   - `(*Store) CreateGateSession(ctx, rawToken string, sess core.GateSession) error`: also deletes expired gateway sessions
   - `(*Store) GetGateSession(ctx, rawToken string) (core.GateSession, error)`
   - `(*Store) DeleteGateSession(ctx, rawToken string) error`, `(*Store) DeleteGateSessionsForSubject(ctx, subject string) error`, `(*Store) DeleteGateSessionsOfKind(ctx, kind string) error`
@@ -184,18 +184,22 @@ func TestRemovingAccountEndsItsGateSessions(t *testing.T) { /* password and SSO 
 func TestChangingPasswordEndsGateSessions(t *testing.T) {
 	// Each of UpdateUserPassword, CompleteSetupLink, ResetUserPassword and EndUserSessions.
 }
-func TestEndSSOSessionsEndsGateSessions(t *testing.T) { /* SSO kind gone, password kind kept */ }
+func TestChangingSSOSettingsEndsGateSessions(t *testing.T) {
+	// Through the real paths: SetSSOSettings(ctx, v, true) and ClearSSOSettings(ctx).
+	// SSO-kind gateway sessions and their route sessions are gone; password-kind ones are kept.
+	// SetSSOSettings(ctx, v, false) keeps them all.
+}
 func TestGateTokensAreHashed(t *testing.T) { /* raw values absent from the three tables */ }
 ```
 
 - [ ] **Step 2: Run the tests and watch them fail**
 
-Run: `go test ./internal/store/ -run 'TestCode|TestRouteCookie|TestEnding|TestRemovingAccount|TestChangingPassword|TestEndSSO|TestGateTokens'`
+Run: `go test ./internal/store/ -run 'TestCode|TestRouteCookie|TestEnding|TestRemovingAccount|TestChangingPassword|TestChangingSSOSettings|TestGateTokens'`
 Expected: compile errors.
 
 - [ ] **Step 3: Implement**
 
-`DeleteUser`, `UpdateUserPassword`, `CompleteSetupLink`, `ResetUserPassword` and `EndUserSessions` delete by `GateSubject()` in their existing transactions. `EndSSOSessions` also deletes SSO-kind gateway sessions. Share one `hashToken` with setup links.
+`DeleteUser`, `UpdateUserPassword`, `CompleteSetupLink`, `ResetUserPassword` and `EndUserSessions` delete by `GateSubject()` in their existing transactions. SSO sessions are ended by the private `endSSOSessions(ctx, tx)` in `internal/store/sso.go`, which `SetSSOSettings(…, endSessions)` and `ClearSSOSettings` call inside their transactions; the exported `EndSSOSessions` has no caller outside tests. Put the delete of SSO-kind gateway sessions in `endSSOSessions`, so a settings change ends them in the same transaction. Share one `hashToken` with setup links.
 
 - [ ] **Step 4: Run the tests and watch them pass**
 
@@ -329,6 +333,15 @@ func TestAdminLoginAlsoCoversRoutes(t *testing.T) {
 func TestSSORouteVisitCreatesNoAccount(t *testing.T) {
 	// GET /auth/sso/start?rd=... then callback with a Fake identity => 303 with a code, gateway session Kind sso,
 	// ListUsers unchanged, no sessions row.
+	// The same visit by someone already signed in to Outhaul: their Outhaul session still works afterwards,
+	// and start didn't send them to "/".
+}
+func TestSSOStartRefusesAnOverlongReturnURL(t *testing.T) { /* a protected rd of 2,001 bytes => 400 */ }
+func TestSettingsChangeDuringRouteSignInLeavesNoGatewaySession(t *testing.T) {
+	// The issuer changes between Exchange and the second check: no code, no gate_sessions row.
+}
+func TestNoGatewaySessionOffThePublicHost(t *testing.T) {
+	// POST /login on Host 10.0.0.5:8080 with an https public URL: signed in, no gate_sessions row, no gateway cookie.
 }
 func TestSSOStartRefusesBadReturnURL(t *testing.T) { /* unprotected rd => 400 */ }
 func TestSSOCallbackChecksReturnURLAgain(t *testing.T) {
@@ -349,12 +362,20 @@ func TestRemovedAccountLosesRouteAccessAtOnce(t *testing.T) { /* POST /users/{id
 
 - [ ] **Step 2: Run the tests and watch them fail**
 
-Run: `go test ./internal/server/ -run 'TestGateStart|TestPasswordSignInForRoute|TestExistingGateway|TestAdminLogin|TestSSORouteVisit|TestSSOStartRefuses|TestSSOCallbackChecks|TestSSOFailureOnRouteVisit|TestSignOut|TestLogoutEnds|TestRemovedAccount'`
+Run: `go test ./internal/server/ -run 'TestGateStart|TestPasswordSignInForRoute|TestExistingGateway|TestAdminLogin|TestSSORouteVisit|TestSSOStartRefuses|TestSettingsChangeDuring|TestNoGatewaySession|TestSSOCallbackChecks|TestSSOFailureOnRouteVisit|TestSignOut|TestLogoutEnds|TestRemovedAccount'`
 Expected: FAIL.
 
 - [ ] **Step 3: Implement**
 
-`validReturnURL` parses with `net/url`, requires scheme `https`, an empty `User`, and a non-empty host. It refuses a path the browser or Traefik might read differently from Outhaul: `u.EscapedPath()` containing `\`, `%2e`, `%2f` or `%5c` in either case, or a `u.Path` that `path.Clean` would change (a trailing slash aside). An empty path counts as `/`. Then it checks `RouteIsProtected(normalizeHost(u.Host), u.Path)`. `redirectWithCode` calls `validReturnURL` itself, so no caller can mint a code for a URL that wasn't checked. Move password checking out of `handleLoginSubmit` into a helper that `/gate/sign-in` also calls, including the hash slots and the refusal of SSO accounts. `s.login` also starts a gateway session. The SSO callback branches on `flow.Return`: when set, it starts a gateway session with subject `core.SSOGateSubject(issuer, subject)` and redirects with a code; when empty, it behaves as in part 2 and also starts a gateway session. A failed callback whose flow has a return URL goes back to `/gate/start`; one with no usable flow goes to `/login`. The gateway cookie is `HttpOnly`, `SameSite=Lax`, `Path=/`, 8 hours, and `Secure` when the public URL is `https://`.
+`validReturnURL` parses with `net/url`, requires scheme `https`, an empty `User`, and a non-empty host. It refuses a path the browser or Traefik might read differently from Outhaul: `u.EscapedPath()` containing `\`, `%2e`, `%2f` or `%5c` in either case, or a `u.Path` that `path.Clean` would change (a trailing slash aside). An empty path counts as `/`. Then it checks `RouteIsProtected(normalizeHost(u.Host), u.Path)`. `redirectWithCode` calls `validReturnURL` itself, so no caller can mint a code for a URL that wasn't checked. Move password checking out of `handleLoginSubmit` into a helper that `/gate/sign-in` also calls, including the hash slots, the refusal of SSO accounts, and the re-check that the password wasn't reset while it was being verified. `s.login` also starts a gateway session; that covers passwords, first-boot setup and setup links.
+
+The SSO callback doesn't use `s.login`: it calls `createSession` and `finishLogin` itself, between two `ssoStillCurrent` checks (`internal/server/sso_login.go`). It branches on `flow.Return` straight after `Exchange` and the first check, **before** `FindOrCreateSSOUser` and before the block that replaces the old session:
+- `Return` set: no account is created and the visitor's Outhaul session, if any, is left alone. It starts a gateway session with subject `core.SSOGateSubject(issuer, subject)`, runs the second `ssoStillCurrent` check, deletes that gateway session if the check fails, and otherwise redirects with a code.
+- `Return` empty: as in part 2, and it also starts a gateway session, created before the second `ssoStillCurrent` check and deleted in that refusal branch next to `DeleteSession`.
+
+`handleSSOStart` sends anyone who already has an Outhaul session to `/` before doing anything else. Skip that when `rd` is set: someone signed in before the upgrade has no gateway session, and would land on the dashboard instead of the app. `rd` longer than 2,000 bytes is refused with the "isn't protected" answer, because the flow cookie that carries it must stay under the browser's 4 KB limit.
+
+A gateway session is started only when the request is on the public URL's host (`onPublicHost(r)`, added in part 2). On `http://<ip>:8080` with an https public URL the browser drops the `__Host-` cookie, which would leave a session nobody holds. A failed callback whose flow has a return URL goes back to `/gate/start`; one with no usable flow goes to `/login`. The gateway cookie is `HttpOnly`, `SameSite=Lax`, `Path=/`, 8 hours, and `Secure` when the public URL is `https://`.
 
 Update copy now that routes exist: `noaccess.tmpl` adds "You can still use apps on protected routes.", and the Users note reads `"No role" means the person can pass protected routes but can't use Outhaul.`
 
@@ -617,7 +638,7 @@ Record what was and wasn't checked in the task's report. Don't claim a check tha
 
 - [ ] **Step 4: Write `docs/PROTECTED-ROUTES.md`**
 
-Cover: what the switch does; the `X-Outhaul-User` contract, and that it's only trustworthy through Traefik; the open-path pattern and the protected-path-under-open-host pattern; `/gate/sign-out`; the 401 for scripts; the requirements; what happens when Outhaul restarts; the warning that everyone who can sign in reaches every protected route; that the app can read the route cookie, which works only on its own host; that the name in the header is whatever the provider sends.
+Cover: what the switch does; the `X-Outhaul-User` contract, and that it's only trustworthy through Traefik; the open-path pattern and the protected-path-under-open-host pattern; `/gate/sign-out`; the 401 for scripts; the requirements; what happens when Outhaul restarts; the warning that everyone who can sign in reaches every protected route; that the app can read the route cookie, which works only on its own host; that the name in the header is whatever the provider sends, and isn't a verified or unique key: it may be an email the provider never verified or a `preferred_username`, and a password account's username can look like an email. An app that needs more than "someone signed in" should keep its own list of who may do what, and Outhaul's admins decide who gets a password account.
 
 - [ ] **Step 5: Update the other docs**
 
