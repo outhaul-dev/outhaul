@@ -169,26 +169,38 @@ func staleOpenHosts(domains []core.Domain, appName string, containers []docker.C
 	return hosts
 }
 
-// otherRedeploy is another app that a save requiring sign-in on Host
-// redeploys: its running containers still serve an open route on Host that
-// its rows no longer have, which would keep answering there with no gate.
+// otherRedeploy is another app that a save requiring sign-in redeploys. Either
+// it is another app whose running containers still serve an open route on
+// Host that its rows no longer have, which would keep answering there with no
+// gate; or (Preview) it is a preview of the app being saved, which gets the
+// same protection (protectPreviews) and redeploys if it is running.
 type otherRedeploy struct {
-	Host  string // lower-cased
-	App   core.App
-	Ships string // what its deploy builds (shipsWhat), or "" when it reuses its image
+	Host    string // lower-cased; "" for a Preview
+	App     core.App
+	Ships   string // what its deploy builds (shipsWhat), or "" when it reuses its image
+	Preview bool
 }
 
 // Sentence is the warning the domain dialog shows for o.
 func (o otherRedeploy) Sentence() string {
 	s := "Requiring sign-in on " + o.Host + " also redeploys " + o.App.Name + ", which still serves an old route there."
+	if o.Preview {
+		s = fmt.Sprintf("Requiring sign-in also requires it on this app's preview for pull request #%d (%s), which redeploys if it is running.", o.App.PRNumber, o.App.Name)
+	}
 	if o.Ships != "" {
 		s += " It will deploy " + o.Ships + "."
 	}
 	return s
 }
 
-// key is how a form names o in others_was: its host and its app's name.
-func (o otherRedeploy) key() string { return o.Host + " " + o.App.Name }
+// key is how a form names o in others_was: its host and its app's name, or,
+// for a preview, "preview:" and its name (a host has no colon).
+func (o otherRedeploy) key() string {
+	if o.Preview {
+		return "preview:" + o.App.Name
+	}
+	return o.Host + " " + o.App.Name
+}
 
 // leftoverRoutes lists the managed containers once, and returns every app
 // other than app whose running containers serve an open route that its rows
@@ -269,6 +281,200 @@ func (s *Server) leavesOpenRoute(ctx context.Context, d core.Domain) (bool, erro
 		return false, err
 	}
 	return openOnProtectedHost(d, hosts), nil
+}
+
+// previewProtection is what giving preview the protection of parentRows (its
+// parent's rows) changes. For each protected parent row, the preview's row for
+// the same service and path, which the preview manager minted from it (the
+// preview host derives only from the service and the PR), is turned on if it
+// is open; when the preview has no such row, one is added, protected, as the
+// preview manager would mint it, so the route isn't left to an open row above
+// it. Protection is only ever added: a parent row turned off leaves its
+// previews as they are. Rows that collapse into one preview row are protected
+// once.
+func (s *Server) previewProtection(cfg core.PreviewConfig, parent core.App, parentRows []core.Domain, preview core.App, previewRows []core.Domain) (turnOn, add []core.Domain) {
+	type route struct{ host, path string }
+	// A service's host is the one its existing preview rows have, so a base
+	// domain changed since the preview was made doesn't split it over two.
+	hostOf := map[string]string{}
+	have := map[route]core.Domain{}
+	for _, r := range previewRows {
+		if _, ok := hostOf[r.Service]; !ok {
+			hostOf[r.Service] = r.Host
+		}
+		have[route{strings.ToLower(r.Host), r.Path}] = r
+	}
+	done := map[route]bool{}
+	for _, p := range parentRows {
+		if !p.Protected {
+			continue
+		}
+		host, ok := hostOf[p.Service]
+		if !ok {
+			host = core.PreviewHost(cfg, parent.Name, preview.PRNumber, p.Service, s.serverIP)
+		}
+		k := route{strings.ToLower(host), p.Path}
+		if done[k] {
+			continue
+		}
+		done[k] = true
+		if r, ok := have[k]; ok {
+			if !r.Protected {
+				turnOn = append(turnOn, r)
+			}
+			continue
+		}
+		add = append(add, core.Domain{AppID: preview.ID, Host: host, Service: p.Service, Port: p.Port,
+			Path: p.Path, InternalPath: p.InternalPath, TLS: p.TLS, Protected: true})
+	}
+	return turnOn, add
+}
+
+// previewRedeploy names preview in the domain dialog of its parent: a save
+// requiring sign-in on the parent also requires it on the preview, and
+// redeploys it by the same rules as any app. Its deploy builds the pull
+// request's latest code unless it reuses its image.
+func (s *Server) previewRedeploy(ctx context.Context, preview core.App) (otherRedeploy, error) {
+	deps, err := s.store.ListDeploymentsForApp(ctx, preview.ID)
+	if err != nil {
+		return otherRedeploy{}, fmt.Errorf("read the deployments of %q: %w", preview.Name, err)
+	}
+	o := otherRedeploy{App: preview, Preview: true}
+	if protectionWarningFor(preview, deps) != "" {
+		o.Ships = fmt.Sprintf("the latest code from pull request #%d", preview.PRNumber)
+	}
+	return o, nil
+}
+
+// previewRedeploys names every preview of app, for its domain dialog: which
+// ones a save changes depends on the row being saved.
+func (s *Server) previewRedeploys(ctx context.Context, app core.App) ([]otherRedeploy, error) {
+	kids, err := s.store.ListPreviewsForParent(ctx, app.ID)
+	if err != nil {
+		return nil, fmt.Errorf("read the previews: %w", err)
+	}
+	out := make([]otherRedeploy, 0, len(kids))
+	for _, k := range kids {
+		o, err := s.previewRedeploy(ctx, k)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, nil
+}
+
+// previewsToProtect returns the previews of app whose rows protectPreviews
+// would change once app's rows are rows: those a save leaving rows protected
+// also protects, and redeploys.
+func (s *Server) previewsToProtect(ctx context.Context, app core.App, rows []core.Domain) ([]otherRedeploy, error) {
+	kids, err := s.store.ListPreviewsForParent(ctx, app.ID)
+	if err != nil || len(kids) == 0 {
+		return nil, err
+	}
+	cfg, err := s.store.GetPreviewConfig(ctx, app.ID)
+	if err != nil {
+		return nil, err
+	}
+	var out []otherRedeploy
+	for _, k := range kids {
+		have, err := s.store.ListDomains(ctx, k.ID)
+		if err != nil {
+			return nil, err
+		}
+		if turnOn, add := s.previewProtection(cfg, app, rows, k, have); len(turnOn)+len(add) == 0 {
+			continue
+		}
+		o, err := s.previewRedeploy(ctx, k)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	return out, nil
+}
+
+// protectPreviews gives each preview of parent the protection of parent's
+// rows (previewProtection), fork previews included, and redeploys each one
+// whose rows changed by the same rules as any app (applyProtection). It
+// carries on past a preview it can't change, and returns what failed, naming
+// each preview.
+func (s *Server) protectPreviews(ctx context.Context, parent core.App) error {
+	kids, err := s.store.ListPreviewsForParent(ctx, parent.ID)
+	if err != nil {
+		return fmt.Errorf("read the previews: %w", err)
+	}
+	if len(kids) == 0 {
+		return nil
+	}
+	rows, err := s.store.ListDomains(ctx, parent.ID)
+	if err != nil {
+		return fmt.Errorf("read the domains: %w", err)
+	}
+	cfg, err := s.store.GetPreviewConfig(ctx, parent.ID)
+	if err != nil {
+		return fmt.Errorf("read the preview settings: %w", err)
+	}
+	var errs []error
+	for _, k := range kids {
+		if err := s.protectPreview(ctx, cfg, parent, rows, k); err != nil {
+			errs = append(errs, fmt.Errorf("%s (%w)", k.Name, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// protectPreview is protectPreviews for one preview.
+func (s *Server) protectPreview(ctx context.Context, cfg core.PreviewConfig, parent core.App, parentRows []core.Domain, preview core.App) error {
+	have, err := s.store.ListDomains(ctx, preview.ID)
+	if err != nil {
+		return fmt.Errorf("read its domains: %w", err)
+	}
+	turnOn, add := s.previewProtection(cfg, parent, parentRows, preview, have)
+	var errs []error
+	changed := false
+	for _, d := range turnOn {
+		if err := s.store.SetDomainProtected(ctx, preview.ID, d.ID, true); err != nil {
+			errs = append(errs, fmt.Errorf("require sign-in on %s%s: %w", d.Host, d.Path, err))
+			continue
+		}
+		changed = true
+	}
+	for _, d := range add {
+		if _, err := s.store.AddDomain(ctx, d); err != nil {
+			errs = append(errs, fmt.Errorf("add %s%s, requiring sign-in: %w", d.Host, d.Path, err))
+			continue
+		}
+		changed = true
+	}
+	if changed {
+		s.refreshPreviewURL(ctx, preview)
+		if _, err := s.applyProtection(ctx, preview); err != nil {
+			errs = append(errs, fmt.Errorf("queue its deploy: %w", err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// refreshPreviewURL sets the preview's OUTHAUL_PREVIEW_URL from its first row,
+// as the preview manager does when it makes one, by the rule the pages link
+// with: a row that now requires sign-in may be served over HTTPS. Its next
+// deploy carries it. A failure is only logged: the route is protected either way.
+func (s *Server) refreshPreviewURL(ctx context.Context, preview core.App) {
+	rows, err := s.store.ListDomains(ctx, preview.ID)
+	if err != nil || len(rows) == 0 {
+		if err != nil {
+			log.Printf("protected routes: read the domains of %q: %v", preview.Name, err)
+		}
+		return
+	}
+	d, scheme := rows[0], "http://"
+	if d.TLS || d.Protected && s.protectedOverHTTPS(ctx) {
+		scheme = "https://"
+	}
+	if err := s.store.SetEnvScoped(ctx, preview.ID, "OUTHAUL_PREVIEW_URL", scheme+d.Host, false, core.ScopeShared); err != nil {
+		log.Printf("protected routes: set OUTHAUL_PREVIEW_URL of %q: %v", preview.Name, err)
+	}
 }
 
 // chooseProtectionDeploy picks how to deploy app so its labels follow its

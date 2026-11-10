@@ -94,6 +94,8 @@
             Turning sign-in on or off redeploys this app if it is running, and so does changing the host or path of a domain on a host that requires sign-in.{{if .TLSAvailable}} A domain that requires sign-in is always served over HTTPS, even with Automate HTTPS off.{{end}}
             {{with .ProtectionWarning}}<strong>{{.}}</strong>{{end}}
             {{range .AlsoRedeploys}}<p class="protect-also" data-also-host="{{.Host}}">{{.Sentence}}</p>{{end}}
+            {{range .PreviewRedeploys}}<p class="protect-also" data-also-preview>{{.Sentence}}</p>{{end}}
+            {{if .HasPreviews}}<p class="protect-also" id="domain-previews-stay">Existing previews stay protected. New ones will be open.</p>{{end}}
           </div>
         </div>
         <p class="muted env-note">Other domain changes apply on this app's next deploy.</p>
@@ -212,10 +214,17 @@
       }
       return hostInput ? hostInput.value.trim().toLowerCase() : '';
     }
+    // The app's previews get the protection of a row saved with the switch
+    // on; one turned off leaves them protected, and the dialog says so.
+    var previewLines = Array.prototype.slice.call(dialog.querySelectorAll('[data-also-preview]'));
+    var previewsStay = document.getElementById('domain-previews-stay');
     function applyProtect() {
-      if (protectNote) protectNote.hidden = !((protect && protect.checked) || editedProtected || (editedException && moved()));
+      var on = !!(protect && protect.checked);
+      if (protectNote) protectNote.hidden = !(on || editedProtected || (editedException && moved()));
       var host = currentHost();
       alsoLines.forEach(function (p) { p.hidden = p.getAttribute('data-also-host') !== host; });
+      previewLines.forEach(function (p) { p.hidden = !on; });
+      if (previewsStay) previewsStay.hidden = !(editedProtected && !on);
     }
     if (protect) protect.addEventListener('change', applyProtect);
     [hostInput, pathInput].forEach(function (el) { if (el) el.addEventListener('input', applyProtect); });

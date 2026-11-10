@@ -6,6 +6,7 @@ package previewmgr
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -78,12 +79,30 @@ type Manager struct {
 	stopped  chan struct{} // closed when Run returns
 
 	jobTimeout time.Duration // bound on handling one event (see handleJob)
+
+	proxy          ProxyControl               // reconciles Traefik before a preview that requires sign-in deploys; nil refuses one
+	protectedHTTPS func(context.Context) bool // whether protected rows are served over HTTPS; nil: no
+}
+
+// ProxyControl reconciles the managed proxy now, so Traefik can reach the
+// gate (server.ProxyControl). Its error names what failed.
+type ProxyControl interface {
+	ReconcileProxy(ctx context.Context) error
 }
 
 func New(st Store, n Notifier, db DBProvisioner, dk Docker, gh GithubAPI, ts TokenSource, serverIP string) *Manager {
 	return &Manager{store: st, notifier: n, dbprov: db, docker: dk, gh: gh, token: ts, serverIP: serverIP,
 		events: make(chan prJob, queueSize), stopped: make(chan struct{}), jobTimeout: defaultJobTimeout}
 }
+
+// SetProxyControl wires the proxy reconcile a preview that requires sign-in
+// needs. Call it before Run.
+func (m *Manager) SetProxyControl(p ProxyControl) { m.proxy = p }
+
+// SetProtectedHTTPS wires whether protected rows are served over HTTPS
+// whatever their own TLS flag: on a TLS server, or through a tunnel, whose
+// edge terminates TLS. Preview links follow it. Call it before Run.
+func (m *Manager) SetProtectedHTTPS(f func(context.Context) bool) { m.protectedHTTPS = f }
 
 // Handle routes one pull_request event to the right lifecycle action for every
 // enabled app targeting the PR's base repo *through the source that delivered
@@ -207,8 +226,14 @@ func (m *Manager) buildPreview(ctx context.Context, parent, child core.App, cfg 
 	if err := m.provisionDatabases(ctx, parent, child); err != nil {
 		return err
 	}
-	if err := m.mintDomains(ctx, parent, child, cfg, ev.Number); err != nil {
+	protected, err := m.mintDomains(ctx, parent, child, cfg, ev.Number)
+	if err != nil {
 		return err
+	}
+	if protected {
+		if err := m.ensureGateHost(ctx); err != nil {
+			return err
+		}
 	}
 	if err := m.injectPreviewURL(ctx, child.ID); err != nil {
 		return err
@@ -287,8 +312,34 @@ func previewRef(ev webhook.PullRequestEvent) string {
 	return ev.HeadRef
 }
 
+// ensureGateHost has the proxy reconciled now, with the preview's rows saved,
+// so Traefik maps the gate's host before a gated preview is deployed, as the
+// domain dialog does when sign-in is turned on. The parent's protected row
+// normally keeps the mapping, but between reading the parent's rows and
+// saving the preview's, the parent's row can be turned off and a reconcile
+// drop it, leaving this preview the only protected row.
+func (m *Manager) ensureGateHost(ctx context.Context) error {
+	if m.proxy == nil {
+		return errors.New("the preview requires sign-in, but this server has no proxy it can update")
+	}
+	if err := m.proxy.ReconcileProxy(ctx); err != nil {
+		return fmt.Errorf("the preview requires sign-in, but Outhaul couldn't %w", err)
+	}
+	return nil
+}
+
+// linkScheme is the scheme a preview's link uses, by the rule the pages use:
+// https when the row's TLS flag is on, or when it is protected and protected
+// rows are served over HTTPS (SetProtectedHTTPS).
+func (m *Manager) linkScheme(ctx context.Context, d core.Domain) string {
+	if d.TLS || d.Protected && m.protectedHTTPS != nil && m.protectedHTTPS(ctx) {
+		return "https://"
+	}
+	return "http://"
+}
+
 // injectPreviewURL sets OUTHAUL_PREVIEW_URL from the child's first minted domain
-// (scheme per that domain's TLS). Apps with no routed domain get no URL var.
+// (scheme per linkScheme). Apps with no routed domain get no URL var.
 func (m *Manager) injectPreviewURL(ctx context.Context, childID int64) error {
 	doms, err := m.store.ListDomains(ctx, childID)
 	if err != nil {
@@ -297,11 +348,7 @@ func (m *Manager) injectPreviewURL(ctx context.Context, childID int64) error {
 	if len(doms) == 0 {
 		return nil
 	}
-	scheme := "http://"
-	if doms[0].TLS {
-		scheme = "https://"
-	}
-	return m.store.SetEnvScoped(ctx, childID, "OUTHAUL_PREVIEW_URL", scheme+doms[0].Host, false, core.ScopeShared)
+	return m.store.SetEnvScoped(ctx, childID, "OUTHAUL_PREVIEW_URL", m.linkScheme(ctx, doms[0])+doms[0].Host, false, core.ScopeShared)
 }
 
 // provisionDatabases creates a fresh empty database per parent attachment and
@@ -340,34 +387,43 @@ func (m *Manager) provisionDatabases(ctx context.Context, parent, child core.App
 
 // mintDomains creates a preview domain row per routed parent domain (compose:
 // one per service; single-container: the primary row). Internal-only services
-// keep no row.
+// keep no row. It reports whether any row it created requires sign-in.
 //
 // The preview host derives only from appName+pr+service (not the parent host),
 // so two parent rows that differ only by host — e.g. a single-container app's
 // auto sslip domain plus an added custom domain, both whole-host with the same
 // empty service — collapse to the same preview (host, path). We dedupe on that
 // derived key so the second AddDomain doesn't hit UNIQUE(app_id, host, path).
-func (m *Manager) mintDomains(ctx context.Context, parent, child core.App, cfg core.PreviewConfig, pr int) error {
+// The first such row gives the rest of the preview row, but the preview row
+// requires sign-in when any of them does: the preview of a protected route is
+// never open.
+func (m *Manager) mintDomains(ctx context.Context, parent, child core.App, cfg core.PreviewConfig, pr int) (protected bool, err error) {
 	parentDomains, err := m.store.ListDomains(ctx, parent.ID)
 	if err != nil {
-		return err
+		return false, err
 	}
-	seen := map[string]bool{}
+	var rows []core.Domain
+	at := map[string]int{} // derived key -> index in rows
 	for _, d := range parentDomains {
 		host := core.PreviewHost(cfg, parent.Name, pr, d.Service, m.serverIP)
 		key := host + "\x00" + d.Path
-		if seen[key] {
+		if i, ok := at[key]; ok {
+			rows[i].Protected = rows[i].Protected || d.Protected
 			continue
 		}
-		seen[key] = true
-		if _, err := m.store.AddDomain(ctx, core.Domain{
+		at[key] = len(rows)
+		rows = append(rows, core.Domain{
 			AppID: child.ID, Host: host, Service: d.Service, Port: d.Port,
-			Path: d.Path, InternalPath: d.InternalPath, TLS: d.TLS,
-		}); err != nil {
-			return err
-		}
+			Path: d.Path, InternalPath: d.InternalPath, TLS: d.TLS, Protected: d.Protected,
+		})
 	}
-	return nil
+	for _, d := range rows {
+		if _, err := m.store.AddDomain(ctx, d); err != nil {
+			return false, err
+		}
+		protected = protected || d.Protected
+	}
+	return protected, nil
 }
 
 func (m *Manager) redeploy(ctx context.Context, parent core.App, ev webhook.PullRequestEvent) error {
@@ -506,11 +562,7 @@ func (m *Manager) OnDeployFinished(ctx context.Context, app core.App, success bo
 		var urls []string
 		if ds, _ := m.store.ListDomains(ctx, app.ID); len(ds) > 0 {
 			for _, d := range ds {
-				scheme := "http://"
-				if d.TLS {
-					scheme = "https://"
-				}
-				urls = append(urls, scheme+d.Host)
+				urls = append(urls, m.linkScheme(ctx, d)+d.Host)
 			}
 		}
 		body = ReadyComment(urls, "") // no commit SHA available on core.App

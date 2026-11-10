@@ -280,6 +280,21 @@ func serve() error {
 		&previewDocker{st: st, runtime: dc, compose: compose.NewDocker()},
 		ghClient, tokenSource, serverIP)
 	worker.SetDeployHook(previews.OnDeployFinished) // update a preview's PR comment + status on deploy completion
+	// A preview of a route that requires sign-in requires it too: the spawn
+	// reconciles the proxy, as turning sign-in on does, and links it over
+	// HTTPS when protected rows are served that way (as the pages do).
+	previews.SetProxyControl(infra)
+	previews.SetProtectedHTTPS(func(ctx context.Context) bool {
+		if cfg.TLSEnabled() {
+			return true
+		}
+		tunnel, err := st.TunnelEnabled(ctx)
+		if err != nil {
+			log.Printf("previews: read the tunnel setting: %v", err)
+			return false
+		}
+		return tunnel
+	})
 	go func() {
 		worker.Run(workerCtx)
 		close(workerDone)

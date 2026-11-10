@@ -891,11 +891,20 @@ func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, status in
 		if err != nil {
 			log.Printf("app page: other apps' old routes: %v", err)
 		}
-		keys := make([]string, 0, len(others))
-		for _, o := range others {
-			keys = append(keys, o.key())
+		// Its previews get the same protection, and are named the same way.
+		previews, err := s.previewRedeploys(r.Context(), app)
+		if err != nil {
+			log.Printf("app page: the previews of %q: %v", app.Name, err)
+		}
+		keys := make([]string, 0, len(others)+len(previews))
+		for _, list := range [][]otherRedeploy{others, previews} {
+			for _, o := range list {
+				keys = append(keys, o.key())
+			}
 		}
 		data["AlsoRedeploys"] = others
+		data["PreviewRedeploys"] = previews
+		data["HasPreviews"] = len(previews) > 0
 		data["OthersWas"] = strings.Join(keys, ",")
 		protectedHosts, err := s.store.ProtectedHosts(r.Context())
 		if err != nil {
@@ -989,7 +998,7 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		d.Protected = true
-		if others, ok = s.othersToRedeploy(ctx, w, r, app, d.Host); !ok {
+		if others, ok = s.othersToRedeploy(ctx, w, r, app, d, true); !ok {
 			return
 		}
 	}
@@ -1009,7 +1018,7 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.finishDomainSave(ctx, w, r, app, d.Protected, others)
+	s.finishDomainSave(ctx, w, r, app, d.Protected, others, d.Protected)
 }
 
 // handleUpdateDomain rewrites an existing route in place.
@@ -1097,11 +1106,12 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 		redeploy = leaves
 	}
 	// Requiring sign-in on a host (turning it on, or moving a protected row)
-	// also redeploys other apps still serving an old open route there.
+	// also redeploys other apps still serving an old open route there. Any
+	// save leaving the row protected gives the app's previews its protection.
 	var others []otherRedeploy
-	if d.Protected && (!existing.Protected || moved) {
+	if d.Protected {
 		var ok bool
-		if others, ok = s.othersToRedeploy(ctx, w, r, app, d.Host); !ok {
+		if others, ok = s.othersToRedeploy(ctx, w, r, app, d, !existing.Protected || moved); !ok {
 			return
 		}
 	}
@@ -1124,33 +1134,48 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	s.finishDomainSave(ctx, w, r, app, redeploy, others)
+	s.finishDomainSave(ctx, w, r, app, redeploy, others, d.Protected)
 }
 
-// othersToRedeploy works out, before a save that requires sign-in on host,
-// which other apps it redeploys (leftoverRoutes). It answers, and reports
-// false, when that can't be worked out (the save is refused) or when the
-// form's others_was doesn't name them all: its page didn't warn of them, so
-// the page is rendered again with the warning.
-func (s *Server) othersToRedeploy(ctx context.Context, w http.ResponseWriter, r *http.Request, app core.App, host string) ([]otherRedeploy, bool) {
-	all, err := s.leftoverRoutes(ctx, app)
+// othersToRedeploy works out, before a save that leaves d protected, which
+// other apps it redeploys. When the save requires sign-in on d's host
+// (onHost), those are the apps still serving an old open route there
+// (leftoverRoutes), which it returns for finishDomainSave to redeploy.
+// Either way they include the previews of app that d's save gives its
+// protection to (previewsToProtect), which finishDomainSave protects and
+// redeploys. It answers, and reports false, when that can't be worked out
+// (the save is refused) or when the form's others_was doesn't name them all:
+// its page didn't warn of them, so the page is rendered again with the
+// warning.
+func (s *Server) othersToRedeploy(ctx context.Context, w http.ResponseWriter, r *http.Request, app core.App, d core.Domain, onHost bool) ([]otherRedeploy, bool) {
+	var others []otherRedeploy
+	if onHost {
+		all, err := s.leftoverRoutes(ctx, app)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Sign-in wasn't turned on: Outhaul couldn't tell which other apps still serve old routes on %s, which it would redeploy (%v). The domain wasn't changed.", d.Host, err), http.StatusServiceUnavailable)
+			return nil, false
+		}
+		for _, o := range all {
+			if strings.EqualFold(o.Host, d.Host) {
+				others = append(others, o)
+			}
+		}
+	}
+	previews, err := s.previewsAfterSave(ctx, app, d)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Sign-in wasn't turned on: Outhaul couldn't tell which other apps still serve old routes on %s, which it would redeploy (%v). The domain wasn't changed.", host, err), http.StatusServiceUnavailable)
+		http.Error(w, fmt.Sprintf("The domain wasn't changed: Outhaul couldn't tell which of this app's previews it would also require sign-in on (%v).", err), http.StatusServiceUnavailable)
 		return nil, false
 	}
 	shown := map[string]bool{}
 	for _, k := range strings.Split(r.FormValue("others_was"), ",") {
 		shown[k] = true
 	}
-	var others []otherRedeploy
 	var unshown []string
-	for _, o := range all {
-		if !strings.EqualFold(o.Host, host) {
-			continue
-		}
-		others = append(others, o)
-		if !shown[o.key()] {
-			unshown = append(unshown, o.Sentence())
+	for _, list := range [][]otherRedeploy{others, previews} {
+		for _, o := range list {
+			if !shown[o.key()] {
+				unshown = append(unshown, o.Sentence())
+			}
 		}
 	}
 	if len(unshown) > 0 {
@@ -1158,6 +1183,22 @@ func (s *Server) othersToRedeploy(ctx context.Context, w http.ResponseWriter, r 
 		return nil, false
 	}
 	return others, true
+}
+
+// previewsAfterSave is previewsToProtect for app's rows as they will be once
+// d is saved: added, or in place of the row it edits.
+func (s *Server) previewsAfterSave(ctx context.Context, app core.App, d core.Domain) ([]otherRedeploy, error) {
+	rows, err := s.store.ListDomains(ctx, app.ID)
+	if err != nil {
+		return nil, err
+	}
+	after := make([]core.Domain, 0, len(rows)+1)
+	for _, row := range rows {
+		if row.ID != d.ID { // an added d has no ID yet
+			after = append(after, row)
+		}
+	}
+	return s.previewsToProtect(ctx, app, append(after, d))
 }
 
 // ensureGateHost has the proxy reconciled now, with the rows as saved, so
@@ -1185,9 +1226,11 @@ func (s *Server) refuseProtection(w http.ResponseWriter, err, undo error) {
 
 // finishDomainSave ends a saved add, edit or removal. When the save changed
 // what sign-in covers it queues the deploy that applies it (applyProtection),
-// and one for each of others, by the same rules. Either way it syncs the
-// local CA, which mints a protected row's certificate whatever its TLS flag.
-func (s *Server) finishDomainSave(ctx context.Context, w http.ResponseWriter, r *http.Request, app core.App, redeploy bool, others []otherRedeploy) {
+// and one for each of others, by the same rules. When it left a row protected
+// (previews), the app's previews get its rows' protection, and redeploy
+// (protectPreviews). Either way it syncs the local CA, which mints a
+// protected row's certificate whatever its TLS flag.
+func (s *Server) finishDomainSave(ctx context.Context, w http.ResponseWriter, r *http.Request, app core.App, redeploy bool, others []otherRedeploy, previews bool) {
 	var failed []string
 	if redeploy {
 		if _, err := s.applyProtection(ctx, app); err != nil {
@@ -1206,9 +1249,22 @@ func (s *Server) finishDomainSave(ctx context.Context, w http.ResponseWriter, r 
 			failed = append(failed, o.App.Name+" ("+err.Error()+")")
 		}
 	}
+	var previewErr error
+	if previews {
+		if previewErr = s.protectPreviews(ctx, app); previewErr != nil {
+			log.Printf("protected routes: require sign-in on the previews of %q: %v", app.Name, previewErr)
+		}
+	}
 	s.syncCerts(ctx)
-	if len(failed) > 0 {
-		http.Error(w, "The domain change was saved, but the deploy that applies it to sign-in couldn't be queued for "+strings.Join(failed, ", ")+". Deploy them to apply it.", http.StatusInternalServerError)
+	if len(failed) > 0 || previewErr != nil {
+		var parts []string
+		if len(failed) > 0 {
+			parts = append(parts, "the deploy that applies it to sign-in couldn't be queued for "+strings.Join(failed, ", ")+". Deploy them to apply it.")
+		}
+		if previewErr != nil {
+			parts = append(parts, "it couldn't be applied to every preview of "+app.Name+": "+strings.ReplaceAll(previewErr.Error(), "\n", ", ")+". Check them on the Domains page.")
+		}
+		http.Error(w, "The domain change was saved, but "+strings.Join(parts, " Also, "), http.StatusInternalServerError)
 		return
 	}
 	http.Redirect(w, r, "/apps/"+strconv.FormatInt(app.ID, 10), http.StatusSeeOther)
@@ -1260,7 +1316,7 @@ func (s *Server) handleDeleteDomain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.finishDomainSave(ctx, w, r, app, redeploy, nil)
+	s.finishDomainSave(ctx, w, r, app, redeploy, nil, false)
 }
 
 // handleAddVolume attaches a persistent volume to a single-container app. The

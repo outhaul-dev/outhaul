@@ -2,6 +2,7 @@ package previewmgr
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -859,6 +860,273 @@ func TestDestroyByIDRejectsNonPreview(t *testing.T) {
 	got := h.gh.comments[repo+"#42"]
 	if len(got) == 0 || got[len(got)-1] != "Preview environment destroyed." {
 		t.Errorf("DestroyByID comment = %v, want a \"Preview environment destroyed.\" notice", got)
+	}
+}
+
+// --- protection --------------------------------------------------------------
+
+// fakeProxy stands in for the proxy reconcile turning sign-in on needs. at, if
+// set, runs during each call.
+type fakeProxy struct {
+	calls int
+	err   error
+	at    func()
+}
+
+func (p *fakeProxy) ReconcileProxy(context.Context) error {
+	p.calls++
+	if p.at != nil {
+		p.at()
+	}
+	return p.err
+}
+
+// parentRow adds a row to parent, protected or not.
+func (h *harness) parentRow(t *testing.T, parent core.App, d core.Domain) core.Domain {
+	t.Helper()
+	d.AppID = parent.ID
+	if d.Port == 0 {
+		d.Port = 8080
+	}
+	added, err := h.st.AddDomain(context.Background(), d)
+	if err != nil {
+		t.Fatalf("AddDomain %s%s: %v", d.Host, d.Path, err)
+	}
+	return added
+}
+
+// protectPrimary turns sign-in on for parent's seeded row (its Domain).
+func (h *harness) protectPrimary(t *testing.T, parent core.App) {
+	t.Helper()
+	ctx := context.Background()
+	rows, err := h.st.ListDomains(ctx, parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range rows {
+		if d.Host == parent.Domain && d.Path == "" {
+			if err := h.st.SetDomainProtected(ctx, parent.ID, d.ID, true); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+	}
+	t.Fatalf("parent %s has no row for %s", parent.Name, parent.Domain)
+}
+
+// previewRows returns the preview's rows by path ("" for the whole host).
+func (h *harness) previewRows(t *testing.T, parent core.App, pr int) map[string]core.Domain {
+	t.Helper()
+	ctx := context.Background()
+	child, err := h.st.GetPreviewByPR(ctx, parent.ID, pr)
+	if err != nil {
+		t.Fatalf("no preview for PR %d: %v", pr, err)
+	}
+	rows, err := h.st.ListDomains(ctx, child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]core.Domain{}
+	for _, d := range rows {
+		out[d.Path] = d
+	}
+	return out
+}
+
+// A preview's row requires sign-in when its parent's row does, a fork's
+// preview included. The proxy is reconciled with the rows saved and before
+// the preview's first deployment is queued, as turning sign-in on in the
+// dialog does, so Traefik can reach the gate.
+func TestMintDomainsCopiesProtection(t *testing.T) {
+	for _, fork := range []bool{false, true} {
+		name := "same repo"
+		if fork {
+			name = "fork"
+		}
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			ctx := context.Background()
+			px := &fakeProxy{}
+			h.mgr.SetProxyControl(px)
+			parent := h.seedGithubApp(t, "web", "acme/web", allowForks)
+			h.protectPrimary(t, parent)
+			h.parentRow(t, parent, core.Domain{Host: parent.Domain, Path: "/hooks"})
+			deploysAt, protectedAt := -1, false
+			px.at = func() {
+				child, err := h.st.GetPreviewByPR(ctx, parent.ID, 42)
+				if err != nil {
+					return
+				}
+				deps, _ := h.st.ListDeploymentsForApp(ctx, child.ID)
+				deploysAt = len(deps)
+				protectedAt, _ = h.st.AnyDomainProtected(ctx)
+				rows, _ := h.st.ListDomains(ctx, child.ID)
+				protectedAt = protectedAt && len(rows) == 2
+			}
+
+			if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 42, "feature-x", "acme/web", fork)); err != nil {
+				t.Fatalf("Handle: %v", err)
+			}
+			rows := h.previewRows(t, parent, 42)
+			if len(rows) != 2 || !rows[""].Protected || rows["/hooks"].Protected {
+				t.Errorf("preview rows = %+v, want the whole host protected and /hooks open", rows)
+			}
+			if px.calls != 1 || deploysAt != 0 || !protectedAt {
+				t.Errorf("reconciles = %d, deployments then = %d, rows saved then = %v; want 1, 0, true", px.calls, deploysAt, protectedAt)
+			}
+		})
+	}
+}
+
+// A preview of a parent with no protected row asks for no reconcile.
+func TestOpenPreviewNeedsNoReconcile(t *testing.T) {
+	h := newHarness(t)
+	px := &fakeProxy{}
+	h.mgr.SetProxyControl(px)
+	parent := h.seedGithubApp(t, "web", "acme/web", nil)
+	if err := h.mgr.Handle(context.Background(), h.sourceID, prEvent("opened", 42, "feature-x", "acme/web", false)); err != nil {
+		t.Fatal(err)
+	}
+	if rows := h.previewRows(t, parent, 42); rows[""].Protected {
+		t.Error("an open parent's preview requires sign-in")
+	}
+	if px.calls != 0 {
+		t.Errorf("reconciles = %d, want 0", px.calls)
+	}
+}
+
+// When the proxy can't be reconciled, or there is none to reconcile, a
+// preview that would require sign-in isn't created, and the PR is told.
+func TestProtectedPreviewRefusedWithoutTheProxy(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		proxy *fakeProxy
+	}{
+		{"the reconcile fails", &fakeProxy{err: errors.New("update the proxy (Traefik): docker is down")}},
+		{"no proxy", nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHarness(t)
+			ctx := context.Background()
+			if c.proxy != nil {
+				h.mgr.SetProxyControl(c.proxy)
+			}
+			parent := h.seedGithubApp(t, "web", "acme/web", nil)
+			h.protectPrimary(t, parent)
+			if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 42, "feature-x", "acme/web", false)); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.st.GetPreviewByPR(ctx, parent.ID, 42); err == nil {
+				t.Error("the preview was kept though the proxy wasn't reconciled")
+			}
+			if h.notifier.notified {
+				t.Error("a deploy was started")
+			}
+			if got := h.gh.comments["acme/web#42"]; len(got) != 1 || !strings.Contains(got[0], "could not be created") {
+				t.Errorf("PR comments = %v, want one saying the preview could not be created", got)
+			}
+		})
+	}
+}
+
+// Several parent rows can collapse into one preview row (the preview host
+// derives only from the service, path and PR). It requires sign-in when any
+// of them does, whichever comes first.
+func TestCollapsedPreviewRowIsProtectedIfAnyParentRowIs(t *testing.T) {
+	for _, other := range []string{"a-custom.example", "z-custom.example"} {
+		t.Run(other, func(t *testing.T) {
+			h := newHarness(t)
+			ctx := context.Background()
+			h.mgr.SetProxyControl(&fakeProxy{})
+			parent := h.seedGithubApp(t, "web", "acme/web", nil)
+			shut := h.parentRow(t, parent, core.Domain{Host: other})
+			if err := h.st.SetDomainProtected(ctx, parent.ID, shut.ID, true); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 42, "feature-x", "acme/web", false)); err != nil {
+				t.Fatal(err)
+			}
+			rows := h.previewRows(t, parent, 42)
+			if len(rows) != 1 || !rows[""].Protected {
+				t.Errorf("preview rows = %+v, want one row, protected", rows)
+			}
+		})
+	}
+}
+
+// Turning a parent's row off leaves its previews as they are; a preview
+// made after that is open.
+func TestTurningParentOffLeavesPreviews(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.mgr.SetProxyControl(&fakeProxy{})
+	parent := h.seedGithubApp(t, "web", "acme/web", nil)
+	h.protectPrimary(t, parent)
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 42, "feature-x", "acme/web", false)); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := h.st.ListDomains(ctx, parent.ID)
+	if err := h.st.SetDomainProtected(ctx, parent.ID, rows[0].ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("synchronize", 42, "feature-x", "acme/web", false)); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 43, "feature-y", "acme/web", false)); err != nil {
+		t.Fatal(err)
+	}
+	if !h.previewRows(t, parent, 42)[""].Protected {
+		t.Error("the existing preview was opened, or a new commit opened it")
+	}
+	if h.previewRows(t, parent, 43)[""].Protected {
+		t.Error("a preview made after the parent was opened requires sign-in")
+	}
+}
+
+// A preview's links (OUTHAUL_PREVIEW_URL and the PR comment) use the rule the
+// pages use: https when the row's TLS flag is on, or when it is protected and
+// protected rows are served over HTTPS (a TLS server, or a tunnel).
+func TestPreviewLinksFollowProtection(t *testing.T) {
+	for _, c := range []struct {
+		name           string
+		protected      bool
+		protectedHTTPS bool
+		scheme         string
+	}{
+		{"protected, served over HTTPS", true, true, "https://"},
+		{"protected, nothing serves HTTPS", true, false, "http://"},
+		{"open, TLS off", false, true, "http://"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHarness(t)
+			ctx := context.Background()
+			h.mgr.SetProxyControl(&fakeProxy{})
+			h.mgr.SetProtectedHTTPS(func(context.Context) bool { return c.protectedHTTPS })
+			parent := h.seedGithubApp(t, "web", "acme/web", nil)
+			rows, _ := h.st.ListDomains(ctx, parent.ID)
+			d := rows[0]
+			d.TLS, d.Protected = false, c.protected
+			if err := h.st.UpdateDomain(ctx, d); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 42, "feature-x", "acme/web", false)); err != nil {
+				t.Fatal(err)
+			}
+			child, err := h.st.GetPreviewByPR(ctx, parent.ID, 42)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := c.scheme + "web-pr-42.1.2.3.4.sslip.io"
+			envs, _ := h.st.ListEnv(ctx, child.ID)
+			if !hasEnv(envs, "OUTHAUL_PREVIEW_URL", want) {
+				t.Errorf("OUTHAUL_PREVIEW_URL = %+v, want %s", envs, want)
+			}
+			h.mgr.OnDeployFinished(ctx, child, true)
+			got := h.gh.comments["acme/web#42"]
+			if len(got) == 0 || !strings.Contains(got[len(got)-1], "- "+want+"\n") {
+				t.Errorf("ready comment = %q, want the link %s", got, want)
+			}
+		})
 	}
 }
 
