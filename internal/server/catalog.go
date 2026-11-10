@@ -87,7 +87,7 @@ func (s *Server) handleDeployTemplate(w http.ResponseWriter, r *http.Request) {
 		if _, err := s.store.AddDomain(r.Context(),
 			core.Domain{AppID: app.ID, Host: d.Host, Service: d.Service, Port: d.Port, TLS: true}); err != nil {
 			s.renderTemplates(w, r, http.StatusInternalServerError,
-				"App created, but a domain could not be added: "+err.Error())
+				"App created, but a domain could not be added: "+s.takenText(r, err))
 			return
 		}
 	}

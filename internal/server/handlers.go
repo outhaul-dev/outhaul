@@ -345,6 +345,18 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		s.renderAppsWithError(w, r, ownHostRefusal)
 		return
 	}
+	if host := app.Domain; host != "" || firstDomain != nil {
+		if firstDomain != nil {
+			host = firstDomain.Host
+		}
+		if refused, err := s.sharedHostRefused(r, projectID, host, true, false); err != nil {
+			s.renderAppsWithError(w, r, "Could not create app: "+err.Error())
+			return
+		} else if refused {
+			s.renderAppsWithError(w, r, sharedHostRefusal)
+			return
+		}
+	}
 
 	if source == core.SourceSSH {
 		priv, pub, err := sshkey.Generate()
@@ -367,7 +379,7 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Most likely a duplicate name (UNIQUE constraint) or a taken host.
-		s.renderAppsWithError(w, r, "Could not create app: "+err.Error())
+		s.renderAppsWithError(w, r, "Could not create app: "+s.takenText(r, err))
 		return
 	}
 	// CreateApp itself seeds a primary domain row for non-compose apps (see
@@ -1018,6 +1030,15 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		d.Protected = true
+	}
+	if refused, err := s.sharedHostRefused(r, app.ProjectID, d.Host, true, d.Protected); err != nil {
+		http.Error(w, "Could not add domain: "+err.Error(), http.StatusInternalServerError)
+		return
+	} else if refused {
+		http.Error(w, sharedHostRefusal, http.StatusBadRequest)
+		return
+	}
+	if d.Protected {
 		if others, ok = s.othersToRedeploy(ctx, w, r, app, d, true); !ok {
 			return
 		}
@@ -1028,7 +1049,7 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, ownHostRefusal, http.StatusBadRequest)
 			return
 		}
-		http.Error(w, "Could not add domain (is it already configured?): "+err.Error(), http.StatusBadRequest)
+		http.Error(w, "Could not add domain (is it already configured?): "+s.takenText(r, err), http.StatusBadRequest)
 		return
 	}
 	if d.Protected {
@@ -1107,6 +1128,14 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 	default:
 		d.Protected = existing.Protected
 	}
+	onto := !strings.EqualFold(existing.Host, d.Host)
+	if refused, err := s.sharedHostRefused(r, app.ProjectID, d.Host, onto, d.Protected && (!existing.Protected || onto)); err != nil {
+		http.Error(w, "Could not update domain: "+err.Error(), http.StatusInternalServerError)
+		return
+	} else if refused {
+		http.Error(w, sharedHostRefusal, http.StatusBadRequest)
+		return
+	}
 	// A deploy applies a change to what sign-in covers: turning it on or off,
 	// moving a protected row, or moving an open row off a route on a host that
 	// requires sign-in, which its old container would keep serving openly.
@@ -1144,7 +1173,7 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, msg, http.StatusBadRequest)
 			return
 		}
-		http.Error(w, "Could not update domain: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, "Could not update domain: "+s.takenText(r, err), http.StatusBadRequest)
 		return
 	}
 	if d.Protected && !existing.Protected {

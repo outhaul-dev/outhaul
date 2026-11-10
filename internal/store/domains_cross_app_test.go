@@ -125,3 +125,75 @@ func TestCreateAppWithDomainsIsAllOrNothing(t *testing.T) {
 		t.Fatalf("domains = %+v, want the one route bound to the new app", doms)
 	}
 }
+
+// A refused route says which app holds it, and that app's project, so a
+// caller can name it only to someone who may see that project.
+func TestDomainTakenNamesTheHolder(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	p, err := st.CreateProject(ctx, core.Project{Name: "other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateApp(ctx, core.App{Name: "shop", RepoURL: "https://example.com/s.git", Domain: "shop.example.com", ProjectID: p.ID}); err != nil {
+		t.Fatal(err)
+	}
+	blog := testApp(t, st, "blog", core.KindCompose, "")
+	_, err = st.AddDomain(ctx, core.Domain{AppID: blog.ID, Host: "SHOP.example.com", Service: "web", Port: 80})
+	var taken *DomainTakenError
+	if !errors.As(err, &taken) || !errors.Is(err, ErrDomainTaken) {
+		t.Fatalf("AddDomain err = %v, want a DomainTakenError", err)
+	}
+	if taken.App != "shop" || taken.ProjectID != p.ID || taken.Host != "SHOP.example.com" || taken.Path != "" {
+		t.Errorf("DomainTakenError = %+v", *taken)
+	}
+	if want := `domain is already routed by another app: SHOP.example.com is served by app "shop"`; err.Error() != want {
+		t.Errorf("err = %q, want %q", err, want)
+	}
+}
+
+// OtherProjectsOnHost says whether an app outside a project has a row on a
+// host (in any case, on any path), and whether one of those rows is protected.
+func TestOtherProjectsOnHost(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	p, err := st.CreateProject(ctx, core.Project{Name: "other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	own := testApp(t, st, "own", core.KindCompose, "")
+	theirs, err := st.CreateApp(ctx, core.App{Name: "theirs", RepoURL: "https://example.com/t.git", Kind: core.KindCompose, ProjectID: p.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	add := func(app core.App, host, path string, protected bool) {
+		t.Helper()
+		if _, err := st.AddDomain(ctx, core.Domain{AppID: app.ID, Host: host, Path: path, Service: "web", Port: 80, Protected: protected}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add(own, "mine.test", "", true)
+	add(theirs, "open.test", "/x", false)
+	add(theirs, "shut.test", "/admin", true)
+	add(theirs, "shut.test", "", false)
+	for _, c := range []struct {
+		host          string
+		project       int64
+		any, shielded bool
+	}{
+		{"nobody.test", core.DefaultProjectID, false, false},
+		{"mine.test", core.DefaultProjectID, false, false},
+		{"mine.test", p.ID, true, true},
+		{"OPEN.test", core.DefaultProjectID, true, false},
+		{"open.test", p.ID, false, false},
+		{"Shut.Test", core.DefaultProjectID, true, true},
+	} {
+		anyRow, protected, err := st.OtherProjectsOnHost(ctx, c.host, c.project)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if anyRow != c.any || protected != c.shielded {
+			t.Errorf("OtherProjectsOnHost(%s, %d) = %v, %v; want %v, %v", c.host, c.project, anyRow, protected, c.any, c.shielded)
+		}
+	}
+}

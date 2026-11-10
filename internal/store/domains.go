@@ -21,6 +21,21 @@ const domainCols = `id, app_id, host, service, port, path, internal_path, tls, p
 // Traefik would get two routers with identical rules and pick one arbitrarily.
 var ErrDomainTaken = errors.New("domain is already routed by another app")
 
+// DomainTakenError is ErrDomainTaken for one route: Host and Path as asked
+// for, and the app that already routes them, with its project, so a caller
+// can name that app only to someone who may see its project.
+type DomainTakenError struct {
+	Host, Path string
+	App        string
+	ProjectID  int64
+}
+
+func (e *DomainTakenError) Error() string {
+	return fmt.Sprintf("%v: %s%s is served by app %q", ErrDomainTaken, e.Host, e.Path, e.App)
+}
+
+func (e *DomainTakenError) Unwrap() error { return ErrDomainTaken }
+
 // ErrHostReserved means the host is the one Outhaul's own admin UI is served
 // on (see SetReservedHost). An app routed there, even on a path of its own,
 // would share the admin UI's origin and cookies.
@@ -116,18 +131,29 @@ func (s *Store) checkRouteFreeTx(ctx context.Context, tx *sql.Tx, d core.Domain)
 	if s.isReservedHost(d.Host) {
 		return fmt.Errorf("%w: %s", ErrHostReserved, d.Host)
 	}
-	var owner string
+	taken := &DomainTakenError{Host: d.Host, Path: d.Path}
 	err := tx.QueryRowContext(ctx,
-		`SELECT a.name FROM domains d JOIN apps a ON a.id = d.app_id
+		`SELECT a.name, a.project_id FROM domains d JOIN apps a ON a.id = d.app_id
 		 WHERE lower(d.host) = lower(?) AND d.path = ? AND d.app_id != ? LIMIT 1`,
-		d.Host, d.Path, d.AppID).Scan(&owner)
+		d.Host, d.Path, d.AppID).Scan(&taken.App, &taken.ProjectID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	return fmt.Errorf("%w: %s%s is served by app %q", ErrDomainTaken, d.Host, d.Path, owner)
+	return taken
+}
+
+// OtherProjectsOnHost reports whether an app outside projectID has a row on
+// host (in any case, on any path), and whether one of those rows is protected.
+func (s *Store) OtherProjectsOnHost(ctx context.Context, host string, projectID int64) (anyRow, protected bool, err error) {
+	err = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) > 0, COALESCE(MAX(d.protected != 0), 0)
+		 FROM domains d JOIN apps a ON a.id = d.app_id
+		 WHERE lower(d.host) = lower(?) AND a.project_id != ?`,
+		host, projectID).Scan(&anyRow, &protected)
+	return anyRow, protected, err
 }
 
 // UpdateDomain rewrites one route (scoped to app_id), its protection included,

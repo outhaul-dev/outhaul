@@ -59,6 +59,12 @@ For visitors to get through, two more things must hold:
 
 You need to be a project member or above on the app's project.
 
+Apps that share an address that requires sign-in share its sign-in, so they should
+belong to people who trust each other. Only a system admin can put a domain on an
+address where an app in another project requires sign-in, or require sign-in where an
+app in another project has a domain; anyone else is told "Another project already uses
+this address, so a system admin has to set this up."
+
 1. Open the app, and its Networking tab.
 2. Press "+ New domain", or "edit" on an existing domain.
 3. On the last step, "HTTPS and sign-in", turn on "Require sign-in".

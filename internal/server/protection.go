@@ -90,6 +90,46 @@ func (s *Server) appContainers(ctx context.Context, app core.App) ([]docker.Cont
 	return s.runtime.ListContainers(ctx, map[string]string{"outhaul.app": app.Name})
 }
 
+// sharedHostRefusal answers someone who isn't a system admin putting a route
+// on, or requiring sign-in on, an address another project uses.
+const sharedHostRefusal = "Another project already uses this address, so a system admin has to set this up."
+
+// sharedHostRefused reports whether the person making r may not, for an app
+// in projectID, put a route on host (onto) or require sign-in there
+// (protecting). A sign-in holds for a whole host, so an app with a route on a
+// host where another project's app requires sign-in receives that sign-in's
+// cookie from everyone who visits. Only a system admin may bring two projects
+// together on such a host; anyone else is refused a route on a host where an
+// app in another project has a protected row, and sign-in on a host where an
+// app in another project has any row.
+func (s *Server) sharedHostRefused(r *http.Request, projectID int64, host string, onto, protecting bool) (bool, error) {
+	if !onto && !protecting {
+		return false, nil
+	}
+	if u, ok := userFrom(r); ok && u.Role == core.RoleSystemAdmin {
+		return false, nil
+	}
+	anyRow, protected, err := s.store.OtherProjectsOnHost(r.Context(), host, projectID)
+	if err != nil {
+		return false, err
+	}
+	return onto && protected || protecting && anyRow, nil
+}
+
+// takenText is err's text for the person making r. A route another app
+// already serves (store.DomainTakenError) names that app only when they may
+// see its project; otherwise it is "another app".
+func (s *Server) takenText(r *http.Request, err error) string {
+	var taken *store.DomainTakenError
+	if !errors.As(err, &taken) {
+		return err.Error()
+	}
+	if scope, serr := s.scopeFor(r); serr == nil && scope.allows(taken.ProjectID) {
+		return err.Error()
+	}
+	return fmt.Sprintf("%v: %s%s is served by another app", store.ErrDomainTaken, taken.Host, taken.Path)
+}
+
 // rowGate reports whether any of containers defines d's router, the row's
 // router on the row's address (its rule names d's host and path, in either
 // spelling traefik.RuleAddress reads), and whether every one that does puts it
