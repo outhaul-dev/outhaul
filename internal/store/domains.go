@@ -15,7 +15,7 @@ import (
 // listen on — deploy.AppPort. Duplicated here to avoid a store→deploy import.
 const primaryDomainPort = 8080
 
-const domainCols = `id, app_id, host, service, port, path, internal_path, tls, created_at`
+const domainCols = `id, app_id, host, service, port, path, internal_path, tls, protected, created_at`
 
 // ErrDomainTaken means another app already routes the same host and path.
 // Traefik would get two routers with identical rules and pick one arbitrarily.
@@ -89,9 +89,9 @@ func (s *Store) addDomainTx(ctx context.Context, tx *sql.Tx, d core.Domain) (cor
 	}
 	d.CreatedAt = time.Now().UTC()
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO domains (app_id, host, service, port, path, internal_path, tls, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		d.AppID, d.Host, d.Service, d.Port, d.Path, d.InternalPath, boolToInt(d.TLS), fmtTime(d.CreatedAt))
+		`INSERT INTO domains (app_id, host, service, port, path, internal_path, tls, protected, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		d.AppID, d.Host, d.Service, d.Port, d.Path, d.InternalPath, boolToInt(d.TLS), boolToInt(d.Protected), fmtTime(d.CreatedAt))
 	if err != nil {
 		return core.Domain{}, err
 	}
@@ -130,7 +130,8 @@ func (s *Store) checkRouteFreeTx(ctx context.Context, tx *sql.Tx, d core.Domain)
 	return fmt.Errorf("%w: %s%s is served by app %q", ErrDomainTaken, d.Host, d.Path, owner)
 }
 
-// UpdateDomain rewrites one route (scoped to app_id) and re-syncs the primary.
+// UpdateDomain rewrites one route (scoped to app_id), its protection included,
+// and re-syncs the primary.
 func (s *Store) UpdateDomain(ctx context.Context, d core.Domain) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -152,15 +153,77 @@ func (s *Store) UpdateDomain(ctx context.Context, d core.Domain) error {
 		}
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE domains SET host = ?, service = ?, port = ?, path = ?, internal_path = ?, tls = ?
+		`UPDATE domains SET host = ?, service = ?, port = ?, path = ?, internal_path = ?, tls = ?, protected = ?
 		 WHERE id = ? AND app_id = ?`,
-		d.Host, d.Service, d.Port, d.Path, d.InternalPath, boolToInt(d.TLS), d.ID, d.AppID); err != nil {
+		d.Host, d.Service, d.Port, d.Path, d.InternalPath, boolToInt(d.TLS), boolToInt(d.Protected), d.ID, d.AppID); err != nil {
 		return err
 	}
 	if err := syncPrimaryDomainTx(ctx, tx, d.AppID); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// SetDomainProtected turns sign-in on or off for one route (scoped to its
+// app). It returns sql.ErrNoRows when the app has no such row. The change
+// reaches Traefik on the app's next deploy.
+func (s *Store) SetDomainProtected(ctx context.Context, appID, domainID int64, protected bool) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE domains SET protected = ? WHERE id = ? AND app_id = ?`,
+		boolToInt(protected), domainID, appID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+// RouteIsProtected reports whether the route Traefik would pick for host and
+// urlPath requires sign-in. Every app's rows on host (compared lower-cased)
+// whose path is a plain string prefix of urlPath match, as Traefik's PathPrefix
+// does, so "/webhooks" matches "/webhooksfoo"; a row with no path matches every
+// path, and an empty urlPath counts as "/". Traefik prefers the longest rule,
+// which on one host is the longest path, so that row decides. If an open row
+// ties with it (two apps on one host and path, from before that was refused),
+// Traefik could route to either, so the answer is false. No match is false.
+func (s *Store) RouteIsProtected(ctx context.Context, host, urlPath string) (bool, error) {
+	if urlPath == "" {
+		urlPath = "/"
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT path, protected FROM domains WHERE lower(host) = lower(?)`, host)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	best, protected := -1, false
+	for rows.Next() {
+		var (
+			path string
+			prot int
+		)
+		if err := rows.Scan(&path, &prot); err != nil {
+			return false, err
+		}
+		if !strings.HasPrefix(urlPath, path) {
+			continue
+		}
+		switch {
+		case len(path) > best:
+			best, protected = len(path), prot != 0
+		case len(path) == best:
+			protected = protected && prot != 0
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return protected, nil
 }
 
 // GetDomain fetches one route scoped to its app.
@@ -191,7 +254,7 @@ func (s *Store) ListDomains(ctx context.Context, appID int64) ([]core.Domain, er
 // name and kind, for the global Domains tab.
 func (s *Store) ListAllDomains(ctx context.Context) ([]core.DomainListing, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT d.id, d.app_id, d.host, d.service, d.port, d.path, d.internal_path, d.tls, d.created_at, a.name, a.kind, a.ephemeral, a.pr_number, a.parent_id
+		`SELECT d.id, d.app_id, d.host, d.service, d.port, d.path, d.internal_path, d.tls, d.protected, d.created_at, a.name, a.kind, a.ephemeral, a.pr_number, a.parent_id
 		   FROM domains d JOIN apps a ON a.id = d.app_id
 		  ORDER BY a.name, d.host, d.path`)
 	if err != nil {
@@ -203,11 +266,12 @@ func (s *Store) ListAllDomains(ctx context.Context) ([]core.DomainListing, error
 		var (
 			l         core.DomainListing
 			tls       int
+			protected int
 			ephemeral int
 			createdAt string
 		)
 		if err := rows.Scan(&l.ID, &l.AppID, &l.Host, &l.Service, &l.Port, &l.Path, &l.InternalPath,
-			&tls, &createdAt, &l.AppName, &l.AppKind, &ephemeral, &l.PRNumber, &l.ParentID); err != nil {
+			&tls, &protected, &createdAt, &l.AppName, &l.AppKind, &ephemeral, &l.PRNumber, &l.ParentID); err != nil {
 			return nil, err
 		}
 		t, err := parseTime(createdAt)
@@ -216,6 +280,7 @@ func (s *Store) ListAllDomains(ctx context.Context) ([]core.DomainListing, error
 		}
 		l.CreatedAt = t
 		l.TLS = tls != 0
+		l.Protected = protected != 0
 		l.Ephemeral = ephemeral != 0
 		out = append(out, l)
 	}
@@ -256,9 +321,10 @@ func scanDomain(row scanner) (core.Domain, error) {
 	var (
 		d         core.Domain
 		tls       int
+		protected int
 		createdAt string
 	)
-	if err := row.Scan(&d.ID, &d.AppID, &d.Host, &d.Service, &d.Port, &d.Path, &d.InternalPath, &tls, &createdAt); err != nil {
+	if err := row.Scan(&d.ID, &d.AppID, &d.Host, &d.Service, &d.Port, &d.Path, &d.InternalPath, &tls, &protected, &createdAt); err != nil {
 		return core.Domain{}, err
 	}
 	t, err := parseTime(createdAt)
@@ -267,5 +333,6 @@ func scanDomain(row scanner) (core.Domain, error) {
 	}
 	d.CreatedAt = t
 	d.TLS = tls != 0
+	d.Protected = protected != 0
 	return d, nil
 }

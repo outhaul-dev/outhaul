@@ -22,6 +22,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/logstream"
 	"github.com/outhaul-dev/outhaul/internal/secret"
 	"github.com/outhaul-dev/outhaul/internal/store"
+	"github.com/outhaul-dev/outhaul/internal/traefik"
 )
 
 // --- test doubles ---
@@ -725,5 +726,40 @@ func TestEffectiveTLSHonoursTunnel(t *testing.T) {
 	}
 	if w.effectiveTLS(ctx) {
 		t.Fatal("expected TLS off once the tunnel is enabled")
+	}
+}
+
+// A protected row reaches the container's labels with a gate pointing at the
+// configured admin port; an open row strips the identity header.
+func TestPipelineLabelsCarryTheGate(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.ListenAddr = ":9123"
+	ctx := context.Background()
+	app := h.app(t, "web") // seeds web.test as domain row 1
+	if err := h.store.SetDomainProtected(ctx, app.ID, 1, true); err != nil {
+		t.Fatalf("SetDomainProtected: %v", err)
+	}
+	if _, err := h.store.AddDomain(ctx, core.Domain{AppID: app.ID, Host: "web.test", Path: "/webhooks", Port: 8080}); err != nil {
+		t.Fatalf("AddDomain: %v", err)
+	}
+	dep := h.claimedDeployment(t, app.ID)
+
+	h.worker.runPipeline(ctx, dep)
+
+	c, _ := h.docker.FindContainer(ctx, "outhaul-app-web")
+	if c == nil {
+		t.Fatal("app container missing")
+	}
+	if !traefik.RowHasGate(c.Labels, "outhaul-web-d1") {
+		t.Errorf("protected row lacks its gate: %v", c.Labels)
+	}
+	if got := c.Labels["traefik.http.middlewares.outhaul-web-d1-gate.forwardauth.address"]; got != "http://host.docker.internal:9123/gate/check" {
+		t.Errorf("gate address = %q, want the configured admin port", got)
+	}
+	if traefik.RowHasGate(c.Labels, "outhaul-web-d2") {
+		t.Errorf("open row has a gate: %v", c.Labels)
+	}
+	if got := c.Labels["traefik.http.routers.outhaul-web-d2.middlewares"]; got != "outhaul-web-d2-noident" {
+		t.Errorf("open row middlewares = %q, want the identity strip", got)
 	}
 }

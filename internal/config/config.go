@@ -189,6 +189,13 @@ func (c Config) AdminPort() string {
 	return port
 }
 
+// GateAddress is the forward-auth address a protected route's Traefik
+// middleware calls: the gate-check endpoint on the host, reached through the
+// host gateway on the admin port, as the admin route's file-provider config is.
+func (c Config) GateAddress() string {
+	return "http://host.docker.internal:" + c.AdminPort() + "/gate/check"
+}
+
 // UpdateDir is where Outhaul and the root updater exchange the update request,
 // status and log files.
 func (c Config) UpdateDir() string { return filepath.Join(c.DataDir, "update") }

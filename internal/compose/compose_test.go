@@ -53,7 +53,7 @@ func TestOverride(t *testing.T) {
 		{ID: 1, Host: "shop.example.com", Service: "web", Port: 3000, TLS: true},
 	}
 
-	got := string(Override(app, domains, "outhaul", false, ""))
+	got := string(Override(app, domains, "outhaul", false, "", "addr"))
 
 	for _, want := range []string{
 		"services:\n  \"web\":\n",
@@ -73,7 +73,7 @@ func TestOverride(t *testing.T) {
 		t.Error("TLS labels must not appear when TLS is disabled")
 	}
 
-	tls := string(Override(app, domains, "outhaul", true, "le"))
+	tls := string(Override(app, domains, "outhaul", true, "le", "addr"))
 	if !strings.Contains(tls, `"traefik.http.routers.outhaul-shop-d1-tls.tls.certresolver": "le"`) {
 		t.Errorf("TLS override missing certresolver labels; got:\n%s", tls)
 	}
@@ -84,7 +84,7 @@ func TestOverridePathAndTLS(t *testing.T) {
 	domains := []core.Domain{
 		{ID: 7, Host: "shop.example.com", Service: "api", Port: 8000, Path: "/api", InternalPath: "/", TLS: true},
 	}
-	got := string(Override(app, domains, "outhaul", true, "le"))
+	got := string(Override(app, domains, "outhaul", true, "le", "addr"))
 	if !strings.Contains(got, "PathPrefix(`/api`)") {
 		t.Errorf("override missing path rule:\n%s", got)
 	}
@@ -107,7 +107,7 @@ func TestOverrideMultipleDomains(t *testing.T) {
 		{ID: 9, Host: "api.example.com", Service: "api", Port: 8080},
 	}
 
-	got := string(Override(app, domains, "outhaul", false, ""))
+	got := string(Override(app, domains, "outhaul", false, "", "addr"))
 
 	for _, want := range []string{
 		"\"traefik.http.routers.outhaul-shop-d7.rule\": \"Host(`shop.example.com`)\"",
@@ -134,5 +134,32 @@ func TestOverrideMultipleDomains(t *testing.T) {
 	}
 	if !strings.Contains(got[apiIdx:webIdx], "outhaul-shop-d9") {
 		t.Errorf("api block missing its router; got:\n%s", got[apiIdx:webIdx])
+	}
+}
+
+// A protected row puts the forward-auth gate on its service; an open row on the
+// same service strips the identity header with an empty value, which must
+// survive into the YAML as "" rather than vanish or become null.
+func TestComposeOverrideCarriesGate(t *testing.T) {
+	app := core.App{Name: "wiki"}
+	domains := []core.Domain{
+		{ID: 1, Host: "wiki.example.com", Service: "web", Port: 3000, TLS: true, Protected: true},
+		{ID: 2, Host: "wiki.example.com", Service: "web", Port: 3000, Path: "/webhooks", TLS: true},
+	}
+	got := string(Override(app, domains, "outhaul", true, "le", "http://host.docker.internal:8080/gate/check"))
+	for _, want := range []string{
+		`"traefik.http.middlewares.outhaul-wiki-d1-gate.forwardauth.address": "http://host.docker.internal:8080/gate/check"`,
+		`"traefik.http.middlewares.outhaul-wiki-d1-gate.forwardauth.authresponseheaders": "X-Outhaul-User"`,
+		`"traefik.http.routers.outhaul-wiki-d1.middlewares": "outhaul-wiki-d1-gate"`,
+		`"traefik.http.routers.outhaul-wiki-d1-tls.middlewares": "outhaul-wiki-d1-gate"`,
+		"      \"traefik.http.middlewares.outhaul-wiki-d2-noident.headers.customrequestheaders.X-Outhaul-User\": \"\"\n",
+		`"traefik.http.routers.outhaul-wiki-d2.middlewares": "outhaul-wiki-d2-noident"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("override missing %q; got:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "@file") {
+		t.Errorf("override references the file provider:\n%s", got)
 	}
 }

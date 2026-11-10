@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"testing"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
@@ -187,5 +189,219 @@ func TestCreateAppSeedsPrimaryDomainRow(t *testing.T) {
 	got := mustList(t, st, app.ID)
 	if len(got) != 1 || got[0].Host != "web.example.com" || got[0].Port != 8080 || got[0].Service != "" || !got[0].TLS {
 		t.Errorf("CreateApp did not seed the primary domain row: %+v", got)
+	}
+}
+
+func TestDomainProtectedRoundTrips(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	app := testApp(t, st, "wiki", core.KindCompose, "")
+
+	d, err := st.AddDomain(ctx, core.Domain{AppID: app.ID, Host: "wiki.example.com", Service: "web", Port: 3000, TLS: true, Protected: true})
+	if err != nil {
+		t.Fatalf("AddDomain: %v", err)
+	}
+	if got, _ := st.GetDomain(ctx, app.ID, d.ID); !got.Protected {
+		t.Errorf("AddDomain did not store Protected: %+v", got)
+	}
+	d.Protected = false
+	if err := st.UpdateDomain(ctx, d); err != nil {
+		t.Fatalf("UpdateDomain: %v", err)
+	}
+	if got := mustList(t, st, app.ID); got[0].Protected {
+		t.Errorf("UpdateDomain did not clear Protected: %+v", got[0])
+	}
+	if err := st.SetDomainProtected(ctx, app.ID, d.ID, true); err != nil {
+		t.Fatalf("SetDomainProtected: %v", err)
+	}
+	if got, _ := st.GetDomain(ctx, app.ID, d.ID); !got.Protected {
+		t.Errorf("SetDomainProtected(true) not applied: %+v", got)
+	}
+	all, err := st.ListAllDomains(ctx)
+	if err != nil || len(all) != 1 || !all[0].Protected {
+		t.Errorf("ListAllDomains = %+v (%v), want one protected row", all, err)
+	}
+	if err := st.SetDomainProtected(ctx, app.ID, d.ID, false); err != nil {
+		t.Fatalf("SetDomainProtected: %v", err)
+	}
+	if got, _ := st.GetDomain(ctx, app.ID, d.ID); got.Protected {
+		t.Errorf("SetDomainProtected(false) not applied: %+v", got)
+	}
+}
+
+// SetDomainProtected is scoped to the row's app, like every other domain write.
+func TestSetDomainProtectedScopedToApp(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	app := testApp(t, st, "wiki", core.KindCompose, "")
+	other := testApp(t, st, "blog", core.KindCompose, "")
+	d, _ := st.AddDomain(ctx, core.Domain{AppID: app.ID, Host: "wiki.example.com", Service: "web", Port: 3000})
+
+	if err := st.SetDomainProtected(ctx, other.ID, d.ID, true); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("SetDomainProtected through the wrong app: err = %v, want sql.ErrNoRows", err)
+	}
+	if got, _ := st.GetDomain(ctx, app.ID, d.ID); got.Protected {
+		t.Error("row protected through the wrong app")
+	}
+}
+
+// Upgrading leaves every existing route open; nothing redeploys.
+func TestProtectedMigrationKeepsRowsOpen(t *testing.T) {
+	db := openMigratedBefore(t, "0028")
+	if _, err := db.Exec(`INSERT INTO apps (id, name, repo_url, domain, created_at)
+	                      VALUES (7, 'wiki', 'r', 'wiki.example.com', '2026-07-04T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO domains (id, app_id, host, service, port, path, internal_path, tls, created_at)
+	                      VALUES (3, 7, 'wiki.example.com', '', 8080, '', '', 1, '2026-07-04T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	d, err := scanDomain(db.QueryRow(`SELECT ` + domainCols + ` FROM domains WHERE id = 3`))
+	if err != nil {
+		t.Fatalf("read domain after migration: %v", err)
+	}
+	if d.Protected {
+		t.Errorf("migrated row is protected: %+v", d)
+	}
+	if d.Host != "wiki.example.com" || !d.TLS {
+		t.Errorf("migrated row changed: %+v", d)
+	}
+}
+
+// The tables the gate's sessions live in: ending a gateway session ends the
+// route sessions and one-time codes minted from it.
+func TestGateTablesCascadeFromGatewaySession(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := st.db.ExecContext(ctx, q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	exec(`INSERT INTO gate_sessions (token_hash, subject, kind, display, created_at, expires_at)
+	      VALUES ('g1', 'user:1', 'password', 'dana', '2026-11-02T00:00:00Z', '2026-11-02T08:00:00Z')`)
+	exec(`INSERT INTO route_sessions (token_hash, gate_token_hash, host, display, expires_at)
+	      VALUES ('r1', 'g1', 'wiki.example.com', 'dana', '2026-11-02T08:00:00Z')`)
+	exec(`INSERT INTO gate_codes (code_hash, gate_token_hash, host, expires_at)
+	      VALUES ('c1', 'g1', 'wiki.example.com', '2026-11-02T00:01:00Z')`)
+	exec(`DELETE FROM gate_sessions WHERE token_hash = 'g1'`)
+
+	for _, table := range []string{"route_sessions", "gate_codes"} {
+		var n int
+		if err := st.db.QueryRowContext(ctx, `SELECT count(*) FROM `+table).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Errorf("%s has %d rows after its gateway session was deleted, want 0", table, n)
+		}
+	}
+}
+
+// RouteIsProtected answers the way Traefik routes: of every app's rows on the
+// host, those whose path is a plain string prefix of the URL path, and the
+// longest of them wins.
+func TestRouteIsProtected(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	wiki := testApp(t, st, "wiki", core.KindCompose, "")
+	hooks := testApp(t, st, "hooks", core.KindCompose, "")
+	shop := testApp(t, st, "shop", core.KindCompose, "")
+
+	add := func(appID int64, host, path string, protected bool) core.Domain {
+		t.Helper()
+		d, err := st.AddDomain(ctx, core.Domain{AppID: appID, Host: host, Path: path, Service: "web", Port: 3000, TLS: true})
+		if err != nil {
+			t.Fatalf("AddDomain %s%s: %v", host, path, err)
+		}
+		if protected {
+			if err := st.SetDomainProtected(ctx, appID, d.ID, true); err != nil {
+				t.Fatalf("SetDomainProtected: %v", err)
+			}
+		}
+		return d
+	}
+	// The rows go in shorter-first on one host and longer-first on the other,
+	// so neither "first match wins" nor "last match wins" passes by accident.
+	add(wiki.ID, "wiki.example.com", "", true)
+	add(hooks.ID, "wiki.example.com", "/webhooks", false)
+	add(shop.ID, "shop.example.com", "/admin", true)
+	add(shop.ID, "shop.example.com", "", false)
+	// PathPrefix(`/`) is a longer rule than a bare Host, so "/" wins everywhere.
+	add(wiki.ID, "root.example.com", "", false)
+	add(hooks.ID, "root.example.com", "/", true)
+
+	cases := []struct {
+		host, path string
+		want       bool
+	}{
+		{"wiki.example.com", "/", true},
+		{"wiki.example.com", "/page", true},
+		{"wiki.example.com", "", true},
+		{"wiki.example.com", "/webhooks", false},
+		{"wiki.example.com", "/webhooks/x", false},
+		{"wiki.example.com", "/webhooksfoo", false},
+		{"shop.example.com", "/admin", true},
+		{"shop.example.com", "/admin/x", true},
+		{"shop.example.com", "/administrator", true},
+		{"shop.example.com", "/", false},
+		{"shop.example.com", "", false},
+		{"shop.example.com", "/cart", false},
+		{"WIKI.example.com", "/page", true},
+		{"unknown.example.com", "/", false},
+		{"root.example.com", "", true},
+		{"root.example.com", "/x", true},
+	}
+	for _, c := range cases {
+		got, err := st.RouteIsProtected(ctx, c.host, c.path)
+		if err != nil {
+			t.Fatalf("RouteIsProtected(%q, %q): %v", c.host, c.path, err)
+		}
+		if got != c.want {
+			t.Errorf("RouteIsProtected(%q, %q) = %v, want %v", c.host, c.path, got, c.want)
+		}
+	}
+}
+
+// Rows written before hosts were lowercased, and two apps sharing a host and
+// path from before the cross-app check: the stored case doesn't matter, and on
+// a tie an open row wins, because Traefik could route the request to it.
+func TestRouteIsProtectedLegacyRows(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+	a := testApp(t, st, "a", core.KindCompose, "")
+	b := testApp(t, st, "b", core.KindCompose, "")
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := st.db.ExecContext(ctx, q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	insert := `INSERT INTO domains (app_id, host, service, port, path, internal_path, tls, protected, created_at)
+	           VALUES (?, ?, 'web', 3000, ?, '', 1, ?, '2026-07-04T00:00:00Z')`
+	exec(insert, a.ID, "Docs.Example.com", "", 1)
+	exec(insert, a.ID, "tie.example.com", "/x", 1)
+	exec(insert, b.ID, "tie.example.com", "/x", 0)
+	exec(insert, a.ID, "eit.example.com", "/x", 0)
+	exec(insert, b.ID, "eit.example.com", "/x", 1)
+
+	for _, c := range []struct {
+		host, path string
+		want       bool
+	}{
+		{"docs.example.com", "/", true},
+		{"tie.example.com", "/x/y", false},
+		{"eit.example.com", "/x/y", false},
+	} {
+		got, err := st.RouteIsProtected(ctx, c.host, c.path)
+		if err != nil {
+			t.Fatalf("RouteIsProtected(%q, %q): %v", c.host, c.path, err)
+		}
+		if got != c.want {
+			t.Errorf("RouteIsProtected(%q, %q) = %v, want %v", c.host, c.path, got, c.want)
+		}
 	}
 }

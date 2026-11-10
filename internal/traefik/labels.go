@@ -17,9 +17,10 @@ import (
 // server-wide switch (ACME configured or local CA active); a row is served
 // over HTTPS only when its own TLS flag and globalTLS are both true.
 // certResolver is "le" under ACME and empty under the local CA, where the
-// file provider supplies certs by SNI instead of a resolver. With no domains
-// the app is internal-only (traefik.enable=false).
-func AppLabels(app core.App, domains []core.Domain, port int, globalTLS bool, certResolver string) map[string]string {
+// file provider supplies certs by SNI instead of a resolver. gateAddress is
+// the forward-auth address protected rows call (config.GateAddress). With no
+// domains the app is internal-only (traefik.enable=false).
+func AppLabels(app core.App, domains []core.Domain, port int, globalTLS bool, certResolver, gateAddress string) map[string]string {
 	labels := map[string]string{
 		"traefik.enable":  "true",
 		"outhaul.managed": "true",
@@ -30,7 +31,7 @@ func AppLabels(app core.App, domains []core.Domain, port int, globalTLS bool, ce
 		return labels
 	}
 	for _, d := range domains {
-		for k, v := range RouteLabels(RouterName(app.Name, d.ID), d.Host, port, d.Path, d.InternalPath, d.TLS && globalTLS, certResolver) {
+		for k, v := range RouteLabels(RouterName(app.Name, d.ID), d.Host, port, d.Path, d.InternalPath, d.TLS && globalTLS, certResolver, d.Protected, gateAddress) {
 			labels[k] = v
 		}
 	}
@@ -45,7 +46,16 @@ func AppLabels(app core.App, domains []core.Domain, port int, globalTLS bool, ce
 // cert for the router; an empty resolver leaves the TLS router without one,
 // which is correct under the local CA, where the file provider serves a
 // pre-issued cert by SNI instead.
-func RouteLabels(router, host string, port int, urlPath, internalPath string, tlsEnabled bool, certResolver string) map[string]string {
+//
+// Every router's first middleware is about identity. A protected route calls
+// the gate at gateAddress (forward auth), which answers with IdentityHeader
+// for a signed-in visitor; an open route removes any IdentityHeader the client
+// sent, so an app that trusts the header can't be fooled on a route with no
+// gate. Both are defined in these labels, never in the file provider: Traefik
+// drops a router that references an undefined middleware, and the request
+// then falls through to an open router. The identity middleware runs before
+// any path rewrite, so the gate sees the URL the visitor asked for.
+func RouteLabels(router, host string, port int, urlPath, internalPath string, tlsEnabled bool, certResolver string, protected bool, gateAddress string) map[string]string {
 	rule := fmt.Sprintf("Host(`%s`)", host)
 	if urlPath != "" {
 		rule += fmt.Sprintf(" && PathPrefix(`%s`)", urlPath)
@@ -59,10 +69,9 @@ func RouteLabels(router, host string, port int, urlPath, internalPath string, tl
 		"traefik.http.routers." + router + ".service":                   router,
 		"traefik.http.services." + router + ".loadbalancer.server.port": strconv.Itoa(port),
 	}
-	mws := rewriteMiddlewares(router, urlPath, internalPath, labels)
-	if len(mws) > 0 {
-		labels["traefik.http.routers."+router+".middlewares"] = strings.Join(mws, ",")
-	}
+	mws := []string{identityMiddleware(router, protected, gateAddress, labels)}
+	mws = append(mws, rewriteMiddlewares(router, urlPath, internalPath, labels)...)
+	labels["traefik.http.routers."+router+".middlewares"] = strings.Join(mws, ",")
 	if tlsEnabled {
 		tls := router + "-tls"
 		labels["traefik.http.routers."+tls+".rule"] = rule
@@ -72,11 +81,62 @@ func RouteLabels(router, host string, port int, urlPath, internalPath string, tl
 			labels["traefik.http.routers."+tls+".tls.certresolver"] = certResolver
 		}
 		labels["traefik.http.routers."+tls+".service"] = router
-		if len(mws) > 0 {
-			labels["traefik.http.routers."+tls+".middlewares"] = strings.Join(mws, ",")
-		}
+		labels["traefik.http.routers."+tls+".middlewares"] = strings.Join(mws, ",")
 	}
 	return labels
+}
+
+// IdentityHeader carries the signed-in visitor's identity to an app behind a
+// protected route: the SSO email, or the username of a password account.
+const IdentityHeader = "X-Outhaul-User"
+
+// identityMiddleware defines the router's identity middleware in dst and
+// returns its name: "<router>-gate", a forward auth to gateAddress that copies
+// IdentityHeader from the gate's answer, for a protected route; otherwise
+// "<router>-noident", a headers middleware whose empty custom request header
+// value makes Traefik delete IdentityHeader from the request.
+//
+// The gate leaves trustForwardHeader unset, so Traefik sets X-Forwarded-Host,
+// -Uri, -Method and -Proto itself and a client can't choose what the gate
+// checks, even through an entrypoint that trusts forwarded headers
+// (deploy/test/integration_gate.sh checks this on a real Traefik).
+func identityMiddleware(router string, protected bool, gateAddress string, dst map[string]string) string {
+	if protected {
+		gate := router + "-gate"
+		dst["traefik.http.middlewares."+gate+".forwardauth.address"] = gateAddress
+		dst["traefik.http.middlewares."+gate+".forwardauth.authresponseheaders"] = IdentityHeader
+		return gate
+	}
+	strip := router + "-noident"
+	dst["traefik.http.middlewares."+strip+".headers.customrequestheaders."+IdentityHeader] = ""
+	return strip
+}
+
+// RowHasGate reports whether labels (a container's) put router behind its
+// gate: the router, and its "-tls" twin when it has any label at all (Traefik
+// gives a router with no rule label a default one), list "<router>-gate"
+// first, and that middleware's forward-auth address is set. Anything less
+// means some request on that route can reach the app without the gate.
+func RowHasGate(labels map[string]string, router string) bool {
+	gate := router + "-gate"
+	if labels["traefik.http.middlewares."+gate+".forwardauth.address"] == "" {
+		return false
+	}
+	gatedFirst := func(r string) bool {
+		first, _, _ := strings.Cut(labels["traefik.http.routers."+r+".middlewares"], ",")
+		return strings.TrimSpace(first) == gate
+	}
+	if !gatedFirst(router) {
+		return false
+	}
+	tls := router + "-tls"
+	tlsPrefix := "traefik.http.routers." + tls + "."
+	for k := range labels {
+		if strings.HasPrefix(k, tlsPrefix) {
+			return gatedFirst(tls)
+		}
+	}
+	return true
 }
 
 // rewriteMiddlewares defines the strip/add-prefix middlewares that turn the

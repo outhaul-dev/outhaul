@@ -10,6 +10,7 @@ import (
 
 	"github.com/outhaul-dev/outhaul/internal/compose"
 	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/traefik"
 )
 
 // composeApp creates a compose-kind app whose fake clone contains a compose
@@ -250,5 +251,45 @@ func TestComposePipelineAbortsIfAppDeletedDuringBuild(t *testing.T) {
 
 	if len(h.compose.CallsFor("up")) != 0 {
 		t.Error("up must not run for a deleted app")
+	}
+}
+
+// The compose override carries the gate for a protected row, at the
+// configured admin port.
+func TestComposePipelineOverrideCarriesTheGate(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.ListenAddr = ":9123"
+	app := h.composeApp(t, "shop", "docker-compose.yml", "shop.example.com")
+	ds, err := h.store.ListDomains(context.Background(), app.ID)
+	if err != nil || len(ds) != 1 {
+		t.Fatalf("ListDomains = %v (%v)", ds, err)
+	}
+	if err := h.store.SetDomainProtected(context.Background(), app.ID, ds[0].ID, true); err != nil {
+		t.Fatal(err)
+	}
+	var overrideContent string
+	h.compose.Hook = func(c compose.Call) {
+		if c.Verb != "up" {
+			return
+		}
+		if b, err := os.ReadFile(filepath.Join(c.Dir, compose.OverrideFile)); err == nil {
+			overrideContent = string(b)
+		}
+	}
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	if got := h.status(t, dep.ID); got.Status != core.StatusRunning {
+		t.Fatalf("status = %q (%q), want running", got.Status, got.Reason)
+	}
+	router := traefik.RouterName("shop", ds[0].ID)
+	for _, want := range []string{
+		`"traefik.http.middlewares.` + router + `-gate.forwardauth.address": "http://host.docker.internal:9123/gate/check"`,
+		`"traefik.http.routers.` + router + `.middlewares": "` + router + `-gate"`,
+	} {
+		if !strings.Contains(overrideContent, want) {
+			t.Errorf("override missing %s; got:\n%s", want, overrideContent)
+		}
 	}
 }

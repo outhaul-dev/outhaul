@@ -86,7 +86,10 @@ type Domain struct {
 	Path         string // external PathPrefix, leading slash; "" = whole host
 	InternalPath string // path forwarded to the container; "" = unchanged
 	TLS          bool   // automate HTTPS for this route (needs global ACME)
-	CreatedAt    time.Time
+	// Protected puts the route behind Outhaul sign-in: its Traefik router
+	// calls the gate before the app. It reaches Traefik on the app's next deploy.
+	Protected bool
+	CreatedAt time.Time
 }
 
 // DomainListing is a Domain plus its app's identity, for the global Domains tab.

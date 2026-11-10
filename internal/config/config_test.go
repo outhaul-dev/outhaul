@@ -173,6 +173,24 @@ func TestAdminHostAndPort(t *testing.T) {
 	}
 }
 
+// Traefik reaches the gate on the host through the host gateway, on the port
+// the admin UI listens on.
+func TestGateAddress(t *testing.T) {
+	c := Load(func(k string) string {
+		if k == "OUTHAUL_LISTEN_ADDR" {
+			return ":9000"
+		}
+		return ""
+	})
+	if got, want := c.GateAddress(), "http://host.docker.internal:9000/gate/check"; got != want {
+		t.Errorf("GateAddress() = %q, want %q", got, want)
+	}
+	def := Load(func(string) string { return "" })
+	if got, want := def.GateAddress(), "http://host.docker.internal:8080/gate/check"; got != want {
+		t.Errorf("default GateAddress() = %q, want %q", got, want)
+	}
+}
+
 func TestCloudflaredImageDefaultAndOverride(t *testing.T) {
 	def := Load(func(string) string { return "" })
 	if def.CloudflaredImage != DefaultCloudflaredImage {

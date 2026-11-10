@@ -25,11 +25,13 @@ const OverrideFile = "outhaul.override.yml"
 //     merges label maps, so user labels survive), plus traefik.docker.network
 //     so Traefik routes to the service's IP on the shared network, not its
 //     stack-internal one. Router names are namespaced by the domain row ID,
-//     keeping them unique across apps and stable across deploys.
+//     keeping them unique across apps and stable across deploys. A protected
+//     row's routers call the gate at gateAddress; an open row's strip the
+//     identity header (see traefik.RouteLabels).
 //
 // The structure is three fixed levels deep, so it is rendered directly — no
 // YAML dependency. All user-influenced values go through quoteYAML.
-func Override(app core.App, domains []core.Domain, network string, tlsEnabled bool, certResolver string) []byte {
+func Override(app core.App, domains []core.Domain, network string, tlsEnabled bool, certResolver, gateAddress string) []byte {
 	byService := map[string][]core.Domain{}
 	var services []string
 	for _, d := range domains {
@@ -52,7 +54,7 @@ func Override(app core.App, domains []core.Domain, network string, tlsEnabled bo
 			"traefik.docker.network": network,
 		}
 		for _, d := range byService[svc] {
-			for k, v := range traefik.RouteLabels(traefik.RouterName(app.Name, d.ID), d.Host, d.Port, d.Path, d.InternalPath, d.TLS && tlsEnabled, certResolver) {
+			for k, v := range traefik.RouteLabels(traefik.RouterName(app.Name, d.ID), d.Host, d.Port, d.Path, d.InternalPath, d.TLS && tlsEnabled, certResolver, d.Protected, gateAddress) {
 				labels[k] = v
 			}
 		}
