@@ -45,6 +45,12 @@ func (s *Server) routes() []route {
 		{"GET /auth/sso/start", levelPublic, nil, s.handleSSOStart},
 		{"GET /auth/sso/callback", levelPublic, nil, s.handleSSOCallback},
 
+		// Traefik's forward auth asks this about every request to a protected
+		// route, over plain HTTP on the admin port, with the visitor's cookies
+		// for the app's host. It checks a route cookie or one-time code itself.
+		// It is a GET, so cross-origin protection lets it by.
+		{"GET /gate/check", levelPublic, nil, s.handleGateCheck},
+
 		{"GET /{$}", levelAnyRole, nil, s.handleOverview},
 
 		{"GET /projects", levelAnyRole, nil, s.handleProjectsList},

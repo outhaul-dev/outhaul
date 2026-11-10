@@ -204,6 +204,7 @@ func TestPublicRoutesAreExactlyThese(t *testing.T) {
 		"GET /auth/sso/start",
 		"GET /ca.pem",
 		"GET /deployments",
+		"GET /gate/check",
 		"GET /github/callback",
 		"GET /github/setup",
 		"GET /healthz",
