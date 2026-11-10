@@ -988,3 +988,36 @@ func TestSettingsChangeAsTheSessionIsWrittenEndsIt(t *testing.T) {
 		t.Errorf("SSO sessions = %d, %v; want 0", sessions, err)
 	}
 }
+
+// An SSO account's username is internal: every page shows its email.
+func TestSSOUsernameIsNeverShown(t *testing.T) {
+	ctx := context.Background()
+	e := ssoLoginEnv(t, fakeIdentity("sub-1", "dana@example.com"))
+	tok := newBrowser(e).signIn(t)
+	u := ssoAccounts(t, e)[0]
+	admin := e.signInAs(t, "boss", core.RoleSystemAdmin)
+
+	check := func(what, token, path string) {
+		t.Helper()
+		page := body(t, e.getAs(t, token, path))
+		if strings.Contains(page, u.Username) || strings.Contains(page, "sso:") {
+			t.Errorf("%s shows the SSO username", what)
+		}
+		if !strings.Contains(page, "dana@example.com") {
+			t.Errorf("%s doesn't show the email", what)
+		}
+	}
+	check("the no-access page", tok, "/")
+	if err := e.store.SetUserRole(ctx, u.ID, core.RoleProjectMember); err != nil {
+		t.Fatal(err)
+	}
+	on := seedProject(t, e, "alpha")
+	off := seedProject(t, e, "bravo")
+	if err := e.store.AddProjectMember(ctx, on.Project.ID, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	check("the Users page", admin, "/users")
+	check("the People panel", admin, "/projects/"+itoa(on.Project.ID))
+	check("the list of people to add", admin, "/projects/"+itoa(off.Project.ID))
+	check("the account page", tok, "/account")
+}

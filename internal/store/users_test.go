@@ -2,8 +2,11 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -557,7 +560,7 @@ func TestSSOFirstSignInCreatesAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if u.ID == 0 || u.Username != "sso:"+testIssuer+"|sub-1" || u.Role != core.RoleNone || u.SignIn != core.SignInSSO ||
+	if u.ID == 0 || u.Username != ssoTestUsername(testIssuer, "sub-1") || u.Role != core.RoleNone || u.SignIn != core.SignInSSO ||
 		u.SSOIssuer != testIssuer || u.SSOSubject != "sub-1" || u.Email != "dana@example.com" || u.PasswordHash != "" {
 		t.Fatalf("user = %+v", u)
 	}
@@ -634,17 +637,47 @@ func TestSSOSignInNeverLinksByEmail(t *testing.T) {
 	}
 }
 
-// A password account that already has the SSO account's username (only the
-// first-boot form could make one) is never reached or changed.
+// ssoTestUsername is the username an SSO account gets, worked out
+// independently of the store.
+func ssoTestUsername(issuer, subject string) string {
+	sum := sha256.Sum256([]byte(issuer + "\x00" + subject))
+	return "sso:" + hex.EncodeToString(sum[:])
+}
+
+// An issuer and subject are joined so that no two pairs share a username,
+// whatever characters they hold.
+func TestSSOUsernamesDontCollide(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	a, err := s.FindOrCreateSSOUser(ctx, "https://idp.example.com/a|b", "c", "one@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.FindOrCreateSSOUser(ctx, "https://idp.example.com/a", "b|c", "two@example.com")
+	if err != nil {
+		t.Fatalf("second account: %v", err)
+	}
+	if a.ID == b.ID || a.Username == b.Username {
+		t.Fatalf("two identities share an account or a username: %+v, %+v", a, b)
+	}
+	if a.Username != ssoTestUsername("https://idp.example.com/a|b", "c") {
+		t.Errorf("username = %q", a.Username)
+	}
+}
+
+// A password account that already has the SSO account's username is never
+// reached or changed.
 func TestSSOSignInNeverReachesAPasswordAccountByUsername(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	pw, err := s.CreateUser(ctx, "sso:"+testIssuer+"|sub-1", "hash")
+	pw, err := s.CreateUser(ctx, ssoTestUsername(testIssuer, "sub-1"), "hash")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if u, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "dana@example.com"); err == nil {
 		t.Fatalf("signed in as %+v", u)
+	} else if strings.Contains(err.Error(), "password") {
+		t.Errorf("error %q names a cause the store doesn't know", err)
 	}
 	if got, _ := s.GetUser(ctx, pw.ID); got.SignIn != core.SignInPassword || got.Email != "" || got.SSOSubject != "" {
 		t.Fatalf("password account changed: %+v", got)

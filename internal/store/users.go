@@ -75,11 +75,19 @@ func (s *Store) CreatePasswordAccount(ctx context.Context, username string, role
 	return s.GetUser(ctx, id)
 }
 
+// ssoUsername is the internal username of the SSO account for issuer and
+// subject. Hashing the pair, joined by a NUL that neither can contain, gives
+// every pair its own name whatever characters they hold. Pages show the
+// account's email instead.
+func ssoUsername(issuer, subject string) string {
+	sum := sha256.Sum256([]byte(issuer + "\x00" + subject))
+	return "sso:" + hex.EncodeToString(sum[:])
+}
+
 // FindOrCreateSSOUser returns the SSO account for issuer and subject, creating
 // it with no role on the first sign-in. A later sign-in keeps its id and role
 // and refreshes its email. Email never selects an account, and a password
-// account is never returned or changed. The username is
-// "sso:" + issuer + "|" + subject, which the Users page never shows.
+// account is never returned or changed. The username is ssoUsername's.
 //
 // It is one transaction. If two first sign-ins race, the insert of the second
 // does nothing and it reads the account the first created.
@@ -96,7 +104,7 @@ func (s *Store) FindOrCreateSSOUser(ctx context.Context, issuer, subject, email 
 		`INSERT INTO users (username, password_hash, created_at, role, sign_in, sso_issuer, sso_subject, email)
 		 VALUES (?, '', ?, ?, 'sso', ?, ?, ?)
 		 ON CONFLICT DO NOTHING`,
-		"sso:"+issuer+"|"+subject, fmtTime(time.Now().UTC()), string(core.RoleNone), issuer, subject, email); err != nil {
+		ssoUsername(issuer, subject), fmtTime(time.Now().UTC()), string(core.RoleNone), issuer, subject, email); err != nil {
 		return core.User{}, err
 	}
 	if _, err := tx.ExecContext(ctx,
@@ -104,13 +112,13 @@ func (s *Store) FindOrCreateSSOUser(ctx context.Context, issuer, subject, email 
 		email, issuer, subject); err != nil {
 		return core.User{}, err
 	}
-	// Not found means the insert did nothing because a password account holds
-	// the username: refuse rather than touch it.
+	// Not found means the insert did nothing because another account already
+	// holds the username: refuse rather than touch it.
 	u, err := scanUser(tx.QueryRowContext(ctx,
 		`SELECT `+userCols+` FROM users WHERE sign_in = 'sso' AND sso_issuer = ? AND sso_subject = ?`,
 		issuer, subject))
 	if errors.Is(err, sql.ErrNoRows) {
-		return core.User{}, fmt.Errorf("store: the username for this SSO account is taken by a password account")
+		return core.User{}, errors.New("store: another account already has the username this SSO account needs")
 	}
 	if err != nil {
 		return core.User{}, err
