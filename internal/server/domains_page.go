@@ -55,7 +55,7 @@ func (s *Server) handleDomainsList(w http.ResponseWriter, r *http.Request) {
 	}
 	var running []docker.Container
 	for _, c := range all {
-		if c.Running() {
+		if answers(c) {
 			byApp[c.Labels["outhaul.app"]] = append(byApp[c.Labels["outhaul.app"]], c)
 			running = append(running, c)
 		}

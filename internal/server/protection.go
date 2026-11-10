@@ -83,6 +83,12 @@ func (s *Server) protectedOverHTTPS(ctx context.Context) bool {
 	return tunnel
 }
 
+// answers reports whether c serves its routes, or is about to: it is running,
+// or Docker is restarting it, after which it serves what its labels say.
+func answers(c docker.Container) bool {
+	return c.Running() || c.State == "restarting"
+}
+
 // appContainers returns the app's containers, stopped ones included: those
 // labelled outhaul.app with its name. That is its routed containers, and a
 // deploy's health-check container, which has no routers.
@@ -330,7 +336,7 @@ func (s *Server) leftoverRoutes(ctx context.Context, app core.App, hosts map[str
 	}
 	running := map[string][]docker.Container{}
 	for _, c := range cs {
-		if name := c.Labels["outhaul.app"]; name != "" && name != app.Name && c.Running() {
+		if name := c.Labels["outhaul.app"]; name != "" && name != app.Name && answers(c) {
 			running[name] = append(running[name], c)
 		}
 	}
@@ -869,9 +875,10 @@ func (s *Server) applyProtection(ctx context.Context, app core.App) (*core.Deplo
 	return &dep, nil
 }
 
-// liveState reads app's containers: whether any of them is running (a
-// Compose stack counts by its project, so a stack with no routes yet counts),
-// and the image its canonical container was made from (canonicalImage).
+// liveState reads app's containers: whether any of them is running, or
+// restarting (answers), a Compose stack counting by its project, so a stack
+// with no routes yet counts; and the image its canonical container was made
+// from (canonicalImage).
 func (s *Server) liveState(ctx context.Context, app core.App) (running bool, serving string, err error) {
 	cs, err := s.appContainers(ctx, app)
 	if err != nil {
@@ -886,7 +893,7 @@ func (s *Server) liveState(ctx context.Context, app core.App) (running bool, ser
 		cs = append(cs, stack...)
 	}
 	for _, c := range cs {
-		if c.Running() {
+		if answers(c) {
 			return true, serving, nil
 		}
 	}
@@ -961,16 +968,19 @@ func unknownAccess() accessState {
 }
 
 // accessStateFor says what Traefik is doing for d, from the labels on the
-// app's running containers, not from the stored setting, so the page can't
-// disagree with the proxy. A stopped container serves nothing and doesn't
-// count. A row no running container defines counts as lacking the gate when
-// it is protected: an open row above it may already be serving that path.
-// latest is the app's newest deployment, named in the note when a protected
-// row lacks the gate; it may be nil.
+// app's running containers (restarting ones included: answers), not from the
+// stored setting, so the page can't disagree with the proxy. A stopped
+// container serves nothing and doesn't count. A row no running container
+// defines counts as lacking the gate when it is protected: an open row above
+// it may already be serving that path. An open row no running container
+// defines is "Open", applying on the next deploy: it isn't served yet, or an
+// old gated router on its former address still answers there. latest is the
+// app's newest deployment, named in the note when a protected row lacks the
+// gate; it may be nil.
 func accessStateFor(d core.Domain, appName string, containers []docker.Container, latest *core.Deployment) accessState {
 	var running []docker.Container
 	for _, c := range containers {
-		if c.Running() {
+		if answers(c) {
 			running = append(running, c)
 		}
 	}
@@ -980,7 +990,7 @@ func accessStateFor(d core.Domain, appName string, containers []docker.Container
 		}
 		return accessState{Label: accessOpen, Class: "state-stopped", Note: accessNextNote}
 	}
-	_, gated := rowGate(running, traefik.RouterName(appName, d.ID), d)
+	defined, gated := rowGate(running, traefik.RouterName(appName, d.ID), d)
 	switch {
 	case d.Protected && gated:
 		return accessState{Label: accessSignIn, Class: "state-running"}
@@ -997,11 +1007,14 @@ func accessStateFor(d core.Domain, appName string, containers []docker.Container
 		return st
 	case gated:
 		return accessState{Label: accessSignIn, Class: "state-running", Note: "until the redeploy finishes"}
+	case !defined:
+		return accessState{Label: accessOpen, Class: "state-stopped", Note: accessNextNote}
 	}
 	return accessState{Label: accessOpen, Class: "state-stopped"}
 }
 
-// strayRoute looks among running, every running container Outhaul manages,
+// strayRoute looks among running, every running (or restarting: answers)
+// container Outhaul manages,
 // for a router that answers part of d's address without the gate: one that
 // Traefik routes (its container has traefik.enable on), whose rule names d's
 // host (in any case) and d's path or a path under it (PathPrefix compares
@@ -1016,7 +1029,7 @@ func strayRoute(d core.Domain, appName string, running []docker.Container, rows 
 	own := traefik.RouterName(appName, d.ID)
 	names := strings.ToLower("Host(`" + d.Host + "`)")
 	for _, c := range running {
-		if !c.Running() || !routed(c.Labels) {
+		if !answers(c) || !routed(c.Labels) {
 			continue
 		}
 		app := c.Labels["outhaul.app"]

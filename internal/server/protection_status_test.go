@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"html"
+	"net/http"
 	"regexp"
 	"strings"
 	"testing"
@@ -68,13 +69,20 @@ func TestAccessStateFor(t *testing.T) {
 		{"on, host moved, the deploy failed", row(true), []docker.Container{movedHost}, dep(6, core.StatusFailed), "Not protected yet", "state-failed", "the last deploy failed", 6},
 		{"on, path moved, the deploy failed", row(true), []docker.Container{movedPath}, dep(6, core.StatusFailed), "Not protected yet", "state-failed", "the last deploy failed", 6},
 		{"on, host moved, stopped", row(true), []docker.Container{ctr("exited", at("old.test", ""))}, nil, "Sign-in required", "state-running", "applies on the next deploy", 0},
-		{"off, host moved, the old address gated", row(false), []docker.Container{movedHost}, nil, "Open", "state-stopped", "", 0},
+		{"off, host moved, the old address gated", row(false), []docker.Container{movedHost}, nil, "Open", "state-stopped", "applies on the next deploy", 0},
 		{"on, path cleared, running", row(true), []docker.Container{ctr("running", webPath(true))}, nil, "Not protected yet", "state-building", "", 0},
 		// The same address in another spelling is the row's.
 		{"on, labels from before the traversal term", row(true), []docker.Container{oldForm(gated)}, nil, "Sign-in required", "state-running", "", 0},
 		{"off, labels from before the traversal term", row(false), []docker.Container{oldForm(open)}, nil, "Open", "state-stopped", "", 0},
 		{"on, the path's labels from before the term", webPath(true), []docker.Container{oldForm(ctr("running", webPath(true)))}, nil, "Sign-in required", "state-running", "", 0},
 		{"on, the host in other case", row(true), []docker.Container{ctr("running", at("WEB.Test", ""))}, nil, "Sign-in required", "state-running", "", 0},
+		// An open row no running container serves yet.
+		{"off, a new row, running", row(false), []docker.Container{ctr("running")}, nil, "Open", "state-stopped", "applies on the next deploy", 0},
+		{"on, a running container lacks the router, a stopped one has it gated", row(true), []docker.Container{ctr("running"), ctr("exited", row(true))}, nil, "Not protected yet", "state-building", "", 0},
+		// A restarting container is about to answer again, as its labels say.
+		{"on, restarting without the gate", row(true), []docker.Container{ctr("restarting", row(false))}, nil, "Not protected yet", "state-building", "", 0},
+		{"on, restarting with the gate", row(true), []docker.Container{ctr("restarting", row(true))}, nil, "Sign-in required", "state-running", "", 0},
+		{"off, restarting", row(false), []docker.Container{ctr("restarting", row(false))}, nil, "Open", "state-stopped", "", 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -291,6 +299,7 @@ func TestStrayRoute(t *testing.T) {
 		{"an orphaned container", shut, []docker.Container{route(core.App{Name: "gone"}, open(9, "web.test", "/x"))}, rowsOf(shut), "gone"},
 		{"a container Traefik doesn't route", shut, []docker.Container{disabled}, rowsOf(shut), ""},
 		{"a stopped container", shut, []docker.Container{{ID: "s", State: "exited", Labels: route(other, open(9, "web.test", "/x")).Labels}}, rowsOf(shut), ""},
+		{"a restarting container", shut, []docker.Container{{ID: "s", State: "restarting", Labels: route(other, open(9, "web.test", "/x")).Labels}}, rowsOf(shut), "hooks"},
 		{"a rule it can't read, naming the host", shut, []docker.Container{custom("Host(`web.test`) && Path(`/x`)")}, rowsOf(shut), "hooks"},
 		{"a rule it can't read, naming another host", shut, []docker.Container{custom("Host(`x.test`) && Path(`/x`)")}, rowsOf(shut), ""},
 		{"this app's is named first", shut, []docker.Container{route(other, open(9, "web.test", "/x")), route(web, core.Domain{ID: 3, AppID: 1, Host: "web.test", Path: "/hooks"})}, rowsOf(shut), "web"},
@@ -414,5 +423,19 @@ func TestOtherRoutesOnAProtectedAddress(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A container Docker is restarting serves its labels again once it is up, so
+// a protection save redeploys its app as it does a running one.
+func TestProtectionSaveRedeploysARestartingApp(t *testing.T) {
+	e, _ := newProtectionEnv(t)
+	app, row, _ := liveWeb(t, e, "img:1")
+	e.runtime.stack[0].State = "restarting"
+	e.runtime.container.State = "restarting"
+	before := len(deploymentsOf(t, e, app.ID))
+	wantStatus(t, "turn the switch on", e.saveDomain(t, app.ID, row, domainForm(row, true)), http.StatusSeeOther)
+	if n := len(deploymentsOf(t, e, app.ID)); n != before+1 {
+		t.Errorf("deployments %d -> %d, want one queued", before, n)
 	}
 }
