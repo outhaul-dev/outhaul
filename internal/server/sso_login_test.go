@@ -1021,3 +1021,24 @@ func TestSSOUsernameIsNeverShown(t *testing.T) {
 	check("the list of people to add", admin, "/projects/"+itoa(off.Project.ID))
 	check("the account page", tok, "/account")
 }
+
+// The first-boot form refuses a username that starts with "sso:", in any case,
+// with the Users page's message.
+func TestSetupRefusesSSOUsernames(t *testing.T) {
+	e := newTestEnv(t)
+	for _, name := range []string{"sso:root", "SSO:root", "Sso:" + strings.Repeat("a", 64)} {
+		resp := e.postForm(t, "/setup", url.Values{"token": {"SETUPTOKEN"}, "username": {name}, "password": {"supersecret"}})
+		page := body(t, resp)
+		if resp.StatusCode != http.StatusBadRequest || !strings.Contains(page, html.EscapeString(ssoPrefixRefusal)) {
+			t.Errorf("setup as %q = %d, want 400 with %q", name, resp.StatusCode, ssoPrefixRefusal)
+		}
+	}
+	if has, _ := e.store.HasUser(context.Background()); has {
+		t.Fatal("an account was created")
+	}
+	// The Users page says the same.
+	if err := validUsername("SSO:x"); err == nil || err.Error() != ssoPrefixRefusal {
+		t.Errorf("validUsername = %v, want %q", err, ssoPrefixRefusal)
+	}
+	e.completeSetup(t)
+}

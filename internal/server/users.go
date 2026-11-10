@@ -101,6 +101,15 @@ func (s *Server) setupLinkFor(r *http.Request, issue func(token string, expires 
 	return s.baseURL(r) + "/account/setup?token=" + url.QueryEscape(token), nil
 }
 
+// ssoPrefixRefusal refuses a password account's username that looks like an
+// SSO account's, on the Users page and at first boot.
+const ssoPrefixRefusal = `The username can't start with "sso:".`
+
+// hasSSOPrefix reports whether name starts with "sso:", in any case.
+func hasSSOPrefix(name string) bool {
+	return strings.HasPrefix(strings.ToLower(name), "sso:")
+}
+
 func validUsername(name string) error {
 	if len(name) < 3 {
 		return errors.New("The username must be at least 3 characters.")
@@ -108,8 +117,8 @@ func validUsername(name string) error {
 	if len(name) > 64 {
 		return errors.New("The username must be at most 64 characters.")
 	}
-	if strings.HasPrefix(strings.ToLower(name), "sso:") {
-		return errors.New(`The username can't start with "sso:".`)
+	if hasSSOPrefix(name) {
+		return errors.New(ssoPrefixRefusal)
 	}
 	for _, c := range name {
 		if unicode.IsSpace(c) || unicode.IsControl(c) {

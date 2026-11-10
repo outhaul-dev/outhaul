@@ -137,7 +137,12 @@ func (s *Server) handleSetupSubmit(w http.ResponseWriter, r *http.Request) {
 
 	username := r.FormValue("username")
 	password := r.FormValue("password")
-	if err := validateCredentials(username, password); err != nil {
+	err = validateCredentials(username, password)
+	// A password account never takes a name that looks like an SSO account's.
+	if err == nil && hasSSOPrefix(username) {
+		err = errors.New(ssoPrefixRefusal)
+	}
+	if err != nil {
 		s.render(w, r, http.StatusBadRequest, "setup", map[string]any{
 			"Title": "Setup", "Token": s.setupToken, "HideChrome": true, "Error": err.Error(),
 		})
