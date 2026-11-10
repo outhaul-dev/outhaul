@@ -840,6 +840,26 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	data["LiveDeploymentID"] = liveID
+	// The domain dialog's "Require sign-in" switch: whether it can be turned on,
+	// and what a save that redeploys would ship. A protected row whose sign-in
+	// stopped being available keeps its gate, and the page says so. When the
+	// containers' labels disagree with the rows, Restart deploys instead.
+	protectOK, protectReason := s.protectionAvailability(r.Context(), core.Domain{})
+	data["ProtectionAvailable"] = protectOK
+	data["ProtectionReason"] = protectReason
+	for _, d := range domains {
+		if d.Protected && !protectOK {
+			data["ProtectionUnreachable"] = true
+		}
+	}
+	if canChange {
+		data["ProtectionWarning"] = protectionWarningFor(app, deployments)
+		if cs, err := s.appContainers(r.Context(), app); err != nil {
+			log.Printf("app page: list the containers of %q: %v", app.Name, err)
+		} else if len(cs) > 0 && protectionMismatch(domains, app.Name, cs) {
+			data["RestartDeploys"] = true
+		}
+	}
 	// GitHub connectivity for the Settings "Source & build" editor (repo dropdown).
 	// Degrades gracefully to no dropdown when no App is connected.
 	for k, v := range s.gitSourceData(r) {
@@ -880,7 +900,8 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 
 // handleAddDomain publishes a route on an app. Compose apps name a service and
 // port; single-container apps route to their container on AppPort with no
-// service. Rows reach Traefik on the app's next deploy — the existing contract.
+// service. An open row reaches Traefik on the app's next deploy; a protected
+// one redeploys a running app at once (see protection.go).
 func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(r.PathValue("id"))
 	if !ok {
@@ -898,7 +919,18 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.AppID = id
-	if _, err := s.store.AddDomain(r.Context(), d); err != nil {
+	// From here the save and the deploy that applies it finish together, even
+	// if the browser goes: the reconcile can recreate the Traefik it came through.
+	ctx := context.WithoutCancel(r.Context())
+	if r.FormValue("protected") != "" {
+		if ok, reason := s.protectionAvailability(ctx, d); !ok {
+			http.Error(w, reason, http.StatusBadRequest)
+			return
+		}
+		d.Protected = true
+	}
+	added, err := s.store.AddDomain(ctx, d)
+	if err != nil {
 		if errors.Is(err, store.ErrHostReserved) {
 			http.Error(w, ownHostRefusal, http.StatusBadRequest)
 			return
@@ -906,8 +938,14 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Could not add domain (is it already configured?): "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.syncCerts(r.Context())
-	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+	if d.Protected {
+		if err := s.ensureGateHost(ctx); err != nil {
+			undo := s.store.DeleteDomain(ctx, id, added.ID)
+			s.refuseProtection(w, err, undo)
+			return
+		}
+	}
+	s.finishDomainSave(ctx, w, r, app, d.Protected)
 }
 
 // handleUpdateDomain rewrites an existing route in place.
@@ -944,7 +982,30 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 	if !s.tlsEnabled {
 		d.TLS = existing.TLS
 	}
-	if err := s.store.UpdateDomain(r.Context(), d); err != nil {
+	// See handleAddDomain.
+	ctx := context.WithoutCancel(r.Context())
+	// UpdateDomain writes Protected as given, so it is always set here: the
+	// switch's value when the form offered it and it can be used, otherwise the
+	// row's own. A disabled switch submits nothing, and a row that is protected
+	// never becomes open because sign-in stopped being available.
+	submitted := r.FormValue("protected") != ""
+	available, reason := s.protectionAvailability(ctx, d)
+	switch {
+	case !available && submitted && !existing.Protected:
+		http.Error(w, reason, http.StatusBadRequest)
+		return
+	case !available:
+		d.Protected = existing.Protected
+	case submitted:
+		d.Protected = true
+	case r.FormValue("protected_offered") != "":
+		d.Protected = false
+	default:
+		d.Protected = existing.Protected
+	}
+	moved := !strings.EqualFold(existing.Host, d.Host) || existing.Path != d.Path
+	redeploy := d.Protected != existing.Protected || existing.Protected && moved
+	if err := s.store.UpdateDomain(ctx, d); err != nil {
 		if errors.Is(err, store.ErrHostReserved) {
 			msg := ownHostRefusal
 			if strings.EqualFold(strings.TrimSuffix(existing.Host, "."), strings.TrimSuffix(d.Host, ".")) {
@@ -956,8 +1017,54 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Could not update domain: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.syncCerts(r.Context())
-	http.Redirect(w, r, "/apps/"+strconv.FormatInt(id, 10), http.StatusSeeOther)
+	if d.Protected && !existing.Protected {
+		if err := s.ensureGateHost(ctx); err != nil {
+			undo := s.store.UpdateDomain(ctx, existing)
+			s.refuseProtection(w, err, undo)
+			return
+		}
+	}
+	s.finishDomainSave(ctx, w, r, app, redeploy)
+}
+
+// ensureGateHost has the proxy reconciled now, with the rows as saved, so
+// Traefik maps the gate's host before a gated container is deployed. The
+// rows alone don't promise it: a tunnel enable can fail half-way, Docker can
+// be down at boot, a public URL can lack a host.
+func (s *Server) ensureGateHost(ctx context.Context) error {
+	if s.proxy == nil {
+		return errors.New("this server has no proxy to update")
+	}
+	return s.proxy.ReconcileProxy(ctx)
+}
+
+// refuseProtection answers a save that would have turned sign-in on when the
+// proxy couldn't be reconciled. undo is the result of putting the row back.
+func (s *Server) refuseProtection(w http.ResponseWriter, err, undo error) {
+	if undo != nil {
+		log.Printf("protected routes: could not put a row back after the proxy failed: %v", undo)
+		http.Error(w, fmt.Sprintf("Sign-in wasn't turned on: Outhaul couldn't update its proxy (%v), and couldn't undo the change to the domain (%v). Check the domain before you deploy.", err, undo), http.StatusInternalServerError)
+		return
+	}
+	http.Error(w, fmt.Sprintf("Sign-in wasn't turned on: Outhaul couldn't update its proxy (%v). The domain wasn't changed.", err), http.StatusServiceUnavailable)
+}
+
+// finishDomainSave ends a saved add or edit. When the save changed what sign-in
+// covers it queues the deploy that applies it (applyProtection). Either way it
+// syncs the local CA, which mints a protected row's certificate whatever its
+// TLS flag.
+func (s *Server) finishDomainSave(ctx context.Context, w http.ResponseWriter, r *http.Request, app core.App, redeploy bool) {
+	var applyErr error
+	if redeploy {
+		_, applyErr = s.applyProtection(ctx, app)
+	}
+	s.syncCerts(ctx)
+	if applyErr != nil {
+		log.Printf("protected routes: queue the deploy of %q: %v", app.Name, applyErr)
+		http.Error(w, "The domain was saved, but the deploy that applies its sign-in setting couldn't be queued: "+applyErr.Error()+". Deploy the app to apply it.", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/apps/"+strconv.FormatInt(app.ID, 10), http.StatusSeeOther)
 }
 
 func (s *Server) handleDeleteDomain(w http.ResponseWriter, r *http.Request) {
@@ -1297,7 +1404,14 @@ func (s *Server) handleStopApp(w http.ResponseWriter, r *http.Request) {
 		})
 }
 
+// handleRestartApp restarts the app's container or stack, unless their labels
+// disagree with its rows' protection: restarting would bring back the old
+// labels, so a protected route could come back public. Then it deploys
+// instead, by the rules in queueProtectionDeploy, and shows that deployment.
 func (s *Server) handleRestartApp(w http.ResponseWriter, r *http.Request) {
+	if s.restartDeploysInstead(w, r) {
+		return
+	}
 	s.appLifecycle(w, r,
 		func(ctx context.Context, cid string) error {
 			_ = s.runtime.StopContainer(ctx, cid, 10*time.Second) // ignore: already-stopped is fine
@@ -1306,6 +1420,41 @@ func (s *Server) handleRestartApp(w http.ResponseWriter, r *http.Request) {
 		func(ctx context.Context, project string) error {
 			return s.compose.Restart(ctx, project, io.Discard)
 		})
+}
+
+// restartDeploysInstead queues a deploy, and answers, when the app's containers
+// disagree with its rows' protection (protectionMismatch). It reports whether
+// it answered. An app with no containers has nothing to restart, and is left
+// to appLifecycle. If the labels can't be read, nothing is restarted.
+func (s *Server) restartDeploysInstead(w http.ResponseWriter, r *http.Request) bool {
+	id, ok := parseID(r.PathValue("id"))
+	if !ok {
+		return false
+	}
+	app, err := s.store.GetApp(r.Context(), id)
+	if err != nil {
+		return false
+	}
+	domains, err := s.store.ListDomains(r.Context(), id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return true
+	}
+	cs, err := s.appContainers(r.Context(), app)
+	if err != nil {
+		http.Error(w, "Could not read the app's containers, so it wasn't restarted: "+err.Error(), http.StatusInternalServerError)
+		return true
+	}
+	if len(cs) == 0 || !protectionMismatch(domains, app.Name, cs) {
+		return false
+	}
+	dep, err := s.queueProtectionDeploy(r.Context(), app)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return true
+	}
+	http.Redirect(w, r, deploymentPath(dep.ID), http.StatusSeeOther)
+	return true
 }
 
 // appLifecycle runs a stop/restart-style action against an app's runtime:

@@ -13,6 +13,7 @@
     {{end}}
   </div>
 </div>
+{{if .RestartDeploys}}<div class="alert alert-warn">Restart will deploy this app instead, so its domains' sign-in settings reach its containers. {{with .ProtectionWarning}}<strong>{{.}}</strong>{{end}}</div>{{end}}
 
 <nav class="tabs" id="app-tabs">
   <a href="#overview" data-tab-link="overview">Overview</a>
@@ -235,6 +236,7 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
     <h2 class="panel-title">Domains</h2>
     {{if .CanChange}}<button type="button" class="btn btn-primary" onclick="openDomainDialog()">+ New domain</button>{{end}}
   </div>
+  {{if .ProtectionUnreachable}}<div class="alert alert-warn">Visitors can't get through to the domains that require sign-in, because signing in isn't available on this server. They keep requiring it. {{.ProtectionReason}}</div>{{end}}
   {{if .Domains}}
   <table class="table">
     <thead><tr><th>Domain</th>{{if eq .App.Kind "compose"}}<th>Service</th>{{end}}<th>Port</th><th>Path</th><th>HTTPS</th><th></th></tr></thead>
@@ -249,7 +251,7 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
         <td>
           {{if $.CanChange}}
           <button type="button" class="linkbtn"
-            onclick='openDomainDialog({"id":"{{.ID}}","host":"{{.Host}}","service":"{{.Service}}","port":"{{.Port}}","path":"{{.Path}}","internal_path":"{{.InternalPath}}","tls":"{{if .TLS}}1{{else}}0{{end}}"})'>edit</button>
+            onclick='openDomainDialog({"id":"{{.ID}}","host":"{{.Host}}","service":"{{.Service}}","port":"{{.Port}}","path":"{{.Path}}","internal_path":"{{.InternalPath}}","tls":"{{if .TLS}}1{{else}}0{{end}}","protected":"{{if .Protected}}1{{else}}0{{end}}"})'>edit</button>
           <form method="post" action="/apps/{{$.App.ID}}/domains/{{.ID}}/delete" class="inline" onsubmit="return confirm('Remove {{.Host}}{{.Path}}?');">
             <button type="submit" class="linkbtn">remove</button>
           </form>

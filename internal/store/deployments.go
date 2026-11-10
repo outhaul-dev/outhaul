@@ -51,6 +51,69 @@ func (s *Store) CreateRollback(ctx context.Context, appID int64, image string, r
 		Image: image, RollbackOf: rollbackOf, CreatedAt: now, Tag: tag}, nil
 }
 
+// EnqueueDeployment hands choose the app's deployments, newest first, and
+// queues what it picks, reading and inserting in one transaction. The store
+// has a single connection, so no other deployment can be queued in between.
+// choose returns an image to reuse and the deployment that built it, queued
+// as CreateRollback queues one (its tag included), or "" for a normal deploy,
+// as CreateDeployment. choose must not call the store: it would deadlock.
+func (s *Store) EnqueueDeployment(ctx context.Context, appID int64, choose func(newestFirst []core.Deployment) (image string, rollbackOf int64)) (core.Deployment, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return core.Deployment{}, err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.QueryContext(ctx,
+		`SELECT `+deploymentCols+` FROM deployments WHERE app_id = ? ORDER BY created_at DESC, id DESC`, appID)
+	if err != nil {
+		return core.Deployment{}, err
+	}
+	var deps []core.Deployment
+	for rows.Next() {
+		d, err := scanDeployment(rows)
+		if err != nil {
+			rows.Close()
+			return core.Deployment{}, err
+		}
+		deps = append(deps, d)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return core.Deployment{}, err
+	}
+	rows.Close()
+
+	image, rollbackOf := choose(deps)
+	now := fmtTime(time.Now().UTC())
+	var res sql.Result
+	if image == "" {
+		res, err = tx.ExecContext(ctx,
+			`INSERT INTO deployments (app_id, status, created_at) VALUES (?, ?, ?)`,
+			appID, core.StatusQueued, now)
+	} else {
+		res, err = tx.ExecContext(ctx,
+			`INSERT INTO deployments (app_id, status, image, rollback_of, created_at, tag)
+			 VALUES (?, ?, ?, ?, ?, COALESCE((SELECT tag FROM deployments WHERE id = ?), ''))`,
+			appID, core.StatusQueued, image, rollbackOf, now, rollbackOf)
+	}
+	if err != nil {
+		return core.Deployment{}, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return core.Deployment{}, err
+	}
+	dep, err := scanDeployment(tx.QueryRowContext(ctx, `SELECT `+deploymentCols+` FROM deployments WHERE id = ?`, id))
+	if err != nil {
+		return core.Deployment{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return core.Deployment{}, err
+	}
+	return dep, nil
+}
+
 // EnqueueTagDeployment reads the app's in-play tags, asks choose whether and
 // which tag to deploy, and inserts a queued tag deployment, all in one
 // transaction. In play means the non-empty tags of the newest running row plus

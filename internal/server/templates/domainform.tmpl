@@ -9,7 +9,7 @@
       <div class="wizard-steps">
         <span class="dot" data-dot>1 · Host</span>
         <span class="dot" data-dot>2 · Target</span>
-        <span class="dot" data-dot>3 · HTTPS</span>
+        <span class="dot" data-dot>3 · HTTPS and sign-in</span>
       </div>
 
       <!-- Step 1: Host -->
@@ -59,7 +59,7 @@
         </label>
       </div>
 
-      <!-- Step 3: HTTPS -->
+      <!-- Step 3: HTTPS and sign-in -->
       <div class="stack" data-step>
         {{if .LocalCA}}
         <label class="field-check">
@@ -75,7 +75,21 @@
         {{if not .TLSAvailable}}
         <p class="env-note">HTTPS automation needs an ACME email or OUTHAUL_LOCAL_CA in the server config. Set one to enable per-domain certificates.</p>
         {{end}}
-        <p class="muted env-note">Domain changes apply on this app's next deploy.</p>
+
+        <div class="protect">
+          <input type="hidden" name="protected_offered" value="1">
+          <label class="field-check">
+            <input type="checkbox" class="switch" role="switch" name="protected" id="domain-protected"{{if not .ProtectionAvailable}} disabled{{end}}>
+            <span>Require sign-in</span>
+          </label>
+          <p class="muted">People must sign in to Outhaul before they reach this address. Everyone who can sign in gets through, and the app receives their name in the <span class="mono">X-Outhaul-User</span> header.</p>
+          {{if not .ProtectionAvailable}}<p class="env-note">{{.ProtectionReason}}</p>{{end}}
+          <div class="alert alert-warn protect-note" id="domain-protect-note">
+            Turning sign-in on or off, or changing the host or path of a domain that requires it, redeploys this app if it is running.{{if .TLSAvailable}} A domain that requires sign-in is always served over HTTPS, even with Automate HTTPS off.{{end}}
+            {{with .ProtectionWarning}}<strong>{{.}}</strong>{{end}}
+          </div>
+        </div>
+        <p class="muted env-note">Other domain changes apply on this app's next deploy.</p>
       </div>
     </div>
 
@@ -153,7 +167,19 @@
       }
     });
 
+    // The redeploy note and the warning of what will ship show while the switch
+    // is on, or when the row being edited was protected (turning it off
+    // redeploys too). Without JS they stay visible.
+    var protect = document.getElementById('domain-protected');
+    var protectNote = document.getElementById('domain-protect-note');
+    var editedProtected = false;
+    function applyProtect() {
+      if (protectNote) protectNote.hidden = !((protect && protect.checked) || editedProtected);
+    }
+    if (protect) protect.addEventListener('change', applyProtect);
+
     applyHostKind();
+    applyProtect();
     show(0);
 
     if (dialog.open) dialog.close();
@@ -180,13 +206,19 @@
         setField('internal_path', row.internal_path || '');
         var tls = document.getElementById('domain-tls');
         if (tls && !tls.disabled) tls.checked = row.tls === '1';
+        // Set even when the switch is disabled, so it shows the row's state;
+        // a disabled switch submits nothing and the row keeps its protection.
+        editedProtected = row.protected === '1';
+        if (protect) protect.checked = editedProtected;
       } else {
         title.textContent = 'New domain';
         submitBtn.textContent = 'Create domain';
         form.setAttribute('action', addAction);
         form.reset();
+        editedProtected = false;
         applyHostKind();
       }
+      applyProtect();
       show(0);
       dialog.showModal();
     };

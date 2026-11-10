@@ -136,6 +136,27 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 input[type=checkbox] { accent-color: var(--accent); }
 .field-wide { grid-column: 1 / -1; }
 .field-check { display: flex; align-items: center; gap: 8px; padding: 7px 0; }
+/* A switch: a checkbox drawn as a sliding toggle (the domain dialog's
+   "Require sign-in"). It stays a real checkbox, so forms and keyboards
+   treat it as one. */
+input[type=checkbox].switch {
+  appearance: none; -webkit-appearance: none; margin: 0; flex: none;
+  position: relative; width: 30px; height: 16px; cursor: pointer;
+  background: var(--bg-4); border: 1px solid var(--border-strong); border-radius: 999px;
+  transition: background-color .15s, border-color .15s;
+}
+input[type=checkbox].switch::before {
+  content: ""; position: absolute; top: 2px; left: 2px;
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--text-secondary); transition: transform .15s, background-color .15s;
+}
+input[type=checkbox].switch:checked { background: var(--accent); border-color: var(--accent-active); }
+input[type=checkbox].switch:checked::before { transform: translateX(14px); background: var(--text-inverse); }
+input[type=checkbox].switch:disabled { opacity: 0.5; cursor: not-allowed; }
+input[type=checkbox].switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.protect { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px solid var(--border-subtle); }
+.protect p { margin: 0; }
+.protect .protect-note { margin: 4px 0 0; }
 
 /* Buttons */
 .btn {
