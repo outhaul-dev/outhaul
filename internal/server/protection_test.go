@@ -420,6 +420,50 @@ func TestNoReusableImageRunsNormalDeploy(t *testing.T) {
 			t.Errorf("deployments = %+v, want a normal deploy queued", deps)
 		}
 	})
+	// A deploy that failed after building its image may have cut over first:
+	// its image can be the one serving, under a failed row, so the live
+	// running row's image isn't known to be what is live.
+	failNewer := func(t *testing.T, e *testEnv, appID int64, image string) {
+		t.Helper()
+		ctx := context.Background()
+		d, err := e.store.CreateDeployment(ctx, appID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := e.store.ClaimDeployment(ctx, d.ID); err != nil || !ok {
+			t.Fatalf("claim: %v %v", ok, err)
+		}
+		if image == "" {
+			mustTransition(t, e, d.ID, core.StatusBuilding, core.StatusFailed)
+			return
+		}
+		if err := e.store.SetImage(ctx, d.ID, image); err != nil {
+			t.Fatal(err)
+		}
+		mustTransition(t, e, d.ID, core.StatusBuilding, core.StatusDeploying)
+		mustTransition(t, e, d.ID, core.StatusDeploying, core.StatusFailed)
+	}
+	t.Run("a newer deploy failed after building its image", func(t *testing.T) {
+		e, _ := newProtectionEnv(t)
+		app, row, _ := liveWeb(t, e, "img:1")
+		failNewer(t, e, app.ID, "img:2")
+		if w := protectionWarningFor(app, deploymentsOf(t, e, app.ID)); !strings.Contains(w, "This will deploy the latest code from main") {
+			t.Errorf("warning = %q, want it to say a build ships", w)
+		}
+		wantStatus(t, "turn the switch on", e.saveDomain(t, app.ID, row, domainForm(row, true)), http.StatusSeeOther)
+		if d := deploymentsOf(t, e, app.ID)[0]; d.Status != core.StatusQueued || d.Image != "" || d.RollbackOf != 0 {
+			t.Errorf("queued %+v, want a normal deploy, not img:1 again", d)
+		}
+	})
+	t.Run("a newer deploy failed in its build", func(t *testing.T) {
+		e, _ := newProtectionEnv(t)
+		app, row, live := liveWeb(t, e, "img:1")
+		failNewer(t, e, app.ID, "")
+		wantStatus(t, "turn the switch on", e.saveDomain(t, app.ID, row, domainForm(row, true)), http.StatusSeeOther)
+		if d := deploymentsOf(t, e, app.ID)[0]; d.Image != "img:1" || d.RollbackOf != live.ID {
+			t.Errorf("queued %+v, want img:1 reused: a build failure never touches the live container", d)
+		}
+	})
 	t.Run("the image was pruned", func(t *testing.T) {
 		e, _ := newProtectionEnv(t)
 		app, row, _ := liveWeb(t, e, "img:1")
@@ -460,6 +504,23 @@ func TestStoppedOrNeverDeployedQueuesNothing(t *testing.T) {
 			t.Errorf("deployments = %+v, want only the old one", deps)
 		}
 	})
+	t.Run("never ran: its first deploy failed", func(t *testing.T) {
+		e, _ := newProtectionEnv(t)
+		app, row, _ := liveWeb(t, e, "")
+		e.runContainers()
+		failed, err := e.store.CreateDeployment(context.Background(), app.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := e.store.ClaimDeployment(context.Background(), failed.ID); err != nil || !ok {
+			t.Fatalf("claim: %v %v", ok, err)
+		}
+		mustTransition(t, e, failed.ID, core.StatusBuilding, core.StatusFailed)
+		wantStatus(t, "turn the switch on", e.saveDomain(t, app.ID, row, domainForm(row, true)), http.StatusSeeOther)
+		if deps := deploymentsOf(t, e, app.ID); len(deps) != 1 {
+			t.Errorf("deployments = %+v, want only the failed one", deps)
+		}
+	})
 	t.Run("stopped: remove an open path on a protected host", func(t *testing.T) {
 		e, _ := newProtectionEnv(t)
 		app, row, _ := liveWeb(t, e, "img:1")
@@ -498,6 +559,77 @@ func TestInFlightDeployIsNotUndone(t *testing.T) {
 			}
 		})
 	}
+	// Nothing is running, but a deploy is in flight: a first build, or one
+	// after Stop. It read the rows when it started, so the switch queues a
+	// normal deploy behind it.
+	for _, c := range []struct {
+		name    string
+		compose bool
+		before  string // the image of an earlier, now stopped, deploy; "" for none
+	}{
+		{name: "a first deploy", before: ""},
+		{name: "a deploy after Stop", before: "img:1"},
+		{name: "a first compose deploy", compose: true},
+	} {
+		for _, st := range []core.DeployStatus{core.StatusQueued, core.StatusBuilding, core.StatusDeploying} {
+			t.Run("nothing running, "+c.name+" "+string(st), func(t *testing.T) {
+				e, _ := newProtectionEnv(t)
+				ctx := context.Background()
+				var (
+					app core.App
+					row core.Domain
+				)
+				if c.compose {
+					app = seedComposeStack(t, e)
+					row = domainsOf(t, e, app.ID)[0]
+					e.runContainers()
+				} else {
+					app, row, _ = liveWeb(t, e, c.before)
+					if c.before == "" {
+						e.runContainers()
+					} else {
+						e.runContainers(labelled("c1", app, []core.Domain{row}, "exited"))
+					}
+				}
+				inFlight, err := e.store.CreateDeployment(ctx, app.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if st != core.StatusQueued {
+					if ok, err := e.store.ClaimDeployment(ctx, inFlight.ID); err != nil || !ok {
+						t.Fatalf("claim: %v %v", ok, err)
+					}
+				}
+				if st == core.StatusDeploying {
+					mustTransition(t, e, inFlight.ID, core.StatusBuilding, core.StatusDeploying)
+				}
+				notified := e.deployer.notified
+				wantStatus(t, "turn the switch on", e.saveDomain(t, app.ID, row, domainForm(row, true)), http.StatusSeeOther)
+				deps := deploymentsOf(t, e, app.ID)
+				if d := deps[0]; d.ID == inFlight.ID || d.Status != core.StatusQueued || d.Image != "" || d.RollbackOf != 0 {
+					t.Errorf("deployments = %+v, want a normal deploy queued behind #%d", deps, inFlight.ID)
+				}
+				if e.deployer.notified == notified {
+					t.Error("the deployer wasn't told about the queued deployment")
+				}
+			})
+		}
+	}
+	t.Run("nothing running, a rollback in flight", func(t *testing.T) {
+		e, _ := newProtectionEnv(t)
+		app, row, _ := liveWeb(t, e, "")
+		old := seedFinishedDeploy(t, e, app.ID, "img:0")
+		e.runContainers(labelled("c1", app, []core.Domain{row}, "exited"))
+		rb, err := e.store.CreateRollback(context.Background(), app.ID, "img:0", old.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantStatus(t, "turn the switch on", e.saveDomain(t, app.ID, row, domainForm(row, true)), http.StatusSeeOther)
+		deps := deploymentsOf(t, e, app.ID)
+		if d := deps[0]; d.ID == rb.ID || d.Image != "img:0" || d.RollbackOf != old.ID {
+			t.Errorf("queued %+v, want img:0 again (from #%d), so the rollback isn't undone", d, old.ID)
+		}
+	})
 	t.Run("a rollback", func(t *testing.T) {
 		e, _ := newProtectionEnv(t)
 		app, row, _ := liveWeb(t, e, "")

@@ -296,10 +296,8 @@ func TestComposeAppDetailShowsStack(t *testing.T) {
 	app, _ := e.store.GetAppByName(context.Background(), "shop")
 
 	e.runtime.stack = []docker.Container{
-		{ID: "c1", Name: "outhaul-shop-web-1", State: "running",
-			Labels: map[string]string{"com.docker.compose.service": "web"}},
-		{ID: "c2", Name: "outhaul-shop-db-1", State: "exited",
-			Labels: map[string]string{"com.docker.compose.service": "db"}},
+		composeContainer(app, "c1", "web", "running", true),
+		composeContainer(app, "c2", "db", "exited", false),
 	}
 
 	page := body(t, e.get(t, "/apps/"+itoa(app.ID)))

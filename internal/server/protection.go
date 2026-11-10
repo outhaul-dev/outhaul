@@ -8,6 +8,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/compose"
 	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/docker"
+	"github.com/outhaul-dev/outhaul/internal/store"
 	"github.com/outhaul-dev/outhaul/internal/traefik"
 )
 
@@ -165,7 +166,10 @@ func (s *Server) leavesOpenRoute(ctx context.Context, d core.Domain) (bool, erro
 //  3. When it is a normal deploy, another normal deploy. Deployments run in
 //     order, so reusing the live image would put the old code back after it.
 //  4. The live (newest running) deployment's image, when it has one that
-//     hasn't been pruned.
+//     hasn't been pruned, and no newer deployment failed after building its
+//     image: that one may have replaced the container before it failed (the
+//     cutover's own health check fails after the swap), so the running row's
+//     image isn't known to be the live one.
 //  5. Otherwise a normal deploy.
 func chooseProtectionDeploy(app core.App, newestFirst []core.Deployment) (image string, builtBy int64) {
 	if app.Kind == core.KindCompose {
@@ -181,6 +185,9 @@ func chooseProtectionDeploy(app core.App, newestFirst []core.Deployment) (image 
 		}
 	}
 	for _, d := range newestFirst {
+		if d.Status == core.StatusFailed && d.Image != "" {
+			return "", 0
+		}
 		if d.Status != core.StatusRunning {
 			continue
 		}
@@ -199,27 +206,53 @@ func chooseProtectionDeploy(app core.App, newestFirst []core.Deployment) (image 
 // one store transaction so no other deployment of the app can be queued
 // between the choice and the insert, and wakes the worker.
 func (s *Server) queueProtectionDeploy(ctx context.Context, app core.App) (core.Deployment, error) {
-	dep, err := s.store.EnqueueDeployment(ctx, app.ID, func(newestFirst []core.Deployment) (string, int64) {
-		return chooseProtectionDeploy(app, newestFirst)
+	dep, _, err := s.enqueueProtectionDeploy(ctx, app, true)
+	return dep, err
+}
+
+// enqueueProtectionDeploy is queueProtectionDeploy, except that when running
+// is false it queues only if a deployment of the app is queued, building or
+// deploying, decided in the same transaction. It reports whether it queued.
+func (s *Server) enqueueProtectionDeploy(ctx context.Context, app core.App, running bool) (core.Deployment, bool, error) {
+	dep, queued, err := s.store.EnqueueDeployment(ctx, app.ID, func(newestFirst []core.Deployment) store.DeployChoice {
+		if !running && !deployInFlight(newestFirst) {
+			return store.DeployChoice{Skip: true}
+		}
+		image, builtBy := chooseProtectionDeploy(app, newestFirst)
+		return store.DeployChoice{Image: image, RollbackOf: builtBy}
 	})
-	if err != nil {
-		return core.Deployment{}, err
+	if err != nil || !queued {
+		return core.Deployment{}, false, err
 	}
 	s.deployer.Notify()
-	return dep, nil
+	return dep, true, nil
+}
+
+// deployInFlight reports whether any of deps is queued, building or deploying.
+func deployInFlight(deps []core.Deployment) bool {
+	for _, d := range deps {
+		switch d.Status {
+		case core.StatusQueued, core.StatusBuilding, core.StatusDeploying:
+			return true
+		}
+	}
+	return false
 }
 
 // applyProtection queues the deploy that applies a protection change, when
-// the app is running. A stopped app, or one never deployed, queues nothing:
-// its next deploy carries the change, and Restart deploys instead of starting
-// a container whose labels disagree (handleRestartApp).
+// the app is running or a deployment of it is in flight: that deployment read
+// the rows when it started, so the change needs another behind it (rule 3 in
+// chooseProtectionDeploy). A stopped app with nothing in flight, or one never
+// deployed, queues nothing: its next deploy carries the change, and Restart
+// deploys instead of starting a container whose labels disagree
+// (handleRestartApp).
 func (s *Server) applyProtection(ctx context.Context, app core.App) (*core.Deployment, error) {
 	running, err := s.appRunning(ctx, app)
-	if err != nil || !running {
+	if err != nil {
 		return nil, err
 	}
-	dep, err := s.queueProtectionDeploy(ctx, app)
-	if err != nil {
+	dep, queued, err := s.enqueueProtectionDeploy(ctx, app, running)
+	if err != nil || !queued {
 		return nil, err
 	}
 	return &dep, nil

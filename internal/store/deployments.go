@@ -51,40 +51,53 @@ func (s *Store) CreateRollback(ctx context.Context, appID int64, image string, r
 		Image: image, RollbackOf: rollbackOf, CreatedAt: now, Tag: tag}, nil
 }
 
+// DeployChoice is what EnqueueDeployment's choose picks: nothing (Skip), an
+// image to reuse and the deployment that built it, or, with Image "", a
+// normal deploy.
+type DeployChoice struct {
+	Skip       bool
+	Image      string
+	RollbackOf int64
+}
+
 // EnqueueDeployment hands choose the app's deployments, newest first, and
 // queues what it picks, reading and inserting in one transaction. The store
 // has a single connection, so no other deployment can be queued in between.
-// choose returns an image to reuse and the deployment that built it, queued
-// as CreateRollback queues one (its tag included), or "" for a normal deploy,
-// as CreateDeployment. choose must not call the store: it would deadlock.
-func (s *Store) EnqueueDeployment(ctx context.Context, appID int64, choose func(newestFirst []core.Deployment) (image string, rollbackOf int64)) (core.Deployment, error) {
+// A reuse is queued as CreateRollback queues one (its tag included), a normal
+// deploy as CreateDeployment. It reports whether it queued one. choose must
+// not call the store: it would deadlock.
+func (s *Store) EnqueueDeployment(ctx context.Context, appID int64, choose func(newestFirst []core.Deployment) DeployChoice) (core.Deployment, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return core.Deployment{}, err
+		return core.Deployment{}, false, err
 	}
 	defer tx.Rollback()
 
 	rows, err := tx.QueryContext(ctx,
 		`SELECT `+deploymentCols+` FROM deployments WHERE app_id = ? ORDER BY created_at DESC, id DESC`, appID)
 	if err != nil {
-		return core.Deployment{}, err
+		return core.Deployment{}, false, err
 	}
 	var deps []core.Deployment
 	for rows.Next() {
 		d, err := scanDeployment(rows)
 		if err != nil {
 			rows.Close()
-			return core.Deployment{}, err
+			return core.Deployment{}, false, err
 		}
 		deps = append(deps, d)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		return core.Deployment{}, err
+		return core.Deployment{}, false, err
 	}
 	rows.Close()
 
-	image, rollbackOf := choose(deps)
+	choice := choose(deps)
+	if choice.Skip {
+		return core.Deployment{}, false, nil
+	}
+	image, rollbackOf := choice.Image, choice.RollbackOf
 	now := fmtTime(time.Now().UTC())
 	var res sql.Result
 	if image == "" {
@@ -98,20 +111,20 @@ func (s *Store) EnqueueDeployment(ctx context.Context, appID int64, choose func(
 			appID, core.StatusQueued, image, rollbackOf, now, rollbackOf)
 	}
 	if err != nil {
-		return core.Deployment{}, err
+		return core.Deployment{}, false, err
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
-		return core.Deployment{}, err
+		return core.Deployment{}, false, err
 	}
 	dep, err := scanDeployment(tx.QueryRowContext(ctx, `SELECT `+deploymentCols+` FROM deployments WHERE id = ?`, id))
 	if err != nil {
-		return core.Deployment{}, err
+		return core.Deployment{}, false, err
 	}
 	if err := tx.Commit(); err != nil {
-		return core.Deployment{}, err
+		return core.Deployment{}, false, err
 	}
-	return dep, nil
+	return dep, true, nil
 }
 
 // EnqueueTagDeployment reads the app's in-play tags, asks choose whether and

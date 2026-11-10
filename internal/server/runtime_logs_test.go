@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/outhaul-dev/outhaul/internal/compose"
 	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/docker"
 )
@@ -101,13 +102,26 @@ func seedComposeStack(t *testing.T, e *testEnv) core.App {
 		t.Fatal(err)
 	}
 	e.runtime.stack = []docker.Container{
-		{ID: "c1", Name: "outhaul-shop-web-1", State: "running",
-			Labels: map[string]string{"com.docker.compose.service": "web"}},
-		{ID: "c2", Name: "outhaul-shop-db-1", State: "running",
-			Labels: map[string]string{"com.docker.compose.service": "db"}},
+		composeContainer(app, "c1", "web", "running", true),
+		composeContainer(app, "c2", "db", "running", false),
 	}
 	e.runtime.logs = map[string]string{"c1": "web says hi\n", "c2": "db ready\n"}
 	return app
+}
+
+// composeContainer is a container of app's stack as Compose labels it: its
+// project and service. A routed service also carries Outhaul's ownership
+// labels, which the override file gives every service with a domain.
+func composeContainer(app core.App, id, service, state string, routed bool) docker.Container {
+	labels := map[string]string{
+		"com.docker.compose.project": compose.ProjectName(app.Name),
+		"com.docker.compose.service": service,
+	}
+	if routed {
+		labels["outhaul.managed"] = "true"
+		labels["outhaul.app"] = app.Name
+	}
+	return docker.Container{ID: id, Name: compose.ProjectName(app.Name) + "-" + service + "-1", State: state, Labels: labels}
 }
 
 func TestRuntimeLogsComposeSelectsService(t *testing.T) {

@@ -31,14 +31,14 @@ func TestEnqueueDeploymentQueuesWhatChooseReturns(t *testing.T) {
 	}
 
 	var seen []int64
-	dep, err := s.EnqueueDeployment(ctx, app.ID, func(deps []core.Deployment) (string, int64) {
+	dep, queuedOne, err := s.EnqueueDeployment(ctx, app.ID, func(deps []core.Deployment) DeployChoice {
 		for _, d := range deps {
 			seen = append(seen, d.ID)
 		}
-		return "outhaul/web:1", built.ID
+		return DeployChoice{Image: "outhaul/web:1", RollbackOf: built.ID}
 	})
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || !queuedOne {
+		t.Fatalf("EnqueueDeployment = %v, %v; want one queued", queuedOne, err)
 	}
 	if len(seen) != 2 || seen[0] != queued.ID || seen[1] != built.ID {
 		t.Errorf("choose saw %v, want this app's deployments newest first: [%d %d]", seen, queued.ID, built.ID)
@@ -54,12 +54,25 @@ func TestEnqueueDeploymentQueuesWhatChooseReturns(t *testing.T) {
 		t.Errorf("returned %+v, stored %+v", dep, got)
 	}
 
-	dep, err = s.EnqueueDeployment(ctx, app.ID, func([]core.Deployment) (string, int64) { return "", 0 })
-	if err != nil {
-		t.Fatal(err)
+	dep, queuedOne, err = s.EnqueueDeployment(ctx, app.ID, func([]core.Deployment) DeployChoice { return DeployChoice{} })
+	if err != nil || !queuedOne {
+		t.Fatalf("EnqueueDeployment = %v, %v; want one queued", queuedOne, err)
 	}
 	if dep.Status != core.StatusQueued || dep.Image != "" || dep.RollbackOf != 0 || dep.Tag != "" {
 		t.Errorf("normal deploy = %+v, want a plain queued deployment", dep)
+	}
+
+	// choose can decide, from the same read, to queue nothing.
+	before, err := s.ListDeploymentsForApp(ctx, app.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dep, queuedOne, err = s.EnqueueDeployment(ctx, app.ID, func([]core.Deployment) DeployChoice { return DeployChoice{Skip: true} })
+	if err != nil || queuedOne || dep.ID != 0 {
+		t.Errorf("skip: EnqueueDeployment = %+v, %v, %v; want nothing queued", dep, queuedOne, err)
+	}
+	if after, err := s.ListDeploymentsForApp(ctx, app.ID); err != nil || len(after) != len(before) {
+		t.Errorf("skip: deployments %d -> %d (%v), want none added", len(before), len(after), err)
 	}
 }
 
@@ -76,13 +89,13 @@ func TestEnqueueDeploymentSerializesCallers(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := s.EnqueueDeployment(ctx, app.ID, func(deps []core.Deployment) (string, int64) {
+			_, _, err := s.EnqueueDeployment(ctx, app.ID, func(deps []core.Deployment) DeployChoice {
 				for _, d := range deps {
 					if d.Status == core.StatusQueued {
-						return "", 0
+						return DeployChoice{}
 					}
 				}
-				return "img:1", 1
+				return DeployChoice{Image: "img:1", RollbackOf: 1}
 			})
 			if err != nil {
 				t.Error(err)

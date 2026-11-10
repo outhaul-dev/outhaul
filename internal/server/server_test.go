@@ -130,12 +130,28 @@ type fakeRuntime struct {
 func (f *fakeRuntime) FindContainer(_ context.Context, name string) (*docker.Container, error) {
 	return f.container, nil
 }
-func (f *fakeRuntime) ListContainers(_ context.Context, _ map[string]string) ([]docker.Container, error) {
+
+// ListContainers returns the containers in stack whose labels match every
+// key=value in match, as Docker's label filter does.
+func (f *fakeRuntime) ListContainers(_ context.Context, match map[string]string) ([]docker.Container, error) {
 	f.listCalls++
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
-	return f.stack, nil
+	var out []docker.Container
+	for _, c := range f.stack {
+		ok := true
+		for k, v := range match {
+			if got, has := c.Labels[k]; !has || got != v {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }
 func (f *fakeRuntime) StartContainer(_ context.Context, id string) error {
 	f.started = append(f.started, id)
