@@ -77,7 +77,7 @@ func (s *Store) CreateAppWithDomains(ctx context.Context, app core.App, domains 
 	// so we never leave an app with a domain mirror but no domain row. Compose
 	// apps pass Domain="" and seed their first row explicitly through the handler.
 	if app.Domain != "" && app.Kind != core.KindCompose {
-		if _, err := addDomainTx(ctx, tx, core.Domain{
+		if _, err := s.addDomainTx(ctx, tx, core.Domain{
 			AppID: app.ID, Host: app.Domain, Port: primaryDomainPort, TLS: true,
 		}); err != nil {
 			return core.App{}, err
@@ -85,7 +85,7 @@ func (s *Store) CreateAppWithDomains(ctx context.Context, app core.App, domains 
 	}
 	for _, d := range domains {
 		d.AppID = app.ID
-		if _, err := addDomainTx(ctx, tx, d); err != nil {
+		if _, err := s.addDomainTx(ctx, tx, d); err != nil {
 			return core.App{}, err
 		}
 	}

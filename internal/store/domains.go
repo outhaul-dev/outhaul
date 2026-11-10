@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
@@ -20,6 +21,47 @@ const domainCols = `id, app_id, host, service, port, path, internal_path, tls, c
 // Traefik would get two routers with identical rules and pick one arbitrarily.
 var ErrDomainTaken = errors.New("domain is already routed by another app")
 
+// ErrHostReserved means the host is the one Outhaul's own admin UI is served
+// on (see SetReservedHost). An app routed there, even on a path of its own,
+// would share the admin UI's origin and cookies.
+var ErrHostReserved = errors.New("domain is Outhaul's own address")
+
+// SetReservedHost names the host Outhaul's own admin UI is served on. From
+// then on no writer may add a domain row on it, or move one onto it; rows
+// already there are left as they are, and can be deleted. Case and a trailing
+// dot are ignored. "" reserves nothing. Call it once at startup.
+func (s *Store) SetReservedHost(host string) {
+	s.reservedHost.Store(normalizeHost(host))
+}
+
+// isReservedHost reports whether host is the reserved host.
+func (s *Store) isReservedHost(host string) bool {
+	reserved, _ := s.reservedHost.Load().(string)
+	return reserved != "" && normalizeHost(host) == reserved
+}
+
+// normalizeHost lowercases a hostname and drops a trailing dot.
+func normalizeHost(host string) string {
+	return strings.TrimSuffix(strings.ToLower(host), ".")
+}
+
+// ReservedHostDomains returns every route on the reserved host, tagged with
+// its app's name, so startup can warn about rows put there before it was
+// reserved. It is empty when nothing is reserved.
+func (s *Store) ReservedHostDomains(ctx context.Context) ([]core.DomainListing, error) {
+	all, err := s.ListAllDomains(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []core.DomainListing
+	for _, d := range all {
+		if s.isReservedHost(d.Host) {
+			out = append(out, d)
+		}
+	}
+	return out, nil
+}
+
 // AddDomain inserts a route and returns it with its ID, then re-syncs the app's
 // primary-domain mirror. A duplicate (app_id, host, path) violates UNIQUE.
 func (s *Store) AddDomain(ctx context.Context, d core.Domain) (core.Domain, error) {
@@ -28,7 +70,7 @@ func (s *Store) AddDomain(ctx context.Context, d core.Domain) (core.Domain, erro
 		return core.Domain{}, err
 	}
 	defer tx.Rollback()
-	d, err = addDomainTx(ctx, tx, d)
+	d, err = s.addDomainTx(ctx, tx, d)
 	if err != nil {
 		return core.Domain{}, err
 	}
@@ -41,8 +83,8 @@ func (s *Store) AddDomain(ctx context.Context, d core.Domain) (core.Domain, erro
 // addDomainTx inserts one route inside an open transaction, sets its ID and
 // CreatedAt, and re-syncs the app's primary-domain mirror. Callers own the
 // commit, so CreateApp can seed a row in the same transaction as the app insert.
-func addDomainTx(ctx context.Context, tx *sql.Tx, d core.Domain) (core.Domain, error) {
-	if err := checkRouteFreeTx(ctx, tx, d); err != nil {
+func (s *Store) addDomainTx(ctx context.Context, tx *sql.Tx, d core.Domain) (core.Domain, error) {
+	if err := s.checkRouteFreeTx(ctx, tx, d); err != nil {
 		return core.Domain{}, err
 	}
 	d.CreatedAt = time.Now().UTC()
@@ -64,12 +106,16 @@ func addDomainTx(ctx context.Context, tx *sql.Tx, d core.Domain) (core.Domain, e
 	return d, nil
 }
 
-// checkRouteFreeTx returns ErrDomainTaken when an app other than d.AppID already
+// checkRouteFreeTx returns ErrHostReserved when d's host is the reserved host,
+// on any path, and ErrDomainTaken when an app other than d.AppID already
 // routes d's host (case-insensitively) and path. The same host on a different
 // path is a legitimate split (e.g. /api served by another app). The check runs
 // in the writing transaction and the store holds a single connection, so two
 // concurrent writes cannot both pass it.
-func checkRouteFreeTx(ctx context.Context, tx *sql.Tx, d core.Domain) error {
+func (s *Store) checkRouteFreeTx(ctx context.Context, tx *sql.Tx, d core.Domain) error {
+	if s.isReservedHost(d.Host) {
+		return fmt.Errorf("%w: %s", ErrHostReserved, d.Host)
+	}
 	var owner string
 	err := tx.QueryRowContext(ctx,
 		`SELECT a.name FROM domains d JOIN apps a ON a.id = d.app_id
@@ -92,7 +138,8 @@ func (s *Store) UpdateDomain(ctx context.Context, d core.Domain) error {
 	}
 	defer tx.Rollback()
 	// Only a move onto a new host+path is checked: rows that already shared a
-	// route with another app before the check existed stay editable in place.
+	// route with another app, or sat on the reserved host, before the checks
+	// existed stay editable in place.
 	var moved bool
 	if err := tx.QueryRowContext(ctx,
 		`SELECT lower(host) != lower(?) OR path != ? FROM domains WHERE id = ? AND app_id = ?`,
@@ -100,7 +147,7 @@ func (s *Store) UpdateDomain(ctx context.Context, d core.Domain) error {
 		return err
 	}
 	if moved {
-		if err := checkRouteFreeTx(ctx, tx, d); err != nil {
+		if err := s.checkRouteFreeTx(ctx, tx, d); err != nil {
 			return err
 		}
 	}

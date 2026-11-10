@@ -15,6 +15,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/gitrepo"
 	"github.com/outhaul-dev/outhaul/internal/logstream"
+	"github.com/outhaul-dev/outhaul/internal/store"
 	"github.com/outhaul-dev/outhaul/internal/tagdeploy"
 )
 
@@ -199,7 +200,13 @@ func (b *Bridge) coldCreate(ctx context.Context, req request) (core.App, error) 
 	if b.serverIP != "" && kind != core.KindCompose {
 		app.Domain = req.App + "." + b.serverIP + ".sslip.io"
 	}
+	// The app and its route are created together, so a refused route leaves
+	// no app behind.
 	created, err := b.store.CreateApp(ctx, app)
+	if errors.Is(err, store.ErrHostReserved) {
+		return core.App{}, fmt.Errorf("an app named '%s' would get %s, which is Outhaul's own address; push under another name",
+			req.App, app.Domain)
+	}
 	if err != nil {
 		return core.App{}, fmt.Errorf("create app: %w", err)
 	}

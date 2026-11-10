@@ -149,6 +149,7 @@ func serve() error {
 		return err
 	}
 	defer st.Close()
+	reserveAdminHost(context.Background(), st, cfg.AdminHost(), log.Printf)
 
 	if n, err := st.RecoverActive(context.Background(), "interrupted by restart"); err != nil {
 		return fmt.Errorf("crash recovery: %w", err)
@@ -516,6 +517,28 @@ func openStore(cfg config.Config) (*store.Store, error) {
 		return nil, err
 	}
 	return openStoreWith(cfg, box)
+}
+
+// reserveAdminHost tells the store the host the admin UI is served on (the
+// public URL's), so no app can be routed there, whoever writes the route: an
+// app on that host would share the admin UI's origin and cookies. Each route
+// already on it gets a warning. Nothing is changed or deleted. "" reserves
+// nothing.
+func reserveAdminHost(ctx context.Context, st *store.Store, host string, logf func(format string, args ...any)) {
+	st.SetReservedHost(host)
+	if host == "" {
+		return
+	}
+	rows, err := st.ReservedHostDomains(ctx)
+	if err != nil {
+		logf("WARNING: could not check for apps on Outhaul's own address: %v", err)
+		return
+	}
+	for _, d := range rows {
+		logf("WARNING: app %q has the domain %s%s, which is Outhaul's own address (OUTHAUL_PUBLIC_URL). "+
+			"An app there shares the admin UI's origin and cookies. Delete that domain on the app's page; Outhaul leaves it in place.",
+			d.AppName, d.Host, d.Path)
+	}
 }
 
 func openStoreWith(cfg config.Config, box *secret.Box) (*store.Store, error) {

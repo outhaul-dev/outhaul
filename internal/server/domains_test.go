@@ -261,15 +261,24 @@ func TestDomainsPageTagsPreviewRows(t *testing.T) {
 	}
 }
 
-const ownAddressRefusal = "That is Outhaul's own address, so an app can't use it."
+const (
+	ownAddressRefusal    = "That is Outhaul's own address, so an app can't use it."
+	ownAddressRowRefusal = "This domain is on Outhaul's own address, which an app can't use, so it can't be edited. Delete it instead."
+)
 
 // refusedAsOwnAddress checks resp is a 400 saying the host is Outhaul's own.
 func refusedAsOwnAddress(t *testing.T, what string, resp *http.Response) {
 	t.Helper()
+	refusedSaying(t, what, resp, ownAddressRefusal)
+}
+
+// refusedSaying checks resp is a 400 saying msg.
+func refusedSaying(t *testing.T, what string, resp *http.Response, msg string) {
+	t.Helper()
 	page := body(t, resp)
 	if resp.StatusCode != http.StatusBadRequest ||
-		!(strings.Contains(page, ownAddressRefusal) || strings.Contains(page, html.EscapeString(ownAddressRefusal))) {
-		t.Errorf("%s = %d, want 400 saying %q: %.300s", what, resp.StatusCode, ownAddressRefusal, page)
+		!(strings.Contains(page, msg) || strings.Contains(page, html.EscapeString(msg))) {
+		t.Errorf("%s = %d, want 400 saying %q: %.300s", what, resp.StatusCode, msg, page)
 	}
 }
 
@@ -315,13 +324,16 @@ func TestAppCantUseOuthaulsOwnHost(t *testing.T) {
 		t.Errorf("refused edit changed the row to %q", got.Host)
 	}
 
-	// A row already on it can't be edited in place, but can be deleted.
+	// A row already on it can't be edited, and the refusal says to delete it,
+	// which works.
 	old, err := e.store.AddDomain(ctx, core.Domain{AppID: web.ID, Host: "slip.example.com", Path: "/old", Port: 8080, TLS: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	refusedAsOwnAddress(t, "edit a row already on it", e.postForm(t, addTo(web)+"/"+itoa(old.ID),
-		url.Values{"host_kind": {"custom"}, "host": {"slip.example.com"}, "path": {"/other"}}))
+	refusedSaying(t, "edit a row already on it", e.postForm(t, addTo(web)+"/"+itoa(old.ID),
+		url.Values{"host_kind": {"custom"}, "host": {"slip.example.com"}, "path": {"/other"}}), ownAddressRowRefusal)
+	refusedSaying(t, "edit a row already on it in place", e.postForm(t, addTo(web)+"/"+itoa(old.ID),
+		url.Values{"host_kind": {"custom"}, "host": {"Slip.example.com"}, "path": {"/old"}}), ownAddressRowRefusal)
 	resp := e.postForm(t, addTo(web)+"/"+itoa(old.ID)+"/delete", url.Values{})
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
@@ -356,5 +368,40 @@ func TestAppCantUseOuthaulsOwnHost(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusSeeOther {
 		t.Errorf("add app.example.com = %d, want 303", resp.StatusCode)
+	}
+}
+
+// The store refuses Outhaul's own host whoever writes the row (main.go tells it
+// the host at startup). The forms explain that refusal the same way as their
+// own check, which here sees another public URL so the store's is the one hit.
+func TestDomainFormsExplainTheStoresOwnHostRefusal(t *testing.T) {
+	ctx := context.Background()
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	web, _ := e.store.CreateApp(ctx, core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
+	old, err := e.store.AddDomain(ctx, core.Domain{AppID: web.ID, Host: "admin.example.com", Path: "/old", Port: 8080, TLS: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.store.SetReservedHost("admin.example.com")
+	addTo := "/apps/" + itoa(web.ID) + "/domains"
+
+	refusedAsOwnAddress(t, "add", e.postForm(t, addTo, url.Values{"host_kind": {"custom"}, "host": {"admin.example.com"}}))
+	moving, _ := e.store.AddDomain(ctx, core.Domain{AppID: web.ID, Host: "edit.test", Port: 8080, TLS: true})
+	refusedAsOwnAddress(t, "edit onto it", e.postForm(t, addTo+"/"+itoa(moving.ID),
+		url.Values{"host_kind": {"custom"}, "host": {"admin.example.com"}}))
+	refusedSaying(t, "move a row already on it", e.postForm(t, addTo+"/"+itoa(old.ID),
+		url.Values{"host_kind": {"custom"}, "host": {"admin.example.com"}, "path": {"/other"}}), ownAddressRowRefusal)
+
+	form := dockerfileForm("api")
+	form.Set("domain", "admin.example.com")
+	refusedAsOwnAddress(t, "create an app on it", e.postForm(t, "/apps", form))
+	form = composeForm("stack")
+	form.Set("domain", "admin.example.com")
+	refusedAsOwnAddress(t, "create a compose app on it", e.postForm(t, "/apps", form))
+	for _, name := range []string{"api", "stack"} {
+		if _, err := e.store.GetAppByName(ctx, name); err == nil {
+			t.Errorf("app %q was created", name)
+		}
 	}
 }

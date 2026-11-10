@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -148,7 +149,80 @@ func TestBridgeColdCreateGuards(t *testing.T) {
 	}
 }
 
+// A cold push gives a new app <name>.<server IP>.sslip.io. When that is
+// Outhaul's own address the push is refused with a message saying so, and no
+// app is left behind; another name works.
+func TestBridgeColdPushRefusesOuthaulsOwnAddress(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	b, st, br := bridgeEnv(t)
+	ctx := context.Background()
+	st.SetReservedHost("outhaul.203.0.113.9.sslip.io")
+
+	out := runHandle(t, b, request{App: "outhaul", Refs: []RefUpdate{{"0", pushedCommit(t, b, "outhaul"), "refs/heads/main"}}})
+	if !strings.Contains(out, "Outhaul's own address") || !strings.Contains(out, "push under another name") || !strings.Contains(out, "exit 1") {
+		t.Fatalf("want a refusal naming Outhaul's own address, exit 1:\n%s", out)
+	}
+	if _, err := st.GetAppByName(ctx, "outhaul"); err == nil {
+		t.Error("an app was created although its route was refused")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		app := waitForApp(t, st, "web")
+		if app.ID == 0 {
+			return
+		}
+		dep := waitForDeployment(t, st, app.ID)
+		markTerminal(t, st, dep, core.StatusRunning)
+		br.Close(dep.ID)
+	}()
+	out = runHandle(t, b, request{App: "web", Refs: []RefUpdate{{"0", pushedCommit(t, b, "web"), "refs/heads/main"}}})
+	<-done
+	if !strings.Contains(out, "✓ deployed web.203.0.113.9.sslip.io") || !strings.Contains(out, "exit 0") {
+		t.Fatalf("a push under another name:\n%s", out)
+	}
+}
+
 // --- helpers ---
+
+// pushedCommit creates app's bare repo holding one commit with an empty tree,
+// as if it had just been pushed, and returns the commit's id.
+func pushedCommit(t *testing.T, b *Bridge, app string) string {
+	t.Helper()
+	if err := b.repos.Init(app); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	dir, err := b.repos.Path(app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := func(stdin string, args ...string) string {
+		cmd := exec.Command("git", append([]string{"-C", dir, "-c", "user.name=t", "-c", "user.email=t@example.com"}, args...)...)
+		cmd.Stdin = strings.NewReader(stdin)
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("git %v: %v", args, err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	tree := git("", "mktree")
+	return git("", "commit-tree", tree, "-m", "init")
+}
+
+func waitForApp(t *testing.T, st *store.Store, name string) core.App {
+	t.Helper()
+	for i := 0; i < 400; i++ {
+		if app, err := st.GetAppByName(context.Background(), name); err == nil {
+			return app
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Errorf("app %q was never created", name)
+	return core.App{}
+}
 
 func newBufReader(s string) *bufio.Reader { return bufio.NewReader(strings.NewReader(s)) }
 

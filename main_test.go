@@ -3,14 +3,18 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/config"
+	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/store"
 	"github.com/outhaul-dev/outhaul/internal/update"
 )
 
@@ -118,6 +122,62 @@ func TestOpenStoreGeneratesKeyWhenNothingIsSealed(t *testing.T) {
 	st.Close()
 	if _, err := os.Stat(cfg.SecretKeyPath()); err != nil {
 		t.Errorf("no key file after open: %v", err)
+	}
+}
+
+// At startup the store learns the admin UI's host, so no writer can give it to
+// an app. Rows already on it are named in a warning, one per row, and left as
+// they are.
+func TestStartupReservesTheAdminHost(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	old, err := st.CreateApp(ctx, core.App{Name: "old", RepoURL: "https://x/y.git", Domain: "outhaul.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AddDomain(ctx, core.Domain{AppID: old.ID, Host: "Outhaul.example.com", Path: "/api", Port: 8080}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.CreateApp(ctx, core.App{Name: "other", RepoURL: "https://x/y.git", Domain: "other.example.com"}); err != nil {
+		t.Fatal(err)
+	}
+
+	var warnings []string
+	logf := func(format string, args ...any) { warnings = append(warnings, fmt.Sprintf(format, args...)) }
+	reserveAdminHost(ctx, st, config.Config{PublicURL: "https://Outhaul.Example.com:8443/"}.AdminHost(), logf)
+
+	if len(warnings) != 2 {
+		t.Fatalf("warnings = %q, want one for each of the old app's two rows", warnings)
+	}
+	for _, path := range []string{"", "/api"} {
+		found := false
+		for _, w := range warnings {
+			found = found || strings.HasPrefix(w, "WARNING:") && strings.Contains(w, `"old"`) &&
+				strings.Contains(w, "Outhaul's own address") && strings.Contains(strings.ToLower(w), "outhaul.example.com"+path+",")
+		}
+		if !found {
+			t.Errorf("warnings = %q, want one naming the app and the route outhaul.example.com%s", warnings, path)
+		}
+	}
+	if rows, _ := st.ListDomains(ctx, old.ID); len(rows) != 2 {
+		t.Errorf("the old app's rows = %+v, want both kept", rows)
+	}
+	if _, err := st.AddDomain(ctx, core.Domain{AppID: old.ID, Host: "outhaul.example.com", Path: "/new", Port: 8080}); !errors.Is(err, store.ErrHostReserved) {
+		t.Errorf("AddDomain on the admin host after startup: err = %v, want ErrHostReserved", err)
+	}
+
+	// No public URL: nothing is reserved, and nothing is said.
+	warnings = nil
+	reserveAdminHost(ctx, st, config.Config{}.AdminHost(), logf)
+	if len(warnings) != 0 {
+		t.Errorf("warnings with no public URL = %q", warnings)
+	}
+	if _, err := st.AddDomain(ctx, core.Domain{AppID: old.ID, Host: "outhaul.example.com", Path: "/new", Port: 8080}); err != nil {
+		t.Errorf("AddDomain with nothing reserved: %v", err)
 	}
 }
 

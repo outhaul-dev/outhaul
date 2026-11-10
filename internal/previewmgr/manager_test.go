@@ -643,6 +643,33 @@ func TestSpawnExplainsHostCollision(t *testing.T) {
 	}
 }
 
+// A preview host that is Outhaul's own address is refused like a taken one:
+// the spawn rolls back and the PR is told why. No other host is minted.
+func TestSpawnRefusesOuthaulsOwnHost(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	repo := "acme/web"
+	parent := h.seedGithubApp(t, "web", repo, nil)
+	h.st.SetReservedHost("web-pr-42." + serverIP + ".sslip.io")
+
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if _, err := h.st.GetPreviewByPR(ctx, parent.ID, 42); err == nil {
+		t.Error("the preview was kept although its host was refused")
+	}
+	if live, _ := h.st.ListPreviewsForParent(ctx, parent.ID); len(live) != 0 {
+		t.Errorf("previews = %+v, want none", live)
+	}
+	if h.notifier.notified {
+		t.Error("a deploy was started")
+	}
+	got := h.gh.comments[repo+"#42"]
+	if len(got) != 1 || !strings.Contains(got[0], "already used") || !strings.Contains(got[0], "Outhaul itself") {
+		t.Errorf("PR comments = %v, want one saying the hostname is used by Outhaul itself", got)
+	}
+}
+
 func TestSpawnDropsProdScopedEnv(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()

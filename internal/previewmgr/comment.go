@@ -41,10 +41,11 @@ func short(sha string) string {
 
 // spawnFailedComment tells the PR a preview never came up. The comment is
 // public, so the cause is named only when it is safe and actionable (a host
-// clash); anything else points at the server logs.
+// clash, with another app or with Outhaul's own address); anything else points
+// at the server logs.
 func spawnFailedComment(err error) string {
-	if errors.Is(err, store.ErrDomainTaken) {
-		return "✗ Preview could not be created: its hostname is already used by another app."
+	if errors.Is(err, store.ErrDomainTaken) || errors.Is(err, store.ErrHostReserved) {
+		return "✗ Preview could not be created: its hostname is already used by another app or by Outhaul itself."
 	}
 	return "✗ Preview could not be created. See the Outhaul server logs for details."
 }

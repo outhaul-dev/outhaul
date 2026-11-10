@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -359,6 +360,10 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		extra = []core.Domain{*firstDomain}
 	}
 	if _, err := s.store.CreateAppWithDomains(r.Context(), app, extra); err != nil {
+		if errors.Is(err, store.ErrHostReserved) {
+			s.renderAppsWithError(w, r, ownHostRefusal)
+			return
+		}
 		// Most likely a duplicate name (UNIQUE constraint) or a taken host.
 		s.renderAppsWithError(w, r, "Could not create app: "+err.Error())
 		return
@@ -894,6 +899,10 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 	}
 	d.AppID = id
 	if _, err := s.store.AddDomain(r.Context(), d); err != nil {
+		if errors.Is(err, store.ErrHostReserved) {
+			http.Error(w, ownHostRefusal, http.StatusBadRequest)
+			return
+		}
 		http.Error(w, "Could not add domain (is it already configured?): "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -920,6 +929,9 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d, verr := s.parseDomainForm(r, app)
+	if verr == ownHostRefusal && s.isOwnHost(existing.Host) {
+		verr = ownHostRowRefusal
+	}
 	if verr != "" {
 		http.Error(w, verr, http.StatusBadRequest)
 		return
@@ -933,6 +945,14 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 		d.TLS = existing.TLS
 	}
 	if err := s.store.UpdateDomain(r.Context(), d); err != nil {
+		if errors.Is(err, store.ErrHostReserved) {
+			msg := ownHostRefusal
+			if strings.EqualFold(strings.TrimSuffix(existing.Host, "."), strings.TrimSuffix(d.Host, ".")) {
+				msg = ownHostRowRefusal
+			}
+			http.Error(w, msg, http.StatusBadRequest)
+			return
+		}
 		http.Error(w, "Could not update domain: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -1101,8 +1121,14 @@ func (s *Server) parseDomainForm(r *http.Request, app core.App) (core.Domain, st
 	return d, ""
 }
 
-// ownHostRefusal is why a domain row can't use Outhaul's own host.
+// ownHostRefusal is why a domain row can't use Outhaul's own host. The store
+// refuses it too (store.ErrHostReserved), whoever writes the row; the forms
+// check first so they can say why.
 const ownHostRefusal = "That is Outhaul's own address, so an app can't use it."
+
+// ownHostRowRefusal answers an edit to a row put on Outhaul's own host before
+// that was refused. It can still be deleted.
+const ownHostRowRefusal = "This domain is on Outhaul's own address, which an app can't use, so it can't be edited. Delete it instead."
 
 // isOwnHost reports whether host is the host of Outhaul's public URL, ignoring
 // case and any port. An app routed there, even on a path of its own, would

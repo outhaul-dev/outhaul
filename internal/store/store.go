@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"sync/atomic"
 	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/secret"
@@ -18,6 +19,8 @@ import (
 type Store struct {
 	db  *sql.DB
 	box *secret.Box // encrypts app_env values; may be nil for non-env callers
+
+	reservedHost atomic.Value // string: the host no domain row may use; see SetReservedHost
 }
 
 // Open opens (creating if needed) the SQLite database at path, applies pragmas,
