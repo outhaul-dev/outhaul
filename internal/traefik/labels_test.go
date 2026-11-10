@@ -251,6 +251,44 @@ func TestOpenRouteStripsIdentityHeader(t *testing.T) {
 	}
 }
 
+// A CDN in front (a Cloudflare tunnel, or proxied DNS) must not cache what a
+// protected route answers, or it would answer strangers without the gate: the
+// route's response carries CDN-Cache-Control and Cloudflare-CDN-Cache-Control
+// "no-store", set by its noalias headers middleware, after the gate. An open
+// route's responses, and browsers' caching, are left as the app sets them.
+func TestProtectedRouteTellsCDNsNotToCache(t *testing.T) {
+	const prefix = "traefik.http.middlewares.r-noalias.headers.customresponseheaders."
+	for _, tls := range []bool{false, true} {
+		l := RouteLabels("r", "wiki.example.com", 8080, "/a", "/", tls, "le", true, "addr")
+		for _, h := range []string{"CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"} {
+			if got := l[prefix+h]; got != "no-store" {
+				t.Errorf("tls %v: %s%s = %q, want no-store", tls, prefix, h, got)
+			}
+		}
+		for _, r := range []string{"r", "r-tls"} {
+			if !tls && r == "r-tls" {
+				continue
+			}
+			if got := l["traefik.http.routers."+r+".middlewares"]; got != "r-gate,r-noalias,r-strip" {
+				t.Errorf("routers.%s.middlewares = %q, want the gate first, then r-noalias", r, got)
+			}
+		}
+		if !RowHasGate(l, "r") {
+			t.Error("RowHasGate = false for a protected route")
+		}
+		delete(l, prefix+"CDN-Cache-Control")
+		delete(l, prefix+"Cloudflare-CDN-Cache-Control")
+		if !RowHasGate(l, "r") {
+			t.Error("RowHasGate requires the CDN headers; a route deployed before them still has its gate")
+		}
+	}
+	for k := range RouteLabels("r", "wiki.example.com", 8080, "", "", true, "le", false, "addr") {
+		if strings.Contains(strings.ToLower(k), "customresponseheaders") {
+			t.Errorf("an open route sets a response header: %s", k)
+		}
+	}
+}
+
 func TestIdentityHeaderName(t *testing.T) {
 	if IdentityHeader != "X-Outhaul-User" {
 		t.Errorf("IdentityHeader = %q", IdentityHeader)

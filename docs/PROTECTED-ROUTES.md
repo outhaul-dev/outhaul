@@ -291,6 +291,16 @@ parameter never reaches the app, so don't use a parameter of that name.
 
 Outhaul's own sign-in cookie stays on Outhaul's address and never reaches an app.
 
+## A CDN in front
+
+Every response on an address that requires sign-in carries
+`CDN-Cache-Control: no-store` and `Cloudflare-CDN-Cache-Control: no-store`, which tell
+a CDN in front of Outhaul, such as a Cloudflare tunnel or proxied DNS, not to keep it.
+Browsers ignore these headers, so the app's own `Cache-Control` still decides what a
+browser keeps. A CDN rule that overrides the origin's caching headers, such as "Cache
+Everything", would serve a stored page to anyone without sign-in, so don't apply one
+to a protected address.
+
 ## When Outhaul is down or restarting
 
 Traefik asks Outhaul about every request to a protected route. While Outhaul is stopped

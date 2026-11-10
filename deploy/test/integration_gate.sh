@@ -291,6 +291,9 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/plain")
         self.send_header("Content-Length", str(len(body)))
+        # What an app may say to a CDN and a browser; see the CDN checks.
+        self.send_header("CDN-Cache-Control", "max-age=600")
+        self.send_header("Cache-Control", "max-age=60")
         self.end_headers()
         self.wfile.write(body)
     do_GET = do_POST = answer
@@ -787,11 +790,13 @@ for want in \
 	'traefik.http.middlewares.outhaul-gt-d1-noalias.headers.customrequestheaders.X-Outhaul_User: ""' \
 	'traefik.http.middlewares.outhaul-gt-d1-noalias.headers.customrequestheaders.X_Outhaul-User: ""' \
 	'traefik.http.middlewares.outhaul-gt-d1-gate.forwardauth.trustforwardheader: "false"' \
+	'traefik.http.middlewares.outhaul-gt-d1-noalias.headers.customresponseheaders.CDN-Cache-Control: no-store' \
+	'traefik.http.middlewares.outhaul-gt-d1-noalias.headers.customresponseheaders.Cloudflare-CDN-Cache-Control: no-store' \
 	'traefik.http.routers.outhaul-gt-d3-tls.middlewares: outhaul-gt-d3-gate,outhaul-gt-d3-noalias'; do
 	if printf '%s\n' "$merged" | grep -qF -- "$want"; then
 		pass "docker compose keeps $want"
 	else
-		fail "docker compose keeps $want" "$(printf '%s\n' "$merged" | grep -i -e outhaul_user -e outhaul-user -e trustforward -e d3-tls -e error | head -8)"
+		fail "docker compose keeps $want" "$(printf '%s\n' "$merged" | grep -i -e outhaul_user -e outhaul-user -e trustforward -e d3-tls -e cache-control -e error | head -8)"
 	fi
 done
 # A container Compose makes from the override (created, never started, so
@@ -907,6 +912,15 @@ for scheme in http https; do
 	else
 		fail "$scheme wiki.test/page, gate says 200: want X-Outhaul-User: dana only" "status=$code" "$body"
 	fi
+	# A CDN in front must not cache a protected route's answer. The app says
+	# CDN-Cache-Control: max-age=600 and Cache-Control: max-age=60.
+	cdn=$(header CDN-Cache-Control) cf=$(header Cloudflare-CDN-Cache-Control) cc=$(header Cache-Control)
+	if [ "$code" = 200 ] && [ "$cdn" = no-store ] && [ "$cf" = no-store ] && [ "$cc" = max-age=60 ]; then
+		pass "$scheme wiki.test/page (protected): CDN-Cache-Control and Cloudflare-CDN-Cache-Control are no-store, over the app's own, and its Cache-Control is unchanged"
+	else
+		fail "$scheme wiki.test/page (protected): want both CDN headers no-store, and Cache-Control: max-age=60" "status=$code" \
+			"CDN-Cache-Control: $cdn" "Cloudflare-CDN-Cache-Control: $cf" "Cache-Control: $cc"
+	fi
 	tid=$((tid + 1))
 	code=$(req "$scheme" shop.test /admin/x -H 'Cookie: gatetest=ok' -H 'x-outhaul-user: mallory' -H "X-Gatetest-Id: $tid")
 	body=$(cat "$work/b")
@@ -960,6 +974,13 @@ for scheme in http https; do
 	else
 		fail "$scheme shop.test/cart: want 200 with no X-Outhaul-User" "status=$code" "$body"
 	fi
+	cdn=$(header CDN-Cache-Control) cf=$(header Cloudflare-CDN-Cache-Control)
+	if [ "$code" = 200 ] && [ "$cdn" = max-age=600 ] && [ -z "$cf" ]; then
+		pass "$scheme shop.test/cart (open host): the app's own CDN-Cache-Control comes through, and no Cloudflare-CDN-Cache-Control is added"
+	else
+		fail "$scheme shop.test/cart (open host): want the app's CDN-Cache-Control: max-age=600 and no other" "status=$code" \
+			"CDN-Cache-Control: $cdn" "Cloudflare-CDN-Cache-Control: $cf"
+	fi
 	if [ -z "$(gate_lines "$tid")" ]; then
 		pass "$scheme shop.test/cart: no gate call"
 	else
@@ -982,6 +1003,13 @@ for scheme in http https; do
 				"status=$code" "$body" "gate saw: $(gate_lines "$tid")"
 		fi
 	done
+	cdn=$(header CDN-Cache-Control) cf=$(header Cloudflare-CDN-Cache-Control)
+	if [ "$code" = 200 ] && [ "$cdn" = max-age=600 ] && [ -z "$cf" ]; then
+		pass "$scheme wiki.test/webhooksfoo (open path, protected host): the app's own CDN-Cache-Control comes through, and no Cloudflare-CDN-Cache-Control is added"
+	else
+		fail "$scheme wiki.test/webhooksfoo (open path): want the app's CDN-Cache-Control: max-age=600 and no other" "status=$code" \
+			"CDN-Cache-Control: $cdn" "Cloudflare-CDN-Cache-Control: $cf"
+	fi
 
 	# What the stub receives: the browser's Cookie and Accept, and X-Forwarded-*
 	# set by Traefik, not by the client, even through entrypoints that trust a

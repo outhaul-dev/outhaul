@@ -107,13 +107,21 @@ const IdentityHeaderAlias = "X_Outhaul_User"
 // an underscore. Traefik matches header names case-insensitively.
 var identityAliases = []string{IdentityHeaderAlias, "X-Outhaul_User", "X_Outhaul-User"}
 
+// noStoreHeaders are the response headers that tell a CDN in front (a
+// Cloudflare tunnel, or proxied DNS) not to cache a response, which it would
+// otherwise answer strangers with, without the gate. Browsers ignore them, so
+// an app's own Cache-Control still governs browser caching.
+var noStoreHeaders = []string{"CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"}
+
 // identityMiddlewares defines the router's identity middlewares in dst and
 // returns their names in order. A protected route gets "<router>-gate", a
 // forward auth to gateAddress that replaces IdentityHeader with the gate's
 // answer, then "<router>-noalias", which removes IdentityHeaderAlias and the
-// other identityAliases. An open route gets "<router>-noident", which removes
-// IdentityHeader and its aliases. A headers middleware removes a request
-// header whose custom value is empty.
+// other identityAliases from the request and sets noStoreHeaders to
+// "no-store" on the response. An open route gets "<router>-noident", which
+// removes IdentityHeader and its aliases. A headers middleware removes a
+// request header whose custom value is empty. RowHasGate doesn't look for
+// noStoreHeaders: a route deployed before them still has its gate.
 //
 // The gate sets trustForwardHeader to false, so Traefik drops every
 // X-Forwarded-* header a client sent and sets X-Forwarded-Host, -Uri, -Method
@@ -132,6 +140,9 @@ func identityMiddlewares(router string, protected bool, gateAddress string, dst 
 		dst["traefik.http.middlewares."+gate+".forwardauth.authresponseheaders"] = IdentityHeader
 		dst["traefik.http.middlewares."+gate+".forwardauth.trustforwardheader"] = "false"
 		strip(noalias, identityAliases...)
+		for _, h := range noStoreHeaders {
+			dst["traefik.http.middlewares."+noalias+".headers.customresponseheaders."+h] = "no-store"
+		}
 		return []string{gate, noalias}
 	}
 	noident := router + "-noident"

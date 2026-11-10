@@ -160,10 +160,16 @@ func TestComposeOverrideCarriesGate(t *testing.T) {
 		"      \"traefik.http.middlewares.outhaul-wiki-d2-noident.headers.customrequestheaders.X-Outhaul_User\": \"\"\n",
 		"      \"traefik.http.middlewares.outhaul-wiki-d1-noalias.headers.customrequestheaders.X_Outhaul-User\": \"\"\n",
 		`"traefik.http.routers.outhaul-wiki-d2.middlewares": "outhaul-wiki-d2-noident"`,
+		// A CDN in front must not cache the protected row's responses.
+		"      \"traefik.http.middlewares.outhaul-wiki-d1-noalias.headers.customresponseheaders.CDN-Cache-Control\": \"no-store\"\n",
+		"      \"traefik.http.middlewares.outhaul-wiki-d1-noalias.headers.customresponseheaders.Cloudflare-CDN-Cache-Control\": \"no-store\"\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("override missing %q; got:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "outhaul-wiki-d2-noident.headers.customresponseheaders") {
+		t.Errorf("the open row sets a response header:\n%s", got)
 	}
 	if strings.Contains(got, "@file") {
 		t.Errorf("override references the file provider:\n%s", got)
