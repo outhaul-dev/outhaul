@@ -1522,11 +1522,11 @@ func TestTurningOnReconcilesTheProxyFirst(t *testing.T) {
 func TestProxyFailureRefusesTheSave(t *testing.T) {
 	e, px := newProtectionEnv(t)
 	app, row, _ := liveWeb(t, e, "img:1")
-	px.err = errors.New("docker is down")
+	px.err = errors.New("update the proxy (Traefik): docker is down")
 	notified := e.deployer.notified
 
 	b := wantStatus(t, "add a protected row", e.saveDomain(t, app.ID, core.Domain{}, domainForm(core.Domain{Host: "admin.test"}, true)), http.StatusServiceUnavailable)
-	if !strings.Contains(b, "docker is down") {
+	if !strings.Contains(b, "Outhaul couldn't update the proxy (Traefik): docker is down.") {
 		t.Errorf("refusal = %q, want it to say why", b)
 	}
 	if rows := domainsOf(t, e, app.ID); len(rows) != 1 {
@@ -1543,10 +1543,20 @@ func TestProxyFailureRefusesTheSave(t *testing.T) {
 		t.Errorf("deployments = %d, notified %d times; want nothing queued", n, e.deployer.notified-notified)
 	}
 
+	// The reply names what failed, which needn't be Traefik.
+	px.err = errors.New("start the tunnel connector: no such image")
+	b = wantStatus(t, "turn a row on, the connector failing", e.saveDomain(t, app.ID, row, domainForm(row, true)), http.StatusServiceUnavailable)
+	if want := "Sign-in wasn't turned on: Outhaul couldn't start the tunnel connector: no such image. The domain wasn't changed."; !strings.Contains(b, want) {
+		t.Errorf("refusal = %q, want %q", b, want)
+	}
+
 	e.srv.SetProxyControl(nil)
-	wantStatus(t, "turn a row on with no proxy", e.saveDomain(t, app.ID, row, domainForm(row, true)), http.StatusServiceUnavailable)
+	b = wantStatus(t, "turn a row on with no proxy", e.saveDomain(t, app.ID, row, domainForm(row, true)), http.StatusServiceUnavailable)
 	if domainOf(t, e, row).Protected {
 		t.Error("the row was turned on with no proxy to reconcile")
+	}
+	if !strings.Contains(b, "Outhaul couldn't update its proxy") {
+		t.Errorf("refusal = %q, want it to say the proxy couldn't be updated", b)
 	}
 }
 

@@ -371,19 +371,20 @@ func ensureInfra(dc docker.Client, cfg config.Config, st *store.Store) *infraCon
 
 // reconcile makes Traefik's posture and the connector match the stored tunnel
 // state: tunnel on -> plain-HTTP Traefik + running connector; tunnel off ->
-// ACME/ports Traefik + no connector.
+// ACME/ports Traefik + no connector. An error starts with the step that
+// failed, worded to follow "Outhaul couldn't" (ReconcileProxy).
 func (ic *infraController) reconcile(ctx context.Context) error {
 	ic.mu.Lock()
 	defer ic.mu.Unlock()
 
 	token, tunnelOn, err := ic.st.CloudflareToken(ctx)
 	if err != nil {
-		return fmt.Errorf("read tunnel token: %w", err)
+		return fmt.Errorf("read the tunnel setting: %w", err)
 	}
 	// Read before anything changes: if it fails, Traefik is left as it is.
 	protected, err := ic.st.AnyDomainProtected(ctx)
 	if err != nil {
-		return fmt.Errorf("read protected routes: %w", err)
+		return fmt.Errorf("read which routes require sign-in: %w", err)
 	}
 	if !protected {
 		protected = ic.gatedContainersRemain(ctx)
@@ -394,20 +395,20 @@ func (ic *infraController) reconcile(ctx context.Context) error {
 		// cloudflared reaches Traefik's :80 web entrypoint in either posture.
 		cc := tunnel.ConnectorConfig{Image: ic.cfg.CloudflaredImage, Network: ic.cfg.Network, Token: token}
 		if err := tunnel.EnsureConnector(ctx, ic.dc, cc, os.Stdout); err != nil {
-			return fmt.Errorf("ensure connector: %w", err)
+			return fmt.Errorf("start the tunnel connector: %w", err)
 		}
 		if err := traefik.EnsureProxy(ctx, ic.dc, ic.proxyConfig(ctx, true, protected), os.Stdout); err != nil {
-			return fmt.Errorf("ensure traefik: %w", err)
+			return fmt.Errorf("update the proxy (Traefik): %w", err)
 		}
 		return nil
 	}
 	// Disabling: restore the ACME/ports Traefik before removing the connector,
 	// so ingress is back before the tunnel goes away.
 	if err := traefik.EnsureProxy(ctx, ic.dc, ic.proxyConfig(ctx, false, protected), os.Stdout); err != nil {
-		return fmt.Errorf("ensure traefik: %w", err)
+		return fmt.Errorf("update the proxy (Traefik): %w", err)
 	}
 	if err := tunnel.RemoveConnector(ctx, ic.dc); err != nil {
-		return fmt.Errorf("remove connector: %w", err)
+		return fmt.Errorf("remove the tunnel connector: %w", err)
 	}
 	return nil
 }
@@ -502,7 +503,8 @@ func (ic *infraController) Enable(_ context.Context, token string) error {
 }
 
 // ReconcileProxy reconciles now, for the server to call before it turns
-// sign-in on (server.ProxyControl), so Traefik maps the gate's host. Like
+// sign-in on (server.ProxyControl), so Traefik maps the gate's host. Its error
+// names the step that failed (reconcile). Like
 // Enable, it runs on a detached context: when the mapping was missing it
 // recreates Traefik, which can drop the request that asked for it, and a
 // cancelled reconcile could leave no Traefik at all. EnsureProxy keeps a

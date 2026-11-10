@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"html"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -152,6 +153,47 @@ func TestProtectedRowLinksOverHTTPSWithTLSFlagOff(t *testing.T) {
 		}
 		if strings.Contains(got, `href="http://two.test`) {
 			t.Errorf("%s: protected row linked over http", page)
+		}
+	}
+}
+
+// A protected row with its TLS flag off is served over HTTPS on a TLS server
+// and through a tunnel, whose edge terminates TLS; with neither, nothing
+// serves it over HTTPS (and sign-in can't be turned on). Its link and badge
+// say which, on the app page and the Domains page.
+func TestProtectedRowSchemeFollowsTheMode(t *testing.T) {
+	rowOf := regexp.MustCompile(`(?s)<tr>\s*<td><a href="[^"]*two\.test.*?</tr>`)
+	for _, c := range []struct {
+		name        string
+		tls, tunnel bool
+		https       bool
+	}{
+		{"a TLS server", true, false, true},
+		{"a tunnel", false, true, true},
+		{"neither", false, false, false},
+	} {
+		for _, page := range []string{"app", "domains"} {
+			t.Run(c.name+", "+page+" page", func(t *testing.T) {
+				e, _ := newProtectionEnv(t)
+				app := twoRowApp(t, e) // row two is protected with its TLS flag off
+				e.srv.tlsEnabled = c.tls
+				if c.tunnel {
+					if err := e.store.SetCloudflareToken(context.Background(), "tok"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				row := rowOf.FindString(body(t, e.get(t, accessPagePath(page, app))))
+				if row == "" {
+					t.Fatal("no row for two.test")
+				}
+				scheme, badge := "http://", ">http<"
+				if c.https {
+					scheme, badge = "https://", ">TLS<"
+				}
+				if !strings.Contains(row, `href="`+scheme+`two.test`) || !strings.Contains(row, badge) {
+					t.Errorf("row = %s\nwant a %s link and %s", row, scheme, badge)
+				}
+			})
 		}
 	}
 }

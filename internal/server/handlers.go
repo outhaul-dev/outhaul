@@ -773,11 +773,12 @@ func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, status in
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		protectedHTTPS := s.protectedOverHTTPS(r.Context())
 		for _, k := range kids {
 			url := ""
 			if ds, _ := s.store.ListDomains(r.Context(), k.ID); len(ds) > 0 {
 				scheme := "http://"
-				if ds[0].WantsTLS() {
+				if ds[0].TLS || ds[0].Protected && protectedHTTPS {
 					scheme = "https://"
 				}
 				url = scheme + ds[0].Host
@@ -876,6 +877,7 @@ func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, status in
 	}
 	openOnProtected := map[int64]bool{}
 	data["OpenOnProtectedHost"] = openOnProtected
+	data["ProtectedHTTPS"] = s.protectedOverHTTPS(r.Context())
 	// The Access column reads the running containers' labels, for viewers too.
 	cs, csErr := s.appContainers(r.Context(), app)
 	if csErr != nil {
@@ -1164,20 +1166,21 @@ func (s *Server) othersToRedeploy(ctx context.Context, w http.ResponseWriter, r 
 // be down at boot, a public URL can lack a host.
 func (s *Server) ensureGateHost(ctx context.Context) error {
 	if s.proxy == nil {
-		return errors.New("this server has no proxy to update")
+		return errors.New("update its proxy: this server has none it can update")
 	}
 	return s.proxy.ReconcileProxy(ctx)
 }
 
 // refuseProtection answers a save that would have turned sign-in on when the
-// proxy couldn't be reconciled. undo is the result of putting the row back.
+// proxy couldn't be reconciled. err names what failed (ProxyControl); undo is
+// the result of putting the row back.
 func (s *Server) refuseProtection(w http.ResponseWriter, err, undo error) {
 	if undo != nil {
 		log.Printf("protected routes: could not put a row back after the proxy failed: %v", undo)
-		http.Error(w, fmt.Sprintf("Sign-in wasn't turned on: Outhaul couldn't update its proxy (%v), and couldn't undo the change to the domain (%v). Check the domain before you deploy.", err, undo), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Sign-in wasn't turned on: Outhaul couldn't %v, and couldn't undo the change to the domain (%v). Check the domain before you deploy.", err, undo), http.StatusInternalServerError)
 		return
 	}
-	http.Error(w, fmt.Sprintf("Sign-in wasn't turned on: Outhaul couldn't update its proxy (%v). The domain wasn't changed.", err), http.StatusServiceUnavailable)
+	http.Error(w, fmt.Sprintf("Sign-in wasn't turned on: Outhaul couldn't %v. The domain wasn't changed.", err), http.StatusServiceUnavailable)
 }
 
 // finishDomainSave ends a saved add, edit or removal. When the save changed

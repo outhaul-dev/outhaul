@@ -61,6 +61,22 @@ func (s *Server) protectionAvailability(ctx context.Context, d core.Domain) (ok 
 	return true, ""
 }
 
+// protectedOverHTTPS reports whether a protected row is served over HTTPS
+// whatever its own TLS flag: on a TLS server (core.Domain.WantsTLS), or
+// through a tunnel, whose edge terminates TLS. With neither, nothing serves
+// it over HTTPS. Pages use it for a protected row's link and badge.
+func (s *Server) protectedOverHTTPS(ctx context.Context) bool {
+	if s.tlsEnabled {
+		return true
+	}
+	tunnel, err := s.store.TunnelEnabled(ctx)
+	if err != nil {
+		log.Printf("protected routes: read the tunnel setting: %v", err)
+		return false
+	}
+	return tunnel
+}
+
 // appContainers returns the app's containers, stopped ones included: those
 // labelled outhaul.app with its name. That is its routed containers, and a
 // deploy's health-check container, which has no routers.

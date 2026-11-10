@@ -82,8 +82,9 @@ func (s *Server) handleDomainsList(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, row)
 	}
 	s.render(w, r, http.StatusOK, "domains", map[string]any{
-		"Title":   "Domains",
-		"Active":  "domains",
-		"Domains": rows,
+		"Title":          "Domains",
+		"Active":         "domains",
+		"Domains":        rows,
+		"ProtectedHTTPS": s.protectedOverHTTPS(r.Context()),
 	})
 }

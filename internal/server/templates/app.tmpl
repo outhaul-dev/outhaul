@@ -244,11 +244,11 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
     <tbody>
       {{range .Domains}}
       <tr>
-        <td><a href="http{{if .WantsTLS}}s{{end}}://{{.Host}}{{.Path}}" target="_blank" rel="noreferrer" class="mono">{{.Host}}{{.Path}}</a></td>
+        <td><a href="http{{if or .TLS (and .Protected $.ProtectedHTTPS)}}s{{end}}://{{.Host}}{{.Path}}" target="_blank" rel="noreferrer" class="mono">{{.Host}}{{.Path}}</a></td>
         {{if eq $.App.Kind "compose"}}<td class="mono">{{.Service}}</td>{{end}}
         <td class="mono">{{.Port}}</td>
         <td class="mono muted">{{if .Path}}{{.Path}}{{if .InternalPath}} &rarr; {{.InternalPath}}{{end}}{{else}}/{{end}}</td>
-        <td>{{if .WantsTLS}}<span class="badge state-running">TLS</span>{{else}}<span class="muted">http</span>{{end}}</td>
+        <td>{{if or .TLS (and .Protected $.ProtectedHTTPS)}}<span class="badge state-running">TLS</span>{{else}}<span class="muted">http</span>{{end}}</td>
         <td>{{template "accesscell" (index $.AccessStates .ID)}}</td>
         <td>
           {{if $.CanChange}}

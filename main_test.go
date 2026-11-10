@@ -18,6 +18,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/server"
 	"github.com/outhaul-dev/outhaul/internal/store"
 	"github.com/outhaul-dev/outhaul/internal/traefik"
+	"github.com/outhaul-dev/outhaul/internal/tunnel"
 	"github.com/outhaul-dev/outhaul/internal/update"
 )
 
@@ -388,6 +389,51 @@ func TestReconcileKeepsTheGateHostWhileAContainerIsGated(t *testing.T) {
 	ic.dc = listFails{fake}
 	if !mapped() {
 		t.Error("containers can't be listed: the gate host should be kept mapped")
+	}
+}
+
+// ReconcileProxy's error says what Outhaul couldn't do, in words the domain
+// dialog can show after "Outhaul couldn't": the tunnel connector, or Traefik.
+func TestReconcileProxyNamesWhatFailed(t *testing.T) {
+	cfg := config.Config{
+		DataDir: t.TempDir(), Network: "outhaul", TraefikImage: config.DefaultTraefikImage,
+		CloudflaredImage: config.DefaultCloudflaredImage, HTTPSPort: "443", ListenAddr: ":8080",
+		PublicURL: "https://outhaul.example.com", ACMEEmail: "ops@example.com",
+	}
+	st, err := openStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	for _, c := range []struct {
+		name, failing, want string
+		tunnel              bool
+	}{
+		{"the connector", tunnel.ContainerName, "start the tunnel connector: ", true},
+		{"Traefik", "outhaul-traefik", "update the proxy (Traefik): ", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if c.tunnel {
+				if err := st.SetCloudflareToken(ctx, "tok"); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := st.ClearCloudflareToken(ctx); err != nil {
+				t.Fatal(err)
+			}
+			fake := docker.NewFake()
+			fake.FailCreate = func(spec docker.ContainerSpec) error {
+				if spec.Name == c.failing {
+					return errors.New("no such image")
+				}
+				return nil
+			}
+			ic := &infraController{dc: fake, st: st, cfg: cfg}
+			err := ic.ReconcileProxy(ctx)
+			if err == nil || !strings.HasPrefix(err.Error(), c.want) || !strings.HasSuffix(err.Error(), "no such image") {
+				t.Errorf("ReconcileProxy = %v, want %q followed by the cause", err, c.want)
+			}
+		})
 	}
 }
 

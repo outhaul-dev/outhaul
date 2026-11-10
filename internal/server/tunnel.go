@@ -21,6 +21,8 @@ func (s *Server) SetTunnelControl(c TunnelControl) { s.tunnel = c }
 // main package's infraController satisfies it. Turning sign-in on asks for one
 // first, so Traefik maps the gate's host before a gated container is deployed.
 // nil means the proxy can't be reconciled, and sign-in can't be turned on.
+// ReconcileProxy's error names what failed, worded to follow "Outhaul
+// couldn't" ("start the tunnel connector: ...").
 type ProxyControl interface {
 	ReconcileProxy(ctx context.Context) error
 }
