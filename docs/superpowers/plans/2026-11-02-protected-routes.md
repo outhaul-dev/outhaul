@@ -14,7 +14,7 @@
 
 - Test first. Commits look like `feat(scope): summary`, and every commit message ends with `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>`.
 - The gate is defined **in labels**, never in the file provider. A router referencing an undefined `@file` middleware falls through to an open router, which was tested on `traefik:v3.7.6`.
-- Header name: `X-Outhaul-User`. Reserved query parameter: `__outhaul_code`. Route cookie: `__Host-outhaul_route`. Gateway cookie: `outhaul_gate`.
+- Header name: `X-Outhaul-User`. Reserved query parameter: `__outhaul_code`. Route cookie: `__Host-outhaul_route`. Gateway cookie: `__Host-outhaul_gate` over HTTPS (`Path=/`, `Secure`, no `Domain`), so an app on a sibling subdomain can't plant one; `outhaul_gate` over plain HTTP, which only local development uses.
 - Route sessions and gateway sessions last 8 hours. One-time codes last 60 seconds and work once.
 - Tokens and codes are stored as SHA-256 hex only.
 - Long-lived handlers aren't involved: `/gate/check` must answer quickly and never stream.
@@ -292,7 +292,7 @@ git commit -m "feat(gate): answer Traefik's forward-auth check"
 - Consumes: Task 2's store methods, `RouteIsProtected`, `ssoFlow.Return`.
 - Produces:
   - Routes at `levelPublic`: `GET /gate/start`, `POST /gate/sign-in`, `GET /gate/sign-out`, `POST /gate/sign-out`
-  - `const gateCookie = "outhaul_gate"`, `const gateCodeTTL = 60 * time.Second`
+  - `func gateCookieName(r *http.Request) string`: `__Host-outhaul_gate` when `requestIsHTTPS(r)`, else `outhaul_gate`; `const gateCodeTTL = 60 * time.Second`
   - `func (s *Server) validReturnURL(ctx, raw string) (host string, ok bool)`
   - `func (s *Server) startGateSession(w, r, subject, kind, display string) (rawToken string, err error)`
   - `func (s *Server) redirectWithCode(w, r, rawGateToken, returnURL string)`
