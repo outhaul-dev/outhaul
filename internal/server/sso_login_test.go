@@ -312,7 +312,9 @@ func TestSSOFirstSignInCreatesNoRoleAccount(t *testing.T) {
 	if !ok || !sc.HttpOnly || sc.Path != "/" {
 		t.Fatalf("session cookie = %+v", sc)
 	}
-	if sc.Expires.After(time.Now().Add(ssoSessionTTL+time.Minute)) || sc.Expires.Before(time.Now().Add(ssoSessionTTL-time.Minute)) {
+	// The literals, not the constants: a change to either is a change to the design.
+	const ssoLifetime = 8 * time.Hour
+	if sc.Expires.After(time.Now().Add(ssoLifetime+time.Minute)) || sc.Expires.Before(time.Now().Add(ssoLifetime-time.Minute)) {
 		t.Errorf("session cookie expires %v, want in 8 hours", sc.Expires)
 	}
 
@@ -328,7 +330,7 @@ func TestSSOFirstSignInCreatesNoRoleAccount(t *testing.T) {
 	if err != nil || sess.UserID != u.ID {
 		t.Fatalf("session = %+v, %v; want one for account %d", sess, err, u.ID)
 	}
-	if left := time.Until(sess.ExpiresAt); left > ssoSessionTTL || left < ssoSessionTTL-time.Minute {
+	if left := time.Until(sess.ExpiresAt); left > ssoLifetime || left < ssoLifetime-time.Minute {
 		t.Errorf("session expires in %v, want 8 hours, not 7 days", left)
 	}
 
@@ -346,8 +348,9 @@ func TestPasswordSessionsStillLastSevenDays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if left := time.Until(sess.ExpiresAt); left > sessionTTL || left < sessionTTL-time.Minute {
-		t.Errorf("password session expires in %v, want %v", left, sessionTTL)
+	const passwordLifetime = 7 * 24 * time.Hour // the literal, not sessionTTL
+	if left := time.Until(sess.ExpiresAt); left > passwordLifetime || left < passwordLifetime-time.Minute {
+		t.Errorf("password session expires in %v, want 7 days", left)
 	}
 }
 
