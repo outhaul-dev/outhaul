@@ -8,6 +8,8 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -25,7 +27,7 @@ const ssoFlowTTL = 10 * time.Minute
 
 // ssoStateCookiePrefix names a sign-in's own cookie. The rest of the name is
 // the first ssoFlowKeyLen characters of its state, so two tabs signing in at
-// once each keep theirs. Over HTTPS the name also starts with
+// once each keep theirs. On an HTTPS public URL the name also starts with
 // ssoHostCookiePrefix (see ssoFlowCookie).
 const ssoStateCookiePrefix = "outhaul_sso_"
 
@@ -75,28 +77,82 @@ func decodeSSOFlow(v string) (ssoFlow, bool) {
 	return f, true
 }
 
-// ssoFlowCookie names and scopes the cookie a flow with this state lives in.
-// States are hex (NewToken), so anything else names no cookie.
+// ssoFlowCookie is the cookie a flow with this state lives in, with no value
+// or lifetime yet: start fills it in, and the callback finds it by name and
+// clears it. States are hex (NewToken), so anything else names no cookie.
 //
-// Over HTTPS it is a __Host- cookie: a browser accepts one only from this
-// host itself, Secure, with Path=/ and no Domain, so a sibling subdomain (a
-// preview or an app) can't toss one in. Plain HTTP, for local development,
-// can't use the prefix, so it keeps the plain name scoped to /auth/sso. The
-// callback looks only for the name of its own scheme.
-func ssoFlowCookie(r *http.Request, state string) (name, path string, ok bool) {
+// Its name, path and Secure flag follow the public URL's scheme, not the
+// request's, because the callback always arrives on the public URL: in tunnel
+// mode Traefik serves plain HTTP and says so in X-Forwarded-Proto while
+// browsers are on HTTPS. On an HTTPS public URL it is a __Host- cookie: a
+// browser accepts one only from this host itself, Secure, with Path=/ and no
+// Domain, so a sibling subdomain (a preview or an app) can't toss one in. A
+// plain-HTTP public URL, for local development, can't use the prefix, so it
+// keeps the plain name scoped to /auth/sso. The callback looks only for that
+// one name.
+func (s *Server) ssoFlowCookie(state string) (*http.Cookie, bool) {
 	if len(state) < ssoFlowKeyLen {
-		return "", "", false
+		return nil, false
 	}
 	key := state[:ssoFlowKeyLen]
 	for i := 0; i < len(key); i++ {
 		if c := key[i]; !('0' <= c && c <= '9' || 'a' <= c && c <= 'f') {
-			return "", "", false
+			return nil, false
 		}
 	}
-	if requestIsHTTPS(r) {
-		return ssoHostCookiePrefix + ssoStateCookiePrefix + key, "/", true
+	c := &http.Cookie{
+		Name:     ssoStateCookiePrefix + key,
+		Path:     ssoFlowPath,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
 	}
-	return ssoStateCookiePrefix + key, ssoFlowPath, true
+	if s.publicURLIsHTTPS() {
+		c.Name, c.Path, c.Secure = ssoHostCookiePrefix+c.Name, "/", true
+	}
+	return c, true
+}
+
+// publicURLIsHTTPS reports whether the public URL is https://. Cookies for
+// pages that only run on the public URL take their Secure flag and __Host-
+// prefix from it, not from how the request looks.
+func (s *Server) publicURLIsHTTPS() bool {
+	u, err := url.Parse(s.publicURL)
+	return err == nil && u.Scheme == "https"
+}
+
+// ssoStartElsewhere is where a sign-in started on another host than the
+// public URL's must start instead: the same path and query on the public URL.
+// The flow cookie belongs to the host that answers start, and the provider
+// sends the browser back to the public URL, so a sign-in started anywhere
+// else could never finish. Hosts are compared with their ports, ignoring
+// case and a port the public URL's scheme implies; on the public URL's own
+// host ok is false, so the move can't loop.
+func (s *Server) ssoStartElsewhere(r *http.Request) (to string, ok bool) {
+	if !s.publicURLSet() {
+		return "", false
+	}
+	pub, err := url.Parse(s.publicURL)
+	if err != nil || pub.Host == "" {
+		return "", false
+	}
+	if hostWithoutDefaultPort(r.Host, pub.Scheme) == hostWithoutDefaultPort(pub.Host, pub.Scheme) {
+		return "", false
+	}
+	u := url.URL{Scheme: pub.Scheme, Host: pub.Host, Path: r.URL.Path, RawQuery: r.URL.RawQuery}
+	return u.String(), true
+}
+
+// hostWithoutDefaultPort lowercases a host[:port] and drops the port scheme
+// implies, as browsers leave it out of the Host header.
+func hostWithoutDefaultPort(host, scheme string) string {
+	host = strings.ToLower(host)
+	switch scheme {
+	case "https":
+		return strings.TrimSuffix(host, ":443")
+	case "http":
+		return strings.TrimSuffix(host, ":80")
+	}
+	return host
 }
 
 // ssoLoginErrors are the only messages a failed SSO sign-in can put on the
@@ -131,6 +187,10 @@ func ssoRefused(w http.ResponseWriter, r *http.Request, code string) {
 // sends the browser to the provider.
 func (s *Server) handleSSOStart(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
+	if to, ok := s.ssoStartElsewhere(r); ok {
+		http.Redirect(w, r, to, http.StatusFound)
+		return
+	}
 	if _, ok := s.currentSession(r); ok {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
@@ -151,41 +211,28 @@ func (s *Server) handleSSOStart(w http.ResponseWriter, r *http.Request) {
 		Verifier: oauth2.GenerateVerifier(),
 		Expires:  time.Now().Add(ssoFlowTTL),
 	}
-	name, path, _ := ssoFlowCookie(r, f.State)
-	http.SetCookie(w, &http.Cookie{
-		Name:     name,
-		Value:    encodeSSOFlow(f),
-		Path:     path,
-		MaxAge:   int(ssoFlowTTL / time.Second),
-		HttpOnly: true,
-		Secure:   requestIsHTTPS(r),
-		SameSite: http.SameSiteLaxMode,
-	})
+	c, _ := s.ssoFlowCookie(f.State) // a NewToken state always names one
+	c.Value = encodeSSOFlow(f)
+	c.MaxAge = int(ssoFlowTTL / time.Second)
+	http.SetCookie(w, c)
 	http.Redirect(w, r, p.AuthURL(f.State, f.Nonce, f.Verifier), http.StatusFound)
 }
 
 // takeSSOFlow finds the flow named by state, clears its cookie whatever
 // happens next, and decodes it. The provider accepts a code once and the
 // cookie is gone after the first callback, so a replay has nothing to use.
-func takeSSOFlow(w http.ResponseWriter, r *http.Request, state string) (ssoFlow, bool) {
-	name, path, ok := ssoFlowCookie(r, state)
+func (s *Server) takeSSOFlow(w http.ResponseWriter, r *http.Request, state string) (ssoFlow, bool) {
+	c, ok := s.ssoFlowCookie(state)
 	if !ok {
 		return ssoFlow{}, false
 	}
-	c, err := r.Cookie(name)
+	got, err := r.Cookie(c.Name)
 	if err != nil {
 		return ssoFlow{}, false
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     name,
-		Value:    "",
-		Path:     path,
-		MaxAge:   -1,
-		HttpOnly: true,
-		Secure:   requestIsHTTPS(r),
-		SameSite: http.SameSiteLaxMode,
-	})
-	return decodeSSOFlow(c.Value)
+	c.MaxAge = -1
+	http.SetCookie(w, c)
+	return decodeSSOFlow(got.Value)
 }
 
 // logText bounds text that came in a request before it is logged.
@@ -204,7 +251,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	q := r.URL.Query()
 	state := q.Get("state")
-	flow, ok := takeSSOFlow(w, r, state)
+	flow, ok := s.takeSSOFlow(w, r, state)
 	if !ok {
 		log.Printf("sso: sign-in refused: this browser has no sign-in in progress for that state")
 		ssoRefused(w, r, "sso_failed")
@@ -269,9 +316,11 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	// Checked again now the session exists: a change that committed since the
 	// check above is seen here, and one that commits after this ends the new
-	// session in its own transaction.
+	// session in its own transaction. A browser that has gone away cancels the
+	// request, which also fails this check, so the session it leaves behind is
+	// ended without the request's context.
 	if !s.ssoStillCurrent(r.Context(), p) {
-		if err := s.store.DeleteSession(r.Context(), token); err != nil {
+		if err := s.store.DeleteSession(context.WithoutCancel(r.Context()), token); err != nil {
 			log.Printf("sso: ending account %d's refused session: %v", user.ID, err)
 		}
 		log.Printf("sso: sign-in refused: the SSO settings changed while it ran")

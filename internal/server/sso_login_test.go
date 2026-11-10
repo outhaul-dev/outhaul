@@ -27,10 +27,12 @@ const (
 )
 
 // ssoLoginEnv has a password admin (so /login doesn't send people to /setup),
-// SSO connected, and discovery returning p.
+// SSO connected, and discovery returning p. The public URL is the test
+// server's own, as a sign-in only runs on the public URL.
 func ssoLoginEnv(t *testing.T, p sso.Provider) *testEnv {
 	t.Helper()
 	e := newTestEnv(t)
+	e.srv.publicURL = e.http.URL
 	e.signInAs(t, "root", core.RoleSystemAdmin)
 	if err := e.store.SetSSOSettings(context.Background(), store.SSOSettings{
 		Issuer: testIssuer, ClientID: "cid", ClientSecret: "sec",
@@ -240,6 +242,7 @@ func TestLoginPageShowsSSOButtonOnlyWhenConnected(t *testing.T) {
 
 func TestSSOStartWithNothingConnectedGoesToLogin(t *testing.T) {
 	e := newTestEnv(t)
+	e.srv.publicURL = e.http.URL
 	e.signInAs(t, "root", core.RoleSystemAdmin)
 	resp := newBrowser(e).get(t, "/auth/sso/start")
 	resp.Body.Close()
@@ -532,19 +535,19 @@ func TestCallbackRefusals(t *testing.T) {
 // rawCallback sends a plain-HTTP callback carrying exactly one cookie.
 func rawCallback(t *testing.T, e *testEnv, name, value string, query url.Values) *http.Response {
 	t.Helper()
-	return rawGet(t, e, "/auth/sso/callback?"+query.Encode(), false, name+"="+value)
+	return rawGet(t, e, "/auth/sso/callback?"+query.Encode(), "", name+"="+value)
 }
 
-// rawGet sends a GET with exactly this Cookie header ("" for none). https
-// makes it look like it came through Traefik over HTTPS.
-func rawGet(t *testing.T, e *testEnv, path string, https bool, cookie string) *http.Response {
+// rawGet sends a GET with exactly this Cookie header ("" for none). proto, if
+// set, is the X-Forwarded-Proto a proxy in front would send.
+func rawGet(t *testing.T, e *testEnv, path, proto, cookie string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodGet, e.http.URL+path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if https {
-		req.Header.Set("X-Forwarded-Proto", "https")
+	if proto != "" {
+		req.Header.Set("X-Forwarded-Proto", proto)
 	}
 	if cookie != "" {
 		req.Header.Set("Cookie", cookie)
@@ -723,73 +726,185 @@ func TestSSOSignInReplacesAnOldSession(t *testing.T) {
 	}
 }
 
-// Over HTTPS the flow cookie is a __Host- cookie, which a sibling subdomain
-// can't set, and the whole sign-in still works.
-func TestFlowCookieIsSecureOverHTTPS(t *testing.T) {
-	fake := fakeIdentity("sub-1", "dana@example.com")
-	e := ssoLoginEnv(t, fake)
-	resp := rawGet(t, e, "/auth/sso/start", true, "")
-	resp.Body.Close()
-	state := fake.LastAuthState
-	if resp.StatusCode != http.StatusFound || state == "" {
-		t.Fatalf("start = %d, state %q", resp.StatusCode, state)
-	}
-	var flow *http.Cookie
-	for _, c := range resp.Cookies() {
-		if strings.Contains(c.Name, ssoStateCookiePrefix) {
-			flow = c
-		}
-	}
-	if flow == nil {
-		t.Fatalf("no flow cookie in %v", resp.Header.Values("Set-Cookie"))
-	}
-	if flow.Name != "__Host-"+ssoStateCookiePrefix+state[:12] || flow.Path != "/" || !flow.Secure || flow.Domain != "" ||
-		!flow.HttpOnly || flow.SameSite != http.SameSiteLaxMode || flow.MaxAge != 600 {
-		t.Errorf("flow cookie = %+v; want __Host-%s%s, Path /, Secure, no Domain, HttpOnly, Lax, 10 minutes", flow, ssoStateCookiePrefix, state[:12])
-	}
+// publicAt makes the public URL scheme://<the test server's address>, so
+// requests to the test server arrive on it whatever they look like.
+func publicAt(e *testEnv, scheme string) {
+	u, _ := url.Parse(e.http.URL)
+	e.srv.publicURL = scheme + "://" + u.Host
+}
 
-	resp = rawGet(t, e, "/auth/sso/callback?"+url.Values{"state": {state}, "code": {"C"}}.Encode(), true, flow.Name+"="+flow.Value)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/" {
-		t.Fatalf("callback = %d to %q, want 303 to /", resp.StatusCode, resp.Header.Get("Location"))
-	}
-	cleared := false
-	for _, c := range resp.Cookies() {
-		if c.Name == flow.Name && c.MaxAge < 0 && c.Path == "/" && c.Secure {
-			cleared = true
+// The flow cookie follows the public URL's scheme, where the callback always
+// arrives, not the request's. In tunnel mode Traefik serves plain HTTP and
+// says so in X-Forwarded-Proto while browsers are on HTTPS. Over HTTPS it is a
+// __Host- cookie, which a sibling subdomain can't set, and the whole sign-in
+// still works.
+func TestFlowCookieFollowsThePublicURL(t *testing.T) {
+	for _, c := range []struct {
+		public, proto string
+	}{
+		{"https", ""},
+		{"https", "http"}, // tunnel mode
+		{"https", "https"},
+		{"http", ""},
+		{"http", "https"},
+	} {
+		fake := fakeIdentity("sub-1", "dana@example.com")
+		e := ssoLoginEnv(t, fake)
+		publicAt(e, c.public)
+		resp := rawGet(t, e, "/auth/sso/start", c.proto, "")
+		resp.Body.Close()
+		state := fake.LastAuthState
+		if resp.StatusCode != http.StatusFound || state == "" {
+			t.Fatalf("%s public URL, proto %q: start = %d, state %q", c.public, c.proto, resp.StatusCode, state)
 		}
-	}
-	if !cleared {
-		t.Errorf("the __Host- flow cookie wasn't cleared: %v", resp.Header.Values("Set-Cookie"))
-	}
-	if sc, ok := sessionCookieIn(resp); !ok || !sc.Secure {
-		t.Errorf("session cookie = %+v, want a Secure one", sc)
+		var flow *http.Cookie
+		for _, ck := range resp.Cookies() {
+			if strings.Contains(ck.Name, ssoStateCookiePrefix) {
+				flow = ck
+			}
+		}
+		if flow == nil {
+			t.Fatalf("%s public URL, proto %q: no flow cookie in %v", c.public, c.proto, resp.Header.Values("Set-Cookie"))
+		}
+		name, path, secure := ssoStateCookiePrefix+state[:12], "/auth/sso", false
+		if c.public == "https" {
+			name, path, secure = "__Host-"+name, "/", true
+		}
+		if flow.Name != name || flow.Path != path || flow.Secure != secure || flow.Domain != "" ||
+			!flow.HttpOnly || flow.SameSite != http.SameSiteLaxMode || flow.MaxAge != 600 {
+			t.Errorf("%s public URL, proto %q: flow cookie = %+v; want %s, Path %s, Secure %v, no Domain, HttpOnly, Lax, 10 minutes",
+				c.public, c.proto, flow, name, path, secure)
+		}
+
+		resp = rawGet(t, e, "/auth/sso/callback?"+url.Values{"state": {state}, "code": {"C"}}.Encode(), c.proto, flow.Name+"="+flow.Value)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/" {
+			t.Fatalf("%s public URL, proto %q: callback = %d to %q, want 303 to /", c.public, c.proto, resp.StatusCode, resp.Header.Get("Location"))
+		}
+		cleared := false
+		for _, ck := range resp.Cookies() {
+			if ck.Name == name && ck.MaxAge < 0 && ck.Path == path && ck.Secure == secure {
+				cleared = true
+			}
+		}
+		if !cleared {
+			t.Errorf("%s public URL, proto %q: the flow cookie wasn't cleared with its own name, path and Secure flag: %v",
+				c.public, c.proto, resp.Header.Values("Set-Cookie"))
+		}
+		if sc, ok := sessionCookieIn(resp); !ok || (c.proto == "https" && !sc.Secure) {
+			t.Errorf("%s public URL, proto %q: session cookie = %+v", c.public, c.proto, sc)
+		}
 	}
 }
 
-// The callback looks only for the cookie name of its own scheme: over HTTPS a
-// plain-named cookie, which a sibling subdomain could toss in, is ignored.
-func TestFlowCookieMustMatchTheScheme(t *testing.T) {
+// The callback looks only for the cookie name of the public URL's scheme: on
+// an HTTPS public URL a plain-named cookie, which a sibling subdomain could
+// toss in, is ignored, however the request looks.
+func TestFlowCookieMustMatchThePublicScheme(t *testing.T) {
 	fake := fakeIdentity("sub-1", "dana@example.com")
 	e := ssoLoginEnv(t, fake)
 	state := NewToken()
 	v := encodeSSOFlow(ssoFlow{State: state, Nonce: NewToken(), Verifier: NewToken(), Expires: time.Now().Add(time.Minute)})
 	q := "/auth/sso/callback?" + url.Values{"state": {state}, "code": {"C"}}.Encode()
 	for _, c := range []struct {
-		https  bool
-		cookie string
+		public, proto, cookie string
 	}{
-		{true, ssoStateCookiePrefix + state[:12] + "=" + v},
-		{false, "__Host-" + ssoStateCookiePrefix + state[:12] + "=" + v},
+		{"https", "", ssoStateCookiePrefix + state[:12] + "=" + v},
+		{"https", "http", ssoStateCookiePrefix + state[:12] + "=" + v},
+		{"http", "https", "__Host-" + ssoStateCookiePrefix + state[:12] + "=" + v},
 	} {
-		resp := rawGet(t, e, q, c.https, c.cookie)
+		publicAt(e, c.public)
+		resp := rawGet(t, e, q, c.proto, c.cookie)
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login?error=sso_failed" {
-			t.Errorf("https=%v with %.30s… = %d to %q, want 303 to /login?error=sso_failed", c.https, c.cookie, resp.StatusCode, resp.Header.Get("Location"))
+			t.Errorf("%s public URL, proto %q, with %.30s… = %d to %q, want 303 to /login?error=sso_failed",
+				c.public, c.proto, c.cookie, resp.StatusCode, resp.Header.Get("Location"))
 		}
 	}
 	if fake.LastExchangeCode != "" || len(ssoAccounts(t, e)) != 0 {
 		t.Error("a cookie for the other scheme was used")
+	}
+}
+
+// startOn opens /auth/sso/start with this Host header ("" keeps the test
+// server's own) and query, and an optional Cookie header.
+func startOn(t *testing.T, e *testEnv, host, query, cookie string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, e.http.URL+"/auth/sso/start"+query, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if host != "" {
+		req.Host = host
+	}
+	if cookie != "" {
+		req.Header.Set("Cookie", cookie)
+	}
+	resp, err := accountClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	return resp
+}
+
+// A sign-in started anywhere but the public URL's host moves there before
+// anything else: the flow cookie belongs to the host that answers start, and
+// the provider sends the browser back to the public URL, so it could never
+// finish otherwise.
+func TestSSOStartMovesToThePublicURL(t *testing.T) {
+	fake := fakeIdentity("sub-1", "dana@example.com")
+	e := ssoLoginEnv(t, fake)
+	var discovered atomic.Int32
+	e.srv.discover = func(context.Context, sso.Config) (sso.Provider, error) {
+		discovered.Add(1)
+		return fake, nil
+	}
+	signedIn := e.signInAs(t, "dana", core.RoleSystemAdmin)
+	e.srv.publicURL = "https://outhaul.example.com/"
+
+	for _, c := range []struct{ host, cookie string }{
+		{"", ""}, // the test server's own address
+		{"outhaul.example.com:8080", ""},
+		{"10.0.0.5:8080", ""},
+		{"apps.example.com", ""},
+		{"outhaul.example.com:8080", sessionCookie + "=" + signedIn},
+	} {
+		resp := startOn(t, e, c.host, "?a=1&b=two", c.cookie)
+		if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "https://outhaul.example.com/auth/sso/start?a=1&b=two" {
+			t.Errorf("start on %q (cookie %v) = %d to %q, want 302 to the same path and query on the public URL",
+				c.host, c.cookie != "", resp.StatusCode, resp.Header.Get("Location"))
+		}
+		if len(resp.Cookies()) != 0 {
+			t.Errorf("start on %q set cookies: %v", c.host, resp.Header.Values("Set-Cookie"))
+		}
+	}
+	if discovered.Load() != 0 || fake.LastAuthState != "" {
+		t.Fatalf("start did something before moving: %d discoveries, state %q", discovered.Load(), fake.LastAuthState)
+	}
+
+	// On the public URL's host, whatever its case, it starts: no loop. A port
+	// the scheme implies is the same host.
+	for _, c := range []struct{ public, host string }{
+		{"https://outhaul.example.com", "outhaul.example.com"},
+		{"https://outhaul.example.com", "OUTHAUL.Example.com"},
+		{"https://outhaul.example.com:443", "outhaul.example.com"},
+		{"https://outhaul.example.com", "outhaul.example.com:443"},
+		{"http://outhaul.example.com:8080", "outhaul.example.com:8080"},
+		{"http://outhaul.example.com", "outhaul.example.com:80"},
+	} {
+		e.srv.publicURL = c.public
+		resp := startOn(t, e, c.host, "", "")
+		if loc, _ := url.Parse(resp.Header.Get("Location")); resp.StatusCode != http.StatusFound || loc == nil || loc.Host != "sso.fake.invalid" {
+			t.Errorf("public URL %s, start on %q = %d to %q, want 302 to the provider", c.public, c.host, resp.StatusCode, resp.Header.Get("Location"))
+		}
+	}
+
+	// A different port is a different host.
+	e.srv.publicURL = "http://outhaul.example.com:8080"
+	resp := startOn(t, e, "outhaul.example.com", "", "")
+	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "http://outhaul.example.com:8080/auth/sso/start" {
+		t.Errorf("start on another port = %d to %q, want 302 to the public URL", resp.StatusCode, resp.Header.Get("Location"))
 	}
 }
 
