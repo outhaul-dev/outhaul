@@ -26,6 +26,16 @@ func TestAccessStateFor(t *testing.T) {
 	gated := ctr("running", row(true))
 	open := ctr("running", row(false))
 	dep := func(id int64, s core.DeployStatus) *core.Deployment { return &core.Deployment{ID: id, Status: s} }
+	// at is row(true) at another address: what the row was before an edit
+	// moved it, so its router in the labels names that address.
+	at := func(host, path string) core.Domain {
+		d := row(true)
+		d.Host, d.Path = host, path
+		return d
+	}
+	movedHost := ctr("running", at("old.test", ""))
+	movedPath := ctr("running", at("web.test", "/old"))
+	webPath := func(protected bool) core.Domain { d := row(protected); d.Path = "/old"; return d }
 
 	cases := []struct {
 		name       string
@@ -50,6 +60,21 @@ func TestAccessStateFor(t *testing.T) {
 		{"on, only a stopped container has the gate", row(true), []docker.Container{ctr("exited", row(true)), open}, nil, "Not protected yet", "state-building", "", 0},
 		{"on, cutover, only the newer has the gate", row(true), []docker.Container{open, gated}, dep(5, core.StatusDeploying), "Not protected yet", "state-building", "redeploying", 5},
 		{"on, cutover, both have it", row(true), []docker.Container{gated, gated}, nil, "Sign-in required", "state-running", "", 0},
+		// The row's host or path was edited: the running container has its
+		// router, gated, on the old address, which isn't the row's.
+		{"on, host moved, running", row(true), []docker.Container{movedHost}, nil, "Not protected yet", "state-building", "", 0},
+		{"on, path moved, running", row(true), []docker.Container{movedPath}, nil, "Not protected yet", "state-building", "", 0},
+		{"on, host moved, redeploying", row(true), []docker.Container{movedHost}, dep(5, core.StatusBuilding), "Not protected yet", "state-building", "redeploying", 5},
+		{"on, host moved, the deploy failed", row(true), []docker.Container{movedHost}, dep(6, core.StatusFailed), "Not protected yet", "state-failed", "the last deploy failed", 6},
+		{"on, path moved, the deploy failed", row(true), []docker.Container{movedPath}, dep(6, core.StatusFailed), "Not protected yet", "state-failed", "the last deploy failed", 6},
+		{"on, host moved, stopped", row(true), []docker.Container{ctr("exited", at("old.test", ""))}, nil, "Sign-in required", "state-running", "applies on the next deploy", 0},
+		{"off, host moved, the old address gated", row(false), []docker.Container{movedHost}, nil, "Open", "state-stopped", "", 0},
+		{"on, path cleared, running", row(true), []docker.Container{ctr("running", webPath(true))}, nil, "Not protected yet", "state-building", "", 0},
+		// The same address in another spelling is the row's.
+		{"on, labels from before the traversal term", row(true), []docker.Container{oldForm(gated)}, nil, "Sign-in required", "state-running", "", 0},
+		{"off, labels from before the traversal term", row(false), []docker.Container{oldForm(open)}, nil, "Open", "state-stopped", "", 0},
+		{"on, the path's labels from before the term", webPath(true), []docker.Container{oldForm(ctr("running", webPath(true)))}, nil, "Sign-in required", "state-running", "", 0},
+		{"on, the host in other case", row(true), []docker.Container{ctr("running", at("WEB.Test", ""))}, nil, "Sign-in required", "state-running", "", 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

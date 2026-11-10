@@ -89,15 +89,18 @@ func (s *Server) appContainers(ctx context.Context, app core.App) ([]docker.Cont
 	return s.runtime.ListContainers(ctx, map[string]string{"outhaul.app": app.Name})
 }
 
-// rowGate reports whether any of containers defines router (has its rule
-// label), and whether every one that does puts it behind its gate
-// (traefik.RowHasGate). During a cutover two containers can define it, and a
-// request may reach either.
-func rowGate(containers []docker.Container, router string) (defined, gated bool) {
+// rowGate reports whether any of containers defines d's router, the row's
+// router on the row's address (its rule names d's host and path, in either
+// spelling traefik.RuleAddress reads), and whether every one that does puts it
+// behind its gate (traefik.RowHasGate). After d's host or path is edited, a
+// container deployed before has the router on the old address: it doesn't
+// serve d's address, so it doesn't define d. During a cutover two containers
+// can define it, and a request may reach either.
+func rowGate(containers []docker.Container, router string, d core.Domain) (defined, gated bool) {
 	rule := "traefik.http.routers." + router + ".rule"
 	gated = true
 	for _, c := range containers {
-		if _, ok := c.Labels[rule]; !ok {
+		if r, ok := c.Labels[rule]; !ok || !traefik.SameAddress(r, d.Host, d.Path) {
 			continue
 		}
 		defined = true
@@ -115,7 +118,7 @@ func rowGate(containers []docker.Container, router string) (defined, gated bool)
 // nothing was protected there.
 func protectionMismatch(domains []core.Domain, appName string, containers []docker.Container, protectedHosts map[string]bool) bool {
 	for _, d := range domains {
-		defined, gated := rowGate(containers, traefik.RouterName(appName, d.ID))
+		defined, gated := rowGate(containers, traefik.RouterName(appName, d.ID), d)
 		if !d.Protected && !defined {
 			continue
 		}
@@ -936,7 +939,7 @@ func accessStateFor(d core.Domain, appName string, containers []docker.Container
 		}
 		return accessState{Label: accessOpen, Class: "state-stopped", Note: accessNextNote}
 	}
-	_, gated := rowGate(running, traefik.RouterName(appName, d.ID))
+	_, gated := rowGate(running, traefik.RouterName(appName, d.ID), d)
 	switch {
 	case d.Protected && gated:
 		return accessState{Label: accessSignIn, Class: "state-running"}

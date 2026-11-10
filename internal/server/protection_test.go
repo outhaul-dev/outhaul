@@ -227,6 +227,13 @@ func TestRowGate(t *testing.T) {
 	healthCheck := docker.Container{ID: "hc", State: "running", Labels: map[string]string{
 		"traefik.enable": "false", "outhaul.managed": "true", "outhaul.app": app.Name}}
 
+	// The row's router, gated, on the address the row had before an edit.
+	movedHost, movedPath := shut, shut
+	movedHost.Host = "old.test"
+	movedPath.Path = "/old"
+	upper := shut
+	upper.Host = "WEB.test"
+
 	for _, c := range []struct {
 		name           string
 		cs             []docker.Container
@@ -241,12 +248,39 @@ func TestRowGate(t *testing.T) {
 		{"a cutover, both gated", []docker.Container{
 			labelled("old", app, []core.Domain{shut}, "running"), labelled("new", app, []core.Domain{shut}, "running")}, true, true},
 		{"another row's router only", []docker.Container{labelled("a", app, []core.Domain{{ID: 2, Host: "x.test", Protected: true}}, "running")}, false, false},
+		// The router is the row's by name, but its rule names the address the
+		// row had: it doesn't serve the row's address.
+		{"the row's host moved", []docker.Container{labelled("a", app, []core.Domain{movedHost}, "running")}, false, false},
+		{"the row's path moved", []docker.Container{labelled("a", app, []core.Domain{movedPath}, "running")}, false, false},
+		{"a cutover, the old one on the old address", []docker.Container{
+			labelled("old", app, []core.Domain{movedHost}, "running"), labelled("new", app, []core.Domain{shut}, "running")}, true, true},
+		// Same address, other spellings.
+		{"labels from before the traversal term", []docker.Container{oldForm(labelled("a", app, []core.Domain{shut}, "running"))}, true, true},
+		{"labels from before the term, open", []docker.Container{oldForm(labelled("a", app, []core.Domain{open}, "running"))}, true, false},
+		{"the host in other case", []docker.Container{labelled("a", app, []core.Domain{upper}, "running")}, true, true},
 	} {
-		defined, gated := rowGate(c.cs, router)
+		defined, gated := rowGate(c.cs, router, shut)
 		if defined != c.defined || gated != c.gated {
 			t.Errorf("%s: rowGate = %v, %v; want %v, %v", c.name, defined, gated, c.defined, c.gated)
 		}
 	}
+}
+
+// oldForm is c with the labels an Outhaul before the traversal term wrote:
+// each rule names only its address, and no router names a priority.
+func oldForm(c docker.Container) docker.Container {
+	labels := make(map[string]string, len(c.Labels))
+	for k, v := range c.Labels {
+		switch {
+		case strings.HasSuffix(k, ".priority"):
+			continue
+		case strings.HasSuffix(k, ".rule"):
+			v, _, _ = strings.Cut(v, " && !PathRegexp(")
+		}
+		labels[k] = v
+	}
+	c.Labels = labels
+	return c
 }
 
 // staleOpenRoute finds an app's own router, without the gate, whose row is
@@ -1054,6 +1088,56 @@ func TestRestartRedeploysOnMismatch(t *testing.T) {
 		}
 		restarted(t, e, app)
 	})
+	t.Run("a protected row labelled before the traversal term", func(t *testing.T) {
+		e, _ := newProtectionEnv(t)
+		app, row, _ := liveWeb(t, e, "img:1")
+		row = setProtected(t, e, row, true)
+		hook := addRow(t, e, core.Domain{AppID: app.ID, Host: row.Host, Path: "/hooks"})
+		e.runContainers(oldForm(labelled("c1", app, []core.Domain{row, hook}, "running")))
+		restarted(t, e, app)
+	})
+	// A protected row whose host or path was edited: the container has the
+	// row's router, gated, on the old address, so nothing gates the new one.
+	// However the container stands, Restart deploys.
+	for _, c := range []struct {
+		name   string
+		move   func(*core.Domain)
+		state  string
+		failed bool // the edit's deploy failed
+	}{
+		{"host moved, running", func(d *core.Domain) { d.Host = "moved.test" }, "running", false},
+		{"path moved, running", func(d *core.Domain) { d.Path = "/moved" }, "running", false},
+		{"host moved, stopped", func(d *core.Domain) { d.Host = "moved.test" }, "exited", false},
+		{"path moved, stopped", func(d *core.Domain) { d.Path = "/moved" }, "exited", false},
+		{"host moved, the deploy failed", func(d *core.Domain) { d.Host = "moved.test" }, "running", true},
+		{"path moved, the deploy failed", func(d *core.Domain) { d.Path = "/moved" }, "running", true},
+	} {
+		t.Run("a protected row's "+c.name, func(t *testing.T) {
+			e, _ := newProtectionEnv(t)
+			ctx := context.Background()
+			app, row, _ := liveWeb(t, e, "img:1")
+			row = setProtected(t, e, row, true)
+			admin := addRow(t, e, core.Domain{AppID: app.ID, Host: row.Host, Path: "/admin", Protected: true})
+			e.runContainers(withImage(labelled("c1", app, []core.Domain{row, admin}, c.state), "img:1"))
+			moved := admin
+			c.move(&moved)
+			if err := e.store.UpdateDomain(ctx, moved); err != nil {
+				t.Fatal(err)
+			}
+			if c.failed {
+				d, err := e.store.CreateDeployment(ctx, app.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if ok, err := e.store.ClaimDeployment(ctx, d.ID); err != nil || !ok {
+					t.Fatalf("claim: %v %v", ok, err)
+				}
+				mustTransition(t, e, d.ID, core.StatusBuilding, core.StatusFailed)
+			}
+			before := len(deploymentsOf(t, e, app.ID))
+			redeployed(t, e, app, before, restart(t, e, app))
+		})
+	}
 	// A removed or moved open row's old route, on a host that requires sign-in:
 	// the stopped container would answer it again with no gate.
 	t.Run("an open path removed from a protected host", func(t *testing.T) {
@@ -2409,6 +2493,31 @@ func TestEditingProtectedParentReprotectsPreview(t *testing.T) {
 	}
 	if n := len(deploymentsOf(t, e, pr.ID)); n != prBefore+1 {
 		t.Errorf("preview deployments %d -> %d, want one queued", prBefore, n)
+	}
+}
+
+// A preview whose row already requires sign-in, but whose container has that
+// row's router on another host (the row was edited since it deployed), doesn't
+// gate the row's address: saving the parent's protected row redeploys it. Its
+// Access cell says so.
+func TestPreviewRouterOnAnotherAddressRedeploys(t *testing.T) {
+	e, _ := newProtectionEnv(t)
+	web, row, pr, prRow := previewedWeb(t, e, true)
+	row = setProtected(t, e, row, true)
+	old := prRow
+	old.Host = "old-" + previewHost
+	e.runContainers(withImage(labelled("c1", web, []core.Domain{row}, "running"), "img:1"),
+		withImage(labelled("p1", pr, []core.Domain{old}, "running"), "pr:1"))
+	page := html.UnescapeString(body(t, e.get(t, "/apps/"+itoa(pr.ID))))
+	if !strings.Contains(page, accessNotYet) || strings.Contains(page, accessSignIn) {
+		t.Errorf("the preview's page should say %q, never %q:\n%s", accessNotYet, accessSignIn, page)
+	}
+	prBefore := len(deploymentsOf(t, e, pr.ID))
+	f := domainForm(row, true)
+	f.Set("others_was", othersWasOf(t, e, web.ID))
+	wantStatus(t, "save the protected row", e.saveDomain(t, web.ID, row, f), http.StatusSeeOther)
+	if deps := deploymentsOf(t, e, pr.ID); len(deps) != prBefore+1 || deps[0].Image != "pr:1" {
+		t.Errorf("preview deployments = %+v, want a reuse of pr:1 queued", deps)
 	}
 }
 
