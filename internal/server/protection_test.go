@@ -119,10 +119,18 @@ func domainOf(t *testing.T, e *testEnv, d core.Domain) core.Domain {
 }
 
 // domainForm is what the domain dialog submits for d, with the switch on or
-// off. A disabled switch submits nothing; see withoutSwitch.
+// off, from a page loaded just now: protected_was is d's protection, and
+// exception_was says the page knew whether d is an open row on a host that
+// requires sign-in (the server only reads it when that matters, so "1").
+// A disabled switch submits nothing.
 func domainForm(d core.Domain, protected bool) url.Values {
+	was := "0"
+	if d.Protected {
+		was = "1"
+	}
 	f := url.Values{"host_kind": {"custom"}, "host": {d.Host}, "path": {d.Path},
-		"internal_path": {d.InternalPath}, "protected_offered": {"1"}}
+		"internal_path": {d.InternalPath}, "protected_offered": {"1"},
+		"protected_was": {was}, "exception_was": {"1"}}
 	if d.TLS {
 		f.Set("tls", "on")
 	}
@@ -663,10 +671,11 @@ func addRow(t *testing.T, e *testEnv, d core.Domain) core.Domain {
 	return added
 }
 
-// removeDomain removes d, as its remove button does.
+// removeDomain removes d, as its remove button does on a page loaded just
+// now: any warning that removing it redeploys was shown.
 func (e *testEnv) removeDomain(t *testing.T, d core.Domain) *http.Response {
 	t.Helper()
-	return e.postForm(t, "/apps/"+itoa(d.AppID)+"/domains/"+itoa(d.ID)+"/delete", url.Values{})
+	return e.postForm(t, "/apps/"+itoa(d.AppID)+"/domains/"+itoa(d.ID)+"/delete", url.Values{"warned": {"1"}})
 }
 
 func TestWhichSavesQueueADeploy(t *testing.T) {
@@ -1041,6 +1050,128 @@ func TestRestartSaysItWillRedeploy(t *testing.T) {
 	}
 }
 
+// changedElsewhere is what a save from a stale page is told.
+const changedElsewhere = "This domain was changed by someone else. Check it and try again."
+
+// wantRefusedAsStale checks a 409 that re-renders the app page, opened on its
+// Networking tab, with want in it, and that nothing was queued.
+func wantRefusedAsStale(t *testing.T, e *testEnv, what string, app core.App, before int, resp *http.Response, want string) {
+	t.Helper()
+	page := html.UnescapeString(wantStatus(t, what, resp, http.StatusConflict))
+	if !strings.Contains(page, want) || !strings.Contains(page, `data-default="networking"`) || !strings.Contains(page, "<h1>"+app.Name) {
+		t.Errorf("%s: the reply should be the app page, on its Networking tab, saying %q", what, want)
+	}
+	if n := len(deploymentsOf(t, e, app.ID)); n != before {
+		t.Errorf("%s: deployments %d -> %d, want nothing queued", what, before, n)
+	}
+}
+
+// A dialog is filled from the row as the page saw it. When the row's
+// protection changed since, the save is refused and nothing changes.
+func TestStaleDialogIsRefused(t *testing.T) {
+	e, _ := newProtectionEnv(t)
+	app, row, _ := liveWeb(t, e, "img:1")
+	before := len(deploymentsOf(t, e, app.ID))
+
+	// The page saw the row open; someone has turned it on since. An edit of
+	// its port with the switch as the page showed it would open it again.
+	stale := row
+	setProtected(t, e, row, true)
+	wantRefusedAsStale(t, e, "an edit from a page that saw it open", app, before,
+		e.saveDomain(t, app.ID, row, domainForm(stale, false)), changedElsewhere)
+	if !domainOf(t, e, row).Protected {
+		t.Error("a stale edit opened the row")
+	}
+
+	form := domainForm(stale, false)
+	form.Del("protected_was")
+	wantRefusedAsStale(t, e, "an edit that doesn't say what it saw", app, before,
+		e.saveDomain(t, app.ID, row, form), changedElsewhere)
+
+	// The page saw it protected; someone has opened it since.
+	shut := domainOf(t, e, row)
+	setProtected(t, e, row, false)
+	wantRefusedAsStale(t, e, "an edit from a page that saw it protected", app, before,
+		e.saveDomain(t, app.ID, row, domainForm(shut, true)), changedElsewhere)
+	if domainOf(t, e, row).Protected {
+		t.Error("a stale edit turned the row on")
+	}
+
+	// A form with no switch at all (no protected_offered) isn't checked.
+	form = domainForm(stale, false)
+	form.Del("protected_offered")
+	form.Del("protected_was")
+	wantStatus(t, "an edit from a form without the switch", e.saveDomain(t, app.ID, row, form), http.StatusSeeOther)
+}
+
+// The page didn't know the row's host requires sign-in (someone protected it
+// since), so it showed no warning that moving or removing the row redeploys.
+func TestStaleOpenPathIsRefused(t *testing.T) {
+	e, _ := newProtectionEnv(t)
+	app, row, _ := liveWeb(t, e, "img:1")
+	hook := addRow(t, e, core.Domain{AppID: app.ID, Host: row.Host, Path: "/hooks"})
+	setProtected(t, e, row, true)
+	e.runContainers(labelled("c1", app, []core.Domain{row, hook}, "running"))
+	before := len(deploymentsOf(t, e, app.ID))
+
+	moved := hook
+	moved.Path = "/webhooks"
+	form := domainForm(moved, false)
+	form.Set("exception_was", "0")
+	wantRefusedAsStale(t, e, "a move from a page that didn't warn", app, before,
+		e.saveDomain(t, app.ID, hook, form), "web.test now requires sign-in")
+	if got := domainOf(t, e, hook); got.Path != "/hooks" {
+		t.Errorf("row = %+v, want it unchanged", got)
+	}
+
+	resp := e.postForm(t, "/apps/"+itoa(app.ID)+"/domains/"+itoa(hook.ID)+"/delete", url.Values{"warned": {"0"}})
+	wantRefusedAsStale(t, e, "a removal from a page that didn't warn", app, before, resp,
+		"Removing web.test/hooks redeploys this app if it is running, because web.test requires sign-in.")
+	if rows := domainsOf(t, e, app.ID); len(rows) != 2 {
+		t.Errorf("rows = %+v, want the row kept", rows)
+	}
+	resp = e.postForm(t, "/apps/"+itoa(app.ID)+"/domains/"+itoa(hook.ID)+"/delete", url.Values{})
+	wantRefusedAsStale(t, e, "a removal that doesn't say", app, before, resp, "Removing web.test/hooks redeploys")
+
+	// With the warning shown, the same removal goes ahead and redeploys.
+	wantStatus(t, "a removal after the warning", e.removeDomain(t, hook), http.StatusSeeOther)
+	if n := len(deploymentsOf(t, e, app.ID)); n != before+1 {
+		t.Errorf("deployments %d -> %d, want one queued", before, n)
+	}
+
+	// A removal that redeploys nothing needs no warning.
+	open := addRow(t, e, core.Domain{AppID: app.ID, Host: "open.test"})
+	resp = e.postForm(t, "/apps/"+itoa(app.ID)+"/domains/"+itoa(open.ID)+"/delete", url.Values{})
+	wantStatus(t, "remove an open row on an open host", resp, http.StatusSeeOther)
+}
+
+// The dialog and the remove button send what their page was rendered with.
+func TestFormsSayWhatTheySaw(t *testing.T) {
+	e, _ := newProtectionEnv(t)
+	app, row, _ := liveWeb(t, e, "")
+	hook := addRow(t, e, core.Domain{AppID: app.ID, Host: row.Host, Path: "/hooks"})
+	setProtected(t, e, row, true)
+	raw := body(t, e.get(t, "/apps/"+itoa(app.ID)))
+	for _, want := range []string{
+		`name="protected_was" id="domain-protected-was" value="0"`,
+		`name="exception_was" id="domain-exception-was" value="0"`,
+		"protectedWas.value = row.protected === '1' ? '1' : '0'",
+		"exceptionWas.value = row.exception === '1' ? '1' : '0'",
+	} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("the dialog lacks %q", want)
+		}
+	}
+	form := regexp.MustCompile(`(?s)<form[^>]*domains/` + itoa(hook.ID) + `/delete".*?</form>`).FindString(raw)
+	if !strings.Contains(form, `name="warned" value="1"`) {
+		t.Errorf("/hooks's remove form = %q, want warned=1 (its warning is shown)", form)
+	}
+	form = regexp.MustCompile(`(?s)<form[^>]*domains/` + itoa(row.ID) + `/delete".*?</form>`).FindString(raw)
+	if !strings.Contains(form, `name="warned" value="0"`) {
+		t.Errorf("web.test's remove form = %q, want warned=0 (removing it redeploys nothing)", form)
+	}
+}
+
 // Before a save that removes or moves an open path on a host that requires
 // sign-in, the page says it redeploys and what will ship: beside the remove
 // button (seen without JS), in its confirmation, and in the edit dialog.
@@ -1244,6 +1375,7 @@ func TestProtectionSaveSyncsCerts(t *testing.T) {
 	if len(ps.seen) == 0 || !ps.seen[len(ps.seen)-1] {
 		t.Fatalf("syncs = %v, want one after the row was protected", ps.seen)
 	}
+	off.Protected = true // as the page shows it now
 	wantStatus(t, "turn the switch off", e.saveDomain(t, app.ID, row, domainForm(off, false)), http.StatusSeeOther)
 	if len(ps.seen) < 2 || ps.seen[len(ps.seen)-1] {
 		t.Errorf("syncs = %v, want one after the row was opened", ps.seen)

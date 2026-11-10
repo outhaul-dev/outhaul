@@ -78,6 +78,8 @@
 
         <div class="protect">
           <input type="hidden" name="protected_offered" value="1">
+          <input type="hidden" name="protected_was" id="domain-protected-was" value="0">
+          <input type="hidden" name="exception_was" id="domain-exception-was" value="0">
           <label class="field-check">
             <input type="checkbox" class="switch" role="switch" name="protected" id="domain-protected"{{if not .ProtectionAvailable}} disabled{{end}}>
             <span>Require sign-in</span>
@@ -186,6 +188,10 @@
     var hostInput = document.getElementById('domain-host');
     var pathInput = form.querySelector('input[name="path"]');
     var editedProtected = false, editedException = false, origHost = '', origPath = '';
+    // What the dialog was filled from. The server refuses an edit whose row
+    // has changed since, rather than saving over what this page didn't show.
+    var protectedWas = document.getElementById('domain-protected-was');
+    var exceptionWas = document.getElementById('domain-exception-was');
     function moved() {
       var kind = dialog.querySelector('input[name="host_kind"]:checked');
       if (kind && kind.value !== 'custom') return true;
@@ -237,6 +243,8 @@
         if (tls && !tls.disabled) tls.checked = row.tls === '1';
         editedProtected = row.protected === '1';
         editedException = row.exception === '1';
+        protectedWas.value = row.protected === '1' ? '1' : '0';
+        exceptionWas.value = row.exception === '1' ? '1' : '0';
         origHost = (row.host || '').toLowerCase();
         origPath = row.path || '';
         if (protect) protect.checked = editedProtected;
@@ -247,6 +255,8 @@
         form.reset();
         editedProtected = false;
         editedException = false;
+        protectedWas.value = '0';
+        exceptionWas.value = '0';
         applyHostKind();
       }
       applyLock();

@@ -649,6 +649,24 @@ func (s *Server) renderAppsWithError(w http.ResponseWriter, r *http.Request, msg
 }
 
 func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
+	s.renderAppPage(w, r, http.StatusOK, "")
+}
+
+// changedElsewhereNotice answers an edit from a dialog filled before the
+// row's protection changed.
+const changedElsewhereNotice = "This domain was changed by someone else. Check it and try again."
+
+// refuseStaleDomainSave answers a domain save from a page that no longer
+// matches the rows: nothing was saved, and the app page is rendered again,
+// as it is now, on its Networking tab, with notice at the top.
+func (s *Server) refuseStaleDomainSave(w http.ResponseWriter, r *http.Request, notice string) {
+	s.renderAppPage(w, r, http.StatusConflict, notice)
+}
+
+// renderAppPage renders the app page of the app in the request's {id}, with
+// status. A non-empty notice is shown at the top, and opens the Networking
+// tab: only domain saves send one.
+func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, status int, notice string) {
 	id, ok := parseID(r.PathValue("id"))
 	if !ok {
 		http.NotFound(w, r)
@@ -919,7 +937,11 @@ func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
 			data["CurrentRepoLabel"] = label
 		}
 	}
-	s.render(w, r, http.StatusOK, "app", data)
+	if notice != "" {
+		data["Notice"] = notice
+		data["OpenTab"] = "networking"
+	}
+	s.render(w, r, status, "app", data)
 }
 
 // handleAddDomain publishes a route on an app. Compose apps name a service and
@@ -990,6 +1012,17 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// The dialog says what it was filled from. When the row's protection has
+	// changed since, its switch shows the old state: saving it could open a
+	// protected row, or deploy, with no warning shown.
+	offered := r.FormValue("protected_offered") != ""
+	if offered {
+		was := r.FormValue("protected_was")
+		if (was != "0" && was != "1") || (was == "1") != existing.Protected {
+			s.refuseStaleDomainSave(w, r, changedElsewhereNotice)
+			return
+		}
+	}
 	d, verr := s.parseDomainForm(r, app)
 	if verr == ownHostRefusal && s.isOwnHost(existing.Host) {
 		verr = ownHostRowRefusal
@@ -1036,6 +1069,11 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 		leaves, err := s.leavesOpenRoute(ctx, existing)
 		if err != nil {
 			http.Error(w, "Could not update domain: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if leaves && offered && r.FormValue("exception_was") != "1" {
+			// The dialog didn't know, so it didn't warn that this redeploys.
+			s.refuseStaleDomainSave(w, r, existing.Host+" now requires sign-in, so changing this domain's host or path redeploys this app if it is running. Check it and try again.")
 			return
 		}
 		redeploy = leaves
@@ -1133,6 +1171,16 @@ func (s *Server) handleDeleteDomain(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+	}
+	// The remove button says whether its page showed that removing the row
+	// redeploys (warned); a page that didn't gets the warning now instead.
+	if redeploy && r.FormValue("warned") != "1" {
+		notice := "Removing " + existing.Host + existing.Path + " redeploys this app if it is running, because " + existing.Host + " requires sign-in."
+		if warning := s.protectionWarning(ctx, app); warning != "" {
+			notice += " " + warning
+		}
+		s.refuseStaleDomainSave(w, r, notice+" Remove it again to go ahead.")
+		return
 	}
 	if err := s.store.DeleteDomain(ctx, id, domainID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

@@ -13,9 +13,10 @@
     {{end}}
   </div>
 </div>
+{{with .Notice}}<div class="alert alert-warn" role="alert">{{.}}</div>{{end}}
 {{if .RestartDeploys}}<div class="alert alert-warn">Restart will deploy this app instead, so its domains' sign-in settings reach its containers. {{with .ProtectionWarning}}<strong>{{.}}</strong>{{end}}</div>{{end}}
 
-<nav class="tabs" id="app-tabs">
+<nav class="tabs" id="app-tabs"{{with .OpenTab}} data-default="{{.}}"{{end}}>
   <a href="#overview" data-tab-link="overview">Overview</a>
   <a href="#deployments" data-tab-link="deployments">Deployments</a>
   <a href="#networking" data-tab-link="networking">Networking</a>
@@ -255,6 +256,7 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
           <button type="button" class="linkbtn"
             onclick='openDomainDialog({"id":"{{.ID}}","host":"{{.Host}}","service":"{{.Service}}","port":"{{.Port}}","path":"{{.Path}}","internal_path":"{{.InternalPath}}","tls":"{{if .TLS}}1{{else}}0{{end}}","protected":"{{if .Protected}}1{{else}}0{{end}}","exception":"{{if $exposes}}1{{else}}0{{end}}"})'>edit</button>
           <form method="post" action="/apps/{{$.App.ID}}/domains/{{.ID}}/delete" class="inline" onsubmit="return confirm('Remove {{.Host}}{{.Path}}?{{if $exposes}} This redeploys this app if it is running, because {{.Host}} requires sign-in.{{with $.ProtectionWarning}} {{.}}{{end}}{{end}}');">
+            <input type="hidden" name="warned" value="{{if $exposes}}1{{else}}0{{end}}">
             <button type="submit" class="linkbtn">remove</button>
           </form>
           {{end}}
@@ -711,7 +713,7 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
     panels.forEach(function (p) { p.hidden = p.getAttribute('data-tab') !== name; });
     links.forEach(function (a) { a.classList.toggle('active', a.getAttribute('data-tab-link') === name); });
   }
-  function fromHash() { activate((location.hash || '').replace(/^#/, '')); }
+  function fromHash() { activate((location.hash || '').replace(/^#/, '') || bar.getAttribute('data-default') || ''); }
   window.addEventListener('hashchange', fromHash);
   fromHash();
 })();
