@@ -1523,6 +1523,31 @@ func TestGateStartLoopGuardSparesTabs(t *testing.T) {
 	}
 }
 
+// Two tabs, each holding its own pending cookie, are sent to /gate/start one
+// after the other: each code works in its own tab. Minting the second
+// doesn't void the first.
+func TestGateCodesOfTwoTabsBothRedeem(t *testing.T) {
+	e := gateSignInEnv(t)
+	gate := gateSignIn(t, e, "dana")
+	b := newBrowser(e)
+	u, _ := url.Parse(e.http.URL)
+	b.client.Jar.SetCookies(u, []*http.Cookie{{Name: wireGateCookie, Value: gate, Path: "/"}})
+	wiki := "https://wiki.example.com/page"
+	pending := []string{NewToken(), NewToken()}
+	var codes []string
+	for i, p := range pending {
+		resp := b.get(t, startPath(wiki, nonceOf(p)))
+		resp.Body.Close()
+		codes = append(codes, wantCodeRedirect(t, "tab "+itoa(int64(i+1)), resp, wiki))
+	}
+	for i, p := range pending {
+		resp, _ := e.checkGate(t, browserGet("/page?"+wireCodeParam+"="+codes[i]).withPending(p))
+		route := wantRedeemed(t, "tab "+itoa(int64(i+1)), resp, wiki)
+		resp, _ = e.checkGate(t, browserGet("/").with(route))
+		wantPass(t, "tab "+itoa(int64(i+1))+"'s route cookie", resp, "dana")
+	}
+}
+
 // /gate/start mints a code only for a navigation. A HEAD or a prefetch with
 // a live gateway session is answered without one, and the code a real
 // navigation got still works.

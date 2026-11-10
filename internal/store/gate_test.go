@@ -270,7 +270,7 @@ func TestGateWritesRefuseEmptyValues(t *testing.T) {
 	}
 }
 
-func TestNewCodeReplacesEarlierUnredeemedCodesForSameHost(t *testing.T) {
+func TestNewCodeReplacesEarlierUnredeemedCodesForSameHostAndNonce(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
 	for _, g := range []string{"g1", "g2"} {
@@ -292,6 +292,44 @@ func TestNewCodeReplacesEarlierUnredeemedCodesForSameHost(t *testing.T) {
 	for i, c := range []struct{ code, host string }{{"other-host", docsHost}, {"other-gate", wikiHost}, {"new", wikiHost}} {
 		if _, err := s.RedeemGateCode(ctx, c.code, c.host, testNonce, "r"+string(rune('a'+i)), time.Now().Add(time.Hour)); err != nil {
 			t.Errorf("%s should still work: %v", c.code, err)
+		}
+	}
+}
+
+// Two tabs opening one app at once each get a code for their own browser
+// nonce (their pending cookies differ): neither voids the other's. A new code
+// for the same nonce replaces the earlier one, and expired codes go.
+func TestCodesForOtherNoncesSurvive(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	if err := s.CreateGateSession(ctx, "g1", core.GateSession{Subject: "user:1", Kind: core.SignInPassword, Display: "dana", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	exp := time.Now().Add(time.Minute)
+	for _, c := range []struct{ code, nonce string }{{"tab1-old", "n1"}, {"tab1", "n1"}, {"tab2", "n2"}, {"tab3", "n3"}} {
+		if err := s.CreateGateCode(ctx, c.code, "g1", wikiHost, c.nonce, exp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.CreateGateCode(ctx, "stale", "g1", docsHost, "n9", time.Now().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateGateCode(ctx, "tab4", "g1", wikiHost, "n4", exp); err != nil {
+		t.Fatal(err)
+	}
+	var stale int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gate_codes WHERE code_hash = ?`, hashToken("stale")).Scan(&stale); err != nil {
+		t.Fatal(err)
+	}
+	if stale != 0 {
+		t.Error("an expired code was kept")
+	}
+	if _, err := s.RedeemGateCode(ctx, "tab1-old", wikiHost, "n1", "r0", time.Now().Add(time.Hour)); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("the code a newer one for the same nonce replaced still works: %v", err)
+	}
+	for i, c := range []struct{ code, nonce string }{{"tab1", "n1"}, {"tab2", "n2"}, {"tab3", "n3"}, {"tab4", "n4"}} {
+		if _, err := s.RedeemGateCode(ctx, c.code, wikiHost, c.nonce, "r"+string(rune('a'+i)), time.Now().Add(time.Hour)); err != nil {
+			t.Errorf("%s (nonce %s) should work: %v", c.code, c.nonce, err)
 		}
 	}
 }

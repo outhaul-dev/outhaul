@@ -155,9 +155,12 @@ func (s *Store) DeleteGateSessionsOfKind(ctx context.Context, kind string) error
 
 // CreateGateCode stores a one-time code that carries the gateway session to
 // host, in the browser whose pending cookie hashes to nonceHash. Only the hash
-// of the code is kept. The session's earlier unredeemed codes for the same
-// host are deleted, so one signed-in person can't pile codes up. An empty
-// rawCode or nonceHash is refused with an error that isn't sql.ErrNoRows.
+// of the code is kept. The session's earlier unredeemed code for the same host
+// and nonce is deleted: it is the same tab asking again. Another nonce's code
+// is another tab's sign-in, so it is kept. Expired codes are deleted too,
+// which bounds what one signed-in person can pile up to what they can mint
+// within a code's lifetime. An empty rawCode or nonceHash is refused with an
+// error that isn't sql.ErrNoRows.
 func (s *Store) CreateGateCode(ctx context.Context, rawCode, rawGateToken, host, nonceHash string, expiresAt time.Time) error {
 	if rawCode == "" {
 		return errGateArg("a code can't be empty")
@@ -170,8 +173,12 @@ func (s *Store) CreateGateCode(ctx context.Context, rawCode, rawGateToken, host,
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM gate_codes WHERE gate_token_hash = ? AND host = ?`,
-		hashToken(rawGateToken), normHost(host)); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM gate_codes WHERE gate_token_hash = ? AND host = ? AND nonce_hash = ?`,
+		hashToken(rawGateToken), normHost(host), nonceHash); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM gate_codes WHERE julianday(expires_at) <= julianday(?)`,
+		fmtTime(time.Now())); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx,
