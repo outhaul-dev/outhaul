@@ -904,3 +904,87 @@ const (
 	ssoRemoveNote = "Also remove them at your SSO provider, or they could sign in again and come back with no role."
 	ssoKeysNote   = "Their push keys stay until you remove them here."
 )
+
+// hookProvider runs during() while Exchange is talking to the provider, standing
+// in for a settings change that lands mid-sign-in.
+type hookProvider struct {
+	*sso.Fake
+	during func()
+}
+
+func (h *hookProvider) Exchange(ctx context.Context, code, nonce, verifier string) (sso.Identity, error) {
+	if h.during != nil {
+		h.during()
+	}
+	return h.Fake.Exchange(ctx, code, nonce, verifier)
+}
+
+// A change that ends SSO sessions also ends a sign-in still in flight.
+func TestSignInInFlightDuringASettingsChangeIsRefused(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name   string
+		change func(e *testEnv) error
+		ok     bool
+	}{
+		{"removed", func(e *testEnv) error { return e.store.ClearSSOSettings(ctx) }, false},
+		{"issuer changed", func(e *testEnv) error {
+			return e.store.SetSSOSettings(ctx, store.SSOSettings{Issuer: "https://other.example.com", ClientID: "cid", ClientSecret: "sec"}, true)
+		}, false},
+		{"client ID changed", func(e *testEnv) error {
+			return e.store.SetSSOSettings(ctx, store.SSOSettings{Issuer: testIssuer, ClientID: "cid2", ClientSecret: "sec"}, true)
+		}, false},
+		{"only the secret changed", func(e *testEnv) error {
+			return e.store.SetSSOSettings(ctx, store.SSOSettings{Issuer: testIssuer, ClientID: "cid", ClientSecret: "sec2"}, false)
+		}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			p := &hookProvider{Fake: fakeIdentity("sub-1", "dana@example.com")}
+			e := ssoLoginEnv(t, p)
+			p.during = func() {
+				if err := c.change(e); err != nil {
+					t.Error(err)
+				}
+			}
+			b := newBrowser(e)
+			state := b.start(t)
+			resp := b.callback(t, url.Values{"state": {state}, "code": {"C"}})
+			resp.Body.Close()
+			_, cookie := sessionCookieIn(resp)
+			if c.ok {
+				if resp.Header.Get("Location") != "/" || !cookie {
+					t.Errorf("callback = %d to %q, want a sign-in", resp.StatusCode, resp.Header.Get("Location"))
+				}
+				return
+			}
+			if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login?error=sso_failed" || cookie {
+				t.Errorf("callback = %d to %q (session cookie %v), want 303 to /login?error=sso_failed and none", resp.StatusCode, resp.Header.Get("Location"), cookie)
+			}
+			if accounts := ssoAccounts(t, e); len(accounts) != 0 {
+				t.Errorf("accounts created: %+v", accounts)
+			}
+		})
+	}
+}
+
+// A change that commits just as the session is written is caught too: the
+// settings are checked again after the session exists, so either that check
+// sees the change or the change's own transaction ends the session.
+func TestSettingsChangeAsTheSessionIsWrittenEndsIt(t *testing.T) {
+	e := ssoLoginEnv(t, fakeIdentity("sub-1", "dana@example.com"))
+	if _, err := e.rawDB(t).Exec(`CREATE TRIGGER change_sso AFTER INSERT ON sessions
+		BEGIN UPDATE settings SET value = 'cid2' WHERE key = 'sso_client_id'; END`); err != nil {
+		t.Fatal(err)
+	}
+	b := newBrowser(e)
+	state := b.start(t)
+	resp := b.callback(t, url.Values{"state": {state}, "code": {"C"}})
+	resp.Body.Close()
+	if _, ok := sessionCookieIn(resp); ok || resp.Header.Get("Location") != "/login?error=sso_failed" {
+		t.Errorf("callback = %d to %q, cookie %v; want refused with no session cookie", resp.StatusCode, resp.Header.Get("Location"), ok)
+	}
+	var sessions int
+	if err := e.rawDB(t).QueryRow(`SELECT COUNT(*) FROM sessions WHERE user_id IN (SELECT id FROM users WHERE sign_in = 'sso')`).Scan(&sessions); err != nil || sessions != 0 {
+		t.Errorf("SSO sessions = %d, %v; want 0", sessions, err)
+	}
+}

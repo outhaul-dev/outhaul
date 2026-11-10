@@ -248,9 +248,33 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		ssoRefused(w, r, "sso_failed")
 		return
 	}
+	// Removing SSO, or changing its issuer or client ID, ends every SSO
+	// sign-in. One that was talking to the provider meanwhile ends too.
+	if !s.ssoStillCurrent(r.Context(), p) {
+		log.Printf("sso: sign-in refused: the SSO settings changed while it ran")
+		ssoRefused(w, r, "sso_failed")
+		return
+	}
 	user, err := s.store.FindOrCreateSSOUser(r.Context(), id.Issuer, id.Subject, id.Email)
 	if err != nil {
 		log.Printf("sso: finding the account for a sign-in: %v", err)
+		ssoRefused(w, r, "sso_failed")
+		return
+	}
+	token, expires, err := s.createSession(r.Context(), user)
+	if err != nil {
+		log.Printf("sso: signing in account %d: %v", user.ID, err)
+		ssoRefused(w, r, "sso_failed")
+		return
+	}
+	// Checked again now the session exists: a change that committed since the
+	// check above is seen here, and one that commits after this ends the new
+	// session in its own transaction.
+	if !s.ssoStillCurrent(r.Context(), p) {
+		if err := s.store.DeleteSession(r.Context(), token); err != nil {
+			log.Printf("sso: ending account %d's refused session: %v", user.ID, err)
+		}
+		log.Printf("sso: sign-in refused: the SSO settings changed while it ran")
 		ssoRefused(w, r, "sso_failed")
 		return
 	}
@@ -258,11 +282,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		old = c.Value
 	}
-	if err := s.login(w, r, user); err != nil {
-		log.Printf("sso: signing in account %d: %v", user.ID, err)
-		ssoRefused(w, r, "sso_failed")
-		return
-	}
+	s.finishLogin(w, r, user, token, expires)
 	// The new session replaces any this browser had; the old one stops working.
 	if old != "" {
 		if err := s.store.DeleteSession(r.Context(), old); err != nil {

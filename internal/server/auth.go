@@ -50,22 +50,38 @@ func requestIsHTTPS(r *http.Request) bool {
 	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
-// login creates a session and sets the cookie. An SSO session lasts
-// ssoSessionTTL, a password session sessionTTL; the cookie lasts as long.
+// login creates a session and sets the cookie.
 func (s *Server) login(w http.ResponseWriter, r *http.Request, user core.User) error {
+	token, expires, err := s.createSession(r.Context(), user)
+	if err != nil {
+		return err
+	}
+	s.finishLogin(w, r, user, token, expires)
+	return nil
+}
+
+// createSession stores a new session for the account. An SSO session lasts
+// ssoSessionTTL, a password session sessionTTL. finishLogin sets its cookie.
+func (s *Server) createSession(ctx context.Context, user core.User) (token string, expires time.Time, err error) {
 	ttl := sessionTTL
 	if user.SignIn == core.SignInSSO {
 		ttl = ssoSessionTTL
 	}
-	expires := time.Now().Add(ttl)
-	token := NewToken()
-	if err := s.store.CreateSession(r.Context(), core.Session{
+	expires = time.Now().Add(ttl)
+	token = NewToken()
+	if err := s.store.CreateSession(ctx, core.Session{
 		Token:     token,
 		UserID:    user.ID,
 		ExpiresAt: expires,
 	}); err != nil {
-		return err
+		return "", time.Time{}, err
 	}
+	return token, expires, nil
+}
+
+// finishLogin records the sign-in and sets the session cookie, which lasts
+// as long as the session.
+func (s *Server) finishLogin(w http.ResponseWriter, r *http.Request, user core.User, token string, expires time.Time) {
 	// Recording the time is for the Users page; it must not block signing in.
 	if err := s.store.TouchUserSignIn(r.Context(), user.ID); err != nil {
 		log.Printf("server: record sign-in for user %d: %v", user.ID, err)
@@ -79,7 +95,6 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, user core.User) e
 		SameSite: http.SameSiteLaxMode,
 		Expires:  expires,
 	})
-	return nil
 }
 
 // --- first-boot setup ---

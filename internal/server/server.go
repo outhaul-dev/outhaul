@@ -126,8 +126,8 @@ type Server struct {
 
 	discover  func(ctx context.Context, cfg sso.Config) (sso.Provider, error) // sso.Discover; tests replace it
 	ssoMu     sync.Mutex
-	ssoCached sso.Provider // nil until discovery succeeds; dropped when the settings change
-	ssoGen    int          // bumped by dropSSOProvider, so a stale discovery isn't cached
+	ssoCached *ssoConn // nil until discovery succeeds; dropped when the settings change
+	ssoGen    int      // bumped by dropSSOProvider, so a stale discovery isn't cached
 
 	hashSlots chan struct{} // bounds concurrent argon2 work; see withHashSlot
 	hashWait  time.Duration // how long a password check waits for a slot

@@ -23,7 +23,7 @@ func (s *Server) ssoRedirectURI() string {
 // and after the settings change. A failed discovery is not cached. Without a
 // public URL there is nowhere for the provider to send people back, so SSO
 // counts as not connected.
-func (s *Server) ssoProvider(ctx context.Context) (sso.Provider, error) {
+func (s *Server) ssoProvider(ctx context.Context) (*ssoConn, error) {
 	if !s.publicURLSet() {
 		return nil, errSSONotConfigured
 	}
@@ -43,13 +43,14 @@ func (s *Server) ssoProvider(ctx context.Context) (sso.Provider, error) {
 	if !ok {
 		return nil, errSSONotConfigured
 	}
-	p, err := s.discover(ctx, sso.Config{
+	dp, err := s.discover(ctx, sso.Config{
 		Issuer: cfg.Issuer, ClientID: cfg.ClientID, ClientSecret: cfg.ClientSecret,
 		RedirectURL: s.ssoRedirectURI(),
 	})
 	if err != nil {
 		return nil, err
 	}
+	p := &ssoConn{Provider: dp, issuer: cfg.Issuer, clientID: cfg.ClientID}
 	s.ssoMu.Lock()
 	defer s.ssoMu.Unlock()
 	// Settings changed while discovery ran: this provider is for the old ones.
@@ -57,6 +58,25 @@ func (s *Server) ssoProvider(ctx context.Context) (sso.Provider, error) {
 		s.ssoCached = p
 	}
 	return p, nil
+}
+
+// ssoConn is the connected provider with the settings it was discovered
+// with, so a sign-in can tell whether they changed while it ran.
+type ssoConn struct {
+	sso.Provider
+	issuer, clientID string
+}
+
+// ssoStillCurrent reports whether the stored settings are still the ones p was
+// discovered with: removing SSO, or changing the issuer or client ID, ends
+// every SSO sign-in, including one in flight.
+func (s *Server) ssoStillCurrent(ctx context.Context, p *ssoConn) bool {
+	cur, ok, err := s.store.GetSSOSettings(ctx)
+	if err != nil {
+		log.Printf("sso: rereading the settings to finish a sign-in: %v", err)
+		return false
+	}
+	return ok && cur.Issuer == p.issuer && cur.ClientID == p.clientID
 }
 
 // dropSSOProvider forgets the cached provider; call when settings change.
