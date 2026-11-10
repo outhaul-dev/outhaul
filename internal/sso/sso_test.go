@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/oauth2"
+
 	"github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 )
@@ -288,8 +290,8 @@ func TestAuthURLCarriesPKCE(t *testing.T) {
 			t.Errorf("%s = %q, want %q", k, q.Get(k), want)
 		}
 	}
-	if q.Get("code_challenge") == "" {
-		t.Error("no code_challenge")
+	if want := oauth2.S256ChallengeFromVerifier(testVerif); q.Get("code_challenge") != want {
+		t.Errorf("code_challenge = %q, want %q", q.Get("code_challenge"), want)
 	}
 	if strings.Contains(raw, testVerif) {
 		t.Error("raw verifier leaked into the URL")
@@ -318,5 +320,72 @@ func TestFakeImplementsProvider(t *testing.T) {
 	f.ExchangeErr = errors.New("boom")
 	if _, err := f.Exchange(context.Background(), "c", "no", "ve"); err == nil {
 		t.Fatal("expected ExchangeErr")
+	}
+}
+
+func TestExchangeReportsConfiguredIssuer(t *testing.T) {
+	// The fake IdP cannot produce a token whose iss differs from the
+	// discovered issuer yet still verifies (go-oidc only allows that for
+	// accounts.google.com), so this asserts Issuer == cfg.Issuer.
+	p := newIDP(t)
+	got, err := exchange(t, p)
+	if err != nil || got.Issuer != p.cfg().Issuer {
+		t.Fatalf("got %+v, %v; want issuer %q", got, err, p.cfg().Issuer)
+	}
+}
+
+func TestExchangeRefusesEmptyExpectedNonce(t *testing.T) {
+	p := newIDP(t)
+	p.claims["nonce"] = nil
+	if _, err := discover(t, p).Exchange(context.Background(), "code-1", "", testVerif); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+func TestDiscoverRefusesBadSettings(t *testing.T) {
+	good := Config{Issuer: "https://idp.example.com", ClientID: "c", ClientSecret: "s", RedirectURL: "https://o.example.com/cb"}
+	cases := map[string]func(*Config){
+		"empty issuer":        func(c *Config) { c.Issuer = "" },
+		"empty client id":     func(c *Config) { c.ClientID = " " },
+		"empty client secret": func(c *Config) { c.ClientSecret = "" },
+		"empty redirect url":  func(c *Config) { c.RedirectURL = "" },
+		"relative issuer":     func(c *Config) { c.Issuer = "idp.example.com" },
+		"issuer no host":      func(c *Config) { c.Issuer = "https://" },
+		"http issuer":         func(c *Config) { c.Issuer = "http://idp.example.com" },
+		"non-loopback ip":     func(c *Config) { c.Issuer = "http://10.0.0.1" },
+	}
+	for name, mutate := range cases {
+		c := good
+		mutate(&c)
+		start := time.Now()
+		_, err := Discover(context.Background(), c)
+		if err == nil {
+			t.Errorf("%s: expected error", name)
+			continue
+		}
+		if time.Since(start) > 2*time.Second {
+			t.Errorf("%s: took too long, looks like a network call", name)
+		}
+	}
+}
+
+func TestFakeRecordsExchangeAndChecksNonce(t *testing.T) {
+	f := &Fake{Identity: Identity{Subject: "s"}}
+	f.AuthURL("st", "n1", "v1")
+	if f.LastVerifier != "v1" {
+		t.Fatalf("LastVerifier = %q", f.LastVerifier)
+	}
+	if _, err := f.Exchange(context.Background(), "c1", "other", "v1"); err == nil {
+		t.Fatal("expected nonce mismatch error")
+	}
+	if _, err := f.Exchange(context.Background(), "c2", "n1", "v1"); err != nil {
+		t.Fatal(err)
+	}
+	if f.LastExchangeCode != "c2" || f.LastExchangeNonce != "n1" || f.LastExchangeVerifier != "v1" {
+		t.Fatalf("recorded %q %q %q", f.LastExchangeCode, f.LastExchangeNonce, f.LastExchangeVerifier)
+	}
+	g := &Fake{} // LastNonce empty: no check
+	if _, err := g.Exchange(context.Background(), "c", "anything", "v"); err != nil {
+		t.Fatal(err)
 	}
 }

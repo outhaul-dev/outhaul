@@ -7,7 +7,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -43,10 +45,14 @@ type provider struct {
 	oauth    oauth2.Config
 	verifier *oidc.IDTokenVerifier
 	client   *http.Client
+	issuer   string
 }
 
 // Discover fetches the provider's configuration and returns a Provider.
 func Discover(ctx context.Context, cfg Config) (Provider, error) {
+	if err := validate(cfg); err != nil {
+		return nil, err
+	}
 	// The client, not only a context deadline, carries the bound: go-oidc's
 	// remote key set keeps using the context it was created with.
 	client := &http.Client{Timeout: httpTimeout}
@@ -68,6 +74,7 @@ func Discover(ctx context.Context, cfg Config) (Provider, error) {
 		verifier: op.VerifierContext(oidc.ClientContext(context.Background(), client),
 			&oidc.Config{ClientID: cfg.ClientID}),
 		client: client,
+		issuer: cfg.Issuer,
 	}, nil
 }
 
@@ -117,7 +124,7 @@ func (p *provider) Exchange(ctx context.Context, code, nonce, verifier string) (
 	if email == "" {
 		return Identity{}, ErrNoEmail
 	}
-	return Identity{Issuer: idt.Issuer, Subject: idt.Subject, Email: email}, nil
+	return Identity{Issuer: p.issuer, Subject: idt.Subject, Email: email}, nil
 }
 
 // explicitlyFalse reports whether email_verified is false, sent either as a
@@ -130,4 +137,37 @@ func explicitlyFalse(v any) bool {
 		return strings.EqualFold(strings.TrimSpace(x), "false")
 	}
 	return false
+}
+
+// validate refuses incomplete settings before any network call.
+func validate(cfg Config) error {
+	switch {
+	case strings.TrimSpace(cfg.Issuer) == "":
+		return errors.New("sso: the issuer URL is empty")
+	case strings.TrimSpace(cfg.ClientID) == "":
+		return errors.New("sso: the client ID is empty")
+	case strings.TrimSpace(cfg.ClientSecret) == "":
+		return errors.New("sso: the client secret is empty")
+	case strings.TrimSpace(cfg.RedirectURL) == "":
+		return errors.New("sso: the redirect URL is empty")
+	}
+	u, err := url.Parse(cfg.Issuer)
+	if err != nil || !u.IsAbs() || u.Hostname() == "" {
+		return errors.New("sso: the issuer must be an absolute URL such as https://idp.example.com")
+	}
+	if u.Scheme == "https" {
+		return nil
+	}
+	if u.Scheme == "http" && isLoopback(u.Hostname()) {
+		return nil
+	}
+	return errors.New("sso: the issuer must start with https:// (http:// is allowed only for localhost)")
+}
+
+func isLoopback(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
