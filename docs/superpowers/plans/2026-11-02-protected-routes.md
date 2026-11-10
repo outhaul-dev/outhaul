@@ -14,7 +14,7 @@
 
 - Test first. Commits look like `feat(scope): summary`, and every commit message ends with `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>`.
 - The gate is defined **in labels**, never in the file provider. A router referencing an undefined `@file` middleware falls through to an open router, which was tested on `traefik:v3.7.6`.
-- Header name: `X-Outhaul-User`. Reserved query parameter: `__outhaul_code`. Route cookie: `__Host-outhaul_route`. Gateway cookie: `__Host-outhaul_gate` over HTTPS (`Path=/`, `Secure`, no `Domain`), so an app on a sibling subdomain can't plant one; `outhaul_gate` over plain HTTP, which only local development uses.
+- Header name: `X-Outhaul-User`. Reserved query parameter: `__outhaul_code`. Route cookie: `__Host-outhaul_route`. Gateway cookie: `__Host-outhaul_gate` (`Path=/`, `Secure`, no `Domain`) when the public URL is `https://`, so an app on a sibling subdomain can't plant one; `outhaul_gate` when it is `http://`, which only local development uses. The choice follows the public URL, not the request: in tunnel mode a request looks like plain HTTP.
 - Route sessions and gateway sessions last 8 hours. One-time codes last 60 seconds and work once.
 - Tokens and codes are stored as SHA-256 hex only.
 - Long-lived handlers aren't involved: `/gate/check` must answer quickly and never stream.
@@ -292,7 +292,7 @@ git commit -m "feat(gate): answer Traefik's forward-auth check"
 - Consumes: Task 2's store methods, `RouteIsProtected`, `ssoFlow.Return`.
 - Produces:
   - Routes at `levelPublic`: `GET /gate/start`, `POST /gate/sign-in`, `GET /gate/sign-out`, `POST /gate/sign-out`
-  - `func gateCookieName(r *http.Request) string`: `__Host-outhaul_gate` when `requestIsHTTPS(r)`, else `outhaul_gate`; `const gateCodeTTL = 60 * time.Second`
+  - `func (s *Server) gateCookieName() string`: `__Host-outhaul_gate` when the public URL is `https://`, else `outhaul_gate`, using the helper part 2 added for the SSO flow cookie; `const gateCodeTTL = 60 * time.Second`
   - `func (s *Server) validReturnURL(ctx, raw string) (host string, ok bool)`
   - `func (s *Server) startGateSession(w, r, subject, kind, display string) (rawToken string, err error)`
   - `func (s *Server) redirectWithCode(w, r, rawGateToken, returnURL string)`
@@ -354,7 +354,7 @@ Expected: FAIL.
 
 - [ ] **Step 3: Implement**
 
-`validReturnURL` parses with `net/url`, requires scheme `https`, an empty `User`, and a non-empty host. It refuses a path the browser or Traefik might read differently from Outhaul: `u.EscapedPath()` containing `\`, `%2e`, `%2f` or `%5c` in either case, or a `u.Path` that `path.Clean` would change (a trailing slash aside). An empty path counts as `/`. Then it checks `RouteIsProtected(normalizeHost(u.Host), u.Path)`. `redirectWithCode` calls `validReturnURL` itself, so no caller can mint a code for a URL that wasn't checked. Move password checking out of `handleLoginSubmit` into a helper that `/gate/sign-in` also calls, including the hash slots and the refusal of SSO accounts. `s.login` also starts a gateway session. The SSO callback branches on `flow.Return`: when set, it starts a gateway session with subject `core.SSOGateSubject(issuer, subject)` and redirects with a code; when empty, it behaves as in part 2 and also starts a gateway session. A failed callback whose flow has a return URL goes back to `/gate/start`; one with no usable flow goes to `/login`. The gateway cookie is `HttpOnly`, `SameSite=Lax`, `Path=/`, 8 hours, `Secure` from `requestIsHTTPS`.
+`validReturnURL` parses with `net/url`, requires scheme `https`, an empty `User`, and a non-empty host. It refuses a path the browser or Traefik might read differently from Outhaul: `u.EscapedPath()` containing `\`, `%2e`, `%2f` or `%5c` in either case, or a `u.Path` that `path.Clean` would change (a trailing slash aside). An empty path counts as `/`. Then it checks `RouteIsProtected(normalizeHost(u.Host), u.Path)`. `redirectWithCode` calls `validReturnURL` itself, so no caller can mint a code for a URL that wasn't checked. Move password checking out of `handleLoginSubmit` into a helper that `/gate/sign-in` also calls, including the hash slots and the refusal of SSO accounts. `s.login` also starts a gateway session. The SSO callback branches on `flow.Return`: when set, it starts a gateway session with subject `core.SSOGateSubject(issuer, subject)` and redirects with a code; when empty, it behaves as in part 2 and also starts a gateway session. A failed callback whose flow has a return URL goes back to `/gate/start`; one with no usable flow goes to `/login`. The gateway cookie is `HttpOnly`, `SameSite=Lax`, `Path=/`, 8 hours, and `Secure` when the public URL is `https://`.
 
 Update copy now that routes exist: `noaccess.tmpl` adds "You can still use apps on protected routes.", and the Users note reads `"No role" means the person can pass protected routes but can't use Outhaul.`
 
