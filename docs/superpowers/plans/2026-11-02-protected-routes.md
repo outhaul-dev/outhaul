@@ -22,6 +22,7 @@
 - This migration is `0028`. Existing rows default to open, and no app redeploys on upgrade.
 - Every new route goes in `routes()` with a level. A new public route is also added to `TestPublicRoutesAreExactlyThese`, and a new path wildcard to the value map in `TestEveryRouteRefusesTheWrongPeople` (both in `internal/server/access_test.go`).
 - Docker: only Tasks 1 and 8 start containers, and only ones named `outhaul-gatetest-*`. Nothing touches `outhaul-traefik` or the `outhaul` network.
+- A one-time code works only in the browser that asked for it. The gate sets `__Host-outhaul_pending` (a random value) on the app's host when it sends a browser to sign in, passes its SHA-256 as `n`, the code is stored with that hash, and redeeming needs the cookie. `n` travels with `rd` through every step of sign-in.
 - A one-time code is only ever sent to a URL the gate will answer. Whoever holds an unredeemed code can sign in as that person on that host.
 
 ## Review Focus
@@ -299,7 +300,8 @@ git commit -m "feat(gate): answer Traefik's forward-auth check"
   - `func (s *Server) gateCookieName() string`: `__Host-outhaul_gate` when the public URL is `https://`, else `outhaul_gate`, using the helper part 2 added for the SSO flow cookie; `const gateCodeTTL = 60 * time.Second`
   - `func (s *Server) validReturnURL(ctx, raw string) (host string, ok bool)`
   - `func (s *Server) startGateSession(w, r, subject, kind, display string) (rawToken string, err error)`
-  - `func (s *Server) redirectWithCode(w, r, rawGateToken, returnURL string)`
+  - `func (s *Server) redirectWithCode(w, r, rawGateToken, returnURL, nonceHash string)`: builds the URL with `net/url`, puts the code in the query, and refuses a return URL that has a fragment
+  - `n` (64 hex characters, refused otherwise) is read at `/gate/start`, carried in a hidden field through `POST /gate/sign-in`, and in `ssoFlow` (a new `Nonce`-like field, `GateNonce`) through SSO
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -327,6 +329,11 @@ func TestPasswordSignInForRouteReturnsWithCode(t *testing.T) {
 	// A wrong password => 401 login page still naming the destination.
 }
 func TestExistingGatewaySessionSkipsThePrompt(t *testing.T) { /* GET /gate/start with outhaul_gate => straight 303 with a code */ }
+func TestCodeIsBoundToTheBrowserThatAsked(t *testing.T) {
+	// End to end through /gate/check: browser A is sent to sign in (pending cookie, n), signs in, and its code works.
+	// The same code URL opened by browser B (no pending cookie, or its own) sets no route cookie and sends B to sign in.
+	// /gate/start with a missing or malformed n => 400. A return URL with a #fragment => 400.
+}
 func TestAdminLoginAlsoCoversRoutes(t *testing.T) {
 	// POST /login creates outhaul_gate; then GET /gate/start => 303 with a code.
 }

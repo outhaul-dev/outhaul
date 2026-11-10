@@ -303,6 +303,10 @@ protected host gets its own cookie, through a one-time code:
 
 Properties to keep:
 
+- A one-time code works only in the browser that asked for it: the gate sets a short-lived cookie on the
+  app's host when it sends a browser to sign in, the code is tied to it, and redeeming needs it. So a
+  link carrying someone else's code signs nobody in.
+
 - The route cookie is host-only, `Secure`, `HttpOnly`, `SameSite=Lax`, and named with the `__Host-`
   prefix. It lasts 8 hours and works only on the host it was issued for. It is checked against the
   host on every request. The app can read it, so it must be useless anywhere else.
