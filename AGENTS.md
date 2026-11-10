@@ -39,7 +39,8 @@ Docker and Go, starts only `outhaul-gatetest-*` containers and a network of the
 same name, on loopback ports, and removes them when it ends. None of them
 carries `traefik.enable`, so a Traefik that exposes only labelled containers,
 like Outhaul's own, ignores them. `--outhaul HOST:PORT` uses a running
-Outhaul's gate instead of the stub; the script's header says how.
+Outhaul's gate instead of the stub; the script's header says how. That mode
+hasn't been run against a real Outhaul yet.
 
 `go build .` leaves an `outhaul` binary in the repository root. Don't commit
 it.
@@ -169,7 +170,13 @@ fixed in five batches. All five are on `main`.
   the pending cookie on the app's host. A protection change takes effect by
   redeploying, because Traefik reads it only from labels; Restart deploys
   instead when labels and rows disagree. Everyone who can sign in gets
-  through: there is one group per server. See `docs/PROTECTED-ROUTES.md`.
+  through: there is one group per server. Every rule ends in a term that
+  refuses `..` path segments in any spelling, and every router names its
+  priority as its rule's length without that term, so containers labelled
+  before it keep their order; code matching a router to a row compares
+  addresses (`traefik.RuleAddress`), not rule strings. Only a system admin can
+  bring two projects together on a protected host. See
+  `docs/PROTECTED-ROUTES.md`.
 
 ### Open: reliability and UX
 

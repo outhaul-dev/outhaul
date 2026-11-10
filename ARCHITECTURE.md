@@ -512,7 +512,15 @@ the answer. Every open row gets a headers middleware that removes that header
 instead. The gate is never defined in the file provider: Traefik drops a router
 that names a middleware the file provider doesn't define, and its requests fall
 to an open router. On a TLS server a protected row is served over HTTPS whatever
-its own TLS flag.
+its own TLS flag. A protected row's headers middleware also sets
+`CDN-Cache-Control` and `Cloudflare-CDN-Cache-Control` to `no-store` on its
+responses. Every rule, open or protected, ends in a `!PathRegexp` term that
+refuses a path with a `..` segment in any spelling (`traefik.Rule`), and every
+router names its priority: the length of its rule without that term, which is
+Traefik's default for the rules written before it, so old and new containers
+on one host still order by path. Code that matches a container's router to a
+row compares the address in its rule (`traefik.RuleAddress`), never the rule
+string.
 
 **The flow.** A cookie on Outhaul's host never reaches an app, so each app host
 gets its own cookie through a one-time code:
@@ -555,11 +563,19 @@ parent save that requires sign-in protects and redeploys its existing previews.
 
 **Status from labels.** The Access column on the app page and the Domains page
 reads the running containers' labels (`traefik.RowHasGate`), not the stored
-flag, so it shows what Traefik is doing.
+flag, so it shows what Traefik is doing. A row's router counts only on the row's
+own address, and a protected row is "Not protected yet" while any other running
+managed container answers part of its address without the gate (`strayRoute`).
+
+**One project per protected host.** A sign-in holds for a whole host, so only a
+system admin can put a route on a host where another project's app requires
+sign-in, or require sign-in where another project's app has a route
+(`sharedHostRefused`).
 
 `deploy/test/integration_gate.sh` checks the labels on a real Traefik with a
 stub in place of Outhaul (not in CI). Its `--outhaul` mode uses a running
-Outhaul instead.
+Outhaul instead, but hasn't been run against one yet, and the whole flow with a
+real Outhaul and a real SSO provider hasn't been run end to end.
 
 ---
 

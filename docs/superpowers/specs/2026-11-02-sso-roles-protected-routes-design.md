@@ -245,15 +245,13 @@ The reverse is supported too: `shop.example.com/admin` protected under an open
 
 The switch needs both of these:
 
-- **A reachable Outhaul:** the condition in `ProxyConfig.adminRoutingEnabled`, meaning a
-  public URL and HTTPS or a tunnel. Browsers are sent there to sign in. It also gives
-  Traefik the host gateway.
-- **HTTPS for visitors:** the row's TLS flag with TLS on for the server, or tunnel mode,
-  where the edge terminates TLS.
+- **A reachable Outhaul:** a public URL. Browsers are sent there to sign in.
+- **HTTPS for visitors:** TLS on for the server, which serves a protected row over HTTPS
+  whatever its own TLS flag, or tunnel mode, where the edge terminates TLS.
 
 If either is missing, the switch is disabled and says why. A row that is already protected
 never silently becomes open if these later stop being true. It keeps its middleware and
-sign-in fails, and the UI warns.
+sign-in fails, and the UI warns. The switch can always be turned off.
 
 ### Traefik
 
@@ -359,17 +357,21 @@ The deploy works like this:
 
 ### What the row shows
 
-The Domains table gets an Access column. Its state comes from the **labels on the running container**,
-not from a stored flag, so it can't disagree with what Traefik is doing. A new row counts as lacking the
-gate, because an open row above it may already be serving that path:
+The Domains table gets an Access column. Its state comes from the **labels on the running containers**,
+not from a stored flag, so it can't disagree with what Traefik is doing. A container's router counts for
+a row only when its rule names the row's host and path. A new row counts as lacking the gate, because an
+open row above it may already be serving that path:
 
 | Setting | Running container | Shows |
 |---|---|---|
-| On | Has the gate | Sign-in required |
+| On | Has the gate, and nothing else answers part of the address without it | Sign-in required |
 | On | Lacks the gate | Not protected yet, with the deploy in progress or the failed deployment |
+| On | Has the gate, but another running container answers part of the address without it | Not protected yet, naming that app as far as the viewer may see it |
 | Off | Has the gate | Sign-in required until the redeploy finishes |
 | Off | Lacks the gate | Open |
+| Off | Doesn't serve the row yet | Open, applying on the next deploy |
 | Either | Not running | The setting, marked as applying on the next deploy |
+| Either | Docker can't be reached | Unknown |
 
 The `/domains` page shows the same state.
 
@@ -379,6 +381,34 @@ The `/domains` page shows the same state.
 included. Several parent rows can collapse into one preview row, and protected wins. Adding a protected
 row to a parent, or turning a parent row's switch on, also protects existing previews and redeploys them,
 by the rules above. Turning it off affects new previews only.
+
+### Built differently
+
+What was built differs from the above in these ways; `docs/PROTECTED-ROUTES.md` describes it.
+
+- The switch can always be turned off, and a protected row is served over HTTPS whatever its own HTTPS
+  option.
+- The gate sets `trustForwardHeader=false`, and every row strips the identity header's underscore
+  spellings too.
+- Every rule refuses a path with a `..` segment in any spelling, and every router names its priority:
+  the length of its rule without that term, so containers labelled before it order as they did.
+- A protected row's responses carry `CDN-Cache-Control` and `Cloudflare-CDN-Cache-Control: no-store`.
+- Traefik maps the gate's host while any row is protected or any container still carries a gate, and
+  turning sign-in on reconciles the proxy first.
+- More saves redeploy: removing or moving an open row on a host that requires sign-in, other apps that
+  still serve an old open route on a host being protected, and the app's previews.
+- A queued deploy absorbs a change. Reusing an image needs the running image to be the one recorded.
+- The dialog sends back what it showed; a save it didn't warn of is refused with a 409 and the page
+  again.
+- Restart deploys on any mismatch between labels and rows.
+- The Access column has the "Unknown" state, and the address-based and other-routes rules above.
+- Previews: a protected parent route the preview has no row for is added on its minted host, and the PR
+  comment marks protected links "(requires sign-in)".
+- HTTPS on a port other than 443 works; `/gate/start` has a loop guard; codes are bound to the browser.
+- A protected host belongs to one project: only a system admin can bring two projects together on one.
+- The migration is 0028.
+- The end-to-end run with a real Outhaul and a real OIDC provider is still outstanding. The labels are
+  checked on real Traefik, with a stand-in for Outhaul, by `deploy/test/integration_gate.sh`.
 
 ## Upgrade
 

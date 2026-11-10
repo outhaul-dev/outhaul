@@ -117,8 +117,14 @@ before you save:
 
 - another app that still serves an old route on that host without sign-in, because
   its domain there was removed or moved since its last deploy. An app in a project you
-  don't share is named only as "an app in a project you don't share";
+  don't share is named only as "an app in a project you don't share", which "may
+  deploy its latest code";
 - this app's pull-request previews. See [Previews](#previews).
+
+The dialog can list other apps in advance only for addresses the app already has, and
+only once something on the server requires sign-in. Otherwise, for example for an
+address new to the app, the first save may be refused with the list of other apps it
+would redeploy. Nothing is changed; check the list and save again to confirm.
 
 ### Restart
 
@@ -141,8 +147,11 @@ it.
 ## The Access column
 
 The Domains panel on the app page, and the Domains page, show each domain's Access.
-It is read from the labels on the app's running containers, not from the switch, so
-it shows what Traefik is doing now.
+It is read from the labels on the running containers, not from the switch, so it shows
+what Traefik is doing now. A container Docker is restarting counts as running. A
+container's route counts for a domain only when it is for that domain's host and path:
+after a domain's host or path is changed, the old container doesn't serve the new
+address.
 
 | Access | What it means |
 |---|---|
@@ -150,9 +159,11 @@ it shows what Traefik is doing now.
 | Open | Anyone can visit. |
 | Not protected yet, redeploying | The switch is on, and the deploy that applies it is queued or running. Until it finishes, the running container doesn't ask for sign-in. |
 | Not protected yet, the last deploy failed | The switch is on, but the deploy failed, and the running container doesn't ask for sign-in. Fix the deploy and deploy again. |
-| Not protected yet | The switch is on, but the running container doesn't ask for sign-in. Deploy the app. |
+| Not protected yet | The switch is on, but the running container doesn't ask for sign-in at this address. Deploy the app. |
+| Not protected yet, an old route of this app still answers part of this address | This app's running container asks for sign-in here, but still serves an old open route under this address, for example a domain removed since its last deploy. Deploy the app. |
+| Not protected yet, *app* still answers part of this address | Another app's running container serves part of this address without sign-in: an old route it still has. Deploy that app. When you don't share its project, it is "another app", and so is a container whose app was removed. |
 | Sign-in required, until the redeploy finishes | The switch is off, and the running container asks for sign-in until the deploy that applies it finishes. |
-| Sign-in required, or Open, applies on the next deploy | The app isn't running. This is the setting its next deploy applies. |
+| Sign-in required, or Open, applies on the next deploy | The app isn't running, or (Open) it is running but doesn't serve this domain yet, for example one added or moved since its last deploy. This is the setting its next deploy applies. |
 | Unknown, Docker can't be reached | Outhaul couldn't read the containers. |
 
 A new domain that requires sign-in shows "Not protected yet" until a deploy gives it
@@ -210,6 +221,14 @@ Traefik sends each request to the domain with the longest path that matches it, 
 Anyone can reach the open path, so the wiki has to check those requests itself, for
 example with the webhook's secret.
 
+On a server with HTTPS, turn on "Automate HTTPS" for the open path's domain too. A
+domain that requires sign-in is always served over HTTPS, but an open one only when
+its own box is on; without it, requests for the open path reach the protected domain
+and ask for sign-in.
+
+This is the safe way to mix the two: protect the whole address, then open the paths
+that need it by name.
+
 ## Protecting one path
 
 The reverse works too. A shop at `shop.example.com` is open to everyone, and only its
@@ -223,6 +242,13 @@ admin pages need sign-in:
 Paths match as plain prefixes, not whole path segments: `/admin` also covers
 `/administrator`, and `/webhooks` also covers `/webhooks-old`. Choose paths with that
 in mind.
+
+Paths are matched exactly as written, including case: `/admin` doesn't cover `/ADMIN`
+or `/Admin`. So protecting one path under an open address is only safe when the app
+itself treats paths exactly as well. An app that also answers `/ADMIN` with its admin
+pages serves them from the open domain, without sign-in. If you can't be sure of that,
+protect the whole address and open the other paths instead, as in
+[Leaving a path open](#leaving-a-path-open).
 
 Outhaul's routes don't accept a path that contains a `..` segment, however it is
 encoded.
