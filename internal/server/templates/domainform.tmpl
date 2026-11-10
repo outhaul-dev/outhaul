@@ -203,9 +203,14 @@
       var path = pathInput ? pathInput.value.trim() : '';
       return host !== origHost || path !== origPath;
     }
-    // Other apps a save would also redeploy are named per host: only the
-    // lines for the host being saved show.
+    // Other apps a save would also redeploy are named per host. They show
+    // only for a save that requires sign-in on the host being saved (a new
+    // protected row, the switch turned on, or a protected row moved), and
+    // only the lines for that host.
     var alsoLines = Array.prototype.slice.call(dialog.querySelectorAll('[data-also-host]'));
+    function requiresSignInHere() {
+      return !!(protect && protect.checked) && (!editedProtected || moved());
+    }
     function currentHost() {
       var kind = dialog.querySelector('input[name="host_kind"]:checked');
       if (kind && kind.value !== 'custom') {
@@ -222,7 +227,8 @@
       var on = !!(protect && protect.checked);
       if (protectNote) protectNote.hidden = !(on || editedProtected || (editedException && moved()));
       var host = currentHost();
-      alsoLines.forEach(function (p) { p.hidden = p.getAttribute('data-also-host') !== host; });
+      var here = requiresSignInHere();
+      alsoLines.forEach(function (p) { p.hidden = !here || p.getAttribute('data-also-host') !== host; });
       previewLines.forEach(function (p) { p.hidden = !on; });
       if (previewsStay) previewsStay.hidden = !(editedProtected && !on);
     }

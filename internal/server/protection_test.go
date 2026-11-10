@@ -66,8 +66,8 @@ func (e *testEnv) runContainers(cs ...docker.Container) {
 }
 
 // liveWeb creates the nixpacks app "web", whose one row is web.test (open),
-// with a running container labelled from that row and, unless image is "",
-// a live deployment of image.
+// with a running container of image labelled from that row and, unless image
+// is "", a live deployment of image.
 func liveWeb(t *testing.T, e *testEnv, image string) (core.App, core.Domain, core.Deployment) {
 	t.Helper()
 	ctx := context.Background()
@@ -80,8 +80,15 @@ func liveWeb(t *testing.T, e *testEnv, image string) (core.App, core.Domain, cor
 	if image != "" {
 		live = seedFinishedDeploy(t, e, app.ID, image)
 	}
-	e.runContainers(labelled("c1", app, rows, "running"))
+	e.runContainers(withImage(labelled("c1", app, rows, "running"), image))
 	return app, rows[0], live
+}
+
+// withImage is c running image, as Docker lists it: the tag it was created
+// from, while that tag still names the same image.
+func withImage(c docker.Container, image string) docker.Container {
+	c.Image = image
+	return c
 }
 
 func domainsOf(t *testing.T, e *testEnv, appID int64) []core.Domain {
@@ -352,7 +359,7 @@ func TestUnavailableRowKeepsItsProtection(t *testing.T) {
 	e, _ := newProtectionEnv(t)
 	app, row, live := liveWeb(t, e, "img:1")
 	row = setProtected(t, e, row, true)
-	e.runContainers(labelled("c1", app, []core.Domain{row}, "running"))
+	e.runContainers(withImage(labelled("c1", app, []core.Domain{row}, "running"), "img:1"))
 	before := len(deploymentsOf(t, e, app.ID))
 
 	e.srv.tlsEnabled = false // HTTPS is gone, so sign-in can't be turned on
@@ -430,9 +437,9 @@ func TestNoReusableImageRunsNormalDeploy(t *testing.T) {
 			t.Errorf("deployments = %+v, want a normal deploy queued", deps)
 		}
 	})
-	// A deploy that failed after building its image may have cut over first:
-	// its image can be the one serving, under a failed row, so the live
-	// running row's image isn't known to be what is live.
+	// A deploy that failed after building its image may have cut over first,
+	// so its image may be what serves, under a failed row. The container
+	// says: Docker lists the tag a container was created from.
 	failNewer := func(t *testing.T, e *testEnv, appID int64, image string) {
 		t.Helper()
 		ctx := context.Background()
@@ -453,18 +460,41 @@ func TestNoReusableImageRunsNormalDeploy(t *testing.T) {
 		mustTransition(t, e, d.ID, core.StatusBuilding, core.StatusDeploying)
 		mustTransition(t, e, d.ID, core.StatusDeploying, core.StatusFailed)
 	}
-	t.Run("a newer deploy failed after building its image", func(t *testing.T) {
-		e, _ := newProtectionEnv(t)
-		app, row, _ := liveWeb(t, e, "img:1")
-		failNewer(t, e, app.ID, "img:2")
-		if w := protectionWarningFor(app, deploymentsOf(t, e, app.ID)); !strings.Contains(w, "This will deploy the latest code from main") {
-			t.Errorf("warning = %q, want it to say a build ships", w)
-		}
-		wantStatus(t, "turn the switch on", e.saveDomain(t, app.ID, row, domainForm(row, true)), http.StatusSeeOther)
-		if d := deploymentsOf(t, e, app.ID)[0]; d.Status != core.StatusQueued || d.Image != "" || d.RollbackOf != 0 {
-			t.Errorf("queued %+v, want a normal deploy, not img:1 again", d)
-		}
-	})
+	for _, c := range []struct {
+		name    string
+		serving string // the image the app's container lists
+		reuse   bool
+	}{
+		// The health check failed before the cutover: the old container serves.
+		{name: "before its cutover", serving: "img:1", reuse: true},
+		// The cutover's own health check failed: the new container serves.
+		{name: "after its cutover", serving: "img:2"},
+		// The tag the container was made from names another image now, so
+		// Docker lists the image's ID.
+		{name: "and the container lists an image ID", serving: "sha256:9b1e0c5d"},
+	} {
+		t.Run("a newer deploy failed "+c.name, func(t *testing.T) {
+			e, _ := newProtectionEnv(t)
+			app, row, live := liveWeb(t, e, "img:1")
+			failNewer(t, e, app.ID, "img:2")
+			e.runContainers(withImage(labelled("c1", app, []core.Domain{row}, "running"), c.serving))
+			warning := e.srv.protectionWarning(context.Background(), app)
+			wantStatus(t, "turn the switch on", e.saveDomain(t, app.ID, row, domainForm(row, true)), http.StatusSeeOther)
+			d := deploymentsOf(t, e, app.ID)[0]
+			if c.reuse {
+				if warning != "" || d.Status != core.StatusQueued || d.Image != "img:1" || d.RollbackOf != live.ID {
+					t.Errorf("warning %q, queued %+v; want no warning, and img:1 reused: it is what serves", warning, d)
+				}
+				return
+			}
+			if !strings.Contains(warning, "This will deploy the latest code from main") {
+				t.Errorf("warning = %q, want it to say a build ships", warning)
+			}
+			if d.Status != core.StatusQueued || d.Image != "" || d.RollbackOf != 0 {
+				t.Errorf("queued %+v, want a normal deploy, not img:1 again", d)
+			}
+		})
+	}
 	t.Run("a newer deploy failed in its build", func(t *testing.T) {
 		e, _ := newProtectionEnv(t)
 		app, row, live := liveWeb(t, e, "img:1")
@@ -564,14 +594,22 @@ func TestInFlightDeployIsNotUndone(t *testing.T) {
 			}
 			wantStatus(t, "turn the switch on", e.saveDomain(t, app.ID, row, domainForm(row, true)), http.StatusSeeOther)
 			deps := deploymentsOf(t, e, app.ID)
+			if st == core.StatusQueued {
+				// It reads the rows when it starts, so it applies the change.
+				if deps[0].ID != inFlight.ID {
+					t.Errorf("queued %+v behind #%d, which hasn't started; want nothing more", deps[0], inFlight.ID)
+				}
+				return
+			}
 			if d := deps[0]; d.ID == inFlight.ID || d.Image != "" || d.RollbackOf != 0 {
 				t.Errorf("queued %+v, want another normal deploy, not a reuse of img:1 after #%d", d, inFlight.ID)
 			}
 		})
 	}
 	// Nothing is running, but a deploy is in flight: a first build, or one
-	// after Stop. It read the rows when it started, so the switch queues a
-	// normal deploy behind it.
+	// after Stop. Once it has started it may have read the rows, so the switch
+	// queues a normal deploy behind it; while it is queued it hasn't, and
+	// nothing more is queued.
 	for _, c := range []struct {
 		name    string
 		compose bool
@@ -616,6 +654,12 @@ func TestInFlightDeployIsNotUndone(t *testing.T) {
 				notified := e.deployer.notified
 				wantStatus(t, "turn the switch on", e.saveDomain(t, app.ID, row, domainForm(row, true)), http.StatusSeeOther)
 				deps := deploymentsOf(t, e, app.ID)
+				if st == core.StatusQueued {
+					if deps[0].ID != inFlight.ID {
+						t.Errorf("queued %+v behind #%d, which hasn't started; want nothing more", deps[0], inFlight.ID)
+					}
+					return
+				}
 				if d := deps[0]; d.ID == inFlight.ID || d.Status != core.StatusQueued || d.Image != "" || d.RollbackOf != 0 {
 					t.Errorf("deployments = %+v, want a normal deploy queued behind #%d", deps, inFlight.ID)
 				}
@@ -634,6 +678,9 @@ func TestInFlightDeployIsNotUndone(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if ok, err := e.store.ClaimDeployment(context.Background(), rb.ID); err != nil || !ok {
+			t.Fatalf("claim: %v %v", ok, err)
+		}
 		wantStatus(t, "turn the switch on", e.saveDomain(t, app.ID, row, domainForm(row, true)), http.StatusSeeOther)
 		deps := deploymentsOf(t, e, app.ID)
 		if d := deps[0]; d.ID == rb.ID || d.Image != "img:0" || d.RollbackOf != old.ID {
@@ -649,12 +696,83 @@ func TestInFlightDeployIsNotUndone(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if ok, err := e.store.ClaimDeployment(context.Background(), rb.ID); err != nil || !ok {
+			t.Fatalf("claim: %v %v", ok, err)
+		}
 		wantStatus(t, "turn the switch on", e.saveDomain(t, app.ID, row, domainForm(row, true)), http.StatusSeeOther)
 		deps := deploymentsOf(t, e, app.ID)
 		if d := deps[0]; d.ID == rb.ID || d.Image != "img:0" || d.RollbackOf != old.ID {
 			t.Errorf("queued %+v, want img:0 again (from #%d), so the rollback isn't undone", d, old.ID)
 		}
 	})
+}
+
+// A deployment that is queued and hasn't started reads the rows when it
+// starts, so it applies any number of saves made before then. One that has
+// started gets one deploy behind it, which then does the same. A tag push's
+// deployment can skip itself when it starts, so it gets one behind it too.
+func TestSavesDuringOneDeployQueueOne(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		status   core.DeployStatus
+		rollback bool
+		tag      bool
+		want     int // deployments the three saves queue
+	}{
+		{name: "a build", status: core.StatusBuilding, want: 1},
+		{name: "a deploy's cutover", status: core.StatusDeploying, want: 1},
+		{name: "a queued deploy", status: core.StatusQueued, want: 0},
+		{name: "a rollback started", status: core.StatusBuilding, rollback: true, want: 1},
+		{name: "a queued rollback", status: core.StatusQueued, rollback: true, want: 0},
+		{name: "a tag push's queued deploy", status: core.StatusQueued, tag: true, want: 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			e, _ := newProtectionEnv(t)
+			ctx := context.Background()
+			app, row, live := liveWeb(t, e, "img:1")
+			var (
+				inFlight core.Deployment
+				err      error
+			)
+			switch {
+			case c.rollback:
+				inFlight, err = e.store.CreateRollback(ctx, app.ID, "img:1", live.ID)
+			case c.tag:
+				inFlight, _, err = e.store.EnqueueTagDeployment(ctx, app.ID, func([]string) (string, bool) { return "v2", true })
+			default:
+				inFlight, err = e.store.CreateDeployment(ctx, app.ID)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.status != core.StatusQueued {
+				if ok, err := e.store.ClaimDeployment(ctx, inFlight.ID); err != nil || !ok {
+					t.Fatalf("claim: %v %v", ok, err)
+				}
+			}
+			if c.status == core.StatusDeploying {
+				mustTransition(t, e, inFlight.ID, core.StatusBuilding, core.StatusDeploying)
+			}
+			before := len(deploymentsOf(t, e, app.ID))
+			for i, on := range []bool{true, false, true} {
+				wantStatus(t, "save "+strconv.Itoa(i+1), e.saveDomain(t, app.ID, row, domainForm(domainOf(t, e, row), on)), http.StatusSeeOther)
+			}
+			deps := deploymentsOf(t, e, app.ID)
+			if n := len(deps) - before; n != c.want {
+				t.Fatalf("three saves queued %d deployments, want %d: %+v", n, c.want, deps)
+			}
+			if c.want == 0 {
+				return
+			}
+			want := ""
+			if c.rollback {
+				want = "img:1"
+			}
+			if d := deps[0]; d.Status != core.StatusQueued || d.Image != want {
+				t.Errorf("queued %+v, want image %q", d, want)
+			}
+		})
+	}
 }
 
 // addRow adds a row to the store directly, as an earlier save would have.
@@ -783,6 +901,10 @@ func TestWhichSavesQueueADeploy(t *testing.T) {
 		if da, db := len(deploymentsOf(t, e, a.ID)), len(deploymentsOf(t, e, b.ID)); da != aBefore || db != bBefore+1 {
 			t.Errorf("moving B's row: deployments A %d -> %d, B %d -> %d; want only B redeployed", aBefore, da, bBefore, db)
 		}
+		// B's deploy has started, so it may have read the rows already.
+		if ok, err := e.store.ClaimDeployment(context.Background(), deploymentsOf(t, e, b.ID)[0].ID); err != nil || !ok {
+			t.Fatalf("claim: %v %v", ok, err)
+		}
 		wantStatus(t, "remove B's open path", e.removeDomain(t, hook), http.StatusSeeOther)
 		if da, db := len(deploymentsOf(t, e, a.ID)), len(deploymentsOf(t, e, b.ID)); da != aBefore || db != bBefore+2 {
 			t.Errorf("removing B's row: deployments A %d -> %d, B %d -> %d; want only B redeployed", aBefore, da, bBefore, db)
@@ -864,11 +986,34 @@ func TestRestartRedeploysOnMismatch(t *testing.T) {
 	})
 	t.Run("a stopped container without the gate, the switch on", func(t *testing.T) {
 		e, _ := newProtectionEnv(t)
-		app, row, _ := liveWeb(t, e, "img:1")
-		e.runContainers(labelled("c1", app, []core.Domain{row}, "exited"))
+		app, row, live := liveWeb(t, e, "img:1")
+		e.runContainers(withImage(labelled("c1", app, []core.Domain{row}, "exited"), "img:1"))
 		setProtected(t, e, row, true)
 		before := len(deploymentsOf(t, e, app.ID))
 		redeployed(t, e, app, before, restart(t, e, app))
+		if d := deploymentsOf(t, e, app.ID)[0]; d.Image != "img:1" || d.RollbackOf != live.ID {
+			t.Errorf("queued %+v, want a reuse of the stopped container's image", d)
+		}
+	})
+	t.Run("a deploy is queued already", func(t *testing.T) {
+		e, _ := newProtectionEnv(t)
+		app, row, _ := liveWeb(t, e, "img:1")
+		setProtected(t, e, row, true)
+		waiting, err := e.store.CreateDeployment(context.Background(), app.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before := len(deploymentsOf(t, e, app.ID))
+		resp := restart(t, e, app)
+		if loc := resp.Header.Get("Location"); loc != deploymentPath(waiting.ID) {
+			t.Errorf("redirect = %q, want the queued deployment %q, which applies the rows", loc, deploymentPath(waiting.ID))
+		}
+		if n := len(deploymentsOf(t, e, app.ID)); n != before {
+			t.Errorf("deployments %d -> %d, want nothing more queued", before, n)
+		}
+		if len(e.runtime.started) != 0 || len(e.runtime.stopped) != 0 {
+			t.Errorf("started %v, stopped %v: the old container must not be restarted", e.runtime.started, e.runtime.stopped)
+		}
 	})
 	t.Run("the switch off, the container still gated", func(t *testing.T) {
 		e, _ := newProtectionEnv(t)
@@ -1025,6 +1170,10 @@ func TestWarningNamesWhatWillShip(t *testing.T) {
 		t.Errorf("never deployed: warning = %q", got)
 	}
 	seedFinishedDeploy(t, e, web.ID, "img:1")
+	if got := e.srv.protectionWarning(ctx, web); !strings.Contains(got, "This will deploy the latest code from trunk") {
+		t.Errorf("no container to say which image serves: warning = %q", got)
+	}
+	e.runContainers(withImage(labelled("c1", web, nil, "running"), "img:1"))
 	if got := e.srv.protectionWarning(ctx, web); got != "" {
 		t.Errorf("a usable image: warning = %q, want none", got)
 	}
@@ -1198,18 +1347,27 @@ func leftoverHooks(t *testing.T, e *testEnv, served []core.Domain, rows []core.D
 // default project).
 func leftoverHooksIn(t *testing.T, e *testEnv, projectID int64, served []core.Domain, rows []core.Domain) core.App {
 	t.Helper()
+	return leftoverApp(t, e, core.App{Name: "hooks", RepoURL: "https://x/hooks.git", ProjectID: projectID}, "hooks:1", "c2", served, rows)
+}
+
+// leftoverApp creates a, live on image (a deploy that builds when image is ""),
+// whose running container id still routes served openly (labelled from
+// served), while its rows are now rows. A served route that is also in rows
+// stays the same row.
+func leftoverApp(t *testing.T, e *testEnv, a core.App, image, id string, served []core.Domain, rows []core.Domain) core.App {
+	t.Helper()
 	ctx := context.Background()
-	hooks, err := e.store.CreateApp(ctx, core.App{Name: "hooks", RepoURL: "https://x/hooks.git", ProjectID: projectID})
+	app, err := e.store.CreateApp(ctx, a)
 	if err != nil {
 		t.Fatal(err)
 	}
-	seedFinishedDeploy(t, e, hooks.ID, "hooks:1")
+	seedFinishedDeploy(t, e, app.ID, image)
 	var added []core.Domain
 	for _, d := range served {
-		d.AppID = hooks.ID
+		d.AppID = app.ID
 		added = append(added, addRow(t, e, d))
 	}
-	labels := labelled("c2", hooks, added, "running")
+	c := withImage(labelled(id, app, added, "running"), image)
 	kept := map[string]bool{}
 	for _, d := range rows {
 		kept[d.Host+d.Path] = true
@@ -1219,18 +1377,18 @@ func leftoverHooksIn(t *testing.T, e *testEnv, projectID int64, served []core.Do
 			delete(kept, d.Host+d.Path)
 			continue
 		}
-		if err := e.store.DeleteDomain(ctx, hooks.ID, d.ID); err != nil {
+		if err := e.store.DeleteDomain(ctx, app.ID, d.ID); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for _, d := range rows {
 		if kept[d.Host+d.Path] {
-			d.AppID = hooks.ID
+			d.AppID = app.ID
 			addRow(t, e, d)
 		}
 	}
-	e.runtime.stack = append(e.runtime.stack, labels)
-	return hooks
+	e.runtime.stack = append(e.runtime.stack, c)
+	return app
 }
 
 // Protecting a host redeploys another app whose running container still
@@ -1238,11 +1396,13 @@ func leftoverHooksIn(t *testing.T, e *testEnv, projectID int64, served []core.Do
 // route on the host is one of its rows is left alone.
 func TestProtectingAHostRedeploysLeftoverRoutes(t *testing.T) {
 	type save struct {
-		name   string
-		served core.Domain // the route hooks' container still serves
-		rows   []core.Domain
-		apply  func(t *testing.T, e *testEnv, web core.App, row core.Domain, othersWas string) *http.Response
-		want   bool // hooks is redeployed
+		name    string
+		served  core.Domain // the route hooks' container still serves
+		rows    []core.Domain
+		moveTo  string // the served row moved to this host since, keeping its ID
+		stopped bool   // hooks' container has stopped
+		apply   func(t *testing.T, e *testEnv, web core.App, row core.Domain, othersWas string) *http.Response
+		want    bool // hooks is redeployed
 	}
 	switchOn := func(t *testing.T, e *testEnv, web core.App, row core.Domain, othersWas string) *http.Response {
 		f := domainForm(row, true)
@@ -1266,12 +1426,13 @@ func TestProtectingAHostRedeploysLeftoverRoutes(t *testing.T) {
 	hooksPath := core.Domain{Host: "web.test", Path: "/hooks"}
 	for _, c := range []save{
 		{name: "turn the switch on: a removed path", served: hooksPath, apply: switchOn, want: true},
-		{name: "turn the switch on: a path moved to another host", served: hooksPath, rows: []core.Domain{{Host: "hooks.test", Path: "/hooks"}}, apply: switchOn, want: true},
+		{name: "turn the switch on: a path moved to another host", served: hooksPath, rows: []core.Domain{hooksPath}, moveTo: "hooks.test", apply: switchOn, want: true},
 		{name: "turn the switch on: the same rule", served: core.Domain{Host: "web.test"}, apply: switchOn, want: true},
 		{name: "add a protected row on the host", served: hooksPath, apply: addShut, want: true},
 		{name: "move a protected row onto the host", served: hooksPath, apply: moveShut, want: true},
 		{name: "an open path that is still a row", served: hooksPath, rows: []core.Domain{hooksPath}, apply: switchOn, want: false},
 		{name: "a removed path on another host", served: core.Domain{Host: "other.test", Path: "/hooks"}, apply: switchOn, want: false},
+		{name: "a removed path, its container stopped", served: hooksPath, stopped: true, apply: switchOn, want: false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			e, _ := newProtectionEnv(t)
@@ -1289,6 +1450,16 @@ func TestProtectingAHostRedeploysLeftoverRoutes(t *testing.T) {
 				web, row, _ = liveWeb(t, e, "img:1")
 				hooks = leftoverHooks(t, e, []core.Domain{c.served}, c.rows)
 			}
+			if c.moveTo != "" {
+				moved := domainsOf(t, e, hooks.ID)[0]
+				moved.Host = c.moveTo
+				if err := e.store.UpdateDomain(context.Background(), moved); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if c.stopped {
+				e.runtime.stack[len(e.runtime.stack)-1].State = "exited"
+			}
 			webBefore, hooksBefore := len(deploymentsOf(t, e, web.ID)), len(deploymentsOf(t, e, hooks.ID))
 			wantStatus(t, c.name, c.apply(t, e, web, row, othersWasOf(t, e, web.ID)), http.StatusSeeOther)
 			if n := len(deploymentsOf(t, e, web.ID)); n != webBefore+1 {
@@ -1305,36 +1476,107 @@ func TestProtectingAHostRedeploysLeftoverRoutes(t *testing.T) {
 	}
 }
 
-// The other app's redeploy follows from the save, as a removal's does: the
-// person saving needs no role on that app's project.
-func TestLeftoverRoutesNeedNoRoleOnTheOtherApp(t *testing.T) {
+// Another app's leftover route is named only to people who can see its
+// project. Anyone else is told that an app in a project they don't share also
+// redeploys: not its name, its other hosts or what it will deploy. Their save
+// needs no role on that project, and redeploys it once their page has warned
+// of it. The page names only what is on this app's own hosts.
+func TestLeftoverRoutesOfAppsYouDontShare(t *testing.T) {
 	e, _ := newProtectionEnv(t)
 	ctx := context.Background()
 	web, row, _ := liveWeb(t, e, "img:1")
+	web, err := e.store.GetApp(ctx, web.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	elsewhere, err := e.store.CreateProject(ctx, core.Project{Name: "elsewhere"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	hooks := leftoverHooksIn(t, e, elsewhere.ID, []core.Domain{{Host: "web.test", Path: "/hooks"}}, nil)
-	if hooks.ProjectID != elsewhere.ID {
-		t.Fatalf("hooks is in project %d, want %d", hooks.ProjectID, elsewhere.ID)
+	// zephyr still serves web.test/old and hidden.test/old openly, and its
+	// next deploy builds its branch, moonbeam.
+	zephyr := leftoverApp(t, e, core.App{Name: "zephyr", RepoURL: "https://x/zephyr.git", Branch: "moonbeam", ProjectID: elsewhere.ID}, "", "c-zephyr",
+		[]core.Domain{{Host: "web.test", Path: "/old"}, {Host: "hidden.test", Path: "/old"}}, nil)
+	secrets := []string{"zephyr", "moonbeam", "hidden.test"}
+	generic := "Requiring sign-in on web.test also redeploys an app in a project you don't share."
+	named := "Requiring sign-in on web.test also redeploys zephyr, which still serves an old route there. It will deploy the latest code from moonbeam."
+	opaque := regexp.MustCompile(`^web\.test ~[0-9a-f]{16}$`)
+	keyOf := func(t *testing.T, raw string) string {
+		t.Helper()
+		m := regexp.MustCompile(`name="others_was" value="([^"]*)"`).FindStringSubmatch(raw)
+		if m == nil {
+			t.Fatal("the dialog has no others_was")
+		}
+		return html.UnescapeString(m[1])
 	}
-	web, err = e.store.GetApp(ctx, web.ID)
-	if err != nil {
-		t.Fatal(err)
+	noSecrets := func(t *testing.T, what, raw string) {
+		t.Helper()
+		page := html.UnescapeString(raw)
+		for _, s := range secrets {
+			if strings.Contains(page, s) {
+				t.Errorf("%s mentions %q, of an app in a project the person doesn't share", what, s)
+			}
+		}
+		if !strings.Contains(page, generic) {
+			t.Errorf("%s should say %q", what, generic)
+		}
 	}
-	member := e.signInAs(t, "mina", core.RoleProjectMember, web.ProjectID)
-	m := regexp.MustCompile(`name="others_was" value="([^"]*)"`).FindStringSubmatch(body(t, e.getAs(t, member, "/apps/"+itoa(web.ID))))
-	if m == nil || html.UnescapeString(m[1]) != "web.test hooks" {
-		t.Fatalf("the member's dialog others_was = %v, want hooks named", m)
+
+	// The admin sees zephyr named, with what it will deploy, on web.test only.
+	page := html.UnescapeString(body(t, e.get(t, "/apps/"+itoa(web.ID))))
+	if !strings.Contains(page, named) || strings.Contains(page, "hidden.test") {
+		t.Errorf("the admin's dialog should say %q, and nothing of hidden.test, which isn't web's host", named)
 	}
-	before := len(deploymentsOf(t, e, hooks.ID))
+	if got := othersWasOf(t, e, web.ID); got != "web.test zephyr" {
+		t.Errorf("the admin's others_was = %q, want zephyr named", got)
+	}
+	// So does someone on zephyr's project, in any role.
+	both := e.signInAs(t, "bo", core.RoleProjectMember, web.ProjectID, elsewhere.ID)
+	if page := html.UnescapeString(body(t, e.getAs(t, both, "/apps/"+itoa(web.ID)))); !strings.Contains(page, named) {
+		t.Errorf("someone on both projects should see %q", named)
+	}
+
+	// A member of web's project only sees the generic line, and an opaque key.
+	mina := e.signInAs(t, "mina", core.RoleProjectMember, web.ProjectID)
+	raw := body(t, e.getAs(t, mina, "/apps/"+itoa(web.ID)))
+	noSecrets(t, "the member's app page", raw)
+	key := keyOf(t, raw)
+	if !opaque.MatchString(key) {
+		t.Fatalf("the member's others_was = %q, want web.test and an opaque key", key)
+	}
+
+	// A save from a page that didn't warn of it is refused, still unnamed.
+	path := "/apps/" + itoa(web.ID) + "/domains/" + itoa(row.ID)
+	before := len(deploymentsOf(t, e, zephyr.ID))
+	resp := e.postAs(t, mina, path, domainForm(row, true))
+	refused := wantStatus(t, "a save that didn't name zephyr", resp, http.StatusConflict)
+	noSecrets(t, "the refusal", refused)
+	if domainOf(t, e, row).Protected || len(deploymentsOf(t, e, zephyr.ID)) != before {
+		t.Error("a refused save changed the row or queued zephyr's deploy")
+	}
+	if k := keyOf(t, refused); k != key {
+		t.Errorf("the refusal's others_was = %q, want the page's %q", k, key)
+	}
+
+	// The save from the page that warned of it redeploys zephyr.
 	f := domainForm(row, true)
-	f.Set("others_was", "web.test hooks")
-	wantStatus(t, "turn the switch on", e.postAs(t, member, "/apps/"+itoa(web.ID)+"/domains/"+itoa(row.ID), f), http.StatusSeeOther)
-	if n := len(deploymentsOf(t, e, hooks.ID)); n != before+1 {
-		t.Errorf("hooks' deployments %d -> %d, want one queued", before, n)
+	f.Set("others_was", key)
+	wantStatus(t, "the save", e.postAs(t, mina, path, f), http.StatusSeeOther)
+	if n := len(deploymentsOf(t, e, zephyr.ID)); n != before+1 {
+		t.Errorf("zephyr's deployments %d -> %d, want one queued", before, n)
 	}
+
+	// A protected row on a host that isn't web's yet: the refusal warns of
+	// the apps there, unnamed, and its page carries their keys.
+	add := domainForm(core.Domain{Host: "hidden.test", Path: "/new"}, true)
+	refused = wantStatus(t, "a new row on hidden.test", e.postAs(t, mina, "/apps/"+itoa(web.ID)+"/domains", add), http.StatusConflict)
+	text := html.UnescapeString(refused)
+	if !strings.Contains(text, "Requiring sign-in on hidden.test also redeploys an app in a project you don't share.") ||
+		strings.Contains(text, "zephyr") || strings.Contains(text, "moonbeam") {
+		t.Errorf("the refusal should warn of an unnamed app on hidden.test; got %q", text)
+	}
+	add.Set("others_was", keyOf(t, refused))
+	wantStatus(t, "the new row, from the refusal's page", e.postAs(t, mina, "/apps/"+itoa(web.ID)+"/domains", add), http.StatusSeeOther)
 }
 
 // The dialog names the other apps a save would redeploy before it is made;
@@ -1373,6 +1615,61 @@ func TestLeftoverRoutesAreWarnedOf(t *testing.T) {
 	}
 	if domainOf(t, e, row).Protected || px.calls != 0 {
 		t.Error("the row was turned on, or the proxy reconciled, though the other apps couldn't be worked out")
+	}
+}
+
+// Working out which other apps a save redeploys reads only the apps with an
+// old route on the host being saved: one elsewhere that can't be read holds
+// nothing up, and one on that host refuses the save.
+func TestOnlyTheSavedHostsOtherAppsAreRead(t *testing.T) {
+	unreadable := func(t *testing.T, e *testEnv, app core.App) {
+		t.Helper()
+		if _, err := e.rawDB(t).Exec(`UPDATE deployments SET created_at = 'not a time' WHERE app_id = ?`, app.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("an old route on another host", func(t *testing.T) {
+		e, _ := newProtectionEnv(t)
+		web, row, _ := liveWeb(t, e, "img:1")
+		unreadable(t, e, leftoverHooks(t, e, []core.Domain{{Host: "other.test", Path: "/hooks"}}, nil))
+		wantStatus(t, "turn the switch on", e.saveDomain(t, web.ID, row, domainForm(row, true)), http.StatusSeeOther)
+		if !domainOf(t, e, row).Protected {
+			t.Error("the row wasn't turned on")
+		}
+	})
+	t.Run("an old route on the saved host", func(t *testing.T) {
+		e, _ := newProtectionEnv(t)
+		web, row, _ := liveWeb(t, e, "img:1")
+		unreadable(t, e, leftoverHooks(t, e, []core.Domain{{Host: "web.test", Path: "/hooks"}}, nil))
+		f := domainForm(row, true)
+		f.Set("others_was", "web.test hooks")
+		b := wantStatus(t, "turn the switch on", e.saveDomain(t, web.ID, row, f), http.StatusServiceUnavailable)
+		if !strings.Contains(b, "The domain wasn't changed.") {
+			t.Errorf("refusal = %q, want it to say nothing changed", b)
+		}
+		if domainOf(t, e, row).Protected {
+			t.Error("the row was turned on, though an app it would redeploy couldn't be read")
+		}
+	})
+}
+
+// The dialog shows the other apps a save redeploys only for a save that
+// requires sign-in on the host being saved: a new protected row, a switch
+// turned on, or a protected row moved. Not for a port edit or a switch-off.
+func TestDialogNamesOtherAppsOnlyWhenTurningOn(t *testing.T) {
+	e, _ := newProtectionEnv(t)
+	web, _, _ := liveWeb(t, e, "img:1")
+	leftoverHooks(t, e, []core.Domain{{Host: "web.test", Path: "/hooks"}}, nil)
+	page := body(t, e.get(t, "/apps/"+itoa(web.ID)))
+	for _, want := range []string{
+		"function requiresSignInHere() {",
+		"return !!(protect && protect.checked) && (!editedProtected || moved());",
+		"p.hidden = !here || p.getAttribute('data-also-host') !== host;",
+		"var here = requiresSignInHere();",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the dialog script lacks %q", want)
+		}
 	}
 }
 
@@ -1663,7 +1960,8 @@ func previewedWeb(t *testing.T, e *testEnv, previewProtected bool) (web core.App
 	}
 	seedFinishedDeploy(t, e, pr.ID, "pr:1")
 	row = domainsOf(t, e, web.ID)[0]
-	e.runContainers(labelled("c1", web, []core.Domain{row}, "running"), labelled("p1", pr, []core.Domain{prRow}, "running"))
+	e.runContainers(withImage(labelled("c1", web, []core.Domain{row}, "running"), "img:1"),
+		withImage(labelled("p1", pr, []core.Domain{prRow}, "running"), "pr:1"))
 	return web, row, pr, prRow
 }
 
@@ -1851,7 +2149,7 @@ func liveWebNamed(t *testing.T, e *testEnv, name, host string) (core.App, core.D
 	}
 	live := seedFinishedDeploy(t, e, app.ID, name+":1")
 	rows := domainsOf(t, e, app.ID)
-	e.runContainers(append(e.runtime.stack, labelled("c-"+name, app, rows, "running"))...)
+	e.runContainers(append(e.runtime.stack, withImage(labelled("c-"+name, app, rows, "running"), name+":1"))...)
 	return app, rows[0], live
 }
 

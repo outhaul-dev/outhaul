@@ -649,7 +649,7 @@ func (s *Server) renderAppsWithError(w http.ResponseWriter, r *http.Request, msg
 }
 
 func (s *Server) handleAppDetail(w http.ResponseWriter, r *http.Request) {
-	s.renderAppPage(w, r, http.StatusOK, "")
+	s.renderAppPage(w, r, http.StatusOK, "", "")
 }
 
 // changedElsewhereNotice answers an edit from a dialog filled before the
@@ -660,13 +660,16 @@ const changedElsewhereNotice = "This domain was changed by someone else. Check i
 // matches the rows: nothing was saved, and the app page is rendered again,
 // as it is now, on its Networking tab, with notice at the top.
 func (s *Server) refuseStaleDomainSave(w http.ResponseWriter, r *http.Request, notice string) {
-	s.renderAppPage(w, r, http.StatusConflict, notice)
+	s.renderAppPage(w, r, http.StatusConflict, notice, "")
 }
 
 // renderAppPage renders the app page of the app in the request's {id}, with
 // status. A non-empty notice is shown at the top, and opens the Networking
-// tab: only domain saves send one.
-func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, status int, notice string) {
+// tab: only domain saves send one. The domain dialog names the other apps a
+// save requiring sign-in would redeploy on the app's own hosts, and on
+// alsoHost when it isn't "": the host of a refused save, so its page can
+// warn of them and send them back.
+func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, status int, notice, alsoHost string) {
 	id, ok := parseID(r.PathValue("id"))
 	if !ok {
 		http.NotFound(w, r)
@@ -884,10 +887,23 @@ func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, status in
 		log.Printf("app page: list the containers of %q: %v", app.Name, csErr)
 	}
 	if canChange {
-		data["ProtectionWarning"] = protectionWarningFor(app, deployments)
-		// Other apps a save requiring sign-in on a host would redeploy, named
-		// in the dialog before the save; the dialog sends back which it named.
-		others, err := s.leftoverRoutes(r.Context(), app)
+		data["ProtectionWarning"] = protectionWarningFor(app, deployments, canonicalImage(app, cs))
+		// Other apps a save requiring sign-in on one of the app's hosts would
+		// redeploy, named in the dialog before the save as far as the person
+		// can see their projects; the dialog sends back which it named.
+		hosts := map[string]bool{}
+		for _, d := range domains {
+			hosts[strings.ToLower(d.Host)] = true
+		}
+		if alsoHost != "" {
+			hosts[strings.ToLower(alsoHost)] = true
+		}
+		scope, err := s.scopeFor(r)
+		if err != nil {
+			log.Printf("app page: read the person's projects: %v", err)
+			scope = projectScope{} // names no other app
+		}
+		others, err := s.leftoverRoutes(r.Context(), app, hosts, scope)
 		if err != nil {
 			log.Printf("app page: other apps' old routes: %v", err)
 		}
@@ -902,7 +918,7 @@ func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, status in
 				keys = append(keys, o.key())
 			}
 		}
-		data["AlsoRedeploys"] = others
+		data["AlsoRedeploys"] = alsoLines(others)
 		data["PreviewRedeploys"] = previews
 		data["HasPreviews"] = len(previews) > 0
 		data["OthersWas"] = strings.Join(keys, ",")
@@ -1143,22 +1159,24 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 // (leftoverRoutes), which it returns for finishDomainSave to redeploy.
 // Either way they include the previews of app that d's save gives its
 // protection to (previewsToProtect), which finishDomainSave protects and
-// redeploys. It answers, and reports false, when that can't be worked out
-// (the save is refused) or when the form's others_was doesn't name them all:
-// its page didn't warn of them, so the page is rendered again with the
-// warning.
+// redeploys. Only the apps with an old route on d's host are read, and those
+// in projects the person can't see aren't named (otherRedeploy.Hidden). It
+// answers, and reports false, when that can't be worked out (the save is
+// refused) or when the form's others_was doesn't name them all: its page
+// didn't warn of them, so the page is rendered again with the warning, and
+// with d's host among those its dialog names other apps on.
 func (s *Server) othersToRedeploy(ctx context.Context, w http.ResponseWriter, r *http.Request, app core.App, d core.Domain, onHost bool) ([]otherRedeploy, bool) {
 	var others []otherRedeploy
 	if onHost {
-		all, err := s.leftoverRoutes(ctx, app)
+		scope, err := s.scopeFor(r)
+		if err != nil {
+			log.Printf("protected routes: read the person's projects: %v", err)
+			scope = projectScope{} // names no other app
+		}
+		others, err = s.leftoverRoutes(ctx, app, map[string]bool{strings.ToLower(d.Host): true}, scope)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("Sign-in wasn't turned on: Outhaul couldn't tell which other apps still serve old routes on %s, which it would redeploy (%v). The domain wasn't changed.", d.Host, err), http.StatusServiceUnavailable)
 			return nil, false
-		}
-		for _, o := range all {
-			if strings.EqualFold(o.Host, d.Host) {
-				others = append(others, o)
-			}
 		}
 	}
 	previews, err := s.previewsAfterSave(ctx, app, d)
@@ -1170,16 +1188,20 @@ func (s *Server) othersToRedeploy(ctx context.Context, w http.ResponseWriter, r 
 	for _, k := range strings.Split(r.FormValue("others_was"), ",") {
 		shown[k] = true
 	}
-	var unshown []string
+	var unshown []otherRedeploy
 	for _, list := range [][]otherRedeploy{others, previews} {
 		for _, o := range list {
 			if !shown[o.key()] {
-				unshown = append(unshown, o.Sentence())
+				unshown = append(unshown, o)
 			}
 		}
 	}
 	if len(unshown) > 0 {
-		s.refuseStaleDomainSave(w, r, strings.Join(unshown, " ")+" Check it and try again.")
+		var say []string
+		for _, l := range alsoLines(unshown) {
+			say = append(say, l.Sentence)
+		}
+		s.renderAppPage(w, r, http.StatusConflict, strings.Join(say, " ")+" Check it and try again.", d.Host)
 		return nil, false
 	}
 	return others, true
@@ -1246,7 +1268,7 @@ func (s *Server) finishDomainSave(ctx context.Context, w http.ResponseWriter, r 
 		queued[o.App.ID] = true
 		if _, err := s.queueProtectionDeploy(ctx, o.App); err != nil {
 			log.Printf("protected routes: queue the deploy of %q: %v", o.App.Name, err)
-			failed = append(failed, o.App.Name+" ("+err.Error()+")")
+			failed = append(failed, o.label()+" ("+err.Error()+")")
 		}
 	}
 	var previewErr error

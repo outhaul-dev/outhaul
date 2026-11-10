@@ -142,6 +142,8 @@ type Server struct {
 
 	httpsPort string // the host port Traefik's HTTPS entrypoint is published on; see appPort
 
+	formKey []byte // keys the opaque values a form names other apps by; see hiddenAppKey
+
 	gateNoPublicURLLog onceAMinute // the gate's "no public URL" line; see gateSignIn
 	gateBadHostLog     onceAMinute // the gate's "isn't a host name" line
 	gateNoPendingLog   onceAMinute // the gate's "no sign-in in progress" line
@@ -176,6 +178,7 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 		discover:          sso.Discover,
 	}
 	s.streams, s.stopStreams = context.WithCancel(context.Background())
+	s.formKey = []byte(rand.Text())
 	s.hashSlots = make(chan struct{}, maxConcurrentHashes)
 	s.hashWait = defaultHashWait
 	s.ssoRetryAfter = ssoDiscoveryRetry

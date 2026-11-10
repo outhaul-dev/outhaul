@@ -2,11 +2,15 @@ package server
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/outhaul-dev/outhaul/internal/compose"
@@ -174,15 +178,27 @@ func staleOpenHosts(domains []core.Domain, appName string, containers []docker.C
 // Host that its rows no longer have, which would keep answering there with no
 // gate; or (Preview) it is a preview of the app being saved, which gets the
 // same protection (protectPreviews) and redeploys if it is running.
+//
+// An app in a project the person saving can't see is Hidden: the dialog says
+// only that an app in a project they don't share redeploys, and its form
+// names it by an opaque value (hiddenAppKey), not its name or ID.
 type otherRedeploy struct {
 	Host    string // lower-cased; "" for a Preview
 	App     core.App
 	Ships   string // what its deploy builds (shipsWhat), or "" when it reuses its image
 	Preview bool
+	Hidden  bool
+	opaque  string // its key when Hidden
 }
+
+// notShared is how the dialog and errors refer to a Hidden app.
+const notShared = "an app in a project you don't share"
 
 // Sentence is the warning the domain dialog shows for o.
 func (o otherRedeploy) Sentence() string {
+	if o.Hidden {
+		return "Requiring sign-in on " + o.Host + " also redeploys " + notShared + "."
+	}
 	s := "Requiring sign-in on " + o.Host + " also redeploys " + o.App.Name + ", which still serves an old route there."
 	if o.Preview {
 		s = fmt.Sprintf("Requiring sign-in also requires it on this app's preview for pull request #%d (%s), which redeploys if it is running.", o.App.PRNumber, o.App.Name)
@@ -193,20 +209,76 @@ func (o otherRedeploy) Sentence() string {
 	return s
 }
 
-// key is how a form names o in others_was: its host and its app's name, or,
-// for a preview, "preview:" and its name (a host has no colon).
+// label names o's app in an error: its name, unless o is Hidden.
+func (o otherRedeploy) label() string {
+	if o.Hidden {
+		return notShared
+	}
+	return o.App.Name
+}
+
+// key is how a form names o in others_was: its host and its app's name; for a
+// Hidden app, its host, "~" and its opaque value (an app name has no "~");
+// or, for a preview, "preview:" and its name (a host has no colon).
 func (o otherRedeploy) key() string {
-	if o.Preview {
+	switch {
+	case o.Preview:
 		return "preview:" + o.App.Name
+	case o.Hidden:
+		return o.Host + " ~" + o.opaque
 	}
 	return o.Host + " " + o.App.Name
 }
 
+// hiddenAppKey is the opaque value a form names a Hidden app by: the first 16
+// hex digits of an HMAC-SHA256 of its ID under a key this process made, so a
+// page's value matches a save's, and says nothing of which app it is.
+func (s *Server) hiddenAppKey(id int64) string {
+	mac := hmac.New(sha256.New, s.formKey)
+	mac.Write([]byte(strconv.FormatInt(id, 10)))
+	return hex.EncodeToString(mac.Sum(nil))[:16]
+}
+
+// alsoLine is one line of the domain dialog's warning of the other apps a
+// save redeploys, shown when the save requires sign-in on Host.
+type alsoLine struct{ Host, Sentence string }
+
+// alsoLines words others for the dialog, in order: each one's Sentence,
+// except that the Hidden apps on a host make one line, which counts them.
+func alsoLines(others []otherRedeploy) []alsoLine {
+	var out []alsoLine
+	hidden := map[string]int{}
+	var hosts []string
+	for _, o := range others {
+		if !o.Hidden {
+			out = append(out, alsoLine{o.Host, o.Sentence()})
+			continue
+		}
+		if hidden[o.Host] == 0 {
+			hosts = append(hosts, o.Host)
+		}
+		hidden[o.Host]++
+	}
+	for _, h := range hosts {
+		s := "Requiring sign-in on " + h + " also redeploys " + notShared + "."
+		if n := hidden[h]; n > 1 {
+			s = fmt.Sprintf("Requiring sign-in on %s also redeploys %d apps in projects you don't share.", h, n)
+		}
+		out = append(out, alsoLine{h, s})
+	}
+	return out
+}
+
 // leftoverRoutes lists the managed containers once, and returns every app
-// other than app whose running containers serve an open route that its rows
-// no longer have, once per host, sorted by host then app. A container whose
-// app no longer exists is left out: there is no app to redeploy.
-func (s *Server) leftoverRoutes(ctx context.Context, app core.App) ([]otherRedeploy, error) {
+// other than app whose running containers serve, on one of hosts
+// (lower-cased), an open route that its rows no longer have: once per host,
+// in the order of their keys (by host). Only those apps are read. A container whose app no
+// longer exists is left out: there is no app to redeploy. An app in a project
+// outside scope is Hidden, and errors don't name it.
+func (s *Server) leftoverRoutes(ctx context.Context, app core.App, hosts map[string]bool, scope projectScope) ([]otherRedeploy, error) {
+	if len(hosts) == 0 {
+		return nil, nil
+	}
 	cs, err := s.runtime.ListContainers(ctx, map[string]string{"outhaul.managed": "true"})
 	if err != nil {
 		return nil, fmt.Errorf("list the containers: %w", err)
@@ -230,8 +302,13 @@ func (s *Server) leftoverRoutes(ctx context.Context, app core.App) ([]otherRedep
 	}
 	var out []otherRedeploy
 	for name, rc := range running {
-		hosts := staleOpenHosts(rows[name], name, rc)
-		if len(hosts) == 0 {
+		var on []string
+		for h := range staleOpenHosts(rows[name], name, rc) {
+			if hosts[h] {
+				on = append(on, h)
+			}
+		}
+		if len(on) == 0 {
 			continue
 		}
 		other, err := s.store.GetAppByName(ctx, name)
@@ -240,26 +317,27 @@ func (s *Server) leftoverRoutes(ctx context.Context, app core.App) ([]otherRedep
 			continue
 		}
 		if err != nil {
-			return nil, fmt.Errorf("read app %q: %w", name, err)
+			log.Printf("protected routes: read app %q: %v", name, err)
+			return nil, fmt.Errorf("read an app that still serves an old route there: %w", err)
+		}
+		o := otherRedeploy{App: other, Hidden: !scope.allows(other.ProjectID)}
+		if o.Hidden {
+			o.opaque = s.hiddenAppKey(other.ID)
 		}
 		deps, err := s.store.ListDeploymentsForApp(ctx, other.ID)
 		if err != nil {
-			return nil, fmt.Errorf("read the deployments of %q: %w", name, err)
+			log.Printf("protected routes: read the deployments of %q: %v", name, err)
+			return nil, fmt.Errorf("read the deployments of %s: %w", o.label(), err)
 		}
-		ships := ""
-		if protectionWarningFor(other, deps) != "" {
-			ships = shipsWhat(other)
+		if protectionWarningFor(other, deps, canonicalImage(other, rc)) != "" {
+			o.Ships = shipsWhat(other)
 		}
-		for h := range hosts {
-			out = append(out, otherRedeploy{Host: h, App: other, Ships: ships})
+		for _, h := range on {
+			o.Host = h
+			out = append(out, o)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Host != out[j].Host {
-			return out[i].Host < out[j].Host
-		}
-		return out[i].App.Name < out[j].App.Name
-	})
+	sort.Slice(out, func(i, j int) bool { return out[i].key() < out[j].key() })
 	return out, nil
 }
 
@@ -340,7 +418,7 @@ func (s *Server) previewRedeploy(ctx context.Context, preview core.App) (otherRe
 		return otherRedeploy{}, fmt.Errorf("read the deployments of %q: %w", preview.Name, err)
 	}
 	o := otherRedeploy{App: preview, Preview: true}
-	if protectionWarningFor(preview, deps) != "" {
+	if protectionWarningFor(preview, deps, s.servingImage(ctx, preview)) != "" {
 		o.Ships = fmt.Sprintf("the latest code from pull request #%d", preview.PRNumber)
 	}
 	return o, nil
@@ -477,73 +555,131 @@ func (s *Server) refreshPreviewURL(ctx context.Context, preview core.App) {
 	}
 }
 
+// protectionDeploy is how a change to what sign-in covers is applied
+// (chooseProtectionDeploy).
+type protectionDeploy struct {
+	// wait: waitFor, a deployment that is queued and hasn't started, applies
+	// it, so nothing more is queued.
+	wait    bool
+	waitFor core.Deployment
+	image   string // the image to reuse, or "" for a normal deploy
+	builtBy int64  // the deployment that built image
+	builds  bool   // the deployment that applies it builds code (shipsWhat)
+}
+
 // chooseProtectionDeploy picks how to deploy app so its labels follow its
-// rows, from its deployments, newest first. It returns the image to reuse and
-// the deployment that built it, or "" for a normal deploy:
+// rows, from its deployments, newest first, and serving, the image its
+// canonical container was made from (canonicalImage):
 //
-//  1. A Compose app has no per-deployment image: a normal deploy.
-//  2. When the newest queued, building or deploying row reuses an image, the
-//     same image, so that rollback isn't undone.
-//  3. When it is a normal deploy, another normal deploy. Deployments run in
-//     order, so reusing the live image would put the old code back after it.
-//  4. The live (newest running) deployment's image, when it has one that
-//     hasn't been pruned, and no newer deployment failed after building its
-//     image: that one may have replaced the container before it failed (the
-//     cutover's own health check fails after the swap), so the running row's
-//     image isn't known to be the live one.
+//  1. When the newest queued, building or deploying deployment is queued, it
+//     reads the rows when it starts, so it applies the change: wait for it.
+//     Not one a tag push queued: it can skip itself when it starts.
+//  2. A Compose app has no per-deployment image: a normal deploy.
+//  3. When the newest deployment in flight has started and reuses an image,
+//     the same image, so that rollback isn't undone. When it is a normal
+//     deploy, another normal deploy: deployments run in order, so reusing the
+//     live image would put the old code back after it.
+//  4. The newest running deployment's image, when it hasn't been pruned and
+//     it is the one serving. A deploy that failed since may have cut over
+//     before it failed (the cutover's own health check fails after the swap),
+//     so the running row alone doesn't say what serves; when it failed before
+//     the cutover the old container still serves its image, whatever failed.
 //  5. Otherwise a normal deploy.
-func chooseProtectionDeploy(app core.App, newestFirst []core.Deployment) (image string, builtBy int64) {
-	if app.Kind == core.KindCompose {
-		return "", 0
-	}
+func chooseProtectionDeploy(app core.App, newestFirst []core.Deployment, serving string) protectionDeploy {
+	normal := protectionDeploy{builds: true}
 	for _, d := range newestFirst {
 		switch d.Status {
 		case core.StatusQueued, core.StatusBuilding, core.StatusDeploying:
-			if d.RollbackOf != 0 && d.Image != "" {
-				return d.Image, d.RollbackOf
+			if d.Status == core.StatusQueued && !d.FromTagEvent {
+				return protectionDeploy{wait: true, waitFor: d, builds: d.Image == ""}
 			}
-			return "", 0
+			if app.Kind != core.KindCompose && d.RollbackOf != 0 && d.Image != "" {
+				return protectionDeploy{image: d.Image, builtBy: d.RollbackOf}
+			}
+			return normal
 		}
 	}
+	if app.Kind == core.KindCompose {
+		return normal
+	}
 	for _, d := range newestFirst {
-		if d.Status == core.StatusFailed && d.Image != "" {
-			return "", 0
-		}
 		if d.Status != core.StatusRunning {
 			continue
 		}
-		if d.Image == "" || d.ImagePruned {
-			return "", 0
+		if d.Image == "" || d.ImagePruned || d.Image != serving {
+			return normal
 		}
 		if d.RollbackOf != 0 {
-			return d.Image, d.RollbackOf
+			return protectionDeploy{image: d.Image, builtBy: d.RollbackOf}
 		}
-		return d.Image, d.ID
+		return protectionDeploy{image: d.Image, builtBy: d.ID}
 	}
-	return "", 0
+	return normal
+}
+
+// canonicalImage is the image app's canonical container was made from, among
+// cs, running or not, or "" when it has none. Docker lists the reference a
+// container was created from (the deploy's tag, outhaul/<app>:<deployment>,
+// as the deployment row stores it) while that reference still names the same
+// image, and the image's ID once it doesn't (the tag was removed or moved),
+// which matches no row.
+func canonicalImage(app core.App, cs []docker.Container) string {
+	name := core.AppContainerName(app.Name)
+	for _, c := range cs {
+		if c.Name == name {
+			return c.Image
+		}
+	}
+	return ""
+}
+
+// servingImage is canonicalImage for app's containers, or "" (which reuses no
+// image, so the dialog warns of a build) when they can't be listed.
+func (s *Server) servingImage(ctx context.Context, app core.App) string {
+	cs, err := s.appContainers(ctx, app)
+	if err != nil {
+		log.Printf("protected routes: list the containers of %q: %v", app.Name, err)
+		return ""
+	}
+	return canonicalImage(app, cs)
 }
 
 // queueProtectionDeploy queues the deploy chooseProtectionDeploy picks, in
 // one store transaction so no other deployment of the app can be queued
-// between the choice and the insert, and wakes the worker.
+// between the choice and the insert, and wakes the worker. When a queued
+// deployment will apply the change instead, it queues nothing and returns
+// that one.
 func (s *Server) queueProtectionDeploy(ctx context.Context, app core.App) (core.Deployment, error) {
-	dep, _, err := s.enqueueProtectionDeploy(ctx, app, true)
+	_, serving, err := s.liveState(ctx, app)
+	if err != nil {
+		return core.Deployment{}, err
+	}
+	dep, _, err := s.enqueueProtectionDeploy(ctx, app, true, serving)
 	return dep, err
 }
 
-// enqueueProtectionDeploy is queueProtectionDeploy, except that when running
-// is false it queues only if a deployment of the app is queued, building or
-// deploying, decided in the same transaction. It reports whether it queued.
-func (s *Server) enqueueProtectionDeploy(ctx context.Context, app core.App, running bool) (core.Deployment, bool, error) {
+// enqueueProtectionDeploy is queueProtectionDeploy, given serving
+// (canonicalImage), except that when running is false it queues only if a
+// deployment of the app is queued, building or deploying, decided in the same
+// transaction. It reports whether it queued.
+func (s *Server) enqueueProtectionDeploy(ctx context.Context, app core.App, running bool, serving string) (core.Deployment, bool, error) {
+	var waiting core.Deployment
 	dep, queued, err := s.store.EnqueueDeployment(ctx, app.ID, func(newestFirst []core.Deployment) store.DeployChoice {
 		if !running && !deployInFlight(newestFirst) {
 			return store.DeployChoice{Skip: true}
 		}
-		image, builtBy := chooseProtectionDeploy(app, newestFirst)
-		return store.DeployChoice{Image: image, RollbackOf: builtBy}
+		c := chooseProtectionDeploy(app, newestFirst, serving)
+		if c.wait {
+			waiting = c.waitFor
+			return store.DeployChoice{Skip: true}
+		}
+		return store.DeployChoice{Image: c.image, RollbackOf: c.builtBy}
 	})
-	if err != nil || !queued {
+	if err != nil {
 		return core.Deployment{}, false, err
+	}
+	if !queued {
+		return waiting, false, nil
 	}
 	s.deployer.Notify()
 	return dep, true, nil
@@ -561,65 +697,65 @@ func deployInFlight(deps []core.Deployment) bool {
 }
 
 // applyProtection queues the deploy that applies a protection change, when
-// the app is running or a deployment of it is in flight: that deployment read
-// the rows when it started, so the change needs another behind it (rule 3 in
-// chooseProtectionDeploy). A stopped app with nothing in flight, or one never
-// deployed, queues nothing: its next deploy carries the change, and Restart
-// deploys instead of starting a container whose labels disagree
-// (handleRestartApp).
+// the app is running or a deployment of it is in flight (rule 1 in
+// chooseProtectionDeploy says when that deployment applies it itself). A
+// stopped app with nothing in flight, or one never deployed, queues nothing:
+// its next deploy carries the change, and Restart deploys instead of starting
+// a container whose labels disagree (handleRestartApp).
 func (s *Server) applyProtection(ctx context.Context, app core.App) (*core.Deployment, error) {
-	running, err := s.appRunning(ctx, app)
+	running, serving, err := s.liveState(ctx, app)
 	if err != nil {
 		return nil, err
 	}
-	dep, queued, err := s.enqueueProtectionDeploy(ctx, app, running)
+	dep, queued, err := s.enqueueProtectionDeploy(ctx, app, running, serving)
 	if err != nil || !queued {
 		return nil, err
 	}
 	return &dep, nil
 }
 
-// appRunning reports whether any of the app's containers is running. A
-// Compose stack counts by its project, so a stack with no routes yet counts.
-func (s *Server) appRunning(ctx context.Context, app core.App) (bool, error) {
+// liveState reads app's containers: whether any of them is running (a
+// Compose stack counts by its project, so a stack with no routes yet counts),
+// and the image its canonical container was made from (canonicalImage).
+func (s *Server) liveState(ctx context.Context, app core.App) (running bool, serving string, err error) {
 	cs, err := s.appContainers(ctx, app)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
+	serving = canonicalImage(app, cs)
 	if app.Kind == core.KindCompose {
 		stack, err := s.runtime.ListContainers(ctx, map[string]string{"com.docker.compose.project": compose.ProjectName(app.Name)})
 		if err != nil {
-			return false, err
+			return false, "", err
 		}
 		cs = append(cs, stack...)
 	}
 	for _, c := range cs {
 		if c.Running() {
-			return true, nil
+			return true, serving, nil
 		}
 	}
-	return false, nil
+	return false, serving, nil
 }
 
-// protectionWarning names the code a protection deploy of app would ship when
-// it builds rather than reusing the live image, or is "" when it reuses one.
-// A template app redeploys its own snapshot, so it has no warning. When the
-// deployments can't be read, it warns.
+// protectionWarning names the code the deployment that applies a protection
+// change to app would ship when it builds rather than reusing the image that
+// serves, or is "" when it reuses one. A template app redeploys its own
+// snapshot, so it has no warning. When the deployments or containers can't be
+// read, it warns.
 func (s *Server) protectionWarning(ctx context.Context, app core.App) string {
 	deps, err := s.store.ListDeploymentsForApp(ctx, app.ID)
 	if err != nil {
 		log.Printf("protected routes: list deployments of %q: %v", app.Name, err)
 		return buildWarning(app)
 	}
-	return protectionWarningFor(app, deps)
+	return protectionWarningFor(app, deps, s.servingImage(ctx, app))
 }
 
-// protectionWarningFor is protectionWarning for app's deployments, newest first.
-func protectionWarningFor(app core.App, newestFirst []core.Deployment) string {
-	if app.Source == core.SourceTemplate {
-		return ""
-	}
-	if image, _ := chooseProtectionDeploy(app, newestFirst); image != "" {
+// protectionWarningFor is protectionWarning for app's deployments, newest
+// first, and serving (canonicalImage).
+func protectionWarningFor(app core.App, newestFirst []core.Deployment, serving string) string {
+	if app.Source == core.SourceTemplate || !chooseProtectionDeploy(app, newestFirst, serving).builds {
 		return ""
 	}
 	return buildWarning(app)
