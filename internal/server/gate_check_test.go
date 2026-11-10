@@ -167,13 +167,21 @@ func isTokenHex(v string) bool {
 }
 
 // wantSignIn checks the answer sends the browser to sign in, to come back to
-// returnURL, with the pending cookie it sets (and no other) named in the URL
-// by its hash. A browser that sent a plausible pending cookie keeps it. It
-// returns the pending cookie's value.
+// returnURL, with its pending cookie named in the URL by its hash. A browser
+// that sent a plausible pending cookie keeps it, and is sent no cookie at
+// all, so reusing one doesn't extend its life. Any other browser is sent a
+// new pending cookie and no other. It returns the pending cookie's value.
 func wantSignIn(t *testing.T, what string, resp *http.Response, returnURL, sent string) string {
 	t.Helper()
 	if u := resp.Header.Get(wireUserHeader); u != "" {
 		t.Errorf("%s: a redirect carries %s %q", what, wireUserHeader, u)
+	}
+	if isTokenHex(sent) {
+		wantNoCookie(t, what+", reusing the pending cookie", resp)
+		if want := signInURL(returnURL, nonceOf(sent)); resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != want {
+			t.Errorf("%s: %d to %q, want 302 to %q", what, resp.StatusCode, resp.Header.Get("Location"), want)
+		}
+		return sent
 	}
 	if raw := resp.Header.Values("Set-Cookie"); len(raw) != 1 {
 		t.Errorf("%s: Set-Cookie = %q, want only the pending cookie", what, raw)
@@ -184,10 +192,7 @@ func wantSignIn(t *testing.T, what string, resp *http.Response, returnURL, sent 
 		return ""
 	}
 	wantPendingAttrs(t, what, resp, p)
-	if isTokenHex(sent) && p.Value != sent {
-		t.Errorf("%s: the browser's pending cookie %q was replaced by %q", what, sent, p.Value)
-	}
-	if !isTokenHex(sent) && p.Value == sent {
+	if p.Value == sent {
 		t.Errorf("%s: an implausible pending cookie %q was kept", what, sent)
 	}
 	if want := signInURL(returnURL, nonceOf(p.Value)); resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != want {
@@ -599,11 +604,15 @@ func TestGateCheckBadCodeRestartsSignIn(t *testing.T) {
 	resp, _ := e.checkGate(t, c)
 	wantRedeemed(t, "the docs code on docs", resp, "https://docs.example.com/")
 
-	// A code is redeemed only for a GET or HEAD. One on a POST stays unspent.
+	// A code is redeemed only for a GET or HEAD. One on a POST is refused and
+	// stays unspent.
 	code := mintGateCode(t, e, g, gateWikiHost, time.Minute)
 	post := gateCall{host: gateWikiHost, uri: "/page?" + wireCodeParam + "=" + code, method: http.MethodPost, accept: browserAccept, pending: testPending}
-	resp, body := e.checkGate(t, post)
-	want401(t, "a code on a POST", resp, body)
+	resp, _ = e.checkGate(t, post)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("a code on a POST: %d, want 400", resp.StatusCode)
+	}
+	wantNoCookie(t, "a code on a POST", resp)
 	resp, _ = e.checkGate(t, browserGet("/page?"+wireCodeParam+"="+code).withPending(testPending))
 	wantRedeemed(t, "the POST's code, then on a GET", resp, "https://wiki.example.com/page")
 }

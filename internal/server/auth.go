@@ -67,12 +67,22 @@ func (s *Server) sessionCookieFor(r *http.Request) *http.Cookie {
 	}
 }
 
-// login creates a session and sets the cookie.
+// login creates a session and sets the cookie. It also starts a gateway
+// session, so the sign-in covers protected routes; that covers first-boot
+// setup and setup links.
 func (s *Server) login(w http.ResponseWriter, r *http.Request, user core.User) error {
 	token, expires, err := s.createSession(r.Context(), user)
 	if err != nil {
 		return err
 	}
+	gateToken, err := s.startGateSession(w, r, user.GateSubject(), user.SignIn, user.Display())
+	if err != nil {
+		if err := s.store.DeleteSession(context.WithoutCancel(r.Context()), token); err != nil {
+			log.Printf("server: ending user %d's session after its gateway session failed: %v", user.ID, err)
+		}
+		return err
+	}
+	s.endReplacedGateSession(r, gateToken)
 	s.finishLogin(w, r, user, token, expires)
 	return nil
 }
@@ -219,32 +229,18 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request, status int, e
 }
 
 func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
-	username := r.FormValue("username")
-	password := r.FormValue("password")
-
-	user, err := s.store.GetUserByName(r.Context(), username)
+	user, err := s.checkPassword(r.Context(), r.FormValue("username"), r.FormValue("password"))
+	if errors.Is(err, errHashBusy) {
+		s.loginPage(w, r, http.StatusServiceUnavailable, busyMessage)
+		return
+	}
 	if err != nil {
 		s.loginFailed(w, r, err)
 		return
 	}
-	// An account whose password isn't set yet can never sign in, and neither
-	// can an SSO account, which the store never returns here anyway.
-	if user.PasswordHash == "" || user.SignIn != core.SignInPassword {
-		s.loginFailed(w, r, errors.New("no password set"))
-		return
-	}
-	var ok bool
-	if busy := s.withHashSlot(r.Context(), func() { ok, err = VerifyPassword(user.PasswordHash, password) }); busy != nil {
-		s.loginPage(w, r, http.StatusServiceUnavailable, busyMessage)
-		return
-	}
-	if err != nil || !ok {
-		s.loginFailed(w, r, errors.New("invalid credentials"))
-		return
-	}
-	// The session is made only if the account still has the hash just
+	// The sessions are made only if the account still has the hash just
 	// checked: a reset or change that committed during the check has ended
-	// the account's sessions, and this one mustn't outlive it.
+	// the account's sessions, and these mustn't outlive it.
 	sess := newSession(user)
 	err = s.store.CreatePasswordSession(r.Context(), sess, user.PasswordHash)
 	if errors.Is(err, store.ErrPasswordChanged) {
@@ -255,6 +251,21 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// The sign-in covers protected routes too.
+	gateToken, err := s.startPasswordGateSession(w, r, user)
+	if err != nil {
+		if err := s.store.DeleteSession(context.WithoutCancel(r.Context()), sess.Token); err != nil {
+			log.Printf("server: ending user %d's session after its gateway session failed: %v", user.ID, err)
+		}
+		if errors.Is(err, store.ErrPasswordChanged) {
+			s.loginFailed(w, r, err)
+			return
+		}
+		log.Printf("server: starting user %d's gateway session: %v", user.ID, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	s.endReplacedGateSession(r, gateToken)
 	s.finishLogin(w, r, user, sess.Token, sess.ExpiresAt)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -265,9 +276,15 @@ func (s *Server) loginFailed(w http.ResponseWriter, r *http.Request, cause error
 	s.loginPage(w, r, http.StatusUnauthorized, "Invalid username or password.")
 }
 
+// handleLogout ends the Outhaul session and the gateway session, so the
+// person also loses every protected route they passed in this browser.
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		_ = s.store.DeleteSession(r.Context(), c.Value)
+	}
+	if err := s.endGateSession(w, r); err != nil {
+		log.Printf("server: ending a gateway session at sign-out: %v", err)
+		s.clearGateCookie(w)
 	}
 	c := s.sessionCookieFor(r)
 	c.MaxAge = -1

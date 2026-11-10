@@ -129,16 +129,22 @@ type Server struct {
 	ssoCached *ssoConn // nil until discovery succeeds; dropped when the settings change
 	ssoGen    int      // bumped by dropSSOProvider, so a stale discovery isn't cached
 
-	ssoFailed      error         // the last discovery failure, returned until ssoFailedUntil
-	ssoFailedUntil time.Time     // see ssoRetryAfter
-	ssoRetryAfter  time.Duration // how long a failed discovery is remembered (ssoDiscoveryRetry; tests shorten it)
-	ssoDiscovering chan struct{} // holds one token while a discovery runs, so only one does
-	ssoExchanges   chan struct{} // bounds calls to the provider's token endpoint; see withExchangeSlot
+	ssoFailed       error         // the last discovery failure, returned until ssoFailedUntil
+	ssoFailedUntil  time.Time     // see ssoRetryAfter
+	ssoRetryAfter   time.Duration // how long a failed discovery is remembered (ssoDiscoveryRetry; tests shorten it)
+	ssoDiscovering  chan struct{} // holds one token while a discovery runs, so only one does
+	ssoExchanges    chan struct{} // bounds calls to the provider's token endpoint; see withExchangeSlot
+	ssoExchangeWait time.Duration // how long a callback waits for an exchange slot
 
 	hashSlots chan struct{} // bounds concurrent argon2 work; see withHashSlot
 	hashWait  time.Duration // how long a password check waits for a slot
 
+	httpsPort string // the host port Traefik's HTTPS entrypoint is published on; see appPort
+
 	gateNoPublicURLLog onceAMinute // the gate's "no public URL" line; see gateSignIn
+	gateBadHostLog     onceAMinute // the gate's "isn't a host name" line
+	gateNoPendingLog   onceAMinute // the gate's "no sign-in in progress" line
+	gateBadCodeLog     onceAMinute // the gate's "refused a sign-in code" line
 }
 
 // New constructs a Server, parsing the embedded templates. setupToken guards the
@@ -172,6 +178,7 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 	s.ssoRetryAfter = ssoDiscoveryRetry
 	s.ssoDiscovering = make(chan struct{}, 1)
 	s.ssoExchanges = make(chan struct{}, maxConcurrentSSOExchanges)
+	s.ssoExchangeWait = defaultSSOExchangeWait
 	if err := s.parseTemplates(); err != nil {
 		return nil, err
 	}
@@ -213,7 +220,7 @@ func (s *Server) syncCerts(ctx context.Context) {
 // parseTemplates builds one template set per page, each combining base.tmpl with
 // the page template (so every page can define its own "content" block).
 func (s *Server) parseTemplates() error {
-	pages := []string{"login", "setup", "noaccess", "overview", "projects", "project", "apps", "app", "database", "databases", "deployment", "containers", "github_connect", "settings", "restore", "placeholder", "templates", "domains", "volumes", "metrics", "users", "account_setup", "account"}
+	pages := []string{"login", "setup", "noaccess", "gate_signout", "overview", "projects", "project", "apps", "app", "database", "databases", "deployment", "containers", "github_connect", "settings", "restore", "placeholder", "templates", "domains", "volumes", "metrics", "users", "account_setup", "account"}
 	s.pages = make(map[string]*template.Template, len(pages))
 	for _, p := range pages {
 		t := template.New("base").Funcs(templateFuncs())

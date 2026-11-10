@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -43,6 +44,29 @@ const (
 
 	// pendingTTL is how long a browser has to finish signing in.
 	pendingTTL = 10 * time.Minute
+
+	// gateCodeTTL is how long a one-time code works.
+	gateCodeTTL = 60 * time.Second
+
+	// gateCookieBase names the gateway cookie, which holds a gateway session
+	// on Outhaul's own host; see gateCookieName.
+	gateCookieBase = "outhaul_gate"
+
+	// gateLapsBase names the cookie on Outhaul's host that counts a browser's
+	// arrivals at /gate/start for one host; see gateLooping.
+	gateLapsBase = "outhaul_gate_laps"
+	gateLapsTTL  = 2 * time.Minute
+	gateMaxLaps  = 3
+
+	// maxSSOReturn bounds a return address carried through SSO: it travels in
+	// the flow cookie, which must stay under a browser's 4 KB.
+	maxSSOReturn = 2000
+)
+
+// What a visitor sees when the gate refuses a sign-in link.
+const (
+	gateNotProtectedCopy = "This address isn't protected by Outhaul."
+	gateBadLinkCopy      = "This sign-in link is incomplete. Open the app's address again to sign in."
 )
 
 // maxRouteToken bounds a route cookie the gate looks up. Real ones are
@@ -82,7 +106,9 @@ func (s *Server) handleGateCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	v, ok := readGateVisit(r)
 	if !ok {
-		log.Printf("gate: refused a check: X-Forwarded-Host %q isn't a host name", logText(r.Header.Get("X-Forwarded-Host")))
+		if s.gateBadHostLog.allow(time.Now()) {
+			log.Printf("gate: refused a check: X-Forwarded-Host %q isn't a host name (logged at most once a minute)", logText(r.Header.Get("X-Forwarded-Host")))
+		}
 		http.Error(w, "Bad request.", http.StatusBadRequest)
 		return
 	}
@@ -102,15 +128,27 @@ func (s *Server) handleGateCheck(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// gateRedeem answers a request carrying a code. Only the first code is tried,
-// only on a GET or HEAD, as a code arrives on a page navigation, and only in
-// the browser holding the pending cookie the code was minted for. A code that
-// doesn't work never lets the request through: a valid cookie sends the
-// visitor on to the URL without the code, and anyone else starts again.
+// gateRedeem answers a request carrying a code. A code arrives on a page
+// navigation, so any other method carrying one is refused outright, route
+// cookie or not. Only the first code is tried, and only in the browser holding
+// the pending cookie the code was minted for. A code that doesn't work never
+// lets the request through: a valid cookie sends the visitor on to the URL
+// without the code, and anyone else starts again.
 func (s *Server) gateRedeem(w http.ResponseWriter, r *http.Request, v gateVisit) {
-	if v.code != "" && (v.method == http.MethodGet || v.method == http.MethodHead) {
+	if v.method != http.MethodGet && v.method != http.MethodHead {
+		http.Error(w, "Bad request.", http.StatusBadRequest)
+		return
+	}
+	port, err := s.appPort(r.Context())
+	if err != nil {
+		gateUnavailable(w, v.host, "reading the tunnel setting", err)
+		return
+	}
+	if v.code != "" {
 		if pending := pendingValue(r); pending == "" {
-			log.Printf("gate: refused a sign-in code on %q: this browser has no sign-in in progress", v.host)
+			if s.gateNoPendingLog.allow(time.Now()) {
+				log.Printf("gate: refused a sign-in code on %q: this browser has no sign-in in progress (logged at most once a minute)", v.host)
+			}
 		} else {
 			token := NewToken()
 			_, err := s.store.RedeemGateCode(r.Context(), v.code, v.host, sha256Hex(pending), token, time.Now().Add(gateSessionTTL))
@@ -125,14 +163,16 @@ func (s *Server) gateRedeem(w http.ResponseWriter, r *http.Request, v gateVisit)
 					SameSite: http.SameSiteLaxMode,
 				})
 				http.SetCookie(w, newPendingCookie("", -1))
-				http.Redirect(w, r, v.url(), http.StatusFound)
+				http.Redirect(w, r, v.url(port), http.StatusFound)
 				return
 			}
 			if !errors.Is(err, sql.ErrNoRows) {
 				gateUnavailable(w, v.host, "redeeming a sign-in code", err)
 				return
 			}
-			log.Printf("gate: refused a sign-in code on %q: it is unknown, used, expired, for another host, or for another browser", v.host)
+			if s.gateBadCodeLog.allow(time.Now()) {
+				log.Printf("gate: refused a sign-in code on %q: it is unknown, used, expired, for another host, or for another browser (logged at most once a minute)", v.host)
+			}
 		}
 	}
 	_, ok, err := s.routeUser(r, v.host)
@@ -140,7 +180,7 @@ func (s *Server) gateRedeem(w http.ResponseWriter, r *http.Request, v gateVisit)
 	case err != nil:
 		gateUnavailable(w, v.host, "reading a route session", err)
 	case ok:
-		http.Redirect(w, r, v.url(), http.StatusFound)
+		http.Redirect(w, r, v.url(port), http.StatusFound)
 	default:
 		s.gateSignIn(w, r, v)
 	}
@@ -149,9 +189,10 @@ func (s *Server) gateRedeem(w http.ResponseWriter, r *http.Request, v gateVisit)
 // gateSignIn sends a browser to sign in on the public URL, to come back to
 // v's URL, and answers anything else 401. The browser gets a pending cookie on
 // this host, whose hash the sign-in URL carries, so the code it comes back
-// with works only here; one it already holds is kept, so two tabs signing in
-// to the same app don't spoil each other's codes. With no public URL there is
-// nowhere to sign in, so a browser gets 503.
+// with works only here. One it already holds is kept, so two tabs signing in
+// to the same app don't spoil each other's codes, and isn't sent again, so
+// reusing it doesn't extend its life. With no public URL there is nowhere to
+// sign in, so a browser gets 503.
 func (s *Server) gateSignIn(w http.ResponseWriter, r *http.Request, v gateVisit) {
 	if !v.browser {
 		http.Error(w, "Sign in to use this address.", http.StatusUnauthorized)
@@ -164,12 +205,37 @@ func (s *Server) gateSignIn(w http.ResponseWriter, r *http.Request, v gateVisit)
 		http.Error(w, gateUnavailableCopy, http.StatusServiceUnavailable)
 		return
 	}
+	port, err := s.appPort(r.Context())
+	if err != nil {
+		gateUnavailable(w, v.host, "reading the tunnel setting", err)
+		return
+	}
 	pending := pendingValue(r)
 	if pending == "" {
 		pending = NewToken()
+		http.SetCookie(w, newPendingCookie(pending, int(pendingTTL/time.Second)))
 	}
-	http.SetCookie(w, newPendingCookie(pending, int(pendingTTL/time.Second)))
-	http.Redirect(w, r, s.gateStartURL(v.url(), sha256Hex(pending)), http.StatusFound)
+	http.Redirect(w, r, s.gateStartURL(v.url(port), sha256Hex(pending)), http.StatusFound)
+}
+
+// SetHTTPSPort records the host port Traefik's HTTPS entrypoint is published
+// on (OUTHAUL_HTTPS_PORT). Call before Handler.
+func (s *Server) SetHTTPSPort(port string) { s.httpsPort = port }
+
+// appPort is the port a browser uses for HTTPS on an app's host, "" for 443:
+// the configured HTTPS port, when Traefik publishes its HTTPS entrypoint
+// there. It does that when TLS is on and no tunnel is; a tunnel's edge serves
+// 443 itself. It never comes from a request, whose Host and forwarded headers
+// the visitor chooses.
+func (s *Server) appPort(ctx context.Context) (string, error) {
+	if !s.tlsEnabled || s.httpsPort == "" || s.httpsPort == "443" {
+		return "", nil
+	}
+	tunnel, err := s.store.TunnelEnabled(ctx)
+	if err != nil || tunnel {
+		return "", err
+	}
+	return s.httpsPort, nil
 }
 
 // newPendingCookie is the pending cookie with value, lasting maxAge seconds;
@@ -190,13 +256,8 @@ func newPendingCookie(value string, maxAge int) *http.Cookie {
 // the gate could have made (NewToken's 64 lower-case hex characters).
 func pendingValue(r *http.Request) string {
 	c, err := r.Cookie(pendingCookie)
-	if err != nil || len(c.Value) != 64 {
+	if err != nil || !isLowerHex64(c.Value) {
 		return ""
-	}
-	for i := 0; i < len(c.Value); i++ {
-		if b := c.Value[i]; !('0' <= b && b <= '9' || 'a' <= b && b <= 'f') {
-			return ""
-		}
 	}
 	return c.Value
 }
@@ -257,10 +318,15 @@ type gateVisit struct {
 	browser bool   // a page navigation; see readGateVisit
 }
 
-// url is where v goes without its code: https, on v's host. It is built from
-// the parts, never from the raw URI, so its path can't name another host.
-func (v gateVisit) url() string {
-	u := "https://" + v.host + v.path
+// url is where v goes without its code: https, on v's host, at port (from
+// appPort; "" for 443). It is built from the parts, never from the raw URI, so
+// its path can't name another host.
+func (v gateVisit) url(port string) string {
+	u := "https://" + v.host
+	if port != "" {
+		u += ":" + port
+	}
+	u += v.path
 	if v.query != "" {
 		u += "?" + v.query
 	}

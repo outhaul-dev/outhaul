@@ -1,12 +1,14 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -14,6 +16,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/sso"
 )
 
@@ -45,16 +48,29 @@ const (
 // as their own client: the provider checks the PKCE verifier, the ID token
 // must carry the nonce, and state only ties the callback to this browser.
 //
-// Return is always empty for now. Whatever uses it must check it again at
-// the callback, because the person can edit it.
+// Return and GateNonce are set for a route visit: the address to go back to
+// with a code, and n, the hash of the pending cookie the code is bound to.
+// The callback checks both again, because the person can edit them and a
+// row may have changed meanwhile.
 type ssoFlow struct {
-	State, Nonce, Verifier, Return string
-	Expires                        time.Time
+	State, Nonce, Verifier string
+	Return, GateNonce      string
+	Expires                time.Time
 }
 
+// routeVisit reports whether the flow signs in for a protected route rather
+// than to Outhaul.
+func (f ssoFlow) routeVisit() bool { return f.Return != "" || f.GateNonce != "" }
+
+// encodeSSOFlow encodes a flow for its cookie. HTML escaping is off, so a
+// return address full of "&" doesn't grow sixfold on its way into a cookie
+// that must stay under 4 KB.
 func encodeSSOFlow(f ssoFlow) string {
-	b, _ := json.Marshal(f) // strings and a time: it can't fail
-	return base64.RawURLEncoding.EncodeToString(b)
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(f) // strings and a time: it can't fail
+	return base64.RawURLEncoding.EncodeToString(bytes.TrimSuffix(b.Bytes(), []byte("\n")))
 }
 
 // decodeSSOFlow reads a flow cookie. ok is false for one that is too large,
@@ -121,8 +137,8 @@ func (s *Server) publicURLIsHTTPS() bool {
 }
 
 // onPublicHost reports whether r arrived on the public URL's host. Hosts are
-// compared with their ports, ignoring case and a port the public URL's scheme
-// implies. It is false when no public URL is set.
+// compared with their ports, ignoring case, one trailing dot and a port the
+// public URL's scheme implies. It is false when no public URL is set.
 func (s *Server) onPublicHost(r *http.Request) bool {
 	if !s.publicURLSet() {
 		return false
@@ -161,17 +177,23 @@ func (s *Server) ssoStartElsewhere(r *http.Request) (to, pubHost string, ok bool
 	return u.String(), pub.Host, true
 }
 
-// hostWithoutDefaultPort lowercases a host[:port] and drops the port scheme
-// implies, as browsers leave it out of the Host header.
-func hostWithoutDefaultPort(host, scheme string) string {
-	host = strings.ToLower(host)
-	switch scheme {
-	case "https":
-		return strings.TrimSuffix(host, ":443")
-	case "http":
-		return strings.TrimSuffix(host, ":80")
+// hostWithoutDefaultPort lowercases a host[:port], drops one trailing dot
+// from the host, which names the same host fully qualified, and drops the
+// port scheme implies, as browsers leave it out of the Host header.
+func hostWithoutDefaultPort(hostport, scheme string) string {
+	hostport = strings.ToLower(hostport)
+	host, port, err := net.SplitHostPort(hostport)
+	if err != nil { // no port
+		return strings.TrimSuffix(hostport, ".")
 	}
-	return host
+	host = strings.TrimSuffix(host, ".")
+	if port == "" || scheme == "https" && port == "443" || scheme == "http" && port == "80" {
+		if strings.Contains(host, ":") {
+			return "[" + host + "]"
+		}
+		return host
+	}
+	return net.JoinHostPort(host, port)
 }
 
 // ssoLoginErrors are the only messages a failed SSO sign-in can put on the
@@ -203,12 +225,21 @@ const maxConcurrentSSOExchanges = 4
 // errSSOBusy means no exchange slot freed up before the request ended.
 var errSSOBusy = errors.New("too many sign-ins are being finished at once")
 
+// defaultSSOExchangeWait is how long a callback waits for an exchange slot
+// before the person is told SSO isn't available.
+const defaultSSOExchangeWait = 10 * time.Second
+
 // withExchangeSlot runs fn, which calls the provider's token endpoint, once
 // one of the maxConcurrentSSOExchanges slots is free. It returns errSSOBusy,
-// without running fn, when ctx ends first.
+// without running fn, when no slot frees within s.ssoExchangeWait or ctx ends
+// first.
 func (s *Server) withExchangeSlot(ctx context.Context, fn func()) error {
+	t := time.NewTimer(s.ssoExchangeWait)
+	defer t.Stop()
 	select {
 	case s.ssoExchanges <- struct{}{}:
+	case <-t.C:
+		return errSSOBusy
 	case <-ctx.Done():
 		return errSSOBusy
 	}
@@ -223,10 +254,24 @@ func ssoRefused(w http.ResponseWriter, r *http.Request, code string) {
 	http.Redirect(w, r, "/login?error="+code, http.StatusSeeOther)
 }
 
+// ssoRefusedFor is ssoRefused for a sign-in whose flow was read. A route
+// visit goes back to the gate's sign-in page for its address, which checks
+// rd and n again, so the person can still sign in with a password.
+func ssoRefusedFor(w http.ResponseWriter, r *http.Request, f ssoFlow, code string) {
+	if !f.routeVisit() {
+		ssoRefused(w, r, code)
+		return
+	}
+	http.Redirect(w, r, "/gate/start?"+url.Values{"rd": {f.Return}, "n": {f.GateNonce}, "error": {code}}.Encode(), http.StatusSeeOther)
+}
+
 // handleSSOStart begins a sign-in: it puts a new flow in its own cookie and
-// sends the browser to the provider.
+// sends the browser to the provider. With rd or n it signs in for a
+// protected route, which the gate's sign-in page links to; both are checked
+// as /gate/start checks them.
 func (s *Server) handleSSOStart(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
 	if to, pubHost, ok := s.ssoStartElsewhere(r); ok {
 		if r.URL.Query().Has(ssoMovedParam) {
 			log.Printf("sso: sign-in refused: it was sent on to %q, the public URL's host, but arrived on %q; a proxy in front may be rewriting the Host header",
@@ -237,29 +282,52 @@ func (s *Server) handleSSOStart(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, to, http.StatusFound)
 		return
 	}
-	if _, ok := s.currentSession(r); ok {
+	q := r.URL.Query()
+	f := ssoFlow{Return: q.Get("rd"), GateNonce: q.Get("n")}
+	route := q.Has("rd") || q.Has("n")
+	if route {
+		// The address travels in the flow cookie, which must stay under 4 KB.
+		if len(f.Return) > maxSSOReturn {
+			http.Error(w, gateNotProtectedCopy, http.StatusBadRequest)
+			return
+		}
+		if !validNonce(f.GateNonce) {
+			http.Error(w, gateBadLinkCopy, http.StatusBadRequest)
+			return
+		}
+		if _, host, err := s.validReturnURL(r.Context(), f.Return); err != nil {
+			refuseReturnURL(w, host, err)
+			return
+		}
+	} else if _, ok := s.currentSession(r); ok {
+		// A route visit goes on even so: someone signed in to Outhaul may have
+		// no gateway session, and would land on the dashboard instead.
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
 	p, err := s.ssoProvider(r.Context())
 	if errors.Is(err, errSSONotConfigured) {
+		if route {
+			http.Redirect(w, r, "/gate/start?"+url.Values{"rd": {f.Return}, "n": {f.GateNonce}}.Encode(), http.StatusSeeOther)
+			return
+		}
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
 	if err != nil {
 		log.Printf("sso: starting a sign-in: %v", err)
-		ssoRefused(w, r, "sso_unavailable")
+		ssoRefusedFor(w, r, f, "sso_unavailable")
 		return
 	}
-	f := ssoFlow{
-		State:    NewToken(),
-		Nonce:    NewToken(),
-		Verifier: oauth2.GenerateVerifier(),
-		Expires:  time.Now().Add(ssoFlowTTL),
-	}
+	f.State, f.Nonce, f.Verifier = NewToken(), NewToken(), oauth2.GenerateVerifier()
+	f.Expires = time.Now().Add(ssoFlowTTL)
 	c, _ := s.ssoFlowCookie(f.State) // a NewToken state always names one
 	c.Value = encodeSSOFlow(f)
 	c.MaxAge = int(ssoFlowTTL / time.Second)
+	if len(c.Name)+len(c.Value) > maxSSOFlowCookie {
+		http.Error(w, gateNotProtectedCopy, http.StatusBadRequest)
+		return
+	}
 	http.SetCookie(w, c)
 	http.Redirect(w, r, p.AuthURL(f.State, f.Nonce, f.Verifier), http.StatusFound)
 }
@@ -310,24 +378,24 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	if !time.Now().Before(flow.Expires) {
 		log.Printf("sso: sign-in refused: it was started more than %v ago", ssoFlowTTL)
-		ssoRefused(w, r, "sso_failed")
+		ssoRefusedFor(w, r, flow, "sso_failed")
 		return
 	}
 	if e := q.Get("error"); e != "" {
 		log.Printf("sso: the provider refused the sign-in: %q %q", logText(e), logText(q.Get("error_description")))
-		ssoRefused(w, r, "sso_failed")
+		ssoRefusedFor(w, r, flow, "sso_failed")
 		return
 	}
 	code := q.Get("code")
 	if code == "" {
 		log.Printf("sso: sign-in refused: the provider sent no code")
-		ssoRefused(w, r, "sso_failed")
+		ssoRefusedFor(w, r, flow, "sso_failed")
 		return
 	}
 	p, err := s.ssoProvider(r.Context())
 	if err != nil {
 		log.Printf("sso: finishing a sign-in: %v", err)
-		ssoRefused(w, r, "sso_unavailable")
+		ssoRefusedFor(w, r, flow, "sso_unavailable")
 		return
 	}
 	var id sso.Identity
@@ -335,24 +403,28 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		id, err = p.Exchange(r.Context(), code, flow.Nonce, flow.Verifier)
 	}); busy != nil {
 		log.Printf("sso: sign-in refused: %v", busy)
-		ssoRefused(w, r, "sso_unavailable")
+		ssoRefusedFor(w, r, flow, "sso_unavailable")
 		return
 	}
 	if errors.Is(err, sso.ErrNoEmail) {
 		log.Printf("sso: sign-in refused: %v", err)
-		ssoRefused(w, r, "sso_no_email")
+		ssoRefusedFor(w, r, flow, "sso_no_email")
 		return
 	}
 	if err != nil {
 		log.Printf("sso: sign-in refused: %v", err)
-		ssoRefused(w, r, "sso_failed")
+		ssoRefusedFor(w, r, flow, "sso_failed")
 		return
 	}
 	// Removing SSO, or changing its issuer or client ID, ends every SSO
 	// sign-in. One that was talking to the provider meanwhile ends too.
 	if !s.ssoStillCurrent(r.Context(), p) {
 		log.Printf("sso: sign-in refused: the SSO settings changed while it ran")
-		ssoRefused(w, r, "sso_failed")
+		ssoRefusedFor(w, r, flow, "sso_failed")
+		return
+	}
+	if flow.routeVisit() {
+		s.finishRouteSSO(w, r, p, flow, id)
 		return
 	}
 	user, err := s.store.FindOrCreateSSOUser(r.Context(), id.Issuer, id.Subject, id.Email)
@@ -367,15 +439,28 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		ssoRefused(w, r, "sso_failed")
 		return
 	}
-	// Checked again now the session exists: a change that committed since the
+	// The sign-in covers protected routes too. Like the session, the gateway
+	// session exists before the check below, so a change to the settings
+	// either fails that check or, committing later, ends it with the others.
+	gateToken, err := s.startGateSession(w, r, user.GateSubject(), core.SignInSSO, user.Display())
+	if err != nil {
+		if err := s.store.DeleteSession(context.WithoutCancel(r.Context()), token); err != nil {
+			log.Printf("sso: ending account %d's refused session: %v", user.ID, err)
+		}
+		log.Printf("sso: starting account %d's gateway session: %v", user.ID, err)
+		ssoRefused(w, r, "sso_failed")
+		return
+	}
+	// Checked again now the sessions exist: a change that committed since the
 	// check above is seen here, and one that commits after this ends the new
-	// session in its own transaction. A browser that has gone away cancels the
-	// request, which also fails this check, so the session it leaves behind is
-	// ended without the request's context.
+	// sessions in its own transaction. A browser that has gone away cancels
+	// the request, which also fails this check, so the sessions it leaves
+	// behind are ended without the request's context.
 	if !s.ssoStillCurrent(r.Context(), p) {
 		if err := s.store.DeleteSession(context.WithoutCancel(r.Context()), token); err != nil {
 			log.Printf("sso: ending account %d's refused session: %v", user.ID, err)
 		}
+		s.endRefusedGateSession(w, r, gateToken)
 		log.Printf("sso: sign-in refused: the SSO settings changed while it ran")
 		ssoRefused(w, r, "sso_failed")
 		return
@@ -384,6 +469,7 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		old = c.Value
 	}
+	s.endReplacedGateSession(r, gateToken)
 	s.finishLogin(w, r, user, token, expires)
 	// The new session replaces any this browser had; the old one stops working.
 	if old != "" {
@@ -392,4 +478,57 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
+}
+
+// finishRouteSSO finishes an SSO sign-in for a protected route, once the
+// provider has said who the person is and the settings are still the ones it
+// asked. It makes no account and leaves any Outhaul session alone: it starts
+// a gateway session for the SSO identity, checks the settings once more, and
+// sends the person back to the address with a code. The address and n come
+// from the flow cookie, which the person can edit, and a row may have been
+// turned off since start, so both are checked again first.
+func (s *Server) finishRouteSSO(w http.ResponseWriter, r *http.Request, p *ssoConn, flow ssoFlow, id sso.Identity) {
+	if !validNonce(flow.GateNonce) {
+		log.Printf("sso: route sign-in refused: the flow carries no valid sign-in link")
+		http.Error(w, gateBadLinkCopy, http.StatusBadRequest)
+		return
+	}
+	if _, host, err := s.validReturnURL(r.Context(), flow.Return); err != nil {
+		refuseReturnURL(w, host, err)
+		return
+	}
+	if !s.onPublicHost(r) {
+		log.Printf("sso: route sign-in refused: the callback arrived on %q, not the public URL's host", logText(r.Host))
+		ssoRefusedFor(w, r, flow, "sso_failed")
+		return
+	}
+	token, err := s.startGateSession(w, r, core.SSOGateSubject(id.Issuer, id.Subject), core.SignInSSO, id.Email)
+	if err != nil {
+		log.Printf("sso: starting a route sign-in's gateway session: %v", err)
+		ssoRefusedFor(w, r, flow, "sso_failed")
+		return
+	}
+	// As for an Outhaul sign-in: a change that committed since the first
+	// check is seen here, and one that commits after this ends the session.
+	if !s.ssoStillCurrent(r.Context(), p) {
+		s.endRefusedGateSession(w, r, token)
+		log.Printf("sso: sign-in refused: the SSO settings changed while it ran")
+		ssoRefusedFor(w, r, flow, "sso_failed")
+		return
+	}
+	s.endReplacedGateSession(r, token)
+	s.redirectWithCode(w, r, token, flow.Return, flow.GateNonce)
+}
+
+// endRefusedGateSession ends a gateway session just started for a sign-in
+// that was then refused, and clears the cookie set for it. It runs without
+// the request's context, which a browser that went away has cancelled.
+func (s *Server) endRefusedGateSession(w http.ResponseWriter, r *http.Request, token string) {
+	if token == "" {
+		return
+	}
+	if err := s.store.DeleteGateSession(context.WithoutCancel(r.Context()), token); err != nil {
+		log.Printf("sso: ending a refused sign-in's gateway session: %v", err)
+	}
+	s.clearGateCookie(w)
 }

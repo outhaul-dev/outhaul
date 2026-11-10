@@ -82,6 +82,19 @@ func deleteExpiredGate(ctx context.Context, tx *sql.Tx, now time.Time) error {
 // It refuses an empty token, subject or display, and a kind other than
 // core.SignInPassword or core.SignInSSO.
 func (s *Store) CreateGateSession(ctx context.Context, rawToken string, sess core.GateSession) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := insertGateSession(ctx, tx, rawToken, sess); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// insertGateSession is CreateGateSession inside an open transaction.
+func insertGateSession(ctx context.Context, tx *sql.Tx, rawToken string, sess core.GateSession) error {
 	switch {
 	case rawToken == "":
 		return errGateArg("a session needs a token")
@@ -92,21 +105,14 @@ func (s *Store) CreateGateSession(ctx context.Context, rawToken string, sess cor
 	case sess.Kind != core.SignInPassword && sess.Kind != core.SignInSSO:
 		return errGateArg("unknown sign-in kind " + sess.Kind)
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	now := time.Now().UTC()
 	if err := deleteExpiredGate(ctx, tx, now); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx,
+	_, err := tx.ExecContext(ctx,
 		`INSERT INTO gate_sessions (token_hash, subject, kind, display, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		hashToken(rawToken), sess.Subject, sess.Kind, sess.Display, fmtTime(now), fmtTime(sess.ExpiresAt)); err != nil {
-		return err
-	}
-	return tx.Commit()
+		hashToken(rawToken), sess.Subject, sess.Kind, sess.Display, fmtTime(now), fmtTime(sess.ExpiresAt))
+	return err
 }
 
 // GetGateSession returns a live gateway session, or sql.ErrNoRows when it is

@@ -297,7 +297,7 @@ func TestWaitingBanner(t *testing.T) {
 	if strings.Index(html, "zed@example.com") > strings.Index(html, "aaa") {
 		t.Error("waiting person not listed first")
 	}
-	if !strings.Contains(html, "can't use Outhaul") {
+	if !strings.Contains(html, `"No role" means the person can pass protected routes but can't use Outhaul.`) {
 		t.Error("no note about No role")
 	}
 }

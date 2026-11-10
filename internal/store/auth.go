@@ -103,17 +103,8 @@ func (s *Store) CreatePasswordSession(ctx context.Context, sess core.Session, ve
 		return err
 	}
 	defer tx.Rollback()
-	var hash string
-	err = tx.QueryRowContext(ctx,
-		`SELECT password_hash FROM users WHERE id = ? AND sign_in = 'password'`, sess.UserID).Scan(&hash)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ErrPasswordChanged
-	}
-	if err != nil {
+	if _, err := checkedPasswordAccount(ctx, tx, sess.UserID, verifiedHash); err != nil {
 		return err
-	}
-	if hash == "" || hash != verifiedHash {
-		return ErrPasswordChanged
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`,
@@ -121,6 +112,51 @@ func (s *Store) CreatePasswordSession(ctx context.Context, sess core.Session, ve
 		return err
 	}
 	return tx.Commit()
+}
+
+// CreatePasswordGateSession stores a gateway session for a password sign-in
+// by account userID, under the hash of rawToken, expiring at expiresAt. Like
+// CreatePasswordSession it re-reads the account in the same transaction as
+// the insert, and returns ErrPasswordChanged, storing nothing, if its hash is
+// no longer verifiedHash, is blank, or the account is gone or isn't a
+// password account. The session's subject is the account's GateSubject and
+// its display name the account's, as they are in that transaction. Otherwise
+// it is CreateGateSession, refusals and clean-up included.
+func (s *Store) CreatePasswordGateSession(ctx context.Context, rawToken string, userID int64, verifiedHash string, expiresAt time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	u, err := checkedPasswordAccount(ctx, tx, userID, verifiedHash)
+	if err != nil {
+		return err
+	}
+	if err := insertGateSession(ctx, tx, rawToken, core.GateSession{
+		Subject: u.GateSubject(), Kind: core.SignInPassword, Display: u.Display(), ExpiresAt: expiresAt,
+	}); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// checkedPasswordAccount reads password account id inside tx and returns it
+// if its hash is still verifiedHash. It returns ErrPasswordChanged when the
+// hash differs or is blank, or the account is gone or isn't a password
+// account.
+func checkedPasswordAccount(ctx context.Context, tx *sql.Tx, id int64, verifiedHash string) (core.User, error) {
+	u, err := scanUser(tx.QueryRowContext(ctx,
+		`SELECT `+userCols+` FROM users WHERE id = ? AND sign_in = 'password'`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return core.User{}, ErrPasswordChanged
+	}
+	if err != nil {
+		return core.User{}, err
+	}
+	if u.PasswordHash == "" || u.PasswordHash != verifiedHash {
+		return core.User{}, ErrPasswordChanged
+	}
+	return u, nil
 }
 
 // GetSession returns a non-expired session, or sql.ErrNoRows if missing/expired.

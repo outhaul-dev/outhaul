@@ -299,6 +299,7 @@ func serve() error {
 		srv.SetSSHControl(sshSrv)
 	}
 	srv.SetTunnelControl(infra)
+	srv.SetHTTPSPort(cfg.HTTPSPort)
 	srv.SetBuild(update.Current())
 	srv.SetUpdates(updates, checker)
 	if certMgr != nil {

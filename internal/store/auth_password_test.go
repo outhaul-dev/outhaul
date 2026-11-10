@@ -128,3 +128,67 @@ func TestPasswordSessionNeedsThePasswordThatWasChecked(t *testing.T) {
 		t.Errorf("for an SSO account: err = %v, want ErrPasswordChanged", err)
 	}
 }
+
+// A sign-in at the gate makes a gateway session instead of a session, after
+// the same slow check, so it is held to the same rule. The session's subject
+// and name come from the account as it is when the session is stored.
+func TestPasswordGateSessionNeedsThePasswordThatWasChecked(t *testing.T) {
+	st := newTestStore(t)
+	ctx := context.Background()
+	if _, err := st.CreateUser(ctx, "admin", "h1"); err != nil {
+		t.Fatal(err)
+	}
+	bob, err := st.CreatePasswordAccount(ctx, "bob", core.RoleNone)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateUserPassword(ctx, bob.ID, "b1", ""); err != nil {
+		t.Fatal(err)
+	}
+	exp := time.Now().Add(time.Hour).UTC().Round(0)
+	refused := func(what, token string, id int64, checked string) {
+		t.Helper()
+		if err := st.CreatePasswordGateSession(ctx, token, id, checked, exp); !errors.Is(err, ErrPasswordChanged) {
+			t.Errorf("%s: err = %v, want ErrPasswordChanged", what, err)
+		}
+		if _, err := st.GetGateSession(ctx, token); !errors.Is(err, sql.ErrNoRows) {
+			t.Errorf("%s: a gateway session was stored (err %v)", what, err)
+		}
+	}
+
+	if err := st.CreatePasswordGateSession(ctx, "ok", bob.ID, "b1", exp); err != nil {
+		t.Fatalf("with the hash that was checked: %v", err)
+	}
+	g, err := st.GetGateSession(ctx, "ok")
+	if err != nil {
+		t.Fatalf("gateway session not stored: %v", err)
+	}
+	if want := (core.User{ID: bob.ID}).GateSubject(); g.Subject != want || g.Kind != core.SignInPassword || g.Display != "bob" || !g.ExpiresAt.Equal(exp) {
+		t.Errorf("gateway session = %+v, want subject %q, kind password, display bob, expiring %v", g, want, exp)
+	}
+	// It is no Outhaul session.
+	var sessions int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&sessions); err != nil || sessions != 0 {
+		t.Errorf("sessions = %d, %v; want none", sessions, err)
+	}
+
+	if err := st.UpdateUserPassword(ctx, bob.ID, "b2", ""); err != nil {
+		t.Fatal(err)
+	}
+	refused("after a password change", "changed", bob.ID, "b1")
+	if err := st.ResetUserPassword(ctx, bob.ID, "tok", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	refused("after a reset", "reset", bob.ID, "b2")
+	refused("with a blank hash", "blank", bob.ID, "")
+	if err := st.DeleteUser(ctx, bob.ID); err != nil {
+		t.Fatal(err)
+	}
+	refused("after the account is deleted", "gone", bob.ID, "b2")
+	refused("for an SSO account", "sso", insertSSOAdmin(t, st, "dana"), "")
+
+	// The token is checked like any gateway session's.
+	if err := st.CreatePasswordGateSession(ctx, "", 1, "h1", exp); err == nil || errors.Is(err, ErrPasswordChanged) {
+		t.Errorf("an empty token: err = %v, want a refusal of its own", err)
+	}
+}

@@ -50,6 +50,14 @@ func (s *Server) routes() []route {
 		// for the app's host. It checks a route cookie or one-time code itself.
 		// It is a GET, so cross-origin protection lets it by.
 		{"GET /gate/check", levelPublic, nil, s.handleGateCheck},
+		// Signing in and out for protected routes, on the public URL. A route
+		// sign-in makes a gateway session, not an Outhaul session, so these
+		// are open to anyone; every address and nonce is checked inside, and
+		// the POSTs are covered by cross-origin protection.
+		{"GET /gate/start", levelPublic, nil, s.handleGateStart},
+		{"POST /gate/sign-in", levelPublic, nil, s.handleGateSignIn},
+		{"GET /gate/sign-out", levelPublic, nil, s.handleGateSignOutPage},
+		{"POST /gate/sign-out", levelPublic, nil, s.handleGateSignOut},
 
 		{"GET /{$}", levelAnyRole, nil, s.handleOverview},
 

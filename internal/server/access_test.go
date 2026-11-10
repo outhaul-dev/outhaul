@@ -205,6 +205,8 @@ func TestPublicRoutesAreExactlyThese(t *testing.T) {
 		"GET /ca.pem",
 		"GET /deployments",
 		"GET /gate/check",
+		"GET /gate/sign-out",
+		"GET /gate/start",
 		"GET /github/callback",
 		"GET /github/setup",
 		"GET /healthz",
@@ -212,6 +214,8 @@ func TestPublicRoutesAreExactlyThese(t *testing.T) {
 		"GET /setup",
 		"GET /static/",
 		"POST /account/setup",
+		"POST /gate/sign-in",
+		"POST /gate/sign-out",
 		"POST /login",
 		"POST /logout",
 		"POST /setup",
@@ -813,12 +817,12 @@ func TestNoRolePersonSeesNoAccessPage(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", resp.StatusCode)
 	}
-	for _, want := range []string{noAccessCopy, "Ask a system admin to give you a role.", `action="/logout"`, "Sign out", `href="/account"`} {
+	for _, want := range []string{noAccessCopy, "Ask a system admin to give you a role.", "You can still use apps on protected routes.", `action="/logout"`, "Sign out", `href="/account"`} {
 		if !strings.Contains(page, want) {
 			t.Errorf("page does not contain %q:\n%s", want, page)
 		}
 	}
-	for _, leak := range []string{s.Project.Name, s.App.Name, s.Database.Name, "protected routes", "sidebar"} {
+	for _, leak := range []string{s.Project.Name, s.App.Name, s.Database.Name, "sidebar"} {
 		if strings.Contains(page, leak) {
 			t.Errorf("page contains %q:\n%s", leak, page)
 		}

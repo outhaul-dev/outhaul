@@ -1,0 +1,14 @@
+{{define "content"}}
+<div class="authcard">
+  <div class="authmark">{{template "brandmark" .}}</div>
+  <h1 class="authtitle">out<span class="haul">haul</span></h1>
+  {{if .Done}}
+  <p class="authsub">You're signed out of the apps on protected routes in this browser.</p>
+  {{else}}
+  <p class="authsub">Sign out of every app on a protected route in this browser. If you signed in with SSO, your provider may sign you straight back in the next time you open one.</p>
+  <form method="post" action="/gate/sign-out" class="stack">
+    <button type="submit" class="btn btn-primary">Sign out</button>
+  </form>
+  {{end}}
+</div>
+{{end}}

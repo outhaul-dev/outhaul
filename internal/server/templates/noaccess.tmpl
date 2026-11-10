@@ -2,7 +2,7 @@
 <div class="authcard">
   <div class="authmark">{{template "brandmark" .}}</div>
   <h1 class="authtitle">out<span class="haul">haul</span></h1>
-  <p class="authsub">You don't have access to Outhaul yet. Ask a system admin to give you a role.</p>
+  <p class="authsub">You don't have access to Outhaul yet. Ask a system admin to give you a role. You can still use apps on protected routes.</p>
   {{if .Me.ID}}<p class="authsub">Signed in as {{.Me.Display}}.</p>{{end}}
   <form method="post" action="/logout" class="stack">
     <button type="submit" class="btn btn-primary">Sign out</button>
