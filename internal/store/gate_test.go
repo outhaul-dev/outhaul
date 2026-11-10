@@ -108,6 +108,9 @@ func TestRouteCookieWorksOnlyOnItsHost(t *testing.T) {
 	if d, err := s.RouteSessionUser(ctx, "r1", wikiHost); err != nil || d != "dana" {
 		t.Fatalf("own host: %q, %v", d, err)
 	}
+	if d, err := s.RouteSessionUser(ctx, "r1", "WIKI.example.com"); err != nil || d != "dana" {
+		t.Fatalf("upper-case host: %q, %v", d, err)
+	}
 	if _, err := s.RouteSessionUser(ctx, "r1", docsHost); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("other host: err = %v", err)
 	}
@@ -148,7 +151,15 @@ func TestEndingGatewaySessionEndsRouteSessions(t *testing.T) {
 			if _, err := s.RedeemGateCode(ctx, "open-code", wikiHost, "r9", time.Now().Add(time.Hour)); !errors.Is(err, sql.ErrNoRows) {
 				t.Fatalf("code outlived its gateway session: %v", err)
 			}
-			if name == "DeleteGateSessionsOfKind" {
+			if name != "DeleteGateSessionsOfKind" {
+				// Another person's sessions survive. (OfKind ends both here: the
+				// two sessions differ in kind, so r2 survives only in the
+				// password case, checked below.)
+				wantRouteOK(t, s, "r2")
+				if _, err := s.GetGateSession(ctx, "g2"); err != nil {
+					t.Fatalf("other gateway session: %v", err)
+				}
+			} else {
 				wantRouteOK(t, s, "r2") // the other kind is untouched
 			}
 		})
@@ -158,14 +169,130 @@ func TestEndingGatewaySessionEndsRouteSessions(t *testing.T) {
 func TestEmptySubjectOrKindDeletesNothing(t *testing.T) {
 	ctx := context.Background()
 	s := newTestStore(t)
-	gateSessionFor(t, s, "user:1", core.SignInPassword, "dana", "g1", "r1")
+	// CreateGateSession refuses these, so plant the rows with SQL.
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO gate_sessions (token_hash, subject, kind, display, created_at, expires_at) VALUES (?, '', '', 'x', ?, ?)`,
+		hashToken("blank"), fmtTime(time.Now()), fmtTime(time.Now().Add(time.Hour))); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.DeleteGateSessionsForSubject(ctx, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DeleteGateSessionsOfKind(ctx, ""); err != nil {
 		t.Fatal(err)
 	}
-	wantRouteOK(t, s, "r1")
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM gate_sessions`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("rows = %d, %v; want the planted one to survive", n, err)
+	}
+}
+
+func TestGateWritesRefuseEmptyValues(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	ok := core.GateSession{Subject: "user:1", Kind: core.SignInPassword, Display: "dana", ExpiresAt: time.Now().Add(time.Hour)}
+	for name, tc := range map[string]struct {
+		tok  string
+		sess core.GateSession
+	}{
+		"empty token":   {"", ok},
+		"empty subject": {"t", core.GateSession{Kind: ok.Kind, Display: ok.Display, ExpiresAt: ok.ExpiresAt}},
+		"empty display": {"t", core.GateSession{Subject: ok.Subject, Kind: ok.Kind, ExpiresAt: ok.ExpiresAt}},
+		"other kind":    {"t", core.GateSession{Subject: ok.Subject, Kind: "token", Display: ok.Display, ExpiresAt: ok.ExpiresAt}},
+		"empty kind":    {"t", core.GateSession{Subject: ok.Subject, Display: ok.Display, ExpiresAt: ok.ExpiresAt}},
+	} {
+		err := s.CreateGateSession(ctx, tc.tok, tc.sess)
+		if err == nil || errors.Is(err, sql.ErrNoRows) {
+			t.Errorf("%s: err = %v; want a refusal", name, err)
+		}
+	}
+	if err := s.CreateGateSession(ctx, "g1", ok); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateGateCode(ctx, "", "g1", wikiHost, time.Now().Add(time.Minute)); err == nil || errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("empty code: err = %v", err)
+	}
+	if err := s.CreateGateCode(ctx, "c1", "g1", wikiHost, time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RedeemGateCode(ctx, "", wikiHost, "r1", time.Now().Add(time.Hour)); err == nil || errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("empty redeem code: err = %v", err)
+	}
+	if _, err := s.RedeemGateCode(ctx, "c1", wikiHost, "", time.Now().Add(time.Hour)); err == nil || errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("empty route token: err = %v", err)
+	}
+	// The refused redeem left the code usable.
+	if _, err := s.RedeemGateCode(ctx, "c1", wikiHost, "r1", time.Now().Add(time.Hour)); err != nil {
+		t.Errorf("code was spent by a refused redeem: %v", err)
+	}
+}
+
+func TestNewCodeReplacesEarlierUnredeemedCodesForSameHost(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	for _, g := range []string{"g1", "g2"} {
+		if err := s.CreateGateSession(ctx, g, core.GateSession{Subject: "user:1", Kind: core.SignInPassword, Display: "dana", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exp := time.Now().Add(time.Minute)
+	for _, c := range []struct{ code, gate, host string }{
+		{"old", "g1", wikiHost}, {"other-host", "g1", docsHost}, {"other-gate", "g2", wikiHost}, {"new", "g1", wikiHost},
+	} {
+		if err := s.CreateGateCode(ctx, c.code, c.gate, c.host, exp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.RedeemGateCode(ctx, "old", wikiHost, "r-old", time.Now().Add(time.Hour)); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("old code survived: %v", err)
+	}
+	for i, c := range []struct{ code, host string }{{"other-host", docsHost}, {"other-gate", wikiHost}, {"new", wikiHost}} {
+		if _, err := s.RedeemGateCode(ctx, c.code, c.host, "r"+string(rune('a'+i)), time.Now().Add(time.Hour)); err != nil {
+			t.Errorf("%s should still work: %v", c.code, err)
+		}
+	}
+}
+
+// julianday reads the stored text to the millisecond, so the cleanup's
+// boundary is pinned at one millisecond, not one nanosecond.
+func TestCleanupBoundaryAgreesWithGo(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	for _, r := range []struct {
+		tok string
+		exp time.Time
+	}{{"past", now.Add(-time.Millisecond)}, {"future", now.Add(time.Millisecond)}} {
+		if _, err := s.db.ExecContext(ctx,
+			`INSERT INTO gate_sessions (token_hash, subject, kind, display, created_at, expires_at) VALUES (?, 'user:1', 'password', 'd', ?, ?)`,
+			r.tok, fmtTime(now), fmtTime(r.exp)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := deleteExpiredGate(ctx, tx, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	rows, err := s.db.QueryContext(ctx, `SELECT token_hash FROM gate_sessions`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var h string
+		rows.Scan(&h)
+		got = append(got, h)
+	}
+	if len(got) != 1 || got[0] != "future" {
+		t.Fatalf("left %v; want only the row expiring a millisecond ahead", got)
+	}
 }
 
 func TestRouteSessionCantOutliveItsGatewaySession(t *testing.T) {
@@ -250,7 +377,11 @@ func TestRemovingAccountEndsItsGateSessions(t *testing.T) {
 	}
 	gateSessionFor(t, s, admin.GateSubject(), core.SignInPassword, "root", "g0", "r0")
 	gateSessionFor(t, s, pw.GateSubject(), core.SignInPassword, "dana", "g1", "r1")
-	gateSessionFor(t, s, sso.GateSubject(), core.SignInSSO, "eli@example.com", "g2", "r2")
+	ssoSubject := core.SSOGateSubject("https://idp", "sub-1")
+	if sso.GateSubject() != ssoSubject {
+		t.Fatalf("GateSubject() = %q; want %q", sso.GateSubject(), ssoSubject)
+	}
+	gateSessionFor(t, s, ssoSubject, core.SignInSSO, "eli@example.com", "g2", "r2")
 	if err := s.DeleteUser(ctx, pw.ID); err != nil {
 		t.Fatal(err)
 	}

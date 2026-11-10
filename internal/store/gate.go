@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"time"
 
@@ -57,24 +58,47 @@ func accountGateSubject(ctx context.Context, tx *sql.Tx, id int64) (string, erro
 
 func normHost(host string) string { return strings.ToLower(host) }
 
+// errGateArg is returned for an empty or unknown value in a write.
+func errGateArg(what string) error { return errors.New("store: gate: " + what) }
+
+// deleteExpiredGate removes gateway sessions, route sessions and codes whose
+// expiry is at or before now. julianday reads the stored RFC3339 text with
+// millisecond precision, so rows within a millisecond of now may go either way;
+// the read paths compare exactly, in Go.
+func deleteExpiredGate(ctx context.Context, tx *sql.Tx, now time.Time) error {
+	for _, table := range []string{"gate_sessions", "route_sessions", "gate_codes"} {
+		if _, err := tx.ExecContext(ctx,
+			`DELETE FROM `+table+` WHERE julianday(expires_at) <= julianday(?)`, fmtTime(now)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // CreateGateSession stores a gateway session under the hash of rawToken. It
 // also deletes what has expired: gateway sessions (their route sessions and
 // codes go with them), and route sessions and codes past their own expiry.
+// It refuses an empty token, subject or display, and a kind other than
+// core.SignInPassword or core.SignInSSO.
 func (s *Store) CreateGateSession(ctx context.Context, rawToken string, sess core.GateSession) error {
+	switch {
+	case rawToken == "":
+		return errGateArg("a session needs a token")
+	case sess.Subject == "":
+		return errGateArg("a session needs a subject")
+	case sess.Display == "":
+		return errGateArg("a session needs a display name")
+	case sess.Kind != core.SignInPassword && sess.Kind != core.SignInSSO:
+		return errGateArg("unknown sign-in kind " + sess.Kind)
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	now := time.Now().UTC()
-	// Timestamps are RFC3339 strings of varying precision, so expiry is
-	// compared in Go.
-	for _, t := range []struct{ table, col string }{
-		{"gate_sessions", "token_hash"}, {"route_sessions", "token_hash"}, {"gate_codes", "code_hash"},
-	} {
-		if err := deleteExpired(ctx, tx, t.table, t.col, now); err != nil {
-			return err
-		}
+	if err := deleteExpiredGate(ctx, tx, now); err != nil {
+		return err
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO gate_sessions (token_hash, subject, kind, display, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)`,
@@ -82,36 +106,6 @@ func (s *Store) CreateGateSession(ctx context.Context, rawToken string, sess cor
 		return err
 	}
 	return tx.Commit()
-}
-
-func deleteExpired(ctx context.Context, tx *sql.Tx, table, keyCol string, now time.Time) error {
-	rows, err := tx.QueryContext(ctx, `SELECT `+keyCol+`, expires_at FROM `+table)
-	if err != nil {
-		return err
-	}
-	var dead []string
-	for rows.Next() {
-		var key, exp string
-		if err := rows.Scan(&key, &exp); err != nil {
-			rows.Close()
-			return err
-		}
-		if t, err := parseTime(exp); err != nil || !now.Before(t) {
-			dead = append(dead, key)
-		}
-	}
-	if err := rows.Close(); err != nil {
-		return err
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	for _, k := range dead {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table+` WHERE `+keyCol+` = ?`, k); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // GetGateSession returns a live gateway session, or sql.ErrNoRows when it is
@@ -154,11 +148,27 @@ func (s *Store) DeleteGateSessionsOfKind(ctx context.Context, kind string) error
 
 // CreateGateCode stores a one-time code that carries the gateway session to
 // host. Only the hash of the code is kept.
+// The session's earlier unredeemed codes for the same host are deleted, so
+// one signed-in person can't pile codes up.
 func (s *Store) CreateGateCode(ctx context.Context, rawCode, rawGateToken, host string, expiresAt time.Time) error {
-	_, err := s.db.ExecContext(ctx,
+	if rawCode == "" {
+		return errGateArg("a code can't be empty")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM gate_codes WHERE gate_token_hash = ? AND host = ?`,
+		hashToken(rawGateToken), normHost(host)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO gate_codes (code_hash, gate_token_hash, host, expires_at) VALUES (?, ?, ?, ?)`,
-		hashToken(rawCode), hashToken(rawGateToken), normHost(host), fmtTime(expiresAt))
-	return err
+		hashToken(rawCode), hashToken(rawGateToken), normHost(host), fmtTime(expiresAt)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // RedeemGateCode turns a code into a route session for host, in one
@@ -169,6 +179,9 @@ func (s *Store) CreateGateCode(ctx context.Context, rawCode, rawGateToken, host 
 // route session ends at routeExpires or when its gateway session does,
 // whichever is first.
 func (s *Store) RedeemGateCode(ctx context.Context, rawCode, host, rawRouteToken string, routeExpires time.Time) (string, error) {
+	if rawCode == "" || rawRouteToken == "" {
+		return "", errGateArg("a code and a route token can't be empty")
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", err
@@ -187,8 +200,14 @@ func (s *Store) RedeemGateCode(ctx context.Context, rawCode, host, rawRouteToken
 	if codeHost != normHost(host) {
 		return "", sql.ErrNoRows
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM gate_codes WHERE code_hash = ?`, hashToken(rawCode)); err != nil {
+	res, err := tx.ExecContext(ctx, `DELETE FROM gate_codes WHERE code_hash = ?`, hashToken(rawCode))
+	if err != nil {
 		return "", err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return "", err
+	} else if n != 1 {
+		return "", sql.ErrNoRows
 	}
 	now := time.Now()
 	ce, err := parseTime(codeExp)
