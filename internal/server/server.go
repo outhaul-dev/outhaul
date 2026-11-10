@@ -133,6 +133,7 @@ type Server struct {
 	ssoFailedUntil time.Time     // see ssoRetryAfter
 	ssoRetryAfter  time.Duration // how long a failed discovery is remembered (ssoDiscoveryRetry; tests shorten it)
 	ssoDiscovering chan struct{} // holds one token while a discovery runs, so only one does
+	ssoExchanges   chan struct{} // bounds calls to the provider's token endpoint; see withExchangeSlot
 
 	hashSlots chan struct{} // bounds concurrent argon2 work; see withHashSlot
 	hashWait  time.Duration // how long a password check waits for a slot
@@ -168,6 +169,7 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 	s.hashWait = defaultHashWait
 	s.ssoRetryAfter = ssoDiscoveryRetry
 	s.ssoDiscovering = make(chan struct{}, 1)
+	s.ssoExchanges = make(chan struct{}, maxConcurrentSSOExchanges)
 	if err := s.parseTemplates(); err != nil {
 		return nil, err
 	}

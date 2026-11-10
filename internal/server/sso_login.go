@@ -134,22 +134,31 @@ func (s *Server) onPublicHost(r *http.Request) bool {
 	return hostWithoutDefaultPort(r.Host, pub.Scheme) == hostWithoutDefaultPort(pub.Host, pub.Scheme)
 }
 
+// ssoMovedParam marks a start that ssoStartElsewhere has already sent to the
+// public URL. One that arrives on another host all the same was moved by a
+// proxy in front that rewrites Host, and moving it again would loop.
+const ssoMovedParam = "moved"
+
 // ssoStartElsewhere is where a sign-in started on another host than the
-// public URL's must start instead: the same path and query on the public URL.
-// The flow cookie belongs to the host that answers start, and the provider
-// sends the browser back to the public URL, so a sign-in started anywhere
-// else could never finish. On the public URL's own host ok is false, so the
-// move can't loop.
-func (s *Server) ssoStartElsewhere(r *http.Request) (to string, ok bool) {
+// public URL's must start instead: the same path and query on the public URL,
+// marked with ssoMovedParam. The flow cookie belongs to the host that answers
+// start, and the provider sends the browser back to the public URL, so a
+// sign-in started anywhere else could never finish. On the public URL's own
+// host ok is false. pubHost is the public URL's host, for logging.
+func (s *Server) ssoStartElsewhere(r *http.Request) (to, pubHost string, ok bool) {
 	if !s.publicURLSet() || s.onPublicHost(r) {
-		return "", false
+		return "", "", false
 	}
 	pub, err := url.Parse(s.publicURL)
 	if err != nil || pub.Host == "" {
-		return "", false
+		return "", "", false
 	}
-	u := url.URL{Scheme: pub.Scheme, Host: pub.Host, Path: r.URL.Path, RawQuery: r.URL.RawQuery}
-	return u.String(), true
+	q := r.URL.RawQuery
+	if q != "" {
+		q += "&"
+	}
+	u := url.URL{Scheme: pub.Scheme, Host: pub.Host, Path: r.URL.Path, RawQuery: q + ssoMovedParam + "=1"}
+	return u.String(), pub.Host, true
 }
 
 // hostWithoutDefaultPort lowercases a host[:port] and drops the port scheme
@@ -187,6 +196,27 @@ func (s *Server) ssoConnected(ctx context.Context) bool {
 	return ok
 }
 
+// maxConcurrentSSOExchanges bounds calls to the provider's token endpoint in
+// flight. Anyone can make up a flow cookie and so make the callback call it.
+const maxConcurrentSSOExchanges = 4
+
+// errSSOBusy means no exchange slot freed up before the request ended.
+var errSSOBusy = errors.New("too many sign-ins are being finished at once")
+
+// withExchangeSlot runs fn, which calls the provider's token endpoint, once
+// one of the maxConcurrentSSOExchanges slots is free. It returns errSSOBusy,
+// without running fn, when ctx ends first.
+func (s *Server) withExchangeSlot(ctx context.Context, fn func()) error {
+	select {
+	case s.ssoExchanges <- struct{}{}:
+	case <-ctx.Done():
+		return errSSOBusy
+	}
+	defer func() { <-s.ssoExchanges }()
+	fn()
+	return nil
+}
+
 // ssoRefused sends the browser back to the login page with one of the fixed
 // error codes in ssoLoginErrors.
 func ssoRefused(w http.ResponseWriter, r *http.Request, code string) {
@@ -197,7 +227,13 @@ func ssoRefused(w http.ResponseWriter, r *http.Request, code string) {
 // sends the browser to the provider.
 func (s *Server) handleSSOStart(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	if to, ok := s.ssoStartElsewhere(r); ok {
+	if to, pubHost, ok := s.ssoStartElsewhere(r); ok {
+		if r.URL.Query().Has(ssoMovedParam) {
+			log.Printf("sso: sign-in refused: it was sent on to %q, the public URL's host, but arrived on %q; a proxy in front may be rewriting the Host header",
+				pubHost, logText(r.Host))
+			ssoRefused(w, r, "sso_unavailable")
+			return
+		}
 		http.Redirect(w, r, to, http.StatusFound)
 		return
 	}
@@ -294,7 +330,14 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		ssoRefused(w, r, "sso_unavailable")
 		return
 	}
-	id, err := p.Exchange(r.Context(), code, flow.Nonce, flow.Verifier)
+	var id sso.Identity
+	if busy := s.withExchangeSlot(r.Context(), func() {
+		id, err = p.Exchange(r.Context(), code, flow.Nonce, flow.Verifier)
+	}); busy != nil {
+		log.Printf("sso: sign-in refused: %v", busy)
+		ssoRefused(w, r, "sso_unavailable")
+		return
+	}
 	if errors.Is(err, sso.ErrNoEmail) {
 		log.Printf("sso: sign-in refused: %v", err)
 		ssoRefused(w, r, "sso_no_email")

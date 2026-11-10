@@ -9,7 +9,9 @@ import (
 	"log"
 	"net/http"
 	"net/http/cookiejar"
+	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -874,8 +876,8 @@ func TestSSOStartMovesToThePublicURL(t *testing.T) {
 		{"outhaul.example.com:8080", sessionCookie + "=" + signedIn},
 	} {
 		resp := startOn(t, e, c.host, "?a=1&b=two", c.cookie)
-		if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "https://outhaul.example.com/auth/sso/start?a=1&b=two" {
-			t.Errorf("start on %q (cookie %v) = %d to %q, want 302 to the same path and query on the public URL",
+		if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "https://outhaul.example.com/auth/sso/start?a=1&b=two&moved=1" {
+			t.Errorf("start on %q (cookie %v) = %d to %q, want 302 to the same path and query on the public URL, marked as moved",
 				c.host, c.cookie != "", resp.StatusCode, resp.Header.Get("Location"))
 		}
 		if len(resp.Cookies()) != 0 {
@@ -906,8 +908,42 @@ func TestSSOStartMovesToThePublicURL(t *testing.T) {
 	// A different port is a different host.
 	e.srv.publicURL = "http://outhaul.example.com:8080"
 	resp := startOn(t, e, "outhaul.example.com", "", "")
-	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "http://outhaul.example.com:8080/auth/sso/start" {
+	if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "http://outhaul.example.com:8080/auth/sso/start?moved=1" {
 		t.Errorf("start on another port = %d to %q, want 302 to the public URL", resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
+// Behind a proxy that rewrites Host, the move to the public URL arrives on the
+// wrong host again. The marker on the move stops a loop: the second time,
+// start says SSO is unavailable, on the host it arrived on, and logs both.
+func TestSSOStartDoesntLoopWhenAProxyRewritesTheHost(t *testing.T) {
+	var logged bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	fake := fakeIdentity("sub-1", "dana@example.com")
+	e := ssoLoginEnv(t, fake)
+	e.srv.publicURL = "https://outhaul.example.com"
+
+	resp := startOn(t, e, "10.0.0.5:8080", "?moved=1", "")
+	if resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != "/login?error=sso_unavailable" {
+		t.Errorf("start moved once and still elsewhere = %d to %q, want 303 to /login?error=sso_unavailable",
+			resp.StatusCode, resp.Header.Get("Location"))
+	}
+	if len(resp.Cookies()) != 0 || fake.LastAuthState != "" {
+		t.Errorf("a sign-in was started: cookies %v, state %q", resp.Header.Values("Set-Cookie"), fake.LastAuthState)
+	}
+	lines := strings.Split(strings.TrimSpace(logged.String()), "\n")
+	if len(lines) != 1 || !strings.Contains(lines[0], "outhaul.example.com") || !strings.Contains(lines[0], "10.0.0.5:8080") {
+		t.Errorf("log = %q, want one line naming both hosts", logged.String())
+	}
+
+	// On the public URL's host the marker changes nothing.
+	resp = startOn(t, e, "outhaul.example.com", "?moved=1", "")
+	if loc, _ := url.Parse(resp.Header.Get("Location")); resp.StatusCode != http.StatusFound || loc == nil || loc.Host != "sso.fake.invalid" {
+		t.Errorf("start with the marker on the public URL's host = %d to %q, want 302 to the provider",
+			resp.StatusCode, resp.Header.Get("Location"))
 	}
 }
 
@@ -1260,5 +1296,101 @@ func TestDiscoveryFailureIsRememberedBriefly(t *testing.T) {
 	start()
 	if n := calls.Load() - before; n != 2 {
 		t.Errorf("discovery ran %d times across an expired failure, want 2", n)
+	}
+}
+
+// gateProvider holds every Exchange until release is closed, and counts how
+// many run at once.
+type gateProvider struct {
+	entered  chan struct{}
+	release  chan struct{}
+	calls    atomic.Int32
+	inFlight atomic.Int32
+	most     atomic.Int32
+}
+
+func (p *gateProvider) AuthURL(state, nonce, verifier string) string {
+	return "https://sso.fake.invalid/authorize?state=" + url.QueryEscape(state)
+}
+
+func (p *gateProvider) Exchange(ctx context.Context, code, nonce, verifier string) (sso.Identity, error) {
+	p.calls.Add(1)
+	n := p.inFlight.Add(1)
+	defer p.inFlight.Add(-1)
+	for {
+		m := p.most.Load()
+		if n <= m || p.most.CompareAndSwap(m, n) {
+			break
+		}
+	}
+	p.entered <- struct{}{}
+	select {
+	case <-p.release:
+	case <-ctx.Done():
+		return sso.Identity{}, ctx.Err()
+	}
+	return sso.Identity{Issuer: testIssuer, Subject: "sub-" + code, Email: code + "@example.com"}, nil
+}
+
+// forgedCallback is a callback carrying a flow cookie its sender made up, as
+// anyone can: it gets as far as the provider's token endpoint.
+func forgedCallback(e *testEnv, code string) *http.Request {
+	state := NewToken()
+	c, _ := e.srv.ssoFlowCookie(state)
+	c.Value = encodeSSOFlow(ssoFlow{State: state, Nonce: NewToken(), Verifier: NewToken(), Expires: time.Now().Add(time.Minute)})
+	req := httptest.NewRequest(http.MethodGet, "/auth/sso/callback?"+url.Values{"state": {state}, "code": {code}}.Encode(), nil)
+	req.AddCookie(c)
+	return req
+}
+
+// A forged flow cookie makes the server call the provider's token endpoint, so
+// at most four calls run at once. A callback that can't get a turn before its
+// request ends is told SSO is unavailable, and never reaches the provider.
+func TestSSOExchangesAreCapped(t *testing.T) {
+	p := &gateProvider{entered: make(chan struct{}, 10), release: make(chan struct{})}
+	e := ssoLoginEnv(t, p)
+
+	var wg sync.WaitGroup
+	recs := make([]*httptest.ResponseRecorder, 4)
+	for i := range recs {
+		recs[i] = httptest.NewRecorder()
+		req := forgedCallback(e, "c"+strconv.Itoa(i))
+		wg.Add(1)
+		go func() { defer wg.Done(); e.srv.handleSSOCallback(recs[i], req) }()
+	}
+	for range recs {
+		<-p.entered
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	waiting := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() { e.srv.handleSSOCallback(waiting, forgedCallback(e, "c4").WithContext(ctx)); close(done) }()
+	time.Sleep(200 * time.Millisecond)
+	if n := p.calls.Load(); n != 4 {
+		t.Errorf("exchanges started = %d, want 4", n)
+	}
+	cancel()
+	<-done
+	if waiting.Code != http.StatusSeeOther || waiting.Header().Get("Location") != "/login?error=sso_unavailable" {
+		t.Errorf("the fifth callback = %d to %q, want 303 to /login?error=sso_unavailable", waiting.Code, waiting.Header().Get("Location"))
+	}
+
+	close(p.release)
+	wg.Wait()
+	for i, rec := range recs {
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/" {
+			t.Errorf("callback %d = %d to %q, want 303 to /", i, rec.Code, rec.Header().Get("Location"))
+		}
+	}
+	if p.most.Load() != 4 || p.calls.Load() != 4 {
+		t.Errorf("at most %d exchanges at once, %d in all; want 4 and 4", p.most.Load(), p.calls.Load())
+	}
+
+	// With the slots free again, the next one goes through.
+	rec := httptest.NewRecorder()
+	e.srv.handleSSOCallback(rec, forgedCallback(e, "c5"))
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/" {
+		t.Errorf("a callback after the others finished = %d to %q, want 303 to /", rec.Code, rec.Header().Get("Location"))
 	}
 }
