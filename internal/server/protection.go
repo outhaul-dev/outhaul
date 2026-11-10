@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
@@ -958,4 +959,145 @@ func accessStateFor(d core.Domain, appName string, containers []docker.Container
 		return accessState{Label: accessSignIn, Class: "state-running", Note: "until the redeploy finishes"}
 	}
 	return accessState{Label: accessOpen, Class: "state-stopped"}
+}
+
+// strayRoute looks among running, every running container Outhaul manages,
+// for a router that answers part of d's address without the gate: one that
+// Traefik routes (its container has traefik.enable on), whose rule names d's
+// host (in any case) and d's path or a path under it (PathPrefix compares
+// paths as written, as plain prefixes), that isn't gated
+// (traefik.RowHasGate), and that is neither d's own router on d's address
+// (rowGate answers for that) nor a current open row's router on that row's
+// address (rows: every app's rows, by router name). A rule it can't read
+// counts when it names d's host. It returns the outhaul.app label of the
+// container whose router it is, appName's own first.
+func strayRoute(d core.Domain, appName string, running []docker.Container, rows map[string]core.Domain) (owner string, found bool) {
+	const prefix, suffix = "traefik.http.routers.", ".rule"
+	own := traefik.RouterName(appName, d.ID)
+	names := strings.ToLower("Host(`" + d.Host + "`)")
+	for _, c := range running {
+		if !c.Running() || !routed(c.Labels) {
+			continue
+		}
+		app := c.Labels["outhaul.app"]
+		if found && app != appName {
+			continue // one is found; only appName's own could be named first
+		}
+		for k, rule := range c.Labels {
+			if !strings.HasPrefix(k, prefix) || !strings.HasSuffix(k, suffix) {
+				continue
+			}
+			router := strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(k, prefix), suffix), "-tls")
+			host, urlPath, ok := traefik.RuleAddress(rule)
+			switch {
+			case !ok && !strings.Contains(strings.ToLower(rule), names):
+				continue
+			case ok && (!strings.EqualFold(host, d.Host) || !strings.HasPrefix(urlPath, d.Path)):
+				continue
+			case ok && router == own && traefik.SameAddress(rule, d.Host, d.Path):
+				continue
+			}
+			if r, current := rows[router]; current && !r.Protected && traefik.SameAddress(rule, r.Host, r.Path) {
+				continue
+			}
+			if traefik.RowHasGate(c.Labels, router) {
+				continue
+			}
+			owner, found = app, true
+			if app == appName {
+				return owner, true
+			}
+			break
+		}
+	}
+	return owner, found
+}
+
+// routed reports whether Traefik routes a container with labels: Outhaul's
+// Traefik exposes only containers whose traefik.enable is on. A value Go
+// can't read as a boolean counts as on.
+func routed(labels map[string]string) bool {
+	v, ok := labels["traefik.enable"]
+	if !ok {
+		return false
+	}
+	on, err := strconv.ParseBool(v)
+	return err != nil || on
+}
+
+// rowsByRouter is every app's rows, by router name, for strayRoute.
+func rowsByRouter(all []core.DomainListing) map[string]core.Domain {
+	m := make(map[string]core.Domain, len(all))
+	for _, l := range all {
+		m[traefik.RouterName(l.AppName, l.ID)] = l.Domain
+	}
+	return m
+}
+
+// Notes on a protected row another route answers part of (strayRoute).
+const (
+	strayOwnNote     = "an old route of this app still answers part of this address"
+	strayAnotherNote = "another app still answers part of this address"
+)
+
+// strayState is the Access cell of a protected row whose address owner's
+// container also answers without the gate (strayRoute), named as far as scope
+// lets the viewer see owner's project. An owner that no longer exists is
+// "another app".
+func (s *Server) strayState(ctx context.Context, owner, appName string, scope projectScope) accessState {
+	st := accessState{Label: accessNotYet, Class: "state-building", Note: strayAnotherNote}
+	switch a, err := s.store.GetAppByName(ctx, owner); {
+	case owner == appName:
+		st.Note = strayOwnNote
+	case err == nil && scope.allows(a.ProjectID):
+		st.Note = owner + " still answers part of this address"
+	}
+	return st
+}
+
+// strayAccess replaces the Access cell of each of rows that is protected and
+// reads "Sign-in required" in states (by row ID) when another route answers
+// part of its address (strayRoute). It lists the managed containers and every
+// app's rows only when there is such a row; when it can't, those rows are
+// Unknown.
+func (s *Server) strayAccess(r *http.Request, rows []core.Domain, appName string, states map[int64]accessState) {
+	var check []core.Domain
+	for _, d := range rows {
+		if d.Protected && states[d.ID].Label == accessSignIn {
+			check = append(check, d)
+		}
+	}
+	if len(check) == 0 {
+		return
+	}
+	ctx := r.Context()
+	cs, err := s.runtime.ListContainers(ctx, map[string]string{"outhaul.managed": "true"})
+	var all []core.DomainListing
+	if err == nil {
+		all, err = s.store.ListAllDomains(ctx)
+	}
+	if err != nil {
+		log.Printf("protected routes: other routes on %q's addresses: %v", appName, err)
+		for _, d := range check {
+			states[d.ID] = unknownAccess()
+		}
+		return
+	}
+	byRouter := rowsByRouter(all)
+	var scope *projectScope
+	for _, d := range check {
+		owner, found := strayRoute(d, appName, cs, byRouter)
+		if !found {
+			continue
+		}
+		if scope == nil {
+			sc, err := s.scopeFor(r)
+			if err != nil {
+				log.Printf("protected routes: read the person's projects: %v", err)
+				sc = projectScope{} // names no other app
+			}
+			scope = &sc
+		}
+		states[d.ID] = s.strayState(ctx, owner, appName, *scope)
+	}
 }

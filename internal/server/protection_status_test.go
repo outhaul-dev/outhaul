@@ -232,3 +232,187 @@ func TestDomainsPageAsksDockerOnce(t *testing.T) {
 		t.Errorf("ListContainers calls = %d, want 1", e.runtime.listCalls)
 	}
 }
+
+// strayRoute finds a router, on another container or not a current row, that
+// answers part of a protected row's address without the gate.
+func TestStrayRoute(t *testing.T) {
+	web := core.App{Name: "web"}
+	shut := core.Domain{ID: 1, AppID: 1, Host: "web.test", Protected: true}
+	admin := core.Domain{ID: 2, AppID: 1, Host: "web.test", Path: "/admin", Protected: true}
+	other := core.App{Name: "hooks"}
+	// route is one container of app with one row's labels, running.
+	route := func(app core.App, d core.Domain) docker.Container {
+		return docker.Container{ID: app.Name + "-c", State: "running",
+			Labels: traefik.AppLabels(app, []core.Domain{d}, 3000, true, "le", testGateAddress)}
+	}
+	open := func(id int64, host, path string) core.Domain {
+		return core.Domain{ID: id, AppID: 2, Host: host, Path: path}
+	}
+	custom := func(rule string) docker.Container {
+		return docker.Container{ID: "custom", State: "running", Labels: map[string]string{
+			"traefik.enable": "true", "outhaul.managed": "true", "outhaul.app": "hooks",
+			"traefik.http.routers.mine.rule": rule}}
+	}
+	disabled := route(other, open(9, "web.test", "/x"))
+	disabled.Labels["traefik.enable"] = "false"
+	rowsOf := func(ds ...core.Domain) map[string]core.Domain {
+		m := map[string]core.Domain{}
+		for _, d := range ds {
+			name := web.Name
+			if d.AppID == 2 {
+				name = other.Name
+			}
+			m[traefik.RouterName(name, d.ID)] = d
+		}
+		return m
+	}
+	for _, c := range []struct {
+		name  string
+		d     core.Domain
+		cs    []docker.Container
+		rows  map[string]core.Domain
+		owner string // "" when nothing is found
+	}{
+		{"only the row's own router", shut, []docker.Container{route(web, shut)}, rowsOf(shut), ""},
+		{"a current open row of another app", shut, []docker.Container{route(web, shut), route(other, open(9, "web.test", "/hooks"))}, rowsOf(shut, open(9, "web.test", "/hooks")), ""},
+		{"another app's removed open row", shut, []docker.Container{route(web, shut), route(other, open(9, "web.test", "/hooks"))}, rowsOf(shut), "hooks"},
+		{"another app's open row, since moved", shut, []docker.Container{route(other, open(9, "web.test", "/hooks"))}, rowsOf(shut, open(9, "web.test", "/webhooks")), "hooks"},
+		{"this app's removed open row", shut, []docker.Container{route(web, core.Domain{ID: 3, AppID: 1, Host: "web.test", Path: "/hooks"})}, rowsOf(shut), "web"},
+		{"the same path", admin, []docker.Container{route(other, open(9, "web.test", "/admin"))}, rowsOf(admin), "hooks"},
+		{"a path under the row's", admin, []docker.Container{route(other, open(9, "web.test", "/admin/x"))}, rowsOf(admin), "hooks"},
+		{"a path sharing the row's prefix", admin, []docker.Container{route(other, open(9, "web.test", "/administrator"))}, rowsOf(admin), "hooks"},
+		{"a path above the row's", admin, []docker.Container{route(other, open(9, "web.test", ""))}, rowsOf(admin), ""},
+		{"a path in other case", admin, []docker.Container{route(other, open(9, "web.test", "/ADMIN"))}, rowsOf(admin), ""},
+		{"another host", shut, []docker.Container{route(other, open(9, "x.test", ""))}, rowsOf(shut), ""},
+		{"the host in other case", shut, []docker.Container{route(other, open(9, "WEB.test", "/x"))}, rowsOf(shut), "hooks"},
+		{"a gated router", shut, []docker.Container{route(other, core.Domain{ID: 9, AppID: 2, Host: "web.test", Path: "/x", Protected: true})}, rowsOf(shut), ""},
+		{"a current protected row without the gate yet", shut, []docker.Container{route(other, open(9, "web.test", "/x"))}, rowsOf(shut, core.Domain{ID: 9, AppID: 2, Host: "web.test", Path: "/x", Protected: true}), "hooks"},
+		{"labels from before the traversal term", shut, []docker.Container{oldForm(route(other, open(9, "web.test", "/hooks")))}, rowsOf(shut), "hooks"},
+		{"an orphaned container", shut, []docker.Container{route(core.App{Name: "gone"}, open(9, "web.test", "/x"))}, rowsOf(shut), "gone"},
+		{"a container Traefik doesn't route", shut, []docker.Container{disabled}, rowsOf(shut), ""},
+		{"a stopped container", shut, []docker.Container{{ID: "s", State: "exited", Labels: route(other, open(9, "web.test", "/x")).Labels}}, rowsOf(shut), ""},
+		{"a rule it can't read, naming the host", shut, []docker.Container{custom("Host(`web.test`) && Path(`/x`)")}, rowsOf(shut), "hooks"},
+		{"a rule it can't read, naming another host", shut, []docker.Container{custom("Host(`x.test`) && Path(`/x`)")}, rowsOf(shut), ""},
+		{"this app's is named first", shut, []docker.Container{route(other, open(9, "web.test", "/x")), route(web, core.Domain{ID: 3, AppID: 1, Host: "web.test", Path: "/hooks"})}, rowsOf(shut), "web"},
+	} {
+		owner, found := strayRoute(c.d, web.Name, c.cs, c.rows)
+		if found != (c.owner != "") || owner != c.owner {
+			t.Errorf("%s: strayRoute = %q, %v; want %q", c.name, owner, found, c.owner)
+		}
+	}
+}
+
+// A protected row whose own router has the gate still isn't protected while
+// any other running container answers part of its address without it. Both
+// pages say so, naming the app as far as the viewer may see it.
+func TestOtherRoutesOnAProtectedAddress(t *testing.T) {
+	const (
+		ownNote     = "an old route of this app still answers part of this address"
+		hooksNote   = "hooks still answers part of this address"
+		anotherNote = "another app still answers part of this address"
+	)
+	ctx := context.Background()
+	// setup leaves web's row web.test protected, and its container gated,
+	// running; it returns web.
+	type setup func(t *testing.T, e *testEnv, web core.App, row core.Domain)
+	hooksApp := func(t *testing.T, e *testEnv, project int64) core.App {
+		t.Helper()
+		a, err := e.store.CreateApp(ctx, core.App{Name: "hooks", RepoURL: "https://x/hooks.git", ProjectID: project})
+		if err != nil {
+			t.Fatal(err)
+		}
+		seedFinishedDeploy(t, e, a.ID, "hooks:1")
+		return a
+	}
+	failDeploy := func(t *testing.T, e *testEnv, appID int64) {
+		t.Helper()
+		d, err := e.store.CreateDeployment(ctx, appID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok, err := e.store.ClaimDeployment(ctx, d.ID); err != nil || !ok {
+			t.Fatalf("claim: %v %v", ok, err)
+		}
+		mustTransition(t, e, d.ID, core.StatusBuilding, core.StatusFailed)
+	}
+	// leftover is hooks with an open /hooks row on web.test that its running
+	// container still serves, though the row is gone and its redeploy failed.
+	leftover := func(project int64) setup {
+		return func(t *testing.T, e *testEnv, web core.App, row core.Domain) {
+			hooks := hooksApp(t, e, project)
+			hook := addRow(t, e, core.Domain{AppID: hooks.ID, Host: "web.test", Path: "/hooks", Port: deployAppPort})
+			e.runContainers(labelled("c1", web, []core.Domain{row}, "running"), labelled("h1", hooks, []core.Domain{hook}, "running"))
+			if err := e.store.DeleteDomain(ctx, hooks.ID, hook.ID); err != nil {
+				t.Fatal(err)
+			}
+			failDeploy(t, e, hooks.ID)
+		}
+	}
+	for _, c := range []struct {
+		name   string
+		setup  setup
+		viewer bool   // seen by a viewer of web's project only
+		note   string // "" when the row requires sign-in
+	}{
+		{"an open exception removed, the deploy failed", func(t *testing.T, e *testEnv, web core.App, row core.Domain) {
+			hook := addRow(t, e, core.Domain{AppID: web.ID, Host: "web.test", Path: "/hooks", Port: deployAppPort})
+			e.runContainers(labelled("c1", web, []core.Domain{row, hook}, "running"))
+			if err := e.store.DeleteDomain(ctx, web.ID, hook.ID); err != nil {
+				t.Fatal(err)
+			}
+			failDeploy(t, e, web.ID)
+		}, false, ownNote},
+		{"another app's leftover, its redeploy failed", leftover(core.DefaultProjectID), false, hooksNote},
+		{"another app's leftover, in a project the viewer doesn't share", nil, true, anotherNote},
+		{"an orphaned container", func(t *testing.T, e *testEnv, web core.App, row core.Domain) {
+			gone := labelled("g1", core.App{Name: "gone"}, []core.Domain{{ID: 99, Host: "web.test", Path: "/x"}}, "running")
+			e.runContainers(labelled("c1", web, []core.Domain{row}, "running"), gone)
+		}, false, anotherNote},
+		{"a current open row of another app", func(t *testing.T, e *testEnv, web core.App, row core.Domain) {
+			hooks := hooksApp(t, e, core.DefaultProjectID)
+			hook := addRow(t, e, core.Domain{AppID: hooks.ID, Host: "web.test", Path: "/hooks", Port: deployAppPort})
+			e.runContainers(labelled("c1", web, []core.Domain{row}, "running"), labelled("h1", hooks, []core.Domain{hook}, "running"))
+		}, false, ""},
+		{"web stopped, another app's leftover", func(t *testing.T, e *testEnv, web core.App, row core.Domain) {
+			leftover(core.DefaultProjectID)(t, e, web, row)
+			e.runtime.stack[0].State = "exited"
+			e.runtime.container.State = "exited"
+		}, false, hooksNote},
+	} {
+		for _, page := range []string{"app", "domains"} {
+			t.Run(c.name+"/"+page, func(t *testing.T) {
+				e, _ := newProtectionEnv(t)
+				web, row, _ := liveWeb(t, e, "img:1")
+				row = setProtected(t, e, row, true)
+				get := func(path string) string { return body(t, e.get(t, path)) }
+				if c.viewer {
+					p, err := e.store.CreateProject(ctx, core.Project{Name: "elsewhere"})
+					if err != nil {
+						t.Fatal(err)
+					}
+					leftover(p.ID)(t, e, web, row)
+					tok := e.signInAs(t, "vera", core.RoleProjectViewer, web.ProjectID)
+					get = func(path string) string { return body(t, e.getAs(t, tok, path)) }
+				} else {
+					c.setup(t, e, web, row)
+				}
+				got := html.UnescapeString(get(accessPagePath(page, web)))
+				if c.note == "" {
+					if !strings.Contains(got, accessSignIn) || strings.Contains(got, accessNotYet) {
+						t.Errorf("want %q and never %q:\n%s", accessSignIn, accessNotYet, got)
+					}
+					return
+				}
+				if !strings.Contains(got, accessNotYet) || !strings.Contains(got, c.note) {
+					t.Errorf("want %q, noting %q:\n%s", accessNotYet, c.note, got)
+				}
+				if strings.Contains(got, accessSignIn) {
+					t.Errorf("the page still says %q:\n%s", accessSignIn, got)
+				}
+				if c.note == anotherNote && strings.Contains(got, ">hooks<") {
+					t.Errorf("the page names an app the viewer can't see:\n%s", got)
+				}
+			})
+		}
+	}
+}

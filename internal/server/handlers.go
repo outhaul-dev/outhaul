@@ -940,7 +940,11 @@ func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, status in
 			data["RestartDeploys"] = true
 		}
 	}
-	data["AccessStates"] = accessStates(domains, app.Name, cs, csErr, deployments)
+	states := accessStates(domains, app.Name, cs, csErr, deployments)
+	if csErr == nil {
+		s.strayAccess(r, domains, app.Name, states)
+	}
+	data["AccessStates"] = states
 	// GitHub connectivity for the Settings "Source & build" editor (repo dropdown).
 	// Degrades gracefully to no dropdown when no App is connected.
 	for k, v := range s.gitSourceData(r) {

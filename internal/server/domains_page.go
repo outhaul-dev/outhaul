@@ -27,6 +27,7 @@ func (s *Server) handleDomainsList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	byRouter := rowsByRouter(domains) // every app's, before the scope filters them
 	if !scope.all {
 		apps, err := s.store.ListApps(r.Context())
 		if err != nil {
@@ -52,9 +53,11 @@ func (s *Server) handleDomainsList(w http.ResponseWriter, r *http.Request) {
 	if listErr != nil {
 		log.Printf("domains page: list the managed containers: %v", listErr)
 	}
+	var running []docker.Container
 	for _, c := range all {
 		if c.Running() {
 			byApp[c.Labels["outhaul.app"]] = append(byApp[c.Labels["outhaul.app"]], c)
+			running = append(running, c)
 		}
 	}
 	latest := map[int64]*core.Deployment{} // fetched only for rows that need it
@@ -77,6 +80,13 @@ func (s *Server) handleDomainsList(w http.ResponseWriter, r *http.Request) {
 					latest[d.AppID] = dep
 				}
 				row.Access = accessStateFor(d.Domain, d.AppName, cs, dep)
+			}
+			// Another route answering part of a protected row's address
+			// without the gate.
+			if d.Protected && row.Access.Label == accessSignIn {
+				if owner, found := strayRoute(d.Domain, d.AppName, running, byRouter); found {
+					row.Access = s.strayState(r.Context(), owner, d.AppName, scope)
+				}
 			}
 		}
 		rows = append(rows, row)
