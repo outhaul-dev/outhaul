@@ -327,6 +327,13 @@ func (listFails) ListContainers(context.Context, map[string]string) ([]docker.Co
 	return nil, errors.New("docker unreachable")
 }
 
+// nothingReads is a Docker that can neither list containers nor look one up.
+type nothingReads struct{ listFails }
+
+func (nothingReads) FindContainer(context.Context, string) (*docker.Container, error) {
+	return nil, errors.New("docker unreachable")
+}
+
 // A container deployed while a row was protected keeps calling the gate until
 // it is replaced, even after the row is turned off or deleted (or when the
 // redeploy that would replace it fails). Until then the gate's host stays
@@ -397,7 +404,7 @@ func TestReconcileKeepsTheGateHostWhileAContainerIsGated(t *testing.T) {
 	}
 	// It has one: it keeps it.
 	ic.dc = fake
-	if _, err := fake.CreateContainer(ctx, docker.ContainerSpec{Name: "outhaul-app-wiki", Image: "img:1", Labels: gated}); err != nil {
+	if id, err = fake.CreateContainer(ctx, docker.ContainerSpec{Name: "outhaul-app-wiki", Image: "img:1", Labels: gated}); err != nil {
 		t.Fatal(err)
 	}
 	if !mapped() {
@@ -408,10 +415,27 @@ func TestReconcileKeepsTheGateHostWhileAContainerIsGated(t *testing.T) {
 	if !mapped() || len(fake.Created) != created {
 		t.Error("containers can't be listed, and Traefik maps the gate host: it should be left as it is")
 	}
-	// Nor can Traefik's own state be read: the host is mapped, as before.
+
+	// From here Traefik has no mapping, so wherever the answer is read from
+	// it, it is no: a yes can only be the answer for what can't be read.
+	ic.dc = fake
+	if err := fake.RemoveContainer(ctx, id, true); err != nil {
+		t.Fatal(err)
+	}
+	if mapped() {
+		t.Fatal("the gated container is gone: the mapping should go")
+	}
+	ic.dc = listFails{fake}
+	if ic.gatedContainersRemain(ctx, false) {
+		t.Fatal("containers can't be listed, and Traefik doesn't map the gate host: gatedContainersRemain should say no")
+	}
+	// Nor can Traefik be looked up: the host is mapped, as before.
+	ic.dc = nothingReads{listFails{fake}}
 	if !ic.gatedContainersRemain(ctx, false) {
 		t.Error("nothing can be read: gatedContainersRemain should say yes")
 	}
+	// Traefik is found, but its config differs in something else: the same.
+	ic.dc = listFails{fake}
 	for _, c := range fake.Containers {
 		if c.Name == "outhaul-traefik" {
 			c.Labels["outhaul.config-hash"] = "drifted"
