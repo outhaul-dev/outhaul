@@ -1,15 +1,35 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/store"
 	"golang.org/x/crypto/ssh"
 )
 
+// accountPage wraps the /account routes. The guard lets in anyone signed in,
+// because a password account with no role still needs to change its password.
+// An SSO account with no role has nothing there: it sees only the no-access
+// page, as everywhere else.
+func (s *Server) accountPage(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if me, _ := userFrom(r); me.SignIn != core.SignInPassword && !me.Role.AtLeast(core.RoleProjectViewer) {
+			s.render(w, r, http.StatusForbidden, "noaccess", map[string]any{"Title": "No access", "HideChrome": true})
+			return
+		}
+		h(w, r)
+	}
+}
+
+// ssoHasNoPassword answers a password change from an SSO account.
+const ssoHasNoPassword = "You sign in with SSO, so you have no password to change here."
+
 // handleAccount shows the signed-in person's own page: their password and
-// their push keys. Everyone can reach it, whatever their role.
+// their push keys. Everyone can reach it, whatever their role, except an SSO
+// account with no role (see accountPage).
 func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 	s.renderAccount(w, r, http.StatusOK, "")
 }
@@ -35,14 +55,18 @@ func (s *Server) renderAccount(w http.ResponseWriter, r *http.Request, status in
 
 // handleChangePassword verifies the current password and stores a new hash.
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	// The access guard has signed the person in and loaded their account.
+	user, _ := userFrom(r)
+	if user.SignIn != core.SignInPassword {
+		http.Error(w, ssoHasNoPassword, http.StatusBadRequest)
+		return
+	}
 	current := r.FormValue("current")
 	next := r.FormValue("new")
 	if len(next) < 8 {
 		http.Error(w, "New password must be at least 8 characters.", http.StatusBadRequest)
 		return
 	}
-	// The access guard has signed the person in and loaded their account.
-	user, _ := userFrom(r)
 	var sessionToken string
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		sessionToken = c.Value
@@ -72,7 +96,10 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	}
 	// Other sessions are revoked with the old password: a password change is
 	// how an admin locks out a leaked session.
-	if err := s.store.UpdateUserPassword(r.Context(), user.ID, hash, sessionToken); err != nil {
+	if err := s.store.UpdateUserPassword(r.Context(), user.ID, hash, sessionToken); errors.Is(err, store.ErrNotPasswordAccount) {
+		http.Error(w, ssoHasNoPassword, http.StatusBadRequest)
+		return
+	} else if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

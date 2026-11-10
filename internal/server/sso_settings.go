@@ -20,8 +20,13 @@ func (s *Server) ssoRedirectURI() string {
 }
 
 // ssoProvider returns the connected provider, running discovery the first time
-// and after the settings change. A failed discovery is not cached.
+// and after the settings change. A failed discovery is not cached. Without a
+// public URL there is nowhere for the provider to send people back, so SSO
+// counts as not connected.
 func (s *Server) ssoProvider(ctx context.Context) (sso.Provider, error) {
+	if !s.publicURLSet() {
+		return nil, errSSONotConfigured
+	}
 	s.ssoMu.Lock()
 	if s.ssoCached != nil {
 		p := s.ssoCached

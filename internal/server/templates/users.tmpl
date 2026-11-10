@@ -45,15 +45,16 @@
           </form>
           {{end}}
           <form method="post" action="/users/{{.ID}}/delete" class="inline"
-                onsubmit="return confirm('Remove {{.Name}}? They are signed out at once.{{if not .Password}} They would come back with no role if they sign in again, so also remove them at your single sign-on provider.{{end}}')">
+                onsubmit="return confirm('Remove {{.Name}}? They are signed out at once.{{if not .Password}} They would come back with no role if they sign in again, so also remove them at your SSO provider.{{end}}')">
             <button type="submit" class="linkbtn">Remove</button>
           </form>
+          {{if not .Password}}<p class="muted row-note">Also remove them at your SSO provider, or they could sign in again and come back with no role. Their push keys stay until you remove them here.</p>{{end}}
         </td>
       </tr>
       {{end}}
     </tbody>
   </table>
-  <p class="muted">Removing someone signs them out at once and deletes their push keys. People who sign in with SSO come back with no role if they sign in again, so remove them at your single sign-on provider too.</p>
+  <p class="muted">Removing someone signs them out at once and deletes their push keys.</p>
 </section>
 
 <dialog id="user-dialog" class="modal" open{{if eq .OpenDialog "user-dialog"}} data-reopen{{end}} aria-labelledby="user-dialog-title">

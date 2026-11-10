@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -544,5 +545,148 @@ func TestSetUserRoleValidates(t *testing.T) {
 	u, _ := s.GetUser(ctx, sso)
 	if u.Role != core.RoleSystemAdmin {
 		t.Fatalf("role changed to %q", u.Role)
+	}
+}
+
+const testIssuer = "https://idp.example.com"
+
+func TestSSOFirstSignInCreatesAccount(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	u, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "dana@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.ID == 0 || u.Username != "sso:"+testIssuer+"|sub-1" || u.Role != core.RoleNone || u.SignIn != core.SignInSSO ||
+		u.SSOIssuer != testIssuer || u.SSOSubject != "sub-1" || u.Email != "dana@example.com" || u.PasswordHash != "" {
+		t.Fatalf("user = %+v", u)
+	}
+	got, err := s.GetUser(ctx, u.ID)
+	if err != nil || got.Username != u.Username || got.Email != u.Email {
+		t.Fatalf("stored %+v, %v", got, err)
+	}
+}
+
+func TestSSOSecondSignInKeepsRoleAndRefreshesEmail(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	first, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "old@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetUserRole(ctx, first.ID, core.RoleProjectMember); err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "new@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.ID != first.ID || again.Role != core.RoleProjectMember || again.Email != "new@example.com" {
+		t.Fatalf("second sign-in = %+v, want id %d, role kept, email refreshed", again, first.ID)
+	}
+	// The account is the issuer and subject: either one differing is someone else.
+	for _, c := range [][2]string{{testIssuer, "sub-2"}, {"https://other.example.com", "sub-1"}} {
+		other, err := s.FindOrCreateSSOUser(ctx, c[0], c[1], "new@example.com")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if other.ID == first.ID || other.Role != core.RoleNone {
+			t.Errorf("%v reached the first account: %+v", c, other)
+		}
+	}
+}
+
+// The account is found by issuer and subject alone, whatever its username.
+func TestSSOSignInFindsTheAccountByIssuerAndSubject(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	res, err := s.db.Exec(`INSERT INTO users (username, password_hash, created_at, role, sign_in, sso_issuer, sso_subject, email)
+		VALUES ('legacy-name', '', ?, 'project_viewer', 'sso', ?, 'sub-1', 'old@example.com')`, fmtTime(time.Now().UTC()), testIssuer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+	u, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "new@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.ID != id || u.Role != core.RoleProjectViewer || u.Email != "new@example.com" {
+		t.Fatalf("got %+v, want account %d with its role and the new email", u, id)
+	}
+}
+
+func TestSSOSignInNeverLinksByEmail(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	pw, err := s.CreatePasswordAccount(ctx, "dana@example.com", core.RoleSystemAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "dana@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.ID == pw.ID || u.Role != core.RoleNone || u.SignIn != core.SignInSSO {
+		t.Fatalf("SSO sign-in reached the password account: %+v", u)
+	}
+	if got, _ := s.GetUser(ctx, pw.ID); got.SignIn != core.SignInPassword || got.Role != core.RoleSystemAdmin || got.Email != "" {
+		t.Fatalf("password account changed: %+v", got)
+	}
+}
+
+// A password account that already has the SSO account's username (only the
+// first-boot form could make one) is never reached or changed.
+func TestSSOSignInNeverReachesAPasswordAccountByUsername(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	pw, err := s.CreateUser(ctx, "sso:"+testIssuer+"|sub-1", "hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "dana@example.com"); err == nil {
+		t.Fatalf("signed in as %+v", u)
+	}
+	if got, _ := s.GetUser(ctx, pw.ID); got.SignIn != core.SignInPassword || got.Email != "" || got.SSOSubject != "" {
+		t.Fatalf("password account changed: %+v", got)
+	}
+}
+
+func TestSSOSignInRefusesAnEmptyIdentity(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	for _, c := range [][3]string{{"", "sub", "a@example.com"}, {testIssuer, "", "a@example.com"}, {testIssuer, "sub", ""}} {
+		if u, err := s.FindOrCreateSSOUser(ctx, c[0], c[1], c[2]); err == nil {
+			t.Errorf("%q made %+v", c, u)
+		}
+	}
+	if has, _ := s.HasUser(ctx); has {
+		t.Error("an account was created")
+	}
+}
+
+func TestSSOFirstSignInsRacingMakeOneAccount(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	const n = 8
+	ids := make([]int64, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			u, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "dana@example.com")
+			ids[i], errs[i] = u.ID, err
+		}()
+	}
+	wg.Wait()
+	for i := range ids {
+		if errs[i] != nil || ids[i] != ids[0] {
+			t.Fatalf("sign-in %d = id %d, %v; want id %d", i, ids[i], errs[i], ids[0])
+		}
+	}
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE sign_in = 'sso'`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("SSO accounts = %d, %v; want 1", count, err)
 	}
 }

@@ -200,6 +200,8 @@ func TestEveryRouteStatesAnAccessLevel(t *testing.T) {
 func TestPublicRoutesAreExactlyThese(t *testing.T) {
 	want := []string{
 		"GET /account/setup",
+		"GET /auth/sso/callback",
+		"GET /auth/sso/start",
 		"GET /ca.pem",
 		"GET /deployments",
 		"GET /github/callback",

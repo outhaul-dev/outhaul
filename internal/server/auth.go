@@ -50,13 +50,19 @@ func requestIsHTTPS(r *http.Request) bool {
 	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
-// login creates a session and sets the cookie.
+// login creates a session and sets the cookie. An SSO session lasts
+// ssoSessionTTL, a password session sessionTTL; the cookie lasts as long.
 func (s *Server) login(w http.ResponseWriter, r *http.Request, user core.User) error {
+	ttl := sessionTTL
+	if user.SignIn == core.SignInSSO {
+		ttl = ssoSessionTTL
+	}
+	expires := time.Now().Add(ttl)
 	token := NewToken()
 	if err := s.store.CreateSession(r.Context(), core.Session{
 		Token:     token,
 		UserID:    user.ID,
-		ExpiresAt: time.Now().Add(sessionTTL),
+		ExpiresAt: expires,
 	}); err != nil {
 		return err
 	}
@@ -71,7 +77,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, user core.User) e
 		HttpOnly: true,
 		Secure:   requestIsHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
-		Expires:  time.Now().Add(sessionTTL),
+		Expires:  expires,
 	})
 	return nil
 }
@@ -166,7 +172,18 @@ func (s *Server) handleLoginForm(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	s.render(w, r, http.StatusOK, "login", map[string]any{"Title": "Sign in", "HideChrome": true})
+	// Only a known code shows anything, and only its fixed message.
+	s.loginPage(w, r, http.StatusOK, ssoLoginErrors[r.URL.Query().Get("error")])
+}
+
+// loginPage renders the sign-in page, with the SSO button when a provider is
+// connected.
+func (s *Server) loginPage(w http.ResponseWriter, r *http.Request, status int, errMsg string) {
+	data := map[string]any{"Title": "Sign in", "HideChrome": true, "SSO": s.ssoConnected(r.Context())}
+	if errMsg != "" {
+		data["Error"] = errMsg
+	}
+	s.render(w, r, status, "login", data)
 }
 
 func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
@@ -178,16 +195,15 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 		s.loginFailed(w, r, err)
 		return
 	}
-	// An account whose password isn't set yet can never sign in.
-	if user.PasswordHash == "" {
+	// An account whose password isn't set yet can never sign in, and neither
+	// can an SSO account, which the store never returns here anyway.
+	if user.PasswordHash == "" || user.SignIn != core.SignInPassword {
 		s.loginFailed(w, r, errors.New("no password set"))
 		return
 	}
 	var ok bool
 	if busy := s.withHashSlot(r.Context(), func() { ok, err = VerifyPassword(user.PasswordHash, password) }); busy != nil {
-		s.render(w, r, http.StatusServiceUnavailable, "login", map[string]any{
-			"Title": "Sign in", "Error": busyMessage, "HideChrome": true,
-		})
+		s.loginPage(w, r, http.StatusServiceUnavailable, busyMessage)
 		return
 	}
 	if err != nil || !ok {
@@ -204,9 +220,7 @@ func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 func (s *Server) loginFailed(w http.ResponseWriter, r *http.Request, cause error) {
 	// Do not leak whether the username exists.
 	_ = cause
-	s.render(w, r, http.StatusUnauthorized, "login", map[string]any{
-		"Title": "Sign in", "Error": "Invalid username or password.", "HideChrome": true,
-	})
+	s.loginPage(w, r, http.StatusUnauthorized, "Invalid username or password.")
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {

@@ -4,6 +4,10 @@
   <h1 class="authtitle">out<span class="haul">haul</span></h1>
   <p class="authsub">Sign in to continue</p>
   {{if .Error}}<div class="alert alert-error">{{.Error}}</div>{{end}}
+  {{if .SSO}}
+  <a href="/auth/sso/start" class="btn btn-primary btn-block">Sign in with SSO</a>
+  <p class="auth-or">or use a password</p>
+  {{end}}
   <form method="post" action="/login" class="stack">
     <label class="field">
       <span>Username</span>

@@ -32,13 +32,18 @@ func (s *Server) routes() []route {
 		{"POST /setup", levelPublic, nil, s.handleSetupSubmit},
 		{"GET /account/setup", levelPublic, nil, s.handleAccountSetupForm},
 		{"POST /account/setup", levelPublic, nil, s.handleAccountSetupSubmit},
-		{"GET /account", levelAccount, nil, s.handleAccount},
-		{"POST /account/password", levelAccount, nil, s.handleChangePassword},
-		{"POST /account/push-keys", levelAccount, nil, s.handleAddPushKey},
-		{"POST /account/push-keys/{id}/delete", levelAccount, nil, s.handleDeletePushKey},
+		{"GET /account", levelAccount, nil, s.accountPage(s.handleAccount)},
+		{"POST /account/password", levelAccount, nil, s.accountPage(s.handleChangePassword)},
+		{"POST /account/push-keys", levelAccount, nil, s.accountPage(s.handleAddPushKey)},
+		{"POST /account/push-keys/{id}/delete", levelAccount, nil, s.accountPage(s.handleDeletePushKey)},
 		{"GET /login", levelPublic, nil, s.handleLoginForm},
 		{"POST /login", levelPublic, nil, s.handleLoginSubmit},
 		{"POST /logout", levelPublic, nil, s.handleLogout},
+		// The browser comes back from the SSO provider with no Outhaul session;
+		// the callback is tied to the browser that started it by the flow's
+		// own cookie and state.
+		{"GET /auth/sso/start", levelPublic, nil, s.handleSSOStart},
+		{"GET /auth/sso/callback", levelPublic, nil, s.handleSSOCallback},
 
 		{"GET /{$}", levelAnyRole, nil, s.handleOverview},
 
