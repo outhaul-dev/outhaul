@@ -106,6 +106,10 @@ normalize_git_port() { # answer
 	esac
 }
 
+git_ssh_from_port() { # port, empty for none
+	if [ -n "$1" ]; then printf ':%s\n' "$1"; else printf 'off\n'; fi
+}
+
 # outhaul serve refuses a public URL without a scheme; a bare host means
 # HTTPS (it is asked for in the Let's Encrypt mode).
 normalize_public_url() { # answer
@@ -1025,7 +1029,7 @@ main() {
 	PUBLIC_URL=$(normalize_public_url "$PUBLIC_URL")
 
 	GITPORT=$(normalize_git_port "$(ask_value "  Git-push-to-deploy port ('none' to disable):" 2222)")
-	if [ -n "$GITPORT" ]; then SSH_ADDR=":$GITPORT"; else SSH_ADDR=''; fi
+	SSH_ADDR=$(git_ssh_from_port "$GITPORT")
 
 	if ask_yes_no "  Install Nixpacks (needed for auto-detected builds)?" y; then WANT_NIXPACKS=1; else WANT_NIXPACKS=0; fi
 	if ask_yes_no "  Configure the firewall (ufw) now?" y; then WANT_FW=1; else WANT_FW=0; fi

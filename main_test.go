@@ -518,3 +518,23 @@ func TestReconcileProxyOutlivesTheRequest(t *testing.T) {
 		t.Errorf("Traefik after ReconcileProxy = %+v, want it running", c)
 	}
 }
+
+// OUTHAUL_SSH_ADDR=off turns the listener off even when the UI saved an
+// address earlier: off means off, not "use the stored setting".
+func TestSSHListenAddrOff(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "db"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SetSetting(context.Background(), "ssh_addr", ":2200"); err != nil {
+		t.Fatal(err)
+	}
+
+	if addr, on := sshListenAddr(st, config.Config{SSHAddr: "off"}); on || addr != "" {
+		t.Errorf("off: got (%q, %v), want (\"\", false)", addr, on)
+	}
+	if addr, on := sshListenAddr(st, config.Config{SSHAddr: ":2222"}); !on || addr != ":2200" {
+		t.Errorf("stored setting: got (%q, %v), want (\":2200\", true)", addr, on)
+	}
+}

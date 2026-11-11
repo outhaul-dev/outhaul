@@ -27,7 +27,7 @@ const DefaultCloudflaredImage = "cloudflare/cloudflared:2026.7.0"
 type Config struct {
 	DataDir          string // root data dir; holds the SQLite DB and work dirs
 	ListenAddr       string // address the admin UI/API listens on
-	SSHAddr          string // default listen address for the git-push SSH server
+	SSHAddr          string // default listen address for the git-push SSH server; "off" disables it
 	DockerHost       string // Docker endpoint; empty means "use the SDK's env default"
 	TraefikImage     string // image used for the managed Traefik container
 	CloudflaredImage string // image used for the managed cloudflared connector
@@ -59,7 +59,7 @@ func Load(getenv Getenv) Config {
 	c := Config{
 		DataDir:          or(getenv("OUTHAUL_DATA_DIR"), "/var/lib/outhaul"),
 		ListenAddr:       p.addr("OUTHAUL_LISTEN_ADDR", ":8080"),
-		SSHAddr:          p.addr("OUTHAUL_SSH_ADDR", ":2222"),
+		SSHAddr:          p.addrOrOff("OUTHAUL_SSH_ADDR", ":2222"),
 		DockerHost:       getenv("OUTHAUL_DOCKER_HOST"), // empty is a valid value: defer to SDK
 		TraefikImage:     or(getenv("OUTHAUL_TRAEFIK_IMAGE"), DefaultTraefikImage),
 		CloudflaredImage: or(getenv("OUTHAUL_CLOUDFLARED_IMAGE"), DefaultCloudflaredImage),
@@ -125,6 +125,10 @@ func (c Config) LocalCAEnabled() bool { return c.LocalCA }
 // TLSEnabled reports whether HTTPS is available by either mechanism; it gates
 // the websecure entrypoint, redirects, and the per-domain TLS toggle.
 func (c Config) TLSEnabled() bool { return c.ACMEEnabled() || c.LocalCAEnabled() }
+
+// SSHOff reports whether the git-push SSH server is turned off. The bare
+// repositories and the hook socket stay; only the listener is skipped.
+func (c Config) SSHOff() bool { return strings.EqualFold(c.SSHAddr, "off") }
 
 // CertResolver is the Traefik certresolver TLS routers should reference;
 // empty when certs come from the file provider (local CA) instead of ACME.
@@ -290,7 +294,12 @@ func (p *parser) port(key, fallback string) string {
 
 // addr parses a listen address, host:port with the host optional (":8080").
 func (p *parser) addr(key, fallback string) string {
-	v := p.getenv(key)
+	return p.addrValue(key, p.getenv(key), fallback)
+}
+
+// addrValue applies addr's rules to v. It is split out so a setting that also
+// accepts a keyword, like OFF, can check for it first.
+func (p *parser) addrValue(key, v, fallback string) string {
 	if v == "" {
 		return fallback
 	}
@@ -300,6 +309,15 @@ func (p *parser) addr(key, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+// addrOrOff is addr, with "off" (in any case) accepted as a value of its own.
+func (p *parser) addrOrOff(key, fallback string) string {
+	v := p.getenv(key)
+	if strings.EqualFold(v, "off") {
+		return "off"
+	}
+	return p.addrValue(key, v, fallback)
 }
 
 // url parses an absolute http(s) URL; empty stays empty.

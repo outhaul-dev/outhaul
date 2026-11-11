@@ -16,6 +16,9 @@ write_env_file "$dest" c '' '' :2222
 body=$(cat "$dest")
 case "$body" in *OUTHAUL_ACME_EMAIL*) echo "  FAIL mode c leaked email" >&2; TESTS_FAIL=$((TESTS_FAIL+1));; *) echo "  ok   mode c has no email";; esac
 assert_contains "mode c keeps ssh"    "$body" "OUTHAUL_SSH_ADDR=:2222"
+
+write_env_file "$dest" c '' '' off
+assert_contains "ssh off is written" "$(cat "$dest")" "OUTHAUL_SSH_ADDR=off"
 rm -f "$dest"
 
 dest2=$(mktemp)

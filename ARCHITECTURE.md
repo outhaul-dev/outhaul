@@ -455,7 +455,8 @@ A fourth app source, alongside public/SSH/GitHub: Outhaul hosts the repo
 itself. `internal/gitrepo` owns a bare repo per push app plus its
 `post-receive` hook; `internal/gitssh` embeds an SSH server (default
 `OUTHAUL_SSH_ADDR`, `:2222`, overridable live from Settings and persisted to
-the `ssh_addr` setting) that authenticates `git push` against registered
+the `ssh_addr` setting; `off` opens no listener, and the stored setting is
+ignored) that authenticates `git push` against registered
 **push keys** — SHA256-fingerprinted SSH public keys, each owned by an
 account and managed from its Account page — rather than per-app deploy keys,
 since the repo is local. A push, fetch or clone is allowed only if the key owner's role can

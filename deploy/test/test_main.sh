@@ -22,4 +22,8 @@ choose_ingress 3<"$in" >/dev/null 2>&1
 assert_eq "ingress b -> MODE b" "b" "$MODE"
 rm -f "$in"
 
+# git_ssh_from_port
+assert_eq "git port -> ssh address" ":2222" "$(git_ssh_from_port 2222)"
+assert_eq "no git port -> off" "off" "$(git_ssh_from_port '')"
+
 [ "${TESTS_FAIL:-0}" -eq 0 ]

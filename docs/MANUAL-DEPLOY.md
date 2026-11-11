@@ -167,8 +167,9 @@ EOF
 chmod 0600 /etc/outhaul.env
 ```
 
-`OUTHAUL_SSH_ADDR` enables git-push-to-deploy on that port; drop the line to
-disable it.
+`OUTHAUL_SSH_ADDR` enables git-push-to-deploy on that port. Set it to `off` to
+turn the SSH listener off (the default `:2222` applies when the line is
+dropped); the bare repositories and the hook socket stay either way.
 
 ## 5. Install and start the service
 

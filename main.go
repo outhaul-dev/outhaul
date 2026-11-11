@@ -658,9 +658,11 @@ func shutdown(httpServer *http.Server, stopWorker context.CancelFunc, workerDone
 	return nil
 }
 
-// startGitPush brings up the deploy bridge (unix socket) and the git-push SSH
-// server. Every failure is non-fatal and logged; it returns the SSH server (for
-// live port rebinds from the UI) or nil if git-push could not start.
+// startGitPush brings up the deploy bridge (unix socket) and, unless
+// OUTHAUL_SSH_ADDR=off, the git-push SSH server. Every failure is non-fatal and
+// logged; it returns the SSH server (for live port rebinds from the UI) or nil
+// if the SSH server is off or could not start. The hook socket and the bare
+// repositories are set up either way.
 func startGitPush(ctx context.Context, cfg config.Config, st *store.Store, worker *deploy.Worker, broker *logstream.Broker, serverIP string, repos *gitrepo.Manager, self string) *gitssh.Server {
 	if self == "" {
 		return nil
@@ -680,13 +682,17 @@ func startGitPush(ctx context.Context, cfg config.Config, st *store.Store, worke
 	go bridge.Serve(ctx, hookLn)
 
 	// SSH server (public-key auth against push_keys).
+	addr, on := sshListenAddr(st, cfg)
+	if !on {
+		log.Printf("git-push SSH server is off (OUTHAUL_SSH_ADDR=off)")
+		return nil
+	}
 	hostKey, err := gitssh.LoadOrCreateHostKey(cfg.SSHHostKeyPath())
 	if err != nil {
 		log.Printf("WARNING: git-push SSH server disabled (host key): %v", err)
 		return nil
 	}
 	sshSrv := gitssh.New(hostKey, st, repos)
-	addr := resolveSSHAddr(st, cfg)
 	if err := sshSrv.Listen(addr); err != nil {
 		log.Printf("WARNING: git-push SSH server disabled (bind %s): %v", addr, err)
 		return nil
@@ -700,13 +706,18 @@ func startGitPush(ctx context.Context, cfg config.Config, st *store.Store, worke
 	return sshSrv
 }
 
-// resolveSSHAddr returns the stored ssh_addr setting if set, else the configured
-// default (OUTHAUL_SSH_ADDR or :2222).
-func resolveSSHAddr(st *store.Store, cfg config.Config) string {
-	if v, ok, err := st.GetSetting(context.Background(), "ssh_addr"); err == nil && ok && v != "" {
-		return v
+// sshListenAddr returns the address the git-push SSH server should listen on
+// and whether it should listen at all. OUTHAUL_SSH_ADDR=off turns it off even
+// when the UI stored an address; otherwise the stored ssh_addr setting, when
+// set, beats the configured default (OUTHAUL_SSH_ADDR or :2222).
+func sshListenAddr(st *store.Store, cfg config.Config) (addr string, on bool) {
+	if cfg.SSHOff() {
+		return "", false
 	}
-	return cfg.SSHAddr
+	if v, ok, err := st.GetSetting(context.Background(), "ssh_addr"); err == nil && ok && v != "" {
+		return v, true
+	}
+	return cfg.SSHAddr, true
 }
 
 // printSetupHint prints the one-time setup URL on first boot. The first
