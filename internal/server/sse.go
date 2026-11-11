@@ -6,10 +6,16 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/compose"
 	"github.com/outhaul-dev/outhaul/internal/core"
 )
+
+// ssePingEvery is how often every stream sends a comment line: often enough
+// that a CDN does not close a quiet connection, and invisible to a browser.
+// It is a variable so tests can shorten it; there is no setting.
+var ssePingEvery = 20 * time.Second
 
 // handleLogsSSE streams a deployment's build/deploy log to the browser as
 // Server-Sent Events. It first replays history, then forwards live lines until
@@ -65,10 +71,16 @@ func (s *Server) handleLogsSSE(w http.ResponseWriter, r *http.Request) {
 	}
 	flusher.Flush()
 
+	ticker := time.NewTicker(ssePingEvery)
+	defer ticker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-ticker.C:
+			writeSSEComment(w, "ping")
+			flusher.Flush()
 		case line, open := <-lines:
 			if !open {
 				// Topic closed: the deployment reached a terminal state. Tell the
@@ -86,6 +98,12 @@ func (s *Server) handleLogsSSE(w http.ResponseWriter, r *http.Request) {
 // writeSSE writes a single named SSE event with a one-line data payload.
 func writeSSE(w http.ResponseWriter, event, data string) {
 	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+}
+
+// writeSSEComment writes an SSE comment line. A browser raises no event for
+// it; it exists to keep the connection alive.
+func writeSSEComment(w http.ResponseWriter, text string) {
+	fmt.Fprintf(w, ": %s\n\n", text)
 }
 
 // runtimeLogTails whitelists the tail-length selector's values; anything else
