@@ -67,4 +67,33 @@ LISTEN 0 4096 *:8080 *:* users:(("outhaul",pid=700,fd=9))
 LISTEN 0 511 0.0.0.0:3000 0.0.0.0:* users:(("node",pid=900,fd=20))'
 assert_eq "docker-published ports excluded" "3000 8080" "$(printf '%s\n' "$ssp_out" | ss_listen_ports)"
 
+# Proxy mode publishes only 443: port 80 stays closed.
+T=$(mktemp -d)
+CALLS=$T/calls
+assert_eq "proxy opens 22 and 443" "22 443" "$(derive_firewall_ports p '')"
+assert_eq "proxy with a git port" "22 443 2222" "$(derive_firewall_ports p 2222)"
+
+# leave calls neither ufw nor apt-get.
+ufw() { echo "ufw $*" >> "$CALLS"; }
+# apt-get is not a valid function name in dash: a stub on PATH records it.
+mkdir -p "$T/bin"
+printf '#!/bin/sh\necho "apt-get $*" >> "%s"\n' "$CALLS" > "$T/bin/apt-get"
+chmod 0755 "$T/bin/apt-get"
+PATH=$T/bin:$PATH
+: > "$CALLS"
+WANT_FW=0 configure_firewall
+assert_eq "leave: no firewall calls" "" "$(cat "$CALLS")"
+
+# ufw that would block a port exits 1 before any call.
+# shellcheck disable=SC2034 # read by configure_firewall
+WANT_FW=1 NONINTERACTIVE=1 MODE=c GITPORT='' LOCAL_CA=0 PORTS="22" ADMIN_PORT=8080 BRIDGE=outhaul
+ufw_would_block() { echo 3000; }
+quiet() { ( "$@" ) >/dev/null 2>&1; }
+assert_fail "ufw would block: exits first" quiet configure_firewall
+assert_eq "ufw would block: no changes" "" \
+  "$(grep -E '^(ufw allow|ufw --force|apt-get)' "$CALLS" || true)"
+unset -f ufw_would_block
+
+rm -rf "$T"
+
 [ "${TESTS_FAIL:-0}" -eq 0 ]

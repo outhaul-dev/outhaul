@@ -62,13 +62,15 @@ detect_color_level() {
 
 # Prints the space-separated, sorted, de-duplicated port set to open.
 # SSH (22) is ALWAYS included. Mode a adds 80/443, as does mode c with the
-# local CA (HTTPS redirect needs :80 too). A non-empty git port is added.
+# local CA (HTTPS redirect needs :80 too). Mode p publishes only 443: port 80
+# stays closed behind the proxy. A non-empty git port is added.
 derive_firewall_ports() { # mode gitport localca
 	mode=$1
 	gitport=${2:-}
 	localca=${3:-0}
 	set -- 22
 	[ "$mode" = a ] && set -- "$@" 80 443
+	[ "$mode" = p ] && set -- "$@" 443
 	[ "$mode" = c ] && [ "$localca" = 1 ] && set -- "$@" 80 443
 	[ -n "$gitport" ] && set -- "$@" "$gitport"
 	printf '%s\n' "$@" | sort -n -u | paste -sd' ' -
@@ -917,6 +919,56 @@ apply_firewall() { # ports (space separated, must include 22) bridge adminport
 	note "open more later with: ufw allow <port>"
 }
 
+# Opens the firewall, when asked to. In non-interactive mode a port that
+# enabling ufw would newly block is fatal before any ufw or apt-get call: the
+# run was told to configure the firewall, and silently cutting a service off
+# is not an answer. The wizard says which ports, and asks.
+configure_firewall() {
+	[ "${WANT_FW:-0}" = 1 ] || return 0
+	PORTS=$(derive_firewall_ports "${MODE:-c}" "${GITPORT:-}" "${LOCAL_CA:-0}")
+	if [ -n "${SSH_CONNECTION:-}" ]; then
+		assh=${SSH_CONNECTION##* }
+		case " $PORTS " in *" $assh "*) ;; *) if [ -n "$assh" ]; then PORTS="$PORTS $assh"; fi ;; esac
+	fi
+	if [ "$NONINTERACTIVE" = 1 ]; then
+		note "firewall will open: $PORTS"
+	else
+		printf '  Firewall will open (SSH always preserved): %s\n' "$PORTS"
+	fi
+	fw_default=y
+	if ! ufw_active; then
+		blocked=$(ufw_would_block "$(listening_ports)" "$PORTS" "$ADMIN_PORT")
+		if [ -n "$blocked" ]; then
+			step_fail "ufw is inactive; enabling it would also block ports listening now: $blocked"
+			note "containers with published ports are not affected; open others with: ufw allow <port>"
+			if [ "$NONINTERACTIVE" = 1 ]; then die "refusing to enable ufw while it would block: $blocked"; fi
+			fw_default=n
+		fi
+	fi
+	if [ "$NONINTERACTIVE" = 1 ]; then
+		apply_firewall "$PORTS" "$BRIDGE" "$ADMIN_PORT"
+	elif ask_yes_no "  Proceed?" "$fw_default"; then
+		apply_firewall "$PORTS" "$BRIDGE" "$ADMIN_PORT"
+	else
+		PORTS=''
+	fi
+}
+
+# The before-anything check: a non-interactive --firewall ufw run that would
+# cut off a listening port exits 1 before Docker, git or a build is touched.
+# configure_firewall checks again, on the new service's ports, after the
+# install.
+check_firewall_early() {
+	[ "$NONINTERACTIVE" = 1 ] && [ "${WANT_FW:-0}" = 1 ] || return 0
+	_ports=$(derive_firewall_ports "${MODE:-c}" "${GITPORT:-}" "${LOCAL_CA:-0}")
+	_admin=$(admin_port "$(service_env OUTHAUL_LISTEN_ADDR :8080)")
+	if ! ufw_active; then
+		_blocked=$(ufw_would_block "$(listening_ports)" "$_ports" "$_admin")
+		if [ -n "$_blocked" ]; then die "refusing to enable ufw while it would block: $_blocked"; fi
+	fi
+	return 0
+}
+
 # Carry legacy slipway state across the rename (mirrors old install.sh).
 migrate_slipway() {
 	if [ -d /var/lib/slipway ] && [ ! -e /var/lib/outhaul ]; then
@@ -1225,7 +1277,6 @@ EOF
 install_or_upgrade() { # src_dir target version
 	_src=$1 _target=$2 _version=$3
 	_from=$(build_field commit)
-	ADMIN_PORT=$(admin_port "${OUTHAUL_LISTEN_ADDR:-:8080}")
 	# Branch on the binary, not the stamp: a binary from before the stamp
 	# records no commit but is still running, and must go through the swap.
 	if [ ! -e "$BIN" ]; then
@@ -1236,6 +1287,8 @@ install_or_upgrade() { # src_dir target version
 		systemctl daemon-reload || die "systemctl daemon-reload failed"
 		systemctl enable --now outhaul || die "could not start outhaul"
 		STARTED_SERVICE=1
+		# Read the port only now: the service has loaded its env files.
+		ADMIN_PORT=$(admin_port "$(service_env OUTHAUL_LISTEN_ADDR :8080)")
 		if ! new_version_healthy "$_target" "$ADMIN_PORT"; then
 			step_fail "the new version did not answer"
 			journalctl -u outhaul -n 20 --no-pager
@@ -1261,6 +1314,7 @@ install_or_upgrade() { # src_dir target version
 	if ! systemctl daemon-reload; then rollback_install "$_from" || true; return 1; fi
 	if ! systemctl start outhaul; then rollback_install "$_from" || true; return 1; fi
 	STARTED_SERVICE=1
+	ADMIN_PORT=$(admin_port "$(service_env OUTHAUL_LISTEN_ADDR :8080)")
 	if ! new_version_healthy "$_target" "$ADMIN_PORT"; then
 		rollback_install "$_from" || true
 		return 1
@@ -1278,7 +1332,6 @@ rollback_install() { # from
 	ROLLBACK_DONE=1
 	set +e
 	trap '' INT TERM
-	_old_port=$(admin_port "${OUTHAUL_LISTEN_ADDR:-:8080}")
 	printf '  .. rolling back to %s\n' "$(short "$_from")"
 	systemctl stop outhaul
 	_restored=1
@@ -1288,6 +1341,8 @@ rollback_install() { # from
 	fi
 	systemctl daemon-reload
 	systemctl start outhaul
+	# The old version's own port, now that it has loaded its env files.
+	_old_port=$(admin_port "$(service_env OUTHAUL_LISTEN_ADDR :8080)")
 	if [ "$_restored" = 1 ] && new_version_healthy "$_from" "$_old_port"; then
 		ROLLED_BACK=1
 		STAGE=''
@@ -1352,7 +1407,6 @@ install_updater() { # src_dir
 	if [ ! -d "$_upd" ]; then mkdir -p "$_upd" || return 1; fi
 	in_real_dir "$_upd" set_up_update_dir "$_work" || return 1
 	systemctl daemon-reload || return 1
-	systemctl enable --now outhaul-update.path || return 1
 	step_ok "installed the updater"
 }
 
@@ -1370,19 +1424,56 @@ set_up_update_dir() { # work_dir
 	return 1
 }
 
-# The installer's call: the updater is optional, so a failure must not stop
-# the firewall, ingress and setup steps that follow.
-setup_updater() { # src_dir
-	if ! install_updater "$1"; then
-		step_fail "could not install the updater"
-		note "updating from the UI stays unavailable; re-run the installer to try again"
+# Turns the update path unit on or off. A failure is not fatal: the service
+# is installed and serving, and the operator can set it later.
+set_update_path() { # on|off
+	if [ "$1" = off ]; then
+		systemctl disable --now outhaul-update.path >/dev/null 2>&1 || true
+	else
+		systemctl enable --now outhaul-update.path >/dev/null 2>&1 || true
 	fi
+}
+
+# The installer's call: the updater is optional, so a failure must not stop
+# the firewall, ingress and setup steps that follow. A no-build run has no
+# source tree: the marker says the updater's files already came from that
+# commit, so only the path unit is set, from the service's own setting.
+setup_updater() { # src_dir, empty on a no-build run
+	if [ -n "${1:-}" ]; then
+		if ! install_updater "$1"; then
+			step_fail "could not install the updater"
+			note "updating from the UI stays unavailable; re-run the installer to try again"
+			return
+		fi
+	fi
+	_upd=$(service_env OUTHAUL_UPDATES main | tr '[:upper:]' '[:lower:]')
+	if [ "$_upd" = off ]; then set_update_path off; else set_update_path on; fi
 }
 
 # The admin UI's port, from an OUTHAUL_LISTEN_ADDR-style ":8080".
 admin_port() { # listen_addr
 	addr=${1:-:8080}
 	printf '%s\n' "${addr##*:}"
+}
+
+# Prints a setting as the running service has it: from its own environment
+# (systemd loaded the env files, and root can read /proc), then the
+# installer's environment, then the default. The service's copy is what the
+# health checks and the firewall must use, because an --env-file may set a
+# port the installer's own environment does not carry. Never prints the whole
+# environment. PROC_ROOT is the test seam.
+service_env() { # name default
+	_pid=$(systemctl show -p MainPID --value outhaul 2>/dev/null || true)
+	if [ -n "$_pid" ] && [ "$_pid" != 0 ] && [ -r "${PROC_ROOT:-/proc}/$_pid/environ" ]; then
+		_v=$(tr '\0' '\n' <"${PROC_ROOT:-/proc}/$_pid/environ" | sed -n "s/^$1=//p" | head -n 1)
+		if [ -n "$_v" ]; then
+			printf '%s\n' "$_v"
+			return 0
+		fi
+	fi
+	eval "_v=\${$1-}"
+	[ -n "$_v" ] || _v=$2
+	printf '%s\n' "$_v"
 }
 
 # Local admin URL to probe.
@@ -1413,15 +1504,28 @@ local_setup_url() { # setup_url adminport
 # under the public URL, for up to ~60s: Traefik may still be starting. Only a
 # 200 counts (-f): a 404 is Traefik without the admin route, a 502/504 is
 # Traefik unable to reach the admin port. -k: the certificate may not be
-# issued yet.
-wait_public_healthy() { # host
+# issued yet. The HTTPS port is the service's own (an env file may change it),
+# and a required header goes to curl on stdin (-K -): its value must never be
+# an argument, where ps and the log would show it.
+wait_public_healthy() { # host [https_port [header_name header_value]]
 	host=$1
+	_port=${2:-443}
+	_args="-fsSk --max-time 2 --resolve $host:$_port:127.0.0.1 -o /dev/null https://$host:$_port/healthz"
 	i=0
 	spinner_start "checking the admin UI at https://$host"
 	while [ "$i" -lt 20 ]; do
-		if curl -fsSk --max-time 2 -o /dev/null --resolve "$host:443:127.0.0.1" "https://$host/healthz" 2>/dev/null; then
-			spinner_stop 0
-			return 0
+		if [ -n "${3:-}" ]; then
+			# shellcheck disable=SC2086 # intentional: _args is a word list
+			if printf 'header = "%s: %s"\n' "$3" "${4:-}" | curl $_args -K - 2>/dev/null; then
+				spinner_stop 0
+				return 0
+			fi
+		else
+			# shellcheck disable=SC2086 # intentional: _args is a word list
+			if curl $_args 2>/dev/null; then
+				spinner_stop 0
+				return 0
+			fi
 		fi
 		sleep 1
 		i=$((i + 1))
@@ -1430,9 +1534,33 @@ wait_public_healthy() { # host
 	return 1
 }
 
+have_ss() { command -v ss >/dev/null 2>&1; }
+
+# True when the proxy's switches took effect: no wildcard-bound listener has
+# the admin port, and Traefik publishes no port 80. An Outhaul from before the
+# switches ignores them without a word, so the run would otherwise report
+# success with the admin port open and port 80 published.
+proxy_effective() { # admin_port
+	_port=$1
+	if have_ss; then
+		if ss -ltn 2>/dev/null |
+			awk -v p="$_port" '$1 == "LISTEN" && ($4 == "0.0.0.0:" p || $4 == "*:" p || $4 == "[::]:" p) { found = 1 } END { exit !found }'; then
+			step_fail "the admin port $_port is listening on a wildcard address"
+			return 1
+		fi
+	else
+		note "ss not found; skipping the admin-port check"
+	fi
+	if docker port outhaul-traefik 2>/dev/null | grep -q '^80/'; then
+		step_fail "Traefik still publishes port 80"
+		return 1
+	fi
+	return 0
+}
+
 # Final boxed summary + confetti. Args passed as positional data. public is
-# the check through Traefik (Let's Encrypt mode): 0 ok, 1 failed, '' not run.
-# ADMIN_PORT and BRIDGE come from main.
+# the check through Traefik (Let's Encrypt and proxy modes): 0 ok, 1 failed,
+# '' not run. ADMIN_PORT and BRIDGE come from main.
 completion_screen() { # mode url ports setup_url healthy(0/1) localca(0/1) public(0/1/'')
 	mode=$1
 	url=$2
@@ -1463,13 +1591,14 @@ completion_screen() { # mode url ports setup_url healthy(0/1) localca(0/1) publi
 		note "the new version did not answer; the previous version is running again"
 	fi
 	[ -n "$ports" ] && note "firewall: $ports open"
-	# The firewall never opens the admin port, and only Let's Encrypt mode
-	# routes the admin UI through Traefik — everyone else needs a tunnel.
-	if [ -n "$ports" ] && [ "$mode" != a ]; then
+	# The firewall never opens the admin port, and only Let's Encrypt and
+	# proxy modes route the admin UI through Traefik — everyone else needs a
+	# tunnel.
+	if [ -n "$ports" ] && [ "$mode" != a ] && [ "$mode" != p ]; then
 		note "admin UI (:$port) is firewalled — reach it over SSH: ssh -L $port:127.0.0.1:$port you@this-server, then open http://127.0.0.1:$port"
 	fi
 	case "$mode" in
-	a) note "HTTPS: Let's Encrypt configured for $url" ;;
+	a | p) note "HTTPS: Let's Encrypt configured for $url" ;;
 	b)
 		_c '1;33'
 		printf '  → Finish Cloudflare Tunnel: log in, then paste your connector token in Settings → Tunnel\n'
@@ -1488,9 +1617,9 @@ completion_screen() { # mode url ports setup_url healthy(0/1) localca(0/1) publi
 		_c 0
 		# The public check runs on this server: DNS or a cloud firewall can
 		# still stand between a browser and Traefik.
-		if [ "$mode" = a ]; then
-			note "if it does not open: ssh -L $port:127.0.0.1:$port you@this-server, then open $(local_setup_url "$setup" "$port")"
-		fi
+		case "$mode" in
+		a | p) note "if it does not open: ssh -L $port:127.0.0.1:$port you@this-server, then open $(local_setup_url "$setup" "$port")" ;;
+		esac
 	else
 		note "find the setup URL with: journalctl -u outhaul | grep -i setup"
 	fi
@@ -1532,6 +1661,11 @@ SNAPSHOT_OK=0
 ROLLED_BACK=0
 HEALTHY=0
 ADMIN_PORT=''
+# Whether a binary was running before this run's install, and its commit
+# (empty for a build from before the stamp). A failed proxy check rolls back
+# only an upgrade this run performed.
+HAD_BINARY=0
+PREV_COMMIT=''
 STAGE=''
 ROLLBACK_TO=''
 ROLLBACK_DONE=0
@@ -1953,6 +2087,10 @@ main() {
 		if ask_yes_no "  Configure the firewall (ufw) now?" y; then WANT_FW=1; else WANT_FW=0; fi
 	fi
 
+	# Before anything is installed or swapped: a non-interactive --firewall
+	# ufw run that would cut off a listening port must change nothing.
+	check_firewall_early
+
 	ensure_docker
 	ensure_git
 	if [ "$WANT_NIXPACKS" = 1 ]; then ensure_nixpacks; fi
@@ -2005,7 +2143,12 @@ main() {
 		fi
 	fi
 
-	ADMIN_PORT=$(admin_port "${OUTHAUL_LISTEN_ADDR:-:8080}")
+	# Whether an upgrade this run performed can be rolled back, and the commit
+	# to roll back to (empty for a build from before the stamp).
+	HAD_BINARY=0
+	if [ -e "$BIN" ]; then HAD_BINARY=1; fi
+	PREV_COMMIT=$(build_field commit)
+
 	if [ "$BUILD" = 1 ]; then
 		if install_or_upgrade "$SRC_DIR" "$TARGET" "$TARGET_VERSION"; then
 			setup_updater "$SRC_DIR"
@@ -2027,9 +2170,14 @@ main() {
 			# shellcheck disable=SC2034 # the setup-file step reads it
 			STARTED_SERVICE=1
 		fi
+		ADMIN_PORT=$(admin_port "$(service_env OUTHAUL_LISTEN_ADDR :8080)")
 		if ! new_version_healthy "$TARGET" "$ADMIN_PORT"; then
 			if [ "$NONINTERACTIVE" = 1 ]; then die "outhaul did not answer"; fi
 			HEALTHY=1
+		else
+			# No tree to install from, but the path unit follows the
+			# service's setting on every run.
+			setup_updater ''
 		fi
 	fi
 
@@ -2048,38 +2196,43 @@ main() {
 	fi
 
 	PORTS=''
-	ADMIN_PORT=$(admin_port "${OUTHAUL_LISTEN_ADDR:-:8080}")
+	# The service has loaded its env files by now: its own ports and required
+	# header are the ones the checks and the firewall must use.
+	ADMIN_PORT=$(admin_port "$(service_env OUTHAUL_LISTEN_ADDR :8080)")
+	HTTPS_PORT=$(service_env OUTHAUL_HTTPS_PORT 443)
+	HEADER_NAME=$(service_env OUTHAUL_REQUIRE_HEADER_NAME '')
+	HEADER_VALUE=$(service_env OUTHAUL_REQUIRE_HEADER_VALUE '')
 	BRIDGE=$(network_bridge outhaul)
-	if [ "$WANT_FW" = 1 ]; then
-		PORTS=$(derive_firewall_ports "$MODE" "$GITPORT" "${LOCAL_CA:-0}")
-		# Preserve the port of the admin's LIVE SSH session too, in case sshd
-		# listens somewhere other than 22 — otherwise enabling ufw locks them out.
-		if [ -n "${SSH_CONNECTION:-}" ]; then
-			assh=${SSH_CONNECTION##* }
-			case " $PORTS " in *" $assh "*) ;; *) [ -n "$assh" ] && PORTS="$PORTS $assh" ;; esac
-		fi
-		printf '  Firewall will open (SSH always preserved): %s\n' "$PORTS"
-		# On a host that already serves other things, enabling ufw would cut
-		# them off: say which ports, and default to leaving the firewall alone.
-		fw_default=y
-		if ! ufw_active; then
-			blocked=$(ufw_would_block "$(listening_ports)" "$PORTS" "$ADMIN_PORT")
-			if [ -n "$blocked" ]; then
-				step_fail "ufw is inactive; enabling it would also block ports listening now: $blocked"
-				note "containers with published ports are not affected; open others with: ufw allow <port>"
-				fw_default=n
-			fi
-		fi
-		if ask_yes_no "  Proceed?" "$fw_default"; then
-			apply_firewall "$PORTS" "$BRIDGE" "$ADMIN_PORT"
-		else PORTS=''; fi
-	fi
+	configure_firewall
 
-	# Let's Encrypt mode serves the admin UI through Traefik, with the
-	# firewall in between: check the way a browser reaches it too.
+	# Let's Encrypt and proxy modes serve the admin UI through Traefik, with
+	# the firewall in between: check the way a browser reaches it too.
 	PUBLIC=''
-	if [ "$MODE" = a ] && [ -n "$PUBLIC_URL" ] && [ "$HEALTHY" = 0 ]; then
-		if wait_public_healthy "$(url_host "$PUBLIC_URL")"; then PUBLIC=0; else PUBLIC=1; fi
+	if { [ "$MODE" = a ] || [ "$MODE" = p ]; } && [ -n "$PUBLIC_URL" ] && [ "$HEALTHY" = 0 ]; then
+		if wait_public_healthy "$(url_host "$PUBLIC_URL")" "$HTTPS_PORT" "$HEADER_NAME" "$HEADER_VALUE"; then
+			PUBLIC=0
+			# proxy must prove it took effect: an older Outhaul ignores the
+			# switches and starts with port 80 published and the admin port
+			# open. Do not leave that version running.
+			if [ "$MODE" = p ] && ! proxy_effective "$ADMIN_PORT"; then
+				step_fail "the proxy's switches did not take effect"
+				if [ "$BUILD" = 1 ] && [ "$HAD_BINARY" = 1 ]; then
+					rollback_install "${PREV_COMMIT:-}" || true
+				else
+					# A first install has no previous version; stop the
+					# service it just started, and leave the binary and
+					# journal for diagnosis.
+					systemctl stop outhaul || true
+				fi
+				if [ "$NONINTERACTIVE" = 1 ]; then
+					journalctl -u outhaul -n 20 --no-pager
+					die "the proxy's switches did not take effect"
+				fi
+				HEALTHY=1
+			fi
+		else
+			PUBLIC=1
+		fi
 	fi
 	# Only the service's current run: a re-run restarted it with a new token,
 	# and an earlier run's hint is stale. -b is the fallback without systemd's

@@ -30,6 +30,11 @@ EOF
 # ------------------------------------------------------------------ stubs --
 
 systemctl() {
+	# service_env asks for MainPID; it is not a state change, so it is not
+	# part of the recorded sequence.
+	case $* in
+	'show -p MainPID --value outhaul') return 0 ;;
+	esac
 	printf 'systemctl %s\n' "$*" >>"$T/calls"
 	printf '%s\n' "$*" >>"$T/systemctl"
 	case $* in
