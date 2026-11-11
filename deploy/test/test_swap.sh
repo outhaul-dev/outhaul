@@ -188,6 +188,23 @@ assert_eq "unhealthy upgrade: install, then roll back" \
 assert_eq "unhealthy upgrade: state" "1 1" "$(cat "$T/state")"
 assert_contains "unhealthy upgrade: it says it rolled back" "$(cat "$T/out")" "rolled back to aaaaaaa"
 
+# The caller can say what failed: a proxy failure says its switches did not
+# take effect, rather than claiming the new version did not answer.
+HEALTHY=$OLD
+( SNAPSHOT_OK=1 ROLLBACK_DONE=0 rollback_install "$OLD" "the proxy's switches did not take effect" ) >"$T/reason" 2>&1 || true
+assert_contains "rollback: the caller's reason is used" "$(cat "$T/reason")" \
+	"the proxy's switches did not take effect; rolled back to aaaaaaa"
+
+# The wizard calls the rollback directly, so it must leave errexit and the
+# signal traps as it found them: on after a wizard call, still off when the
+# exit trap (already without errexit) called it.
+out=$( ( set -e; trap 'exit 130' INT; rollback_install "$OLD" >/dev/null 2>&1; case $- in *e*) echo errexit-on ;; *) echo errexit-off ;; esac ) )
+assert_eq "rollback: errexit is back after a wizard call" errexit-on "$out"
+out=$( ( set +e; rollback_install "$OLD" >/dev/null 2>&1; case $- in *e*) echo errexit-on ;; *) echo errexit-off ;; esac ) )
+assert_eq "rollback: the exit trap's errexit stays off" errexit-off "$out"
+out=$( ( trap 'exit 130' INT; rollback_install "$OLD" >/dev/null 2>&1; trap ) 2>/dev/null )
+assert_contains "rollback: the INT trap is back" "$out" "exit 130"
+
 # 4. A die in write_dropins after the stop: the trap's swap_guard restores the
 #    same files, starts the old version, and the exit status is 1.
 setup_swap

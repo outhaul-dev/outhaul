@@ -74,6 +74,17 @@ assert_eq "fetch by tag" "$C1" "$(git -C "$SRC_DIR" rev-parse HEAD)"
 fetch_source >/dev/null 2>&1
 assert_eq "fetch with no ref: HEAD" "$C1" "$(git -C "$SRC_DIR" rev-parse HEAD)"
 
+# The docs promise the log's fetch line names the commit the ref resolved to:
+# the spinner's own line never reaches the log when colour is off.
+: >"$T/log"
+# shellcheck disable=SC2034 # read by log_event, sourced from bootstrap.sh
+NONINTERACTIVE=1
+LOGFILE=$T/log fetch_source "$C1" >/dev/null 2>&1
+assert_contains "fetch: the log names the commit, in short form" "$(cat "$T/log")" \
+	"fetch outhaul $(printf '%s' "$C1" | cut -c1-7)"
+# shellcheck disable=SC2034 # read by die, sourced from bootstrap.sh
+NONINTERACTIVE=0
+
 # A fetch whose HEAD is not the commit asked for is refused.
 git() {
 	case "$*" in

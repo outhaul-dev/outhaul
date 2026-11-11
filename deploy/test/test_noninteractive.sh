@@ -19,6 +19,7 @@ TARGET_VERSION=''
 HEALTHY_COMMITS=$OLD
 BUILD_FAIL=0
 NO_SETUP=0
+RESTART_FAIL=0
 BLOCKED_PORTS=''
 LISTENING_PORTS=''
 
@@ -59,6 +60,7 @@ EOF
 	PATH=$T/testbin:$PATH
 	TARGET=$OLD TARGET_VERSION='' HEALTHY_COMMITS=$OLD
 	BUILD_FAIL=0 NO_SETUP=0 BLOCKED_PORTS='' LISTENING_PORTS='' PUBLIC_OK=1
+	RESTART_FAIL=0
 	: >"$T/calls"
 	unset OUTHAUL_REF
 }
@@ -93,7 +95,15 @@ systemctl() {
 	*ActiveEnterTimestamp*) cat "$T/stamp" 2>/dev/null || printf '0\n' ;;
 	*EnvironmentFiles*) sed -n 's/^EnvironmentFile=//p' "$SERVICE_DROPIN" 2>/dev/null ;;
 	'stop outhaul') rm -f "$T/up" ;;
-	'start outhaul' | 'restart outhaul' | 'enable --now outhaul')
+	'start outhaul' | 'enable --now outhaul')
+		: >"$T/up"
+		_n=$(cat "$T/stamp" 2>/dev/null || printf '0')
+		printf '%s\n' "$((_n + 1))" >"$T/stamp"
+		;;
+	'restart outhaul')
+		# A restart the new env files stop: systemd refuses it and the
+		# service is left as it was.
+		[ "$RESTART_FAIL" = 1 ] && return 1
 		: >"$T/up"
 		_n=$(cat "$T/stamp" 2>/dev/null || printf '0')
 		printf '%s\n' "$((_n + 1))" >"$T/stamp"
@@ -284,6 +294,7 @@ assert_eq "same commit: no daemon-reload" 0 "$(count 'systemctl daemon-reload')"
 assert_eq "same commit: the binary keeps its inode" "$bin_inode" "$(inode "$BIN")"
 assert_eq "same commit: install.env keeps its inode" "$env_inode" "$(inode "$INSTALL_ENV")"
 assert_eq "same commit: the service did not start again" "$stamp" "$(systemctl show -p ActiveEnterTimestamp outhaul)"
+assert_fail "same commit: no env-file copy is left behind" [ -e "$WORK_DIR/env-previous" ]
 
 # --------------------------------------------- 3. a changed flag restarts --
 
@@ -430,6 +441,35 @@ assert_eq "public check: the journal's two lines are in the log, withheld" 2 "$(
 assert_eq "public check: the URL is not in the log" 0 "$(log_has 'o\.example\.com/setup')"
 assert_eq "public check: the token is not in stdout" 0 "$(grep -c 'token=abc' "$T/stdout" || true)"
 assert_eq "public check: the log ends FAILED" "FAILED exit 1" "$(tail -1 "$T/log")"
+
+# ------ 13. a no-build run whose new env files stop the service goes back --
+
+# A no-build run rewrites install.env and the drop-ins before it restarts the
+# service. If the new files stop it, the old ones must come back: there is no
+# snapshot to restore, because nothing stopped the service.
+setup
+run_main $LOCAL --updates off --ref "$TARGET"
+assert_eq "failed env change: the first run installs" 0 "$RC"
+old_env=$(cat "$INSTALL_ENV")
+old_dropin=$(cat "$SERVICE_DROPIN")
+: >"$T/calls"
+printf 'OUTHAUL_EXAMPLE=1\n' >"$T/extra.env"
+RESTART_FAIL=1
+run_main $LOCAL --updates main --env-file "$T/extra.env" --ref "$TARGET"
+assert_eq "failed env change: exit 1" 1 "$RC"
+assert_eq "failed env change: the old install.env is back" "$old_env" "$(cat "$INSTALL_ENV")"
+assert_contains "failed env change: install.env still has the old setting" "$(cat "$INSTALL_ENV")" "OUTHAUL_UPDATES=off"
+assert_eq "failed env change: the old service drop-in is back" "$old_dropin" "$(cat "$SERVICE_DROPIN")"
+assert_eq "failed env change: the old update drop-in is back" "$old_dropin" "$(cat "$UPDATE_DROPIN")"
+assert_eq "failed env change: the old configuration was started" "systemctl start outhaul" "$(tail -1 "$T/calls")"
+assert_ok "failed env change: the service is running" [ -e "$T/up" ]
+# The journal's last lines are the failed configuration's, printed and logged
+# with the setup URL withheld.
+assert_eq "failed env change: the journal's failure line is printed" 1 "$(grep -c 'address already in use' "$T/stdout" || true)"
+assert_eq "failed env change: the journal's failure line is in the log" 1 "$(log_has 'address already in use')"
+assert_eq "failed env change: the URL is not in the log" 0 "$(log_has 'o\.example\.com/setup')"
+assert_eq "failed env change: the token is not in stdout" 0 "$(grep -c 'token=abc' "$T/stdout" || true)"
+assert_eq "failed env change: the log ends FAILED" "FAILED exit 1" "$(tail -1 "$T/log")"
 
 rm -rf "$ROOT"
 [ "${TESTS_FAIL:-0}" -eq 0 ]

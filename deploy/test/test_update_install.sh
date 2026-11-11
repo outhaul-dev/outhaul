@@ -134,5 +134,18 @@ assert_eq "path unit on" "systemctl enable --now outhaul-update.path" "$(cat "$C
 set_update_path off
 assert_eq "path unit off" "systemctl disable --now outhaul-update.path" "$(cat "$CALLS")"
 
+# A no-build run has no tree: setup_updater only moves the path unit, from the
+# service's own OUTHAUL_UPDATES. Updates off disables it; main enables it.
+install_updater() { echo "install_updater $*" >> "$CALLS"; }
+set_update_path() { echo "set_update_path $*" >> "$CALLS"; }
+service_env() { printf '%s\n' "$UPDATES_VALUE"; }
+: > "$CALLS"
+UPDATES_VALUE=off setup_updater ''
+assert_eq "no-build run, updates off: the path unit is disabled" "set_update_path off" "$(cat "$CALLS")"
+: > "$CALLS"
+UPDATES_VALUE=main setup_updater ''
+assert_eq "no-build run, updates main: the path unit is enabled" "set_update_path on" "$(cat "$CALLS")"
+assert_eq "no-build run: nothing is installed from a tree" 0 "$(grep -c '^install_updater' "$CALLS" || true)"
+
 rm -rf "$ROOT"
 [ "${TESTS_FAIL:-0}" -eq 0 ]

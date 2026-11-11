@@ -89,6 +89,9 @@ assert_eq "flag beats OUTHAUL_REF" from-flag \
 # re-enables the :2222 listener on a host installed with --git-ssh off.
 SERVICE_DROPIN=$T/malformed/outhaul.service.d/10-install.conf
 UPDATE_DROPIN=$T/malformed/outhaul-update.service.d/10-install.conf
+# A wizard --env-file run keeps install.env when it exists; this host has none.
+# shellcheck disable=SC2034 # read by write_dropins, sourced from bootstrap.sh
+INSTALL_ENV=$T/malformed/install.env
 mkdir -p "$(dirname "$SERVICE_DROPIN")" "$(dirname "$UPDATE_DROPIN")"
 printf 'sentinel\n' >"$SERVICE_DROPIN"
 printf 'sentinel\n' >"$UPDATE_DROPIN"

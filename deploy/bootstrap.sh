@@ -706,6 +706,9 @@ fetch_source() { # [target]
 	[ "$rc" -eq 0 ] || die "could not fetch $(short "$_target") from $OUTHAUL_REPO — see ${LOGFILE:-the install log}"
 	_fetched=$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || true)
 	[ "$_fetched" = "$_target" ] || die "fetched $_fetched, not $_target"
+	# The docs promise the log names the commit a tag resolved to; the
+	# spinner's line never reaches the log when colour is off.
+	log_event "fetch outhaul $(short "$_fetched")"
 }
 
 # Resolves ref (a tag, a branch, a full commit, or nothing for the remote's
@@ -949,6 +952,15 @@ apply_firewall() { # ports (space separated, must include 22) bridge adminport
 	ufw allow in on "$bridge" to any port "$adminport" proto tcp >>"${LOGFILE:-/dev/null}" 2>&1 || true
 	# --force avoids the interactive "proceed?" prompt; SSH is already allowed above.
 	ufw --force enable >>"${LOGFILE:-/dev/null}" 2>&1 || true
+	# The allow lines and the enable are best-effort, so success cannot rest on
+	# their exit status: ask ufw. A run told to configure the firewall must not
+	# report it open when nothing is filtered.
+	if ! ufw_active; then
+		step_fail "ufw did not become active"
+		note "the ports are not filtered; check: ufw status, or open them by hand"
+		if [ "$NONINTERACTIVE" = 1 ]; then die "ufw did not become active"; fi
+		return 0
+	fi
 	step_ok "firewall: opened $ports (SSH preserved)"
 	note "admin port $adminport: allowed from Outhaul's Docker bridge ($bridge) only, so Traefik can serve it"
 	note "open more later with: ufw allow <port>"
@@ -1142,6 +1154,74 @@ install_new() {
 	replace_file "$SRC_DIR/deploy/outhaul.service" "$UNIT_DIR/outhaul.service" 0644
 }
 
+# Keeps one of the env files a no-build run is about to rewrite, or records
+# that it was not there, so putting them back can tell the two apart.
+keep_env_file() { # path copy missing-list
+	if [ -f "$1" ]; then
+		cp -p "$1" "$2"
+	else
+		printf '%s\n' "${2##*/}" >>"$3"
+	fi
+}
+
+# Keeps the files a no-build run rewrites: install.env, the two install
+# drop-ins and /etc/outhaul.env. The service is not stopped, so this is not
+# snapshot: only these files are copied, never the binary or the database.
+# Every step is checked: callers test its status.
+save_env_files() { # directory
+	_dir=$1
+	rm -rf "$_dir" || return 1
+	mkdir "$_dir" || return 1
+	chmod 0700 "$_dir" || return 1
+	: >"$_dir/missing" || return 1
+	keep_env_file "$INSTALL_ENV" "$_dir/install.env" "$_dir/missing" || return 1
+	keep_env_file "$SERVICE_DROPIN" "$_dir/service.conf" "$_dir/missing" || return 1
+	keep_env_file "$UPDATE_DROPIN" "$_dir/update.conf" "$_dir/missing" || return 1
+	keep_env_file "$ENV_FILE" "$_dir/outhaul.env" "$_dir/missing" || return 1
+}
+
+# Puts one env file back from its copy, or removes it when it did not exist.
+put_env_file() { # path copy missing-list
+	if grep -qx "${2##*/}" "$3"; then
+		rm -f "$1"
+	else
+		replace_file "$2" "$1"
+	fi
+}
+
+# Puts back what save_env_files kept. Every step is checked: the caller says
+# whether all of it landed. systemd is not reloaded and the service is not
+# started here.
+restore_env_files() { # directory
+	_dir=$1
+	[ -f "$_dir/missing" ] || return 1
+	put_env_file "$INSTALL_ENV" "$_dir/install.env" "$_dir/missing" || return 1
+	put_env_file "$SERVICE_DROPIN" "$_dir/service.conf" "$_dir/missing" || return 1
+	put_env_file "$UPDATE_DROPIN" "$_dir/update.conf" "$_dir/missing" || return 1
+	put_env_file "$ENV_FILE" "$_dir/outhaul.env" "$_dir/missing" || return 1
+}
+
+# A no-build run writes the env files before it start or restarts the service.
+# When the service refuses them, the old ones are already gone: put them back,
+# reload systemd and start the old configuration. The journal tail comes first,
+# so its lines are the failed configuration's. Returns 0 when the old files are
+# in place, 1 when they are not; the caller fails the run either way.
+revert_env_files() { # directory
+	_dir=$1
+	print_journal_tail
+	printf '  .. putting back the env files from before this run\n'
+	systemctl stop outhaul
+	if restore_env_files "$_dir"; then
+		systemctl daemon-reload
+		systemctl start outhaul
+		step_fail "outhaul did not work with the new env files; the previous ones are back"
+		return 0
+	fi
+	note "could not put back every env file from $_dir"
+	step_fail "outhaul did not work with the new env files, and the previous ones did not come back either"
+	return 1
+}
+
 # Reads response headers on stdin: true when they carry X-Outhaul-Commit:
 # <commit>. An unstamped build (empty commit) sends no such header, so then
 # any 200 counts.
@@ -1251,6 +1331,11 @@ write_if_changed() { # path content mode
 	}
 	if cmp -s "$_wic_tmp" "$_wic_path"; then
 		rm -f "$_wic_tmp"
+		# Right content, wrong mode: an interrupted run can leave install.env
+		# 0644. Correct it rather than leave the secret readable.
+		if [ "$(stat -c '%a' "$_wic_path" 2>/dev/null)" != "${_wic_mode#0}" ]; then
+			chmod "$_wic_mode" "$_wic_path" || die "could not set the mode of $_wic_path"
+		fi
 		return 1
 	fi
 	mv -fT "$_wic_tmp" "$_wic_path" || {
@@ -1272,8 +1357,11 @@ write_install_env() {
 
 # Writes the drop-in that loads this run's env files, for the service and the
 # updater. A wizard re-run with no --env-file leaves both alone, so an earlier
-# unattended run's env files keep applying. Paths are written bare: systemd
-# takes a space in a bare path and ignores a quoted one.
+# unattended run's env files keep applying. A wizard --env-file run cannot
+# leave them alone, so it keeps install.env first when it is already there:
+# that run's answers (OUTHAUL_SSH_ADDR=off, OUTHAUL_UPDATES=off, the proxy
+# switches) would be lost at the next restart otherwise. Paths are written
+# bare: systemd takes a space in a bare path and ignores a quoted one.
 write_dropins() {
 	if [ "$NONINTERACTIVE" != 1 ] && [ -z "$ENV_FILES" ]; then return 0; fi
 	_dropin='[Service]
@@ -1281,6 +1369,10 @@ write_dropins() {
 	if [ "$NONINTERACTIVE" = 1 ]; then
 		_dropin="${_dropin}EnvironmentFile=$INSTALL_ENV
 "
+	elif [ -f "$INSTALL_ENV" ]; then
+		_dropin="${_dropin}EnvironmentFile=$INSTALL_ENV
+"
+		note "keeping $INSTALL_ENV from the earlier unattended run"
 	fi
 	while IFS= read -r _f; do
 		[ -n "$_f" ] || continue
@@ -1362,9 +1454,15 @@ install_or_upgrade() { # src_dir target version
 # also runs from the exit trap, so it checks every step itself and nothing
 # interrupts it. With SNAPSHOT_OK=0 there is no copy to trust: the binary
 # still in place is started instead of an older previous/.
-rollback_install() { # from
+# The wizard can call it directly, so errexit and the signal traps it finds go
+# back as it found them; from the exit trap, errexit is already off. The reason
+# names what failed, for a caller whose failure was not the health check.
+rollback_install() { # from [reason]
 	_from=$1
+	_why=${2:-the new version did not answer}
 	ROLLBACK_DONE=1
+	_errexit=0
+	case $- in *e*) _errexit=1 ;; esac
 	set +e
 	trap '' INT TERM
 	# The journal's last lines are the failed new version's: read them before
@@ -1382,16 +1480,21 @@ rollback_install() { # from
 	systemctl start outhaul
 	# The old version's own port, now that it has loaded its env files.
 	_old_port=$(admin_port "$(service_env OUTHAUL_LISTEN_ADDR :8080)")
+	_rc=1
 	if [ "$_restored" = 1 ] && new_version_healthy "$_from" "$_old_port"; then
 		ROLLED_BACK=1
 		STAGE=''
-		step_fail "the new version did not answer; rolled back to $(short "$_from")"
-		return 0
+		step_fail "$_why; rolled back to $(short "$_from")"
+		_rc=0
+	else
+		STAGE=''
+		recovery_help
+		step_fail "$_why, and the old one did not come back either"
 	fi
-	STAGE=''
-	recovery_help
-	step_fail "the new version did not answer, and the old one did not come back either"
-	return 1
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+	if [ "$_errexit" = 1 ]; then set -e; fi
+	return "$_rc"
 }
 
 # The exit guard: a signal or a die after Outhaul stopped puts the old
@@ -1713,7 +1816,7 @@ completion_screen() { # mode url ports setup_url healthy(0/1) localca(0/1) publi
 		a | p) note "if it does not open: ssh -L $port:127.0.0.1:$port you@this-server, then open $(local_setup_url "$setup" "$port")" ;;
 		esac
 	else
-		if [ "${NONINTERACTIVE:-0}" = 1 ] && [ -n "${SETUP_URL_FILE:-}" ]; then
+		if [ "${NONINTERACTIVE:-0}" = 1 ] && [ -n "${SETUP_URL_FILE:-}" ] && [ -f "$SETUP_URL_FILE" ]; then
 			note "the one-time setup URL is in $SETUP_URL_FILE"
 		else
 			note "find the setup URL with: journalctl -u outhaul | grep -i setup"
@@ -2305,29 +2408,49 @@ main() {
 			if [ "$NONINTERACTIVE" = 1 ]; then die "outhaul did not answer"; fi
 		fi
 	else
+		# The service keeps running here, so the swap's snapshot is not the
+		# way back: keep only the env files this run rewrites, and put them
+		# back if the service refuses the new ones.
+		_env_previous=$WORK_DIR/env-previous
+		save_env_files "$_env_previous" || die "could not keep a copy of the env files"
 		write_install_env
 		write_dropins
 		# A drop-in is a unit-file change: systemd reads it on daemon-reload, not on restart.
 		if [ "$DROPIN_CHANGED" = 1 ]; then systemctl daemon-reload; fi
 		SERVICE_WAS_ACTIVE=0
 		if systemctl is-active --quiet outhaul; then SERVICE_WAS_ACTIVE=1; fi
+		_no_build_failed=0
+		_no_build_why=''
 		if [ "$SERVICE_WAS_ACTIVE" = 0 ]; then
 			# Nothing to install, but the recorded build is not running.
-			systemctl enable --now outhaul
-			STARTED_SERVICE=1
-		elif [ "$ENV_CHANGED" = 1 ] || [ "$DROPIN_CHANGED" = 1 ] || [ "$ENV_FILE_CHANGED" = 1 ]; then
-			systemctl restart outhaul
-			# shellcheck disable=SC2034 # the setup-file step reads it
-			STARTED_SERVICE=1
-		fi
-		ADMIN_PORT=$(admin_port "$(service_env OUTHAUL_LISTEN_ADDR :8080)")
-		if ! new_version_healthy "$TARGET" "$ADMIN_PORT"; then
-			if [ "$NONINTERACTIVE" = 1 ]; then
-				print_journal_tail
-				die "outhaul did not answer"
+			if systemctl enable --now outhaul; then
+				STARTED_SERVICE=1
+			else
+				_no_build_failed=1
+				_no_build_why="outhaul did not start"
 			fi
+		elif [ "$ENV_CHANGED" = 1 ] || [ "$DROPIN_CHANGED" = 1 ] || [ "$ENV_FILE_CHANGED" = 1 ]; then
+			if systemctl restart outhaul; then
+				# shellcheck disable=SC2034 # the setup-file step reads it
+				STARTED_SERVICE=1
+			else
+				_no_build_failed=1
+				_no_build_why="outhaul did not start"
+			fi
+		fi
+		if [ "$_no_build_failed" = 0 ]; then
+			ADMIN_PORT=$(admin_port "$(service_env OUTHAUL_LISTEN_ADDR :8080)")
+			if ! new_version_healthy "$TARGET" "$ADMIN_PORT"; then
+				_no_build_failed=1
+				_no_build_why="outhaul did not answer"
+			fi
+		fi
+		if [ "$_no_build_failed" = 1 ]; then
+			revert_env_files "$_env_previous" || true
+			if [ "$NONINTERACTIVE" = 1 ]; then die "$_no_build_why"; fi
 			HEALTHY=1
 		else
+			rm -rf "$_env_previous"
 			# No tree to install from, but the path unit follows the
 			# service's setting on every run.
 			setup_updater ''
@@ -2369,7 +2492,7 @@ main() {
 				# this run started from stopped; a no-build run that changed
 				# nothing reports the failure without touching the service.
 				case "$(proxy_failure_action "$BUILD" "$HAD_BINARY" "$STARTED_SERVICE" "${SERVICE_WAS_ACTIVE:-0}")" in
-				rollback) rollback_install "${PREV_COMMIT:-}" || true ;;
+				rollback) rollback_install "${PREV_COMMIT:-}" "the proxy's switches did not take effect" || true ;;
 				stop) systemctl stop outhaul || true ;;
 				esac
 				if [ "$NONINTERACTIVE" = 1 ]; then

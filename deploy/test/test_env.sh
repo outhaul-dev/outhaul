@@ -61,6 +61,11 @@ before=$(ls -i "$INSTALL_ENV" | awk '{print $1}')
 NONINTERACTIVE=1 MODE=c SSH_ADDR=off write_install_env
 assert_eq "unchanged install.env keeps its inode" "$before" "$(ls -i "$INSTALL_ENV" | awk '{print $1}')"
 assert_eq "install.env is 0600" 600 "$(stat -c '%a' "$INSTALL_ENV")"
+# An interrupted run can leave the right content with the wrong mode: the next
+# run corrects the mode rather than leaving the file readable.
+chmod 0644 "$INSTALL_ENV"
+NONINTERACTIVE=1 MODE=c SSH_ADDR=off write_install_env
+assert_eq "the same content with the wrong mode is corrected" 600 "$(stat -c '%a' "$INSTALL_ENV")"
 
 # The drop-in names the real path; write_dropins only reads INSTALL_ENV, and
 # the file itself was written above through this test's own path.
@@ -91,6 +96,22 @@ printf 'sentinel\n' >"$UPDATE_DROPIN"
 NONINTERACTIVE=0 ENV_FILES='' write_dropins
 assert_eq "wizard run keeps the service drop-in" sentinel "$(cat "$SERVICE_DROPIN")"
 assert_eq "wizard run keeps the update drop-in" sentinel "$(cat "$UPDATE_DROPIN")"
+
+# A wizard run with --env-file rewrites both drop-ins, so it must keep an
+# earlier unattended run's install.env first: its OUTHAUL_SSH_ADDR=off,
+# OUTHAUL_UPDATES=off and proxy switches would be lost at the next restart.
+INSTALL_ENV=$T/keep/install.env
+mkdir -p "$(dirname "$INSTALL_ENV")"
+printf 'OUTHAUL_UPDATES=off\n' >"$INSTALL_ENV"
+: >"$T/keep/extra.env"
+SERVICE_DROPIN=$T/keep/outhaul.service.d/10-install.conf
+UPDATE_DROPIN=$T/keep/outhaul-update.service.d/10-install.conf
+NONINTERACTIVE=0 ENV_FILES=$T/keep/extra.env write_dropins >/dev/null
+assert_eq "a wizard --env-file run keeps install.env first" \
+	"[Service]
+EnvironmentFile=$INSTALL_ENV
+EnvironmentFile=$T/keep/extra.env" "$(cat "$SERVICE_DROPIN")"
+assert_eq "the update drop-in gets the same lines" "$(cat "$SERVICE_DROPIN")" "$(cat "$UPDATE_DROPIN")"
 
 # Writing the files is all the writers do; the caller reloads and restarts.
 assert_eq "the writers run no systemctl" 0 "$(grep -c '^systemctl' "$CALLS" || true)"

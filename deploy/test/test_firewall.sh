@@ -47,7 +47,10 @@ assert_eq "no network yet: the name Outhaul gives it" "outhaul" "$(printf '' | b
 # apply_firewall lets the bridge reach the admin port, before ufw is enabled:
 # Traefik serves the admin UI from there, and ufw drops it otherwise.
 calls=$(mktemp)
-ufw() { printf '%s\n' "$*" >> "$calls"; }
+ufw() {
+	printf '%s\n' "$*" >> "$calls"
+	case "$*" in status) printf 'Status: active\n' ;; esac
+}
 LOGFILE=/dev/null apply_firewall "22 80 443" outhaul 8080 >/dev/null
 rule=$(grep -n '^allow in on outhaul to any port 8080 proto tcp$' "$calls" | cut -d: -f1)
 enable=$(grep -n '^--force enable$' "$calls" | cut -d: -f1)
@@ -57,6 +60,15 @@ else
 	_fail "bridge may reach the admin port, before enable (ufw calls: $(paste -sd'|' "$calls"))"
 fi
 rm -f "$calls"
+
+# An enable that leaves ufw inactive is a failure, not a success: the allow
+# lines and the enable are best-effort, so apply_firewall asks ufw itself.
+quiet() { ( "$@" ) >/dev/null 2>&1; }
+ufw() { case "$*" in status) printf 'Status: inactive\n' ;; esac; }
+NONINTERACTIVE=1
+assert_fail "ufw still inactive: an unattended run fails" quiet apply_firewall "22 80 443" outhaul 8080
+NONINTERACTIVE=0
+assert_ok "ufw still inactive: the wizard carries on" quiet apply_firewall "22 80 443" outhaul 8080
 unset -f ufw
 
 # Ports Docker publishes (Traefik's 80/443) bypass ufw, so they are not ones

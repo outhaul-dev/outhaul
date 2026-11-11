@@ -45,4 +45,23 @@ assert_contains "rolled back: the screen says the old version is back" "$rolled"
 # shellcheck disable=SC2034 # read by completion_screen
 ROLLED_BACK=0
 
+# An unattended run points at the setup file only while it is there: a run
+# whose start printed no URL removes it, and the screen must not name it.
+T=$(mktemp -d)
+: >"$T/setup"
+# shellcheck disable=SC2034 # read by completion_screen and log_event
+NONINTERACTIVE=1
+# shellcheck disable=SC2034 # read by log_event, sourced from bootstrap.sh
+LOGFILE=/dev/null
+# shellcheck disable=SC2034 # read by completion_screen
+SETUP_URL_FILE=$T/setup
+assert_contains "an existing setup file is named" "$(completion_screen c '' '' '' 0 0)" \
+	"the one-time setup URL is in $T/setup"
+rm -f "$SETUP_URL_FILE"
+case "$(completion_screen c '' '' '' 0 0)" in
+	*"the one-time setup URL is in"*) _fail "a removed setup file is not named" ;;
+	*) _pass "a removed setup file is not named" ;;
+esac
+rm -rf "$T"
+
 [ "${TESTS_FAIL:-0}" -eq 0 ]

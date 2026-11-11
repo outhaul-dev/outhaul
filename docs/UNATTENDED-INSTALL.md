@@ -107,7 +107,8 @@ a success. See [BEHIND-A-PROXY.md](BEHIND-A-PROXY.md) for what the settings do.
 | `/etc/systemd/system/outhaul.service.d/10-install.conf` | a run with `--non-interactive` or `--env-file` | `EnvironmentFile=` lines for this run's files |
 | `/etc/systemd/system/outhaul-update.service.d/10-install.conf` | the same | the same lines, for the root updater |
 
-The drop-ins name `install.env` first (in a non-interactive run), then each
+The drop-ins name `install.env` first (in a non-interactive run, and in a
+wizard `--env-file` run when an earlier unattended install left one), then each
 `--env-file` in the order it was given. systemd loads the unit's own
 `/etc/outhaul.env` first, then the drop-in's files, and a later file wins. So
 the order is `/etc/outhaul.env`, then the flags, then each `--env-file`. A line
@@ -144,8 +145,18 @@ DNS check first, fetching this server's public IP and resolving the name;
 `tunnel`, `local`, `local-ca` and `proxy` need none for a no-op run.
 
 A wizard re-run never writes `install.env` and, with no `--env-file`, leaves
-the drop-ins alone. It still follows the same table, so it no longer rebuilds an
+the drop-ins alone. With `--env-file` it rewrites both drop-ins, keeping an
+`install.env` from an earlier unattended install first, so that run's answers
+(`OUTHAUL_SSH_ADDR=off`, `OUTHAUL_UPDATES=off`, the proxy switches) still
+apply. It still follows the same table, so it no longer rebuilds an
 unchanged `main`.
+
+In that no-build row the service is not stopped, so there is no snapshot to
+restore. The run keeps `install.env`, the two drop-ins and `/etc/outhaul.env`
+in `/var/lib/outhaul-updater/env-previous` before it writes them. If the
+service will not start, or does not answer, with the new files, it puts the old
+ones back, reloads systemd, starts the old configuration and fails the run; the
+copy is removed after a healthy check.
 
 ## Upgrading and rollback
 
@@ -312,7 +323,10 @@ behaviour: a note, and Dockerfile and compose apps still work.
 change ufw, and does not run `apt-get install ufw`. `--firewall ufw` opens the
 ports the ingress needs (SSH always), plus the admin port from Outhaul's Docker
 bridge. Before anything is installed, a run that would enable ufw over a port
-that is listening now exits 1 instead of cutting it off.
+that is listening now exits 1 instead of cutting it off. The allow lines and
+the enable are best-effort, so the run asks `ufw status`: an unattended run
+exits 1 when ufw did not become active rather than reporting the ports open,
+and the wizard says so and carries on.
 
 ## Updates on the host
 
@@ -366,7 +380,9 @@ systemd, Docker and the journal:
   version that does; the run rolls an upgrade back, or stops a service it
   started.
 - A service that will not start: `journalctl -u outhaul -n 50 --no-pager`.
-  `install.env` and the drop-ins are on disk, so the journal names the setting
-  that was refused.
+  A run that installs a new version leaves `install.env` and the drop-ins on
+  disk, so the journal names the setting that was refused. A no-build run puts
+  the previous env files back and starts the old configuration, so what is on
+  disk is what was running before it.
 - Updates off but a request file appears: the updater removes it and changes
   nothing; `journalctl -u outhaul-update` says so.
