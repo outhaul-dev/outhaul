@@ -164,6 +164,44 @@ func TestStateBackupUsesTheAzureRow(t *testing.T) {
 	}
 }
 
+func TestStateBackupKeptAzureRowFailsWithTheVariable(t *testing.T) {
+	h := stateHarness(t, true)
+	ctx := context.Background()
+	if err := h.store.SyncAzureDestination(ctx, "examplebackups", "outhaul"); err != nil {
+		t.Fatal(err)
+	}
+	dests, err := h.store.ListDestinations(ctx)
+	if err != nil || len(dests) != 1 {
+		t.Fatalf("destinations = %v (err %v)", dests, err)
+	}
+	db := h.seedRunningDatabase(t, "shop", core.EnginePostgres)
+	h.backup(t, core.BackupTargetDatabase, db.ID, dests[0].ID, 0)
+
+	if err := h.store.SyncAzureDestination(ctx, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	dests, _ = h.store.ListDestinations(ctx)
+	if len(dests) != 1 || dests[0].Endpoint != "" || dests[0].Bucket != "" {
+		t.Fatalf("kept row = %+v, want a cleared endpoint and bucket", dests)
+	}
+
+	h.m.dial = blobstore.NewOpener("").Open
+	h.m.SetStateBackup(StateBackup{Schedule: "15 2 * * *", Keep: 1, Prefix: "prod"})
+	h.m.RunStateNow()
+	h.waitRun(t)
+
+	outcome, ok, err := h.store.StateBackupRun(ctx)
+	if err != nil || !ok {
+		t.Fatalf("outcome = ok %v, err %v", ok, err)
+	}
+	if outcome.OK || !strings.Contains(outcome.Reason, "OUTHAUL_BACKUP_AZURE_ACCOUNT") {
+		t.Errorf("outcome = %+v, want a failure naming OUTHAUL_BACKUP_AZURE_ACCOUNT", outcome)
+	}
+	if keys := h.blob.keys(); len(keys) != 0 {
+		t.Errorf("uploaded %v, want nothing", keys)
+	}
+}
+
 func TestStateBackupMissingDestination(t *testing.T) {
 	h := stateHarness(t, true)
 	h.m.SetStateBackup(StateBackup{Schedule: "15 2 * * *", Destination: "nope", Keep: 1, Prefix: "prod"})

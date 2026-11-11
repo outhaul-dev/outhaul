@@ -257,6 +257,30 @@ func TestRestorePassRetriesUntilItRuns(t *testing.T) {
 	}
 }
 
+func TestRestorePassRetriesAReadError(t *testing.T) {
+	e := newTestEnv(t)
+	pendingRestoreMarker(t, e)
+	e.srv.restoreEvery = time.Millisecond
+	var reads atomic.Int32
+	e.srv.restoreMarker = func(ctx context.Context) (core.RestoreMarker, bool, error) {
+		if reads.Add(1) == 1 {
+			return core.RestoreMarker{}, false, errors.New("database is busy")
+		}
+		return e.store.RestoreMarker(ctx)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	e.srv.RunRestorePass(ctx)
+
+	if reads.Load() < 2 {
+		t.Fatalf("marker read %d time(s), want a retry", reads.Load())
+	}
+	if m := restoreMarkerOf(t, e); m.Pending {
+		t.Fatal("the pass never ran after a read error")
+	}
+}
+
 func TestRestoreNoticeOnSettings(t *testing.T) {
 	e := newTestEnv(t)
 	e.login(t)

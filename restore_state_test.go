@@ -724,6 +724,82 @@ func TestRestoreStateMigratesAnOlderCopy(t *testing.T) {
 	}
 }
 
+func TestSwapInReportsWhatMoved(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.Load(func(k string) string {
+		if k == "OUTHAUL_DATA_DIR" {
+			return dir
+		}
+		return ""
+	})
+	old := filepath.Join(dir, "outhaul.db")
+	if err := os.WriteFile(old, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	moved, dbMoved, err := swapIn(cfg, filepath.Join(dir, "missing.db"), nil, "20261111T021500Z")
+	if err == nil || !dbMoved {
+		t.Fatalf("swapIn = moved %v, dbMoved %v, err %v; want a failure after moving the database", moved, dbMoved, err)
+	}
+	want := old + ".before-restore-20261111T021500Z"
+	if len(moved) != 1 || moved[0] != want {
+		t.Fatalf("moved = %v, want [%s]", moved, want)
+	}
+	msg := swapError(moved, dbMoved, err).Error()
+	if !strings.Contains(msg, want) || !strings.Contains(msg, "the host has no outhaul.db") {
+		t.Errorf("swapError = %q, want the moved path and the no-database warning", msg)
+	}
+}
+
+func TestRestoreStateRefusesAFailedMigration(t *testing.T) {
+	src := newRestoreSource(t, true)
+	failed := filepath.Join(t.TempDir(), "failed.db")
+	copyForTest(t, src.dbPath, failed)
+	db, err := sql.Open("sqlite", "file:"+url.PathEscape(failed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM schema_migrations WHERE name = 'migrations/0030_destination_kind.sql'`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+
+	dir := t.TempDir()
+	oldKeyPath := filepath.Join(dir, "secret.key")
+	oldBox, err := secret.Load(oldKeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRaw, err := os.ReadFile(oldKeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := store.Open(filepath.Join(dir, "outhaul.db"), oldBox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := old.SetSetting(context.Background(), "target", "yes"); err != nil {
+		t.Fatal(err)
+	}
+	old.Close()
+
+	_, errOut, code := runRestore(t, dir, failed, src.keyPath)
+	if code == 0 || !strings.Contains(errOut, "duplicate column") {
+		t.Fatalf("restore with a failing migration = %d, %q", code, errOut)
+	}
+	assertNoStaged(t, dir)
+	if got, err := os.ReadFile(oldKeyPath); err != nil || !bytes.Equal(got, oldRaw) {
+		t.Errorf("the target key changed: %x, %v", got, err)
+	}
+	target, err := store.Open(filepath.Join(dir, "outhaul.db"), oldBox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer target.Close()
+	if v, ok, err := target.GetSetting(context.Background(), "target"); err != nil || !ok || v != "yes" {
+		t.Errorf("the target database changed: %q, %v, %v", v, ok, err)
+	}
+}
+
 func TestRestoreStateAcceptsACopyWithNothingSealedWithoutAKey(t *testing.T) {
 	src := newRestoreSource(t, false)
 	t.Run("no key", func(t *testing.T) {

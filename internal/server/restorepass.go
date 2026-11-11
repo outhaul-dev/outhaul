@@ -25,16 +25,20 @@ func (s *Server) RunRestorePass(ctx context.Context) {
 	t := time.NewTicker(every)
 	defer t.Stop()
 	for {
-		m, ok, err := s.store.RestoreMarker(ctx)
-		if err != nil {
-			log.Printf("restore pass: read marker: %v", err)
-			return
+		read := s.restoreMarker
+		if read == nil {
+			read = s.store.RestoreMarker
 		}
-		if !ok || !m.Pending {
+		m, ok, err := read(ctx)
+		switch {
+		case err != nil:
+			log.Printf("restore pass: read marker: %v; retrying", err)
+		case !ok || !m.Pending:
 			return
-		}
-		if err := s.runRestorePassOnce(ctx, m); err != nil {
-			log.Printf("restore pass: %v; retrying", err)
+		default:
+			if err := s.runRestorePassOnce(ctx, m); err != nil {
+				log.Printf("restore pass: %v; retrying", err)
+			}
 		}
 		select {
 		case <-ctx.Done():

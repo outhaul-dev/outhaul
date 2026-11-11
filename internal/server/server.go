@@ -100,7 +100,8 @@ type Server struct {
 	previews  PreviewHandler      // routes pull_request webhooks to the preview manager; nil disables previews
 	metrics   metricsSampler      // host/self resource sampler for the Metrics page
 
-	restoreEvery time.Duration // how often the first-start pass retries; tests shorten it
+	restoreEvery  time.Duration // how often the first-start pass retries; tests shorten it
+	restoreMarker func(ctx context.Context) (core.RestoreMarker, bool, error)
 
 	pages      map[string]*template.Template
 	setupToken string
@@ -182,6 +183,7 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 		tlsEnabled:        tlsEnabled,
 		setupToken:        setupToken,
 		restoreEvery:      time.Minute,
+		restoreMarker:     st.RestoreMarker,
 		stateTokens:       map[string]time.Time{},
 		backfillAttempted: map[int64]bool{},
 		discover:          sso.Discover,

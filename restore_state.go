@@ -189,6 +189,11 @@ func restoreState(ctx context.Context, cfg config.Config, opts restoreOptions, o
 	if err := closeStaged(st, staged); err != nil {
 		return err
 	}
+	// Every file the command made gets the data directory's owner before any
+	// rename, so the swap itself does only same-directory renames.
+	if err := chownLike(staged, cfg.DataDir); err != nil {
+		return err
+	}
 
 	if err := store.CheckDatabaseIdle(dbPath); err != nil {
 		if errors.Is(err, store.ErrDatabaseInUse) {
@@ -196,9 +201,9 @@ func restoreState(ctx context.Context, cfg config.Config, opts restoreOptions, o
 		}
 		return err
 	}
-	moved, err := swapIn(cfg, staged, keyRaw, stamp)
+	moved, dbMoved, err := swapIn(cfg, staged, keyRaw, stamp)
 	if err != nil {
-		return err
+		return swapError(moved, dbMoved, err)
 	}
 	done = true
 
@@ -363,25 +368,25 @@ func closeStaged(st *store.Store, path string) error {
 }
 
 // swapIn writes the supplied key first, moves the old key and database aside,
-// then puts the staged database in place. Nothing is deleted.
-func swapIn(cfg config.Config, staged string, keyRaw []byte, stamp string) ([]string, error) {
-	var moved []string
+// then puts the staged database in place. Nothing is deleted. dbMoved reports
+// whether outhaul.db itself was renamed away.
+func swapIn(cfg config.Config, staged string, keyRaw []byte, stamp string) (moved []string, dbMoved bool, err error) {
 	keyPath := cfg.SecretKeyPath()
 	if keyRaw != nil {
 		old, err := os.ReadFile(keyPath)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return moved, err
+			return moved, false, err
 		}
 		if !bytes.Equal(old, keyRaw) {
 			if err == nil {
 				dst, err := moveAside(keyPath, stamp)
 				if err != nil {
-					return moved, err
+					return moved, false, err
 				}
 				moved = append(moved, dst)
 			}
 			if err := writeKey(keyPath, keyRaw); err != nil {
-				return moved, err
+				return moved, false, err
 			}
 		}
 	}
@@ -398,20 +403,32 @@ func swapIn(cfg config.Config, staged string, keyRaw []byte, stamp string) ([]st
 		if _, err := os.Stat(p); err == nil {
 			dst := p + ".before-restore-" + suffix
 			if err := os.Rename(p, dst); err != nil {
-				return moved, err
+				return moved, dbMoved, err
+			}
+			if p == dbPath {
+				dbMoved = true
 			}
 			moved = append(moved, dst)
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return moved, err
+			return moved, dbMoved, err
 		}
 	}
-	if err := chownLike(staged, cfg.DataDir); err != nil {
-		return moved, err
-	}
 	if err := os.Rename(staged, dbPath); err != nil {
-		return moved, err
+		return moved, dbMoved, err
 	}
-	return moved, nil
+	return moved, dbMoved, nil
+}
+
+// swapError is what a part-way swap says: which paths already moved, and
+// whether the host is without a database until one is moved back.
+func swapError(moved []string, dbMoved bool, err error) error {
+	if len(moved) == 0 {
+		return fmt.Errorf("the swap stopped part-way: %v; nothing had moved aside yet", err)
+	}
+	if dbMoved {
+		return fmt.Errorf("the swap stopped part-way: %v; already moved aside: %s; the host has no outhaul.db until you move one back", err, strings.Join(moved, ", "))
+	}
+	return fmt.Errorf("the swap stopped part-way: %v; already moved aside: %s", err, strings.Join(moved, ", "))
 }
 
 func moveAside(path, stamp string) (string, error) {
