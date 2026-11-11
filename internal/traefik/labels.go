@@ -28,6 +28,9 @@ func AppLabels(app core.App, domains []core.Domain, port int, rt Routing) map[st
 		labels["traefik.enable"] = "false"
 		return labels
 	}
+	if stamp := rt.Stamp(); stamp != "" {
+		labels[IngressLabel] = stamp
+	}
 	for _, d := range domains {
 		for k, v := range RouteLabels(RouterName(app.Name, d.ID), d, port, rt) {
 			labels[k] = v

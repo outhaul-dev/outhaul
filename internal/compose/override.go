@@ -53,6 +53,9 @@ func Override(app core.App, domains []core.Domain, network string, rt traefik.Ro
 			"outhaul.app":            app.Name,
 			"traefik.docker.network": network,
 		}
+		if stamp := rt.Stamp(); stamp != "" {
+			labels[traefik.IngressLabel] = stamp
+		}
 		for _, d := range byService[svc] {
 			for k, v := range traefik.RouteLabels(traefik.RouterName(app.Name, d.ID), d, d.Port, rt) {
 				labels[k] = v

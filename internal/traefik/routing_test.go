@@ -283,3 +283,109 @@ func TestHeaderKeepsTheGate(t *testing.T) {
 		}
 	}
 }
+
+func TestStamp(t *testing.T) {
+	empty := []Routing{
+		{},
+		{TLS: true, CertResolver: "le", GateAddress: "x"},
+	}
+	for _, rt := range empty {
+		if got := rt.Stamp(); got != "" {
+			t.Errorf("%+v: Stamp() = %q, want empty", rt, got)
+		}
+	}
+	stamps := map[string]string{}
+	for name, rt := range map[string]Routing{
+		"http-off": {HTTPOff: true},
+		"wildcard": {Wildcard: "*.shared.demo.example.com"},
+		"header":   {HeaderName: "X-Azure-FDID", HeaderValue: "abc-123"},
+	} {
+		got := rt.Stamp()
+		if len(got) != 12 || strings.ToLower(got) != got {
+			t.Errorf("%s: Stamp() = %q, want 12 lower-case hex characters", name, got)
+		}
+		for other, have := range stamps {
+			if got == have {
+				t.Errorf("%s and %s have the same stamp %q", name, other, got)
+			}
+		}
+		stamps[name] = got
+	}
+	a := Routing{HeaderName: "X-Azure-FDID", HeaderValue: "abc-123"}.Stamp()
+	b := Routing{HeaderName: "X-Azure-FDID", HeaderValue: "abc-124"}.Stamp()
+	if a == b {
+		t.Error("changing the header value should change the stamp")
+	}
+	lower := Routing{HeaderName: "x-azure-fdid", HeaderValue: "abc-123"}.Stamp()
+	if a != lower {
+		t.Errorf("the header name's case should not change the stamp: %q vs %q", a, lower)
+	}
+}
+
+func TestConstraint(t *testing.T) {
+	rt := Routing{HeaderName: "X-Azure-FDID", HeaderValue: "abc-123"}
+	pc := goldenProxyConfigs()["plain"]
+	pc.Routing = rt
+	flag := "--providers.docker.constraints=Label(`outhaul.ingress`,`" + rt.Stamp() + "`)"
+	found := false
+	for _, f := range proxySpec(pc).Cmd {
+		if f == flag {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("cmd does not carry %q: %v", flag, proxySpec(pc).Cmd)
+	}
+	noHeader := goldenProxyConfigs()["localca-no-admin"]
+	noHeader.Routing = Routing{TLS: true, HTTPOff: true}
+	for _, f := range proxySpec(noHeader).Cmd {
+		if strings.Contains(f, "constraints") {
+			t.Errorf("HTTP off alone should add no constraint, but got %q", f)
+		}
+	}
+}
+
+func TestStaleAndIgnores(t *testing.T) {
+	rt := Routing{HeaderName: "X-Azure-FDID", HeaderValue: "abc-123"}
+	cases := []struct {
+		name    string
+		rt      Routing
+		labels  map[string]string
+		stale   bool
+		ignores bool
+	}{
+		{"routed, no stamp", rt, map[string]string{"traefik.enable": "true"}, true, true},
+		{"routed, another stamp", rt, map[string]string{"traefik.enable": "true", IngressLabel: "0123456789ab"}, true, true},
+		{"routed, current stamp", rt, map[string]string{"traefik.enable": "true", IngressLabel: rt.Stamp()}, false, false},
+		{"not routed", rt, map[string]string{"traefik.enable": "false"}, false, false},
+		{"no labels", rt, map[string]string{}, false, false},
+		{"HTTP off, no stamp", Routing{HTTPOff: true}, map[string]string{"traefik.enable": "true"}, true, false},
+		{"nothing set, another stamp", Routing{}, map[string]string{"traefik.enable": "true", IngressLabel: "0123456789ab"}, true, false},
+	}
+	for _, c := range cases {
+		if got := c.rt.Stale(c.labels); got != c.stale {
+			t.Errorf("%s: Stale = %v, want %v", c.name, got, c.stale)
+		}
+		if got := c.rt.Ignores(c.labels); got != c.ignores {
+			t.Errorf("%s: Ignores = %v, want %v", c.name, got, c.ignores)
+		}
+	}
+}
+
+func TestRoutedContainersCarryTheStamp(t *testing.T) {
+	rt := Routing{TLS: true, HeaderName: "X-Azure-FDID", HeaderValue: "abc-123"}
+	labels := AppLabels(core.App{Name: "web"}, []core.Domain{{ID: 1, Host: "web.example.com", TLS: true}}, 8080, rt)
+	if got := labels[IngressLabel]; got != rt.Stamp() {
+		t.Errorf("AppLabels stamp = %q, want %q", got, rt.Stamp())
+	}
+	internal := AppLabels(core.App{Name: "web"}, nil, 8080, rt)
+	if _, ok := internal[IngressLabel]; ok {
+		t.Errorf("an app with no domains carries %s", IngressLabel)
+	}
+	noSettings := RouteLabels("r", core.Domain{Host: "web.example.com"}, 8080, Routing{TLS: true})
+	for k := range noSettings {
+		if k == IngressLabel {
+			t.Errorf("nothing set still writes %s", IngressLabel)
+		}
+	}
+}

@@ -1,11 +1,20 @@
 package traefik
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"strings"
 
 	"github.com/outhaul-dev/outhaul/internal/config"
 	"github.com/outhaul-dev/outhaul/internal/core"
 )
+
+// IngressLabel carries a short stamp of the routing settings on every routed
+// container. While a request header is required, Traefik's Docker provider is
+// constrained to the current stamp, so a container labelled under other
+// settings has no routes at all.
+const IngressLabel = "outhaul.ingress"
 
 // Routing carries the server-wide routing settings every writer of a Traefik
 // router reads: the app labels, the Compose override and the admin route. One
@@ -46,6 +55,46 @@ func (rt Routing) Rule(host, urlPath string) string {
 
 // HeaderRequired reports whether every router must carry the request header.
 func (rt Routing) HeaderRequired() bool { return rt.HeaderName != "" }
+
+// Stamp is a short hash of the settings that change what a container's labels
+// mean. It is "" when none of them is set, so an ordinary install writes no
+// stamp label. The header name is compared without case, as Traefik compares
+// header names.
+func (rt Routing) Stamp() string {
+	if rt.HeaderName == "" && !rt.HTTPOff && rt.Wildcard == "" {
+		return ""
+	}
+	material := fmt.Sprintf("http-off=%t\nwildcard=%s\nheader-name=%s\nheader-value=%s\n",
+		rt.HTTPOff, strings.ToLower(rt.Wildcard), strings.ToLower(rt.HeaderName), rt.HeaderValue)
+	sum := sha256.Sum256([]byte(material))
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+// Constraint is the Docker-provider constraint that makes Traefik ignore
+// containers whose stamp differs. It is "" unless a header is required.
+func (rt Routing) Constraint() string {
+	if !rt.HeaderRequired() {
+		return ""
+	}
+	return "Label(`" + IngressLabel + "`,`" + rt.Stamp() + "`)"
+}
+
+// Stale reports whether a container Traefik is asked to route (traefik.enable
+// on) was labelled under other settings: its stamp, "" when absent, isn't the
+// current one.
+func (rt Routing) Stale(labels map[string]string) bool {
+	if labels["traefik.enable"] != "true" {
+		return false
+	}
+	return labels[IngressLabel] != rt.Stamp()
+}
+
+// Ignores reports whether Traefik, running with rt's constraint, ignores a
+// container with these labels: a header is required and the container is
+// stale.
+func (rt Routing) Ignores(labels map[string]string) bool {
+	return rt.HeaderRequired() && rt.Stale(labels)
+}
 
 // headerTerm is the rule's last term, requiring the configured request header.
 func (rt Routing) headerTerm() string {

@@ -198,6 +198,9 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 		"--providers.docker=true",
 		"--providers.docker.exposedbydefault=false",
 	}
+	if constraint := pc.Routing.Constraint(); constraint != "" {
+		cmd = append(cmd, "--providers.docker.constraints="+constraint)
+	}
 	httpOff := pc.Routing.HTTPOff && !pc.TunnelMode
 	if !httpOff {
 		cmd = append(cmd, "--entrypoints.web.address=:80")

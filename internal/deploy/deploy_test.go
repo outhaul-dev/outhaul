@@ -798,3 +798,57 @@ func TestDoneLineIsHTTPSWhenHTTPOff(t *testing.T) {
 		})
 	}
 }
+
+// While a request header is required, an image whose labels would give its
+// container a router Outhaul didn't write (and that lacks the header term) is
+// refused, whether it was just built or arrived with the deployment.
+func TestHeaderRequiredRefusesAnImageThatRoutesItself(t *testing.T) {
+	for _, reuse := range []bool{false, true} {
+		name := "built"
+		if reuse {
+			name = "reused"
+		}
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			h.worker.cfg.RequireHeaderName = "X-Azure-FDID"
+			h.worker.cfg.RequireHeaderValue = "abc-123"
+			ctx := context.Background()
+			app := h.app(t, "web")
+			dep := h.claimedDeployment(t, app.ID)
+			image := fmt.Sprintf("outhaul/%s:%d", app.Name, dep.ID)
+			if reuse {
+				image = "outhaul/web:reused"
+				dep.Image = image
+				dep.RollbackOf = 1
+			}
+			h.docker.ImageLabelsByRef = map[string]map[string]string{
+				image: {"traefik.http.routers.x.rule": "Host(`evil.example.com`)"},
+			}
+			h.worker.runPipeline(ctx, dep)
+			got := h.status(t, dep.ID)
+			if got.Status != core.StatusFailed || !strings.Contains(got.Reason, "traefik.http.routers.x.rule") {
+				t.Fatalf("status = %q (%q), want failed naming the label", got.Status, got.Reason)
+			}
+			for _, spec := range h.docker.Created {
+				if spec.Labels["traefik.enable"] == "true" {
+					t.Errorf("a routed container was created from the refused image: %s", spec.Name)
+				}
+			}
+		})
+	}
+}
+
+func TestNoHeaderAllowsAnImageWithTraefikLabels(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	app := h.app(t, "web")
+	dep := h.claimedDeployment(t, app.ID)
+	image := fmt.Sprintf("outhaul/%s:%d", app.Name, dep.ID)
+	h.docker.ImageLabelsByRef = map[string]map[string]string{
+		image: {"traefik.http.routers.x.rule": "Host(`own.example.com`)"},
+	}
+	h.worker.runPipeline(ctx, dep)
+	if got := h.status(t, dep.ID); got.Status != core.StatusRunning {
+		t.Fatalf("status = %q (%q), want running", got.Status, got.Reason)
+	}
+}

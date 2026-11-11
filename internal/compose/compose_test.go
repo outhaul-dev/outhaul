@@ -268,3 +268,13 @@ func TestOverrideCarriesTheHeader(t *testing.T) {
 		t.Error("the header value is not preserved in the override")
 	}
 }
+
+func TestOverrideCarriesTheIngressStamp(t *testing.T) {
+	rt := traefik.Routing{TLS: true, HeaderName: "X-Azure-FDID", HeaderValue: "abc-123"}
+	app := core.App{Name: "shop"}
+	domains := []core.Domain{{ID: 1, Host: "shop.example.com", Service: "web", Port: 3000, TLS: true}}
+	got := string(Override(app, domains, "outhaul", rt))
+	if !strings.Contains(got, `"`+traefik.IngressLabel+`": "`+rt.Stamp()+`"`) {
+		t.Errorf("the override does not carry %s=%s:\n%s", traefik.IngressLabel, rt.Stamp(), got)
+	}
+}

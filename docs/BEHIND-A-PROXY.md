@@ -80,3 +80,15 @@ Every page shows a domain row as HTTPS and links it over HTTPS, including
 preview links and the "is live at" line in a deploy log. A row's "Automate
 HTTPS" box is shown on and can't be changed, with a note saying the server
 serves HTTPS only.
+
+## Images and Compose files with their own Traefik labels
+
+Docker copies an image's labels onto its containers, and Traefik reads container
+labels. While a request header is required, an image that carries any
+`traefik.*` label is refused for every single-container app, not only for fork
+previews: its router would be Outhaul's not to write, and it would lack the
+header term. The deploy fails and names the labels.
+
+A Compose file can write `traefik.*` labels on its own services. On a service
+Outhaul doesn't route, Traefik's constraint ignores them. On a service Outhaul
+does route, they sit beside Outhaul's own labels and are not checked yet.
