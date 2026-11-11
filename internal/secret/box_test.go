@@ -10,6 +10,29 @@ import (
 	"testing"
 )
 
+func TestNewBox(t *testing.T) {
+	raw := make([]byte, 32)
+	for i := range raw {
+		raw[i] = byte(i)
+	}
+	b, err := NewBox(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, err := b.Seal([]byte("value"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := b.Open(enc); err != nil || string(got) != "value" {
+		t.Fatalf("round trip = %q, %v", got, err)
+	}
+	for _, n := range []int{0, 31, 33} {
+		if _, err := NewBox(make([]byte, n)); err == nil || !strings.Contains(err.Error(), "want 32") {
+			t.Errorf("NewBox(%d bytes) = %v, want an error naming 32", n, err)
+		}
+	}
+}
+
 func TestSealOpenRoundTrip(t *testing.T) {
 	b := newTestBox(t)
 	enc, err := b.Seal([]byte("hunter2"))

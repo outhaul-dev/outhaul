@@ -12,6 +12,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"path"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -47,14 +48,19 @@ func (f *fakeDeployer) Cancel(_ context.Context, id int64) (bool, error) {
 // store or container, so tests assert on the calls (and set row state
 // themselves when a page needs it).
 type fakeDatabases struct {
-	provisioned []core.Database
-	started     []int64
-	stopped     []int64
-	removed     []int64
-	failWith    error // returned by Start/Stop/Remove when set
+	provisioned     []core.Database
+	provisionedSync []core.Database
+	started         []int64
+	stopped         []int64
+	removed         []int64
+	failWith        error // returned by ProvisionSync/Start/Stop/Remove when set
 }
 
 func (f *fakeDatabases) Provision(d core.Database) { f.provisioned = append(f.provisioned, d) }
+func (f *fakeDatabases) ProvisionSync(_ context.Context, d core.Database) error {
+	f.provisionedSync = append(f.provisionedSync, d)
+	return f.failWith
+}
 func (f *fakeDatabases) Start(_ context.Context, d core.Database) error {
 	if f.failWith != nil {
 		return f.failWith
@@ -79,9 +85,10 @@ func (f *fakeDatabases) Remove(_ context.Context, d core.Database) error {
 
 // fakeBackups records backup-manager calls from the handlers.
 type fakeBackups struct {
-	ran     []int64 // backup IDs passed to RunNow
-	tested  []string
-	testErr error // returned by TestDestination when set
+	ran       []int64 // backup IDs passed to RunNow
+	stateRuns int     // RunStateNow calls
+	tested    []string
+	testErr   error // returned by TestDestination when set
 
 	restored   []string           // "<backupID> <key>" per RestoreNow call
 	objects    []blobstore.Object // returned by ListRestoreObjects
@@ -90,6 +97,7 @@ type fakeBackups struct {
 }
 
 func (f *fakeBackups) RunNow(b core.Backup) { f.ran = append(f.ran, b.ID) }
+func (f *fakeBackups) RunStateNow()         { f.stateRuns++ }
 func (f *fakeBackups) RestoreNow(b core.Backup, objectKey string) {
 	f.restored = append(f.restored, fmt.Sprintf("%d %s", b.ID, objectKey))
 }
@@ -109,11 +117,14 @@ func (f *fakeBackups) TestDestination(_ context.Context, d core.Destination) err
 
 type fakeRuntime struct {
 	container   *docker.Container
-	stack       []docker.Container  // returned by ListContainers (compose apps)
-	listErr     error               // returned by ListContainers when set
-	listErrOf   map[string]error    // by app name: returned when listing that app's containers (outhaul.app)
-	listCalls   int                 // ListContainers calls
-	listMatches []map[string]string // each ListContainers call's label filter, in order
+	byName      map[string]*docker.Container // FindContainer when set
+	stack       []docker.Container           // returned by ListContainers (compose apps)
+	listErr     error                        // returned by ListContainers when set
+	images      []string                     // returned by ListImages
+	imagesErr   error                        // returned by ListImages when set
+	listErrOf   map[string]error             // by app name: returned when listing that app's containers (outhaul.app)
+	listCalls   int                          // ListContainers calls
+	listMatches []map[string]string          // each ListContainers call's label filter, in order
 	started     []string
 	stopped     []string
 	removed     []string
@@ -130,7 +141,23 @@ type fakeRuntime struct {
 }
 
 func (f *fakeRuntime) FindContainer(_ context.Context, name string) (*docker.Container, error) {
+	if f.byName != nil {
+		return f.byName[name], nil
+	}
 	return f.container, nil
+}
+
+func (f *fakeRuntime) ListImages(_ context.Context, refPattern string) ([]string, error) {
+	if f.imagesErr != nil {
+		return nil, f.imagesErr
+	}
+	var out []string
+	for _, img := range f.images {
+		if ok, _ := path.Match(refPattern, img); ok {
+			out = append(out, img)
+		}
+	}
+	return out, nil
 }
 
 // ListContainers returns the containers in stack whose labels match every

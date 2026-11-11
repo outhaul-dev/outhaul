@@ -39,6 +39,28 @@ func TestInitIsIdempotentAndWritesHook(t *testing.T) {
 	}
 }
 
+func TestExists(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	m := New(t.TempDir(), "/usr/local/bin/outhaul", "/var/lib/outhaul/git-hook.sock")
+	if m.Exists("api") {
+		t.Fatal("Exists before Init = true")
+	}
+	if err := m.Init("api"); err != nil {
+		t.Fatal(err)
+	}
+	if !m.Exists("api") {
+		t.Fatal("Exists after Init = false")
+	}
+	if err := m.Remove("api"); err != nil {
+		t.Fatal(err)
+	}
+	if m.Exists("api") {
+		t.Fatal("Exists after Remove = true")
+	}
+}
+
 func TestShellQuote(t *testing.T) {
 	cases := map[string]string{
 		"api":     `'api'`,

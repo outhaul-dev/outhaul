@@ -127,6 +127,22 @@
   {{end}}
 </section>
 
+{{with .RestoreNotice}}
+<section class="panel" id="restore-notice">
+  <h2 class="panel-title">Restore</h2>
+  {{if .Pending}}
+  <p class="env-note">Restored on {{fmtTime .RestoredAt}}. The first-start pass is still running; it retries each minute until it has re-created what it can.</p>
+  {{else}}
+  <p class="env-note">Restored on {{fmtTime .RestoredAt}}. The first start has re-created what it can.</p>
+  {{if .Databases}}<p class="muted env-note">Databases re-created: <span class="mono">{{range $i, $n := .Databases}}{{if $i}}, {{end}}{{$n}}{{end}}</span></p>{{end}}
+  {{if .Queued}}<p class="muted env-note">Deploys queued: <span class="mono">{{range $i, $n := .Queued}}{{if $i}}, {{end}}{{$n}}{{end}}</span></p>{{end}}
+  {{if .WaitingPush}}<p class="muted env-note">Waiting for a git push: <span class="mono">{{range $i, $n := .WaitingPush}}{{if $i}}, {{end}}{{$n}}{{end}}</span></p>{{end}}
+  {{if .Failed}}<p class="muted env-note">Failed: <span class="mono">{{range $i, $n := .Failed}}{{if $i}}, {{end}}{{$n}}{{end}}</span></p>{{end}}
+  <form method="post" action="/settings/restore/dismiss" class="inline"><button type="submit" class="btn btn-quiet">Dismiss</button></form>
+  {{end}}
+</section>
+{{end}}
+
 <section class="panel">
   <h2 class="panel-title">Backup destinations</h2>
   {{if .Destinations}}
@@ -136,12 +152,20 @@
       {{range .Destinations}}
       <tr>
         <td class="mono">{{.Name}}</td>
+        {{if eq .Kind "azure"}}
+        <td class="mono muted">{{.AzureAccount}}</td>
+        <td class="mono muted">{{.Bucket}}</td>
+        <td class="mono muted">managed identity</td>
+        {{else}}
         <td class="mono muted truncate">{{.Endpoint}}</td>
         <td class="mono muted">{{.Bucket}}</td>
         <td class="mono muted">{{if .Region}}{{.Region}}{{else}}—{{end}}</td>
+        {{end}}
         <td class="row-actions">
           <form method="post" action="/settings/destinations/{{.ID}}/test" class="inline"><button type="submit" class="btn btn-quiet">Test</button></form>
+          {{if or (ne .Kind "azure") (not $.AzureDestinationSet)}}
           <form method="post" action="/settings/destinations/{{.ID}}/delete" class="inline"><button type="submit" class="linkbtn">remove</button></form>
+          {{end}}
         </td>
       </tr>
       {{end}}
@@ -161,6 +185,29 @@
   </form>
   <p class="muted env-note">The secret key is stored encrypted at rest. Addressing is path-style, which every S3-compatible service accepts; Test writes and deletes a small probe object.</p>
 </section>
+
+{{with .StateBackup}}
+<section class="panel">
+  <h2 class="panel-title">State backup</h2>
+  <p class="muted env-note">A copy of Outhaul's own database, without sign-in sessions, on the schedule below.</p>
+  <table class="table">
+    <tbody>
+      <tr><th>Schedule</th><td class="mono">{{.Schedule}}</td></tr>
+      <tr><th>Destination</th><td class="mono">{{.Destination}}</td></tr>
+      <tr><th>Keep</th><td class="mono">{{.Keep}}</td></tr>
+      <tr><th>Prefix</th><td class="mono">{{if .Prefix}}{{.Prefix}}{{else}}—{{end}}</td></tr>
+    </tbody>
+  </table>
+  {{with $.StateBackupLast}}
+  <p class="muted env-note">
+    Last run {{fmtTime .At}}:
+    {{if .OK}}<span class="badge">ok</span> <span class="mono">{{.Key}}</span> ({{fmtSize .SizeBytes}})
+    {{else}}<span class="badge">failed</span> {{.Reason}}{{end}}
+  </p>
+  {{end}}
+  <form method="post" action="/settings/state-backup/run" class="inline"><button type="submit" class="btn btn-quiet">Run now</button></form>
+</section>
+{{end}}
 
 <section class="panel">
   <h2 class="panel-title">Git-push SSH port</h2>

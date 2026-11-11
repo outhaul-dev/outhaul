@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/outhaul-dev/outhaul/internal/cron"
 )
 
 // DefaultTraefikImage is the Traefik image Outhaul pulls and manages. Pinned to
@@ -53,7 +55,17 @@ type Config struct {
 	PublicURL string // externally reachable base URL of the admin UI (for GitHub callbacks/webhooks); empty disables GitHub App setup
 	ServerIP  string // public IP used in generated sslip.io template domains; empty means auto-detect
 
-	problems []error // malformed OUTHAUL_* values; reported by Validate
+	BackupAzureAccount   string // OUTHAUL_BACKUP_AZURE_ACCOUNT; the storage account for the Azure destination
+	BackupAzureContainer string // OUTHAUL_BACKUP_AZURE_CONTAINER; its private container
+	AzureClientID        string // AZURE_CLIENT_ID; the managed identity, when the VM has more than one
+
+	StateBackupSchedule    string // OUTHAUL_STATE_BACKUP_SCHEDULE; unset disables state backups
+	StateBackupDestination string // OUTHAUL_STATE_BACKUP_DESTINATION; "" means the Azure row
+	StateBackupKeep        int    // OUTHAUL_STATE_BACKUP_KEEP; 0 keeps every copy
+	StateBackupPrefix      string // OUTHAUL_STATE_BACKUP_PREFIX; keeps hosts sharing a container apart
+
+	stateBackupKeepSet bool    // OUTHAUL_STATE_BACKUP_KEEP was present
+	problems           []error // malformed OUTHAUL_* values; reported by Validate
 }
 
 // Getenv matches os.Getenv; injected so Load is testable without touching the
@@ -92,7 +104,17 @@ func Load(getenv Getenv) Config {
 
 		PublicURL: p.url("OUTHAUL_PUBLIC_URL"),
 		ServerIP:  p.ip("OUTHAUL_SERVER_IP"),
+
+		BackupAzureAccount:   getenv("OUTHAUL_BACKUP_AZURE_ACCOUNT"),
+		BackupAzureContainer: getenv("OUTHAUL_BACKUP_AZURE_CONTAINER"),
+		AzureClientID:        getenv("AZURE_CLIENT_ID"),
+
+		StateBackupSchedule:    p.cron("OUTHAUL_STATE_BACKUP_SCHEDULE"),
+		StateBackupDestination: getenv("OUTHAUL_STATE_BACKUP_DESTINATION"),
+		StateBackupKeep:        p.count("OUTHAUL_STATE_BACKUP_KEEP", 30),
+		StateBackupPrefix:      p.keyPrefix("OUTHAUL_STATE_BACKUP_PREFIX"),
 	}
+	c.stateBackupKeepSet = getenv("OUTHAUL_STATE_BACKUP_KEEP") != ""
 	c.problems = p.problems
 	return c
 }
@@ -163,6 +185,14 @@ func (c Config) CertResolver() string {
 	return ""
 }
 
+// Azure destination shapes, checked before startup so a typo names its
+// variable instead of failing the first backup.
+var (
+	azureAccountRe   = regexp.MustCompile(`^[a-z0-9]{3,24}$`)
+	azureContainerRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$`)
+	azureClientIDRe  = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+)
+
 // Validate rejects malformed values and impossible combinations before any
 // infrastructure moves.
 func (c Config) Validate() error {
@@ -200,6 +230,35 @@ func (c Config) Validate() error {
 		case c.ACMEEnabled() && c.ACMEDNSProvider == "":
 			errs = append(errs, errors.New("OUTHAUL_HTTP_PORT=off with Let's Encrypt needs a DNS-01 challenge, because the HTTP challenge uses port 80: set OUTHAUL_ACME_DNS_PROVIDER"))
 		}
+	}
+	switch {
+	case c.BackupAzureAccount == "" && c.BackupAzureContainer != "":
+		errs = append(errs, errors.New("OUTHAUL_BACKUP_AZURE_ACCOUNT is required when OUTHAUL_BACKUP_AZURE_CONTAINER is set"))
+	case c.BackupAzureAccount != "" && c.BackupAzureContainer == "":
+		errs = append(errs, errors.New("OUTHAUL_BACKUP_AZURE_CONTAINER is required when OUTHAUL_BACKUP_AZURE_ACCOUNT is set"))
+	case c.BackupAzureAccount != "":
+		if !azureAccountRe.MatchString(c.BackupAzureAccount) {
+			errs = append(errs, fmt.Errorf("OUTHAUL_BACKUP_AZURE_ACCOUNT=%q: want 3 to 24 lowercase letters and digits", c.BackupAzureAccount))
+		}
+		if !azureContainerRe.MatchString(c.BackupAzureContainer) || strings.Contains(c.BackupAzureContainer, "--") {
+			errs = append(errs, fmt.Errorf("OUTHAUL_BACKUP_AZURE_CONTAINER=%q: want 3 to 63 lowercase letters, digits and single hyphens, starting and ending with a letter or digit", c.BackupAzureContainer))
+		}
+		if c.AzureClientID != "" && !azureClientIDRe.MatchString(c.AzureClientID) {
+			errs = append(errs, fmt.Errorf("AZURE_CLIENT_ID=%q: want a GUID such as 8f7c1a2e-0000-4000-8000-000000000000", c.AzureClientID))
+		}
+	}
+	if c.StateBackupSchedule == "" {
+		if c.StateBackupDestination != "" {
+			errs = append(errs, fmt.Errorf("OUTHAUL_STATE_BACKUP_DESTINATION=%q: needs OUTHAUL_STATE_BACKUP_SCHEDULE", c.StateBackupDestination))
+		}
+		if c.StateBackupPrefix != "" {
+			errs = append(errs, fmt.Errorf("OUTHAUL_STATE_BACKUP_PREFIX=%q: needs OUTHAUL_STATE_BACKUP_SCHEDULE", c.StateBackupPrefix))
+		}
+		if c.stateBackupKeepSet {
+			errs = append(errs, errors.New("OUTHAUL_STATE_BACKUP_KEEP: needs OUTHAUL_STATE_BACKUP_SCHEDULE"))
+		}
+	} else if c.StateBackupDestination == "" && (c.BackupAzureAccount == "" || c.BackupAzureContainer == "") {
+		errs = append(errs, errors.New("OUTHAUL_STATE_BACKUP_SCHEDULE needs a destination: set OUTHAUL_STATE_BACKUP_DESTINATION, or OUTHAUL_BACKUP_AZURE_ACCOUNT and OUTHAUL_BACKUP_AZURE_CONTAINER"))
 	}
 	return errors.Join(errs...)
 }
@@ -542,6 +601,34 @@ func (p *parser) url(key string) string {
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		p.reject(key, v, "an absolute URL such as https://paas.example.com")
 		return ""
+	}
+	return v
+}
+
+// stateBackupPrefixRe is a key prefix: segments of letters, digits, '.', '_'
+// and '-', joined by single slashes.
+var stateBackupPrefixRe = regexp.MustCompile(`^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$`)
+
+// cron parses a five-field cron expression; empty stays empty.
+func (p *parser) cron(key string) string {
+	v := p.getenv(key)
+	if v == "" {
+		return ""
+	}
+	if _, err := cron.Parse(v); err != nil {
+		p.reject(key, v, "a 5-field cron expression such as 15 2 * * *")
+	}
+	return v
+}
+
+// keyPrefix parses a slash-separated object-key prefix; empty stays empty.
+func (p *parser) keyPrefix(key string) string {
+	v := p.getenv(key)
+	if v == "" {
+		return ""
+	}
+	if !stateBackupPrefixRe.MatchString(v) {
+		p.reject(key, v, "letters, digits, '-', '_', '.' and '/', with no '/' at either end")
 	}
 	return v
 }

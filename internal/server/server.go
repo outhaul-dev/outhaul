@@ -52,6 +52,7 @@ type Deployer interface {
 // asynchronous (it can pull an image); the rest are immediate.
 type Databases interface {
 	Provision(d core.Database)
+	ProvisionSync(ctx context.Context, d core.Database) error
 	Start(ctx context.Context, d core.Database) error
 	Stop(ctx context.Context, d core.Database) error
 	Remove(ctx context.Context, d core.Database) error
@@ -65,6 +66,7 @@ type Backups interface {
 	ListRestoreObjects(ctx context.Context, b core.Backup) ([]blobstore.Object, error)
 	RestoreDir(ctx context.Context, b core.Backup) (string, error)
 	TestDestination(ctx context.Context, d core.Destination) error
+	RunStateNow()
 }
 
 // Runtime is the slice of the Docker client the server needs for app lifecycle.
@@ -77,6 +79,7 @@ type Runtime interface {
 	ContainerLogs(ctx context.Context, id string, tail int) (io.ReadCloser, error)
 	ContainerStats(ctx context.Context, id string) (docker.Stats, error)
 	RemoveImage(ctx context.Context, ref string) error
+	ListImages(ctx context.Context, refPattern string) ([]string, error)
 	ListVolumesFull(ctx context.Context, match map[string]string) ([]docker.VolumeInfo, error)
 	RemoveVolume(ctx context.Context, name string, force bool) error
 }
@@ -98,12 +101,18 @@ type Server struct {
 	previews  PreviewHandler      // routes pull_request webhooks to the preview manager; nil disables previews
 	metrics   metricsSampler      // host/self resource sampler for the Metrics page
 
+	restoreEvery  time.Duration // how often the first-start pass retries; tests shorten it
+	restoreMarker func(ctx context.Context) (core.RestoreMarker, bool, error)
+
 	pages      map[string]*template.Template
 	setupToken string
 	publicURL  string
 	serverIP   string          // for generated sslip.io template domains; may be empty
 	tlsEnabled bool            // ACME or local CA configured: HTTPS automation is available
 	routing    traefik.Routing // the server-wide routing settings the pages show
+
+	azureDestinationSet bool              // OUTHAUL_BACKUP_AZURE_* set: the Azure row belongs to the environment
+	stateBackup         *StateBackupPanel // nil or no schedule: no State backup panel
 
 	repos      *gitrepo.Manager // push-app bare repos; nil disables push-repo cleanup
 	sshControl SSHControl       // git-push SSH server; nil disables the port setting
@@ -176,6 +185,8 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 		serverIP:          serverIP,
 		tlsEnabled:        tlsEnabled,
 		setupToken:        setupToken,
+		restoreEvery:      time.Minute,
+		restoreMarker:     st.RestoreMarker,
 		stateTokens:       map[string]time.Time{},
 		backfillAttempted: map[int64]bool{},
 		discover:          sso.Discover,
@@ -210,6 +221,20 @@ func (s *Server) streamContext(r *http.Request) (context.Context, context.Cancel
 
 // SetCertSync installs the hook that refreshes local-CA certs after domain
 // changes. Call before Handler.
+// SetAzureDestinationSet records whether the environment owns the Azure row.
+func (s *Server) SetAzureDestinationSet(on bool) { s.azureDestinationSet = on }
+
+// StateBackupPanel is what Settings shows for the state-backup schedule.
+type StateBackupPanel struct {
+	Schedule    string
+	Destination string // the configured name, or "Azure Blob"
+	Keep        int
+	Prefix      string
+}
+
+// SetStateBackup installs the panel data; an empty schedule hides it.
+func (s *Server) SetStateBackup(p StateBackupPanel) { s.stateBackup = &p }
+
 func (s *Server) SetCertSync(cs CertSyncer) { s.certSync = cs }
 
 // SetLocalCAFile publishes the CA root certificate at GET /ca.pem.

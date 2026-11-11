@@ -320,6 +320,30 @@ Deliberate seams: cross-target restore (different database/volume/server),
 upload-a-local-dump, PITR/incremental, automatic pre-restore safety backup
 (the confirm dialog tells the operator to Run now first).
 
+### Azure Blob destinations, state backups and restore (done)
+
+A third destination kind, `azure`, is one row owned by the environment:
+`OUTHAUL_BACKUP_AZURE_ACCOUNT` and `..._CONTAINER`, kept in step by
+`SyncAzureDestination`. It has no secret. A process-wide managed-identity token
+source (`internal/blobstore/imds.go`) feeds the hand-rolled Azure Blob client
+(`azure.go`): 8 MiB blocks, per-request deadlines, a 60-second stall check,
+two retries, and one token refresh after a 401. No SDK, as for S3. The row
+can't be removed on Settings while the settings are set.
+
+The same manager copies Outhaul's own database (`Store.Snapshot`: `VACUUM
+INTO` plus session stripping) to `<prefix>/_outhaul-state/<stamp>.db.gz` on
+`OUTHAUL_STATE_BACKUP_SCHEDULE`, with retention. An install with no account
+uploads nothing, so a freshly rebuilt host can't become "latest".
+
+`outhaul restore-state` puts a copy back on an empty install. It stages and
+checks the file, migrates an older schema on the staged copy, proves the key by
+opening every sealed value, strips sessions, writes a `state_restore` marker,
+and swaps key first and database second, moving the old files to
+`*.before-restore-<stamp>`. `serve` consumes the marker with a first-start pass
+that marks missing images pruned, re-provisions `running` databases empty, and
+queues for live apps with no container the same deploy a protection change
+would (ordinary apps before previews). See `docs/STATE-BACKUP.md`.
+
 ### Dockerfile builds (done)
 
 A third app kind, `dockerfile`, deploys repos that carry their own Dockerfile

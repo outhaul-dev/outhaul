@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/blobstore"
 	"github.com/outhaul-dev/outhaul/internal/core"
@@ -28,6 +29,145 @@ func destinationForm(name string) url.Values {
 	return url.Values{
 		"name": {name}, "endpoint": {"https://s3.example.com"}, "region": {"eu-west-2"},
 		"bucket": {"outhaul"}, "access_key": {"AK"}, "secret_key": {"SK"},
+	}
+}
+
+func TestAzureDestinationRow(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	if err := e.store.SyncAzureDestination(context.Background(), "examplebackups", "outhaul"); err != nil {
+		t.Fatal(err)
+	}
+	e.srv.SetAzureDestinationSet(true)
+
+	dests, err := e.store.ListDestinations(context.Background())
+	if err != nil || len(dests) != 1 {
+		t.Fatalf("destinations = %v (err %v)", dests, err)
+	}
+	page := body(t, e.get(t, "/settings"))
+	for _, want := range []string{"Azure Blob", "examplebackups", "outhaul", "managed identity",
+		"/settings/destinations/" + itoa(dests[0].ID) + "/test"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("settings page missing %q", want)
+		}
+	}
+	if strings.Contains(page, "/settings/destinations/"+itoa(dests[0].ID)+"/delete") {
+		t.Error("the Azure row offers remove while the environment sets it")
+	}
+}
+
+func TestAzureDestinationCannotBeRemovedWhileSet(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	if err := e.store.SyncAzureDestination(context.Background(), "examplebackups", "outhaul"); err != nil {
+		t.Fatal(err)
+	}
+	e.srv.SetAzureDestinationSet(true)
+	dests, _ := e.store.ListDestinations(context.Background())
+
+	resp := e.postForm(t, "/settings/destinations/"+itoa(dests[0].ID)+"/delete", url.Values{})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("delete status = %d, want 409", resp.StatusCode)
+	}
+	if page := body(t, resp); !strings.Contains(page, "OUTHAUL_BACKUP_AZURE_ACCOUNT") {
+		t.Error("refusal does not name the variable")
+	}
+	if got, _ := e.store.ListDestinations(context.Background()); len(got) != 1 {
+		t.Errorf("row was removed: %+v", got)
+	}
+}
+
+func TestAzureDestinationTestUsesTheManager(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	if err := e.store.SyncAzureDestination(context.Background(), "examplebackups", "outhaul"); err != nil {
+		t.Fatal(err)
+	}
+	e.srv.SetAzureDestinationSet(true)
+	dests, _ := e.store.ListDestinations(context.Background())
+
+	resp := e.postForm(t, "/settings/destinations/"+itoa(dests[0].ID)+"/test", url.Values{})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("test status = %d, want 303", resp.StatusCode)
+	}
+	if len(e.backups.tested) != 1 || e.backups.tested[0] != "Azure Blob" {
+		t.Errorf("tested = %v, want the Azure row", e.backups.tested)
+	}
+}
+
+func TestStateBackupPanel(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	ctx := context.Background()
+
+	if page := body(t, e.get(t, "/settings")); strings.Contains(page, "State backup") {
+		t.Fatal("the panel is shown before any setting")
+	}
+	e.srv.SetStateBackup(StateBackupPanel{Schedule: ""})
+	if page := body(t, e.get(t, "/settings")); strings.Contains(page, "State backup") {
+		t.Fatal("the panel is shown with no schedule")
+	}
+
+	e.srv.SetStateBackup(StateBackupPanel{
+		Schedule: "15 2 * * *", Destination: "minio", Keep: 30, Prefix: "prod",
+	})
+	page := body(t, e.get(t, "/settings"))
+	for _, want := range []string{"State backup", "15 2 * * *", "minio", "30", "prod", "Run now"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("panel missing %q", want)
+		}
+	}
+
+	if err := e.store.SetStateBackupRun(ctx, core.StateBackupRun{
+		At: time.Now(), OK: true, Key: "prod/_outhaul-state/x.db.gz", SizeBytes: 1234,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	page = body(t, e.get(t, "/settings"))
+	if !strings.Contains(page, "prod/_outhaul-state/x.db.gz") || !strings.Contains(page, "1.2 KiB") {
+		t.Error("panel missing the last successful outcome")
+	}
+
+	if err := e.store.SetStateBackupRun(ctx, core.StateBackupRun{
+		At: time.Now(), OK: false, Reason: `destination "nope" does not exist`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if page := body(t, e.get(t, "/settings")); !strings.Contains(page, `destination &#34;nope&#34; does not exist`) &&
+		!strings.Contains(page, `destination "nope" does not exist`) {
+		t.Error("panel missing the last failure reason")
+	}
+}
+
+func TestRunStateBackupNow(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	e.srv.SetStateBackup(StateBackupPanel{Schedule: "15 2 * * *", Destination: "minio", Keep: 30})
+
+	resp := e.postForm(t, "/settings/state-backup/run", url.Values{})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", resp.StatusCode)
+	}
+	if e.backups.stateRuns != 1 {
+		t.Errorf("state runs = %d, want 1", e.backups.stateRuns)
+	}
+}
+
+func TestRunStateBackupNeedsSystemAdmin(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	e.srv.SetStateBackup(StateBackupPanel{Schedule: "15 2 * * *", Destination: "minio", Keep: 30})
+	p, err := e.store.CreateProject(context.Background(), core.Project{Name: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := e.signInAs(t, "viewer", core.RoleProjectViewer, p.ID)
+	resp := e.postAs(t, token, "/settings/state-backup/run", url.Values{})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if e.backups.stateRuns != 0 {
+		t.Errorf("state runs = %d, want none", e.backups.stateRuns)
 	}
 }
 

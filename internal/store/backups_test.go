@@ -3,7 +3,10 @@ package store
 import (
 	"context"
 	"errors"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
 )
@@ -51,6 +54,159 @@ func TestDestinationRoundTripAndEncryption(t *testing.T) {
 	}
 	if raw == "very-secret" {
 		t.Fatal("secret key stored in plaintext")
+	}
+}
+
+func TestDestinationKindMigration(t *testing.T) {
+	db := openMigratedBefore(t, "0030")
+	if _, err := db.Exec(`INSERT INTO destinations
+		(name, endpoint, region, bucket, access_key, secret_key, created_at)
+		VALUES ('minio', 'http://minio:9000', '', 'b', 'AK', 'SK', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(db); err != nil {
+		t.Fatal(err)
+	}
+	var kind string
+	if err := db.QueryRow(`SELECT kind FROM destinations WHERE name = 'minio'`).Scan(&kind); err != nil {
+		t.Fatal(err)
+	}
+	if kind != "s3" {
+		t.Errorf("kind = %q, want s3", kind)
+	}
+}
+
+func TestCreateDestinationDefaultsToS3(t *testing.T) {
+	s := openWithBox(t)
+	d := mustDestination(t, s, "minio")
+	if d.Kind != core.DestinationS3 {
+		t.Errorf("created kind = %q, want %q", d.Kind, core.DestinationS3)
+	}
+	got, err := s.GetDestination(context.Background(), d.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Kind != core.DestinationS3 {
+		t.Errorf("read kind = %q, want %q", got.Kind, core.DestinationS3)
+	}
+}
+
+func TestCreateDestinationRefusesAzureKind(t *testing.T) {
+	s := openWithBox(t)
+	_, err := s.CreateDestination(context.Background(), core.Destination{
+		Name: "azure", Kind: core.DestinationAzure, Endpoint: "https://examplebackups.blob.core.windows.net",
+		Bucket: "outhaul",
+	})
+	if err == nil || !strings.Contains(err.Error(), "environment") {
+		t.Fatalf("CreateDestination with azure kind = %v, want an error naming the environment", err)
+	}
+}
+
+func TestEmptyDestinationSecretNeedsNoBox(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.db")
+	s, err := Open(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	res, err := s.db.Exec(`INSERT INTO destinations
+		(name, endpoint, region, bucket, access_key, secret_key, created_at, kind)
+		VALUES ('Azure Blob', 'https://examplebackups.blob.core.windows.net', '', 'outhaul', '', '', '2026-01-01T00:00:00Z', 'azure')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetDestination(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SecretKey != "" || got.Kind != core.DestinationAzure {
+		t.Errorf("got secret %q kind %q, want empty secret and azure", got.SecretKey, got.Kind)
+	}
+}
+
+func TestSyncAzureDestination(t *testing.T) {
+	s := openWithBox(t)
+	ctx := context.Background()
+
+	if err := s.SyncAzureDestination(ctx, "examplebackups", "outhaul"); err != nil {
+		t.Fatal(err)
+	}
+	dests, err := s.ListDestinations(ctx)
+	if err != nil || len(dests) != 1 {
+		t.Fatalf("destinations = %v (err %v), want one", dests, err)
+	}
+	d := dests[0]
+	if d.Name != "Azure Blob" || d.Kind != core.DestinationAzure ||
+		d.Endpoint != "https://examplebackups.blob.core.windows.net" || d.Bucket != "outhaul" ||
+		d.Region != "" || d.AccessKey != "" || d.SecretKey != "" {
+		t.Fatalf("azure row = %+v", d)
+	}
+	if has, err := s.HasSealedValues(ctx); err != nil || has {
+		t.Fatalf("HasSealedValues = %v, %v; want false", has, err)
+	}
+	id := d.ID
+
+	if err := s.SyncAzureDestination(ctx, "examplebackups", "other"); err != nil {
+		t.Fatal(err)
+	}
+	dests, _ = s.ListDestinations(ctx)
+	if len(dests) != 1 || dests[0].ID != id || dests[0].Bucket != "other" {
+		t.Fatalf("after container change: %+v", dests)
+	}
+
+	if err := s.SyncAzureDestination(ctx, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if dests, _ = s.ListDestinations(ctx); len(dests) != 0 {
+		t.Fatalf("unset left %+v, want none", dests)
+	}
+
+	if err := s.SyncAzureDestination(ctx, "examplebackups", "outhaul"); err != nil {
+		t.Fatal(err)
+	}
+	dests, _ = s.ListDestinations(ctx)
+	keptID := dests[0].ID
+	db := mustDatabase(t, s, "shop")
+	mustBackup(t, s, core.BackupTargetDatabase, db.ID, dests[0].ID)
+	if err := s.SyncAzureDestination(ctx, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	dests, _ = s.ListDestinations(ctx)
+	if len(dests) != 1 || dests[0].ID != keptID || dests[0].Endpoint != "" || dests[0].Bucket != "" {
+		t.Fatalf("kept row = %+v", dests)
+	}
+
+	if err := s.SyncAzureDestination(ctx, "examplebackups", "outhaul"); err != nil {
+		t.Fatal(err)
+	}
+	dests, _ = s.ListDestinations(ctx)
+	if len(dests) != 1 || dests[0].ID != keptID ||
+		dests[0].Endpoint != "https://examplebackups.blob.core.windows.net" || dests[0].Bucket != "outhaul" {
+		t.Fatalf("restored row = %+v", dests)
+	}
+}
+
+func TestStateBackupRunRoundTrips(t *testing.T) {
+	s := openWithBox(t)
+	ctx := context.Background()
+	if _, ok, err := s.StateBackupRun(ctx); ok || err != nil {
+		t.Fatalf("absent outcome = ok %v, err %v", ok, err)
+	}
+	at := time.Date(2026, 11, 11, 2, 15, 0, 0, time.UTC)
+	want := core.StateBackupRun{At: at, OK: true, Key: "p/_outhaul-state/x.db.gz", SizeBytes: 42}
+	if err := s.SetStateBackupRun(ctx, want); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.StateBackupRun(ctx)
+	if err != nil || !ok {
+		t.Fatalf("StateBackupRun = ok %v, err %v", ok, err)
+	}
+	if !got.At.Equal(want.At) || got.OK != want.OK || got.Key != want.Key || got.SizeBytes != want.SizeBytes || got.Reason != want.Reason {
+		t.Errorf("outcome = %+v, want %+v", got, want)
 	}
 }
 

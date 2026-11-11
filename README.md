@@ -63,6 +63,7 @@ one-time setup URL. Developers with a local checkout can run
 - **Managed databases** — one click provisions PostgreSQL, MySQL, or Redis with generated credentials and persistent storage, reachable over the internal network (and optionally on a published host port).
 - **Template gallery** — deploy Uptime Kuma, Grafana, Umami, n8n, Vaultwarden, PocketBase, Ghost, WordPress, or MinIO in one click, with generated credentials and zero-DNS `sslip.io` domains — fully editable afterward like any compose app.
 - **Scheduled backups & restore** — ship database dumps and compose volumes to any S3-compatible bucket (AWS, MinIO, R2, B2, …) on cron schedules, with retention and run history; restore any archive from the same page.
+- **State backups** — a scheduled copy of Outhaul's own database (apps, domains, accounts, settings) to an S3-compatible bucket or Azure Blob, without sign-in sessions; see [docs/STATE-BACKUP.md](docs/STATE-BACKUP.md).
 
 ### See what's happening
 - **Live runtime logs** — tail container logs in the browser, per service for compose stacks.
@@ -202,6 +203,22 @@ Each update's log is in `/var/lib/outhaul-updater/log` on the server
 If an update leaves Outhaul down, the log says how to put the previous
 version back.
 
+### Restoring Outhaul's own state
+
+`restore-state` puts a state copy back on a fresh install, from a file or from
+the Azure container:
+
+```sh
+outhaul restore-state --from latest --key-file /root/secret.key
+outhaul restore-state --from 20261111T021500Z --key-file /root/secret.key
+outhaul restore-state --list
+```
+
+It fills an empty install only, proves the key before replacing anything, and
+leaves the old database and key beside the new ones. The full steps, the
+environment it needs and what a rebuild does not bring back are in
+[docs/STATE-BACKUP.md](docs/STATE-BACKUP.md).
+
 ## Configuration
 
 No config files — defaults with `OUTHAUL_*` environment overrides:
@@ -231,6 +248,15 @@ No config files — defaults with `OUTHAUL_*` environment overrides:
 | `OUTHAUL_SERVER_IP`     | (auto-detected)      | Public IP embedded in generated `sslip.io` template domains |
 | `OUTHAUL_UPDATES`       | `main`               | `main` follows the newest commit on `main`; `off` stops the panel's update actions, the background check and the root updater (`releases` is not built) |
 | `OUTHAUL_SSH_ADDR`      | `:2222`              | git-push SSH listen address; `off` opens no listener (the repositories and hook socket stay) |
+| `OUTHAUL_BACKUP_AZURE_ACCOUNT` | (empty)      | Storage account for the Azure Blob backup destination; set with `OUTHAUL_BACKUP_AZURE_CONTAINER` — see docs/STATE-BACKUP.md |
+| `OUTHAUL_BACKUP_AZURE_CONTAINER` | (empty)    | Private container for that destination; the host's managed identity needs "Storage Blob Data Contributor" on it |
+| `OUTHAUL_STATE_BACKUP_SCHEDULE` | (empty)     | Five-field cron for a copy of Outhaul's own database; unset disables it — see docs/STATE-BACKUP.md |
+| `OUTHAUL_STATE_BACKUP_DESTINATION` | (empty)  | Destination name for that copy; unset uses the Azure row |
+| `OUTHAUL_STATE_BACKUP_KEEP` | `30`              | State copies kept; `0` keeps all |
+| `OUTHAUL_STATE_BACKUP_PREFIX` | (empty)        | Key prefix for state copies, for hosts sharing a container |
+
+`AZURE_CLIENT_ID` is not an `OUTHAUL_*` setting: when the VM has more than one
+managed identity, set it to the one Outhaul should use.
 
 Apps are expected to listen on `$PORT` (Outhaul sets it and points Traefik at it).
 

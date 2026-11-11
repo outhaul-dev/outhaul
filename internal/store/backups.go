@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -21,8 +22,15 @@ const runHistoryCap = 20
 // --- destinations ---
 
 // CreateDestination inserts an S3 destination, encrypting the secret key at
-// rest. The returned Destination keeps the plaintext secret.
+// rest. The returned Destination keeps the plaintext secret. The Azure row
+// belongs to the environment and is written by SyncAzureDestination.
 func (s *Store) CreateDestination(ctx context.Context, d core.Destination) (core.Destination, error) {
+	if d.Kind == core.DestinationAzure {
+		return core.Destination{}, errors.New("store: the Azure destination comes from the environment")
+	}
+	if d.Kind == "" {
+		d.Kind = core.DestinationS3
+	}
 	if s.box == nil {
 		return core.Destination{}, fmt.Errorf("store: no secret box configured; cannot store destination credentials")
 	}
@@ -32,9 +40,9 @@ func (s *Store) CreateDestination(ctx context.Context, d core.Destination) (core
 	}
 	d.CreatedAt = time.Now().UTC()
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO destinations (name, endpoint, region, bucket, access_key, secret_key, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		d.Name, d.Endpoint, d.Region, d.Bucket, d.AccessKey, enc, fmtTime(d.CreatedAt))
+		`INSERT INTO destinations (name, endpoint, region, bucket, access_key, secret_key, created_at, kind)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		d.Name, d.Endpoint, d.Region, d.Bucket, d.AccessKey, enc, fmtTime(d.CreatedAt), d.Kind)
 	if err != nil {
 		return core.Destination{}, err
 	}
@@ -45,7 +53,78 @@ func (s *Store) CreateDestination(ctx context.Context, d core.Destination) (core
 	return d, nil
 }
 
-const destinationCols = `id, name, endpoint, region, bucket, access_key, secret_key, created_at`
+const (
+	destinationCols      = `id, name, endpoint, region, bucket, access_key, secret_key, created_at, kind`
+	azureDestinationName = "Azure Blob"
+)
+
+// SyncAzureDestination keeps the single kind=azure row in step with the
+// environment. Empty account and container remove it unless a backup schedule
+// uses it; a kept row has its endpoint and bucket cleared.
+func (s *Store) SyncAzureDestination(ctx context.Context, account, container string) error {
+	var id int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id FROM destinations WHERE kind = ?`, core.DestinationAzure).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		if account == "" && container == "" {
+			return nil
+		}
+		_, err := s.db.ExecContext(ctx,
+			`INSERT INTO destinations (name, endpoint, region, bucket, access_key, secret_key, created_at, kind)
+			 VALUES (?, ?, '', ?, '', '', ?, ?)`,
+			azureDestinationName, azureEndpoint(account), container, fmtTime(time.Now().UTC()), core.DestinationAzure)
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	if account == "" && container == "" {
+		if err := s.DeleteDestination(ctx, id); err != nil {
+			if !errors.Is(err, ErrDestinationInUse) {
+				return err
+			}
+			_, err = s.db.ExecContext(ctx,
+				`UPDATE destinations SET endpoint = '', bucket = '' WHERE id = ?`, id)
+			return err
+		}
+		return nil
+	}
+	_, err = s.db.ExecContext(ctx,
+		`UPDATE destinations SET name = ?, endpoint = ?, region = '', bucket = ?, access_key = '', secret_key = '', kind = ?
+		 WHERE id = ?`,
+		azureDestinationName, azureEndpoint(account), container, core.DestinationAzure, id)
+	return err
+}
+
+func azureEndpoint(account string) string {
+	return "https://" + account + ".blob.core.windows.net"
+}
+
+// stateBackupRunKey holds the last state-backup outcome in settings.
+const stateBackupRunKey = "state_backup_last"
+
+// StateBackupRun returns the most recent state-backup outcome. ok is false
+// when no run has been recorded.
+func (s *Store) StateBackupRun(ctx context.Context) (core.StateBackupRun, bool, error) {
+	v, ok, err := s.GetSetting(ctx, stateBackupRunKey)
+	if err != nil || !ok {
+		return core.StateBackupRun{}, false, err
+	}
+	var r core.StateBackupRun
+	if err := json.Unmarshal([]byte(v), &r); err != nil {
+		return core.StateBackupRun{}, false, fmt.Errorf("store: decode %s: %w", stateBackupRunKey, err)
+	}
+	return r, true, nil
+}
+
+// SetStateBackupRun records the most recent state-backup outcome.
+func (s *Store) SetStateBackupRun(ctx context.Context, r core.StateBackupRun) error {
+	b, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	return s.SetSetting(ctx, stateBackupRunKey, string(b))
+}
 
 func (s *Store) GetDestination(ctx context.Context, id int64) (core.Destination, error) {
 	row := s.db.QueryRowContext(ctx,
@@ -95,22 +174,24 @@ func (s *Store) DeleteDestination(ctx context.Context, id int64) error {
 }
 
 func (s *Store) scanDestination(row scanner) (core.Destination, error) {
-	if s.box == nil {
-		return core.Destination{}, fmt.Errorf("store: no secret box configured; cannot read destination credentials")
-	}
 	var (
 		d         core.Destination
 		enc       string
 		createdAt string
 	)
-	if err := row.Scan(&d.ID, &d.Name, &d.Endpoint, &d.Region, &d.Bucket, &d.AccessKey, &enc, &createdAt); err != nil {
+	if err := row.Scan(&d.ID, &d.Name, &d.Endpoint, &d.Region, &d.Bucket, &d.AccessKey, &enc, &createdAt, &d.Kind); err != nil {
 		return core.Destination{}, err
 	}
-	plain, err := s.box.Open(enc)
-	if err != nil {
-		return core.Destination{}, fmt.Errorf("decrypt destination %q secret: %w", d.Name, err)
+	if enc != "" {
+		if s.box == nil {
+			return core.Destination{}, fmt.Errorf("store: no secret box configured; cannot read destination credentials")
+		}
+		plain, err := s.box.Open(enc)
+		if err != nil {
+			return core.Destination{}, fmt.Errorf("decrypt destination %q secret: %w", d.Name, err)
+		}
+		d.SecretKey = string(plain)
 	}
-	d.SecretKey = string(plain)
 	t, err := parseTime(createdAt)
 	if err != nil {
 		return core.Destination{}, err

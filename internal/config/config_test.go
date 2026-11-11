@@ -389,6 +389,156 @@ func TestValidateAcceptsWellFormedValues(t *testing.T) {
 	}
 }
 
+func TestAzureDestinationSettings(t *testing.T) {
+	pair := func(account, container string) map[string]string {
+		m := map[string]string{}
+		if account != "" {
+			m["OUTHAUL_BACKUP_AZURE_ACCOUNT"] = account
+		}
+		if container != "" {
+			m["OUTHAUL_BACKUP_AZURE_CONTAINER"] = container
+		}
+		return m
+	}
+	cases := []struct {
+		name    string
+		env     map[string]string
+		wantVar string
+	}{
+		{"valid", pair("examplebackups", "outhaul"), ""},
+		{"account upper", pair("Example", "outhaul"), "OUTHAUL_BACKUP_AZURE_ACCOUNT"},
+		{"account short", pair("ab", "outhaul"), "OUTHAUL_BACKUP_AZURE_ACCOUNT"},
+		{"account underscore", pair("a_b", "outhaul"), "OUTHAUL_BACKUP_AZURE_ACCOUNT"},
+		{"container space", pair("examplebackups", "out haul"), "OUTHAUL_BACKUP_AZURE_CONTAINER"},
+		{"container leading hyphen", pair("examplebackups", "-outhaul"), "OUTHAUL_BACKUP_AZURE_CONTAINER"},
+		{"container trailing hyphen", pair("examplebackups", "outhaul-"), "OUTHAUL_BACKUP_AZURE_CONTAINER"},
+		{"container double hyphen", pair("examplebackups", "a--b"), "OUTHAUL_BACKUP_AZURE_CONTAINER"},
+		{"container short", pair("examplebackups", "ab"), "OUTHAUL_BACKUP_AZURE_CONTAINER"},
+		{"account only", pair("examplebackups", ""), "OUTHAUL_BACKUP_AZURE_CONTAINER"},
+		{"container only", pair("", "outhaul"), "OUTHAUL_BACKUP_AZURE_ACCOUNT"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Load(func(k string) string { return tc.env[k] })
+			err := c.Validate()
+			if tc.wantVar == "" {
+				if err != nil {
+					t.Fatalf("Validate = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantVar) {
+				t.Fatalf("Validate = %v, want an error naming %s", err, tc.wantVar)
+			}
+		})
+	}
+}
+
+func TestAzureClientIDSetting(t *testing.T) {
+	env := func(account, container, clientID string) map[string]string {
+		m := map[string]string{
+			"OUTHAUL_BACKUP_AZURE_ACCOUNT":   account,
+			"OUTHAUL_BACKUP_AZURE_CONTAINER": container,
+			"AZURE_CLIENT_ID":                clientID,
+		}
+		return m
+	}
+	c := Load(func(k string) string {
+		return env("examplebackups", "outhaul", "8f7c1a2e-0000-4000-8000-000000000000")[k]
+	})
+	if c.BackupAzureAccount != "examplebackups" || c.BackupAzureContainer != "outhaul" || c.AzureClientID == "" {
+		t.Fatalf("Load = %+v", c)
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate with a GUID = %v, want nil", err)
+	}
+	c = Load(func(k string) string { return env("examplebackups", "outhaul", "not-a-guid")[k] })
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "AZURE_CLIENT_ID") {
+		t.Fatalf("Validate with a bad client ID = %v, want an error naming AZURE_CLIENT_ID", err)
+	}
+	c = Load(func(k string) string { return env("", "", "not-a-guid")[k] })
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate without the pair = %v, want the client ID ignored", err)
+	}
+}
+
+func TestStateBackupSettings(t *testing.T) {
+	cases := []struct {
+		name     string
+		withPair bool
+		env      map[string]string
+		wantVar  string
+		wantKeep int
+	}{
+		{"azure pair", true, map[string]string{"OUTHAUL_STATE_BACKUP_SCHEDULE": "15 2 * * *"}, "", 30},
+		{"destination", false, map[string]string{
+			"OUTHAUL_STATE_BACKUP_SCHEDULE": "15 2 * * *", "OUTHAUL_STATE_BACKUP_DESTINATION": "minio",
+		}, "", 30},
+		{"schedule alone", false, map[string]string{"OUTHAUL_STATE_BACKUP_SCHEDULE": "15 2 * * *"}, "OUTHAUL_STATE_BACKUP_SCHEDULE", 30},
+		{"bad schedule", false, map[string]string{
+			"OUTHAUL_STATE_BACKUP_SCHEDULE": "15 2 * *", "OUTHAUL_STATE_BACKUP_DESTINATION": "minio",
+		}, "OUTHAUL_STATE_BACKUP_SCHEDULE", 30},
+		{"destination without schedule", false, map[string]string{"OUTHAUL_STATE_BACKUP_DESTINATION": "minio"}, "OUTHAUL_STATE_BACKUP_DESTINATION", 30},
+		{"prefix without schedule", false, map[string]string{"OUTHAUL_STATE_BACKUP_PREFIX": "prod/state"}, "OUTHAUL_STATE_BACKUP_PREFIX", 30},
+		{"keep without schedule", false, map[string]string{"OUTHAUL_STATE_BACKUP_KEEP": "7"}, "OUTHAUL_STATE_BACKUP_KEEP", 7},
+		{"prefix valid", false, map[string]string{
+			"OUTHAUL_STATE_BACKUP_SCHEDULE": "15 2 * * *", "OUTHAUL_STATE_BACKUP_DESTINATION": "minio",
+			"OUTHAUL_STATE_BACKUP_PREFIX": "prod/state",
+		}, "", 30},
+		{"prefix double slash", false, map[string]string{
+			"OUTHAUL_STATE_BACKUP_SCHEDULE": "15 2 * * *", "OUTHAUL_STATE_BACKUP_DESTINATION": "minio",
+			"OUTHAUL_STATE_BACKUP_PREFIX": "prod//state",
+		}, "OUTHAUL_STATE_BACKUP_PREFIX", 30},
+		{"prefix leading slash", false, map[string]string{
+			"OUTHAUL_STATE_BACKUP_SCHEDULE": "15 2 * * *", "OUTHAUL_STATE_BACKUP_DESTINATION": "minio",
+			"OUTHAUL_STATE_BACKUP_PREFIX": "/prod",
+		}, "OUTHAUL_STATE_BACKUP_PREFIX", 30},
+		{"prefix trailing slash", false, map[string]string{
+			"OUTHAUL_STATE_BACKUP_SCHEDULE": "15 2 * * *", "OUTHAUL_STATE_BACKUP_DESTINATION": "minio",
+			"OUTHAUL_STATE_BACKUP_PREFIX": "prod/",
+		}, "OUTHAUL_STATE_BACKUP_PREFIX", 30},
+		{"keep negative", false, map[string]string{
+			"OUTHAUL_STATE_BACKUP_SCHEDULE": "15 2 * * *", "OUTHAUL_STATE_BACKUP_DESTINATION": "minio",
+			"OUTHAUL_STATE_BACKUP_KEEP": "-1",
+		}, "OUTHAUL_STATE_BACKUP_KEEP", 30},
+		{"keep garbage", false, map[string]string{
+			"OUTHAUL_STATE_BACKUP_SCHEDULE": "15 2 * * *", "OUTHAUL_STATE_BACKUP_DESTINATION": "minio",
+			"OUTHAUL_STATE_BACKUP_KEEP": "many",
+		}, "OUTHAUL_STATE_BACKUP_KEEP", 30},
+		{"keep unset", false, map[string]string{
+			"OUTHAUL_STATE_BACKUP_SCHEDULE": "15 2 * * *", "OUTHAUL_STATE_BACKUP_DESTINATION": "minio",
+		}, "", 30},
+		{"keep zero", false, map[string]string{
+			"OUTHAUL_STATE_BACKUP_SCHEDULE": "15 2 * * *", "OUTHAUL_STATE_BACKUP_DESTINATION": "minio",
+			"OUTHAUL_STATE_BACKUP_KEEP": "0",
+		}, "", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{}
+			if tc.withPair {
+				env["OUTHAUL_BACKUP_AZURE_ACCOUNT"] = "examplebackups"
+				env["OUTHAUL_BACKUP_AZURE_CONTAINER"] = "outhaul"
+			}
+			for k, v := range tc.env {
+				env[k] = v
+			}
+			c := Load(func(k string) string { return env[k] })
+			err := c.Validate()
+			if tc.wantVar == "" {
+				if err != nil {
+					t.Fatalf("Validate = %v, want nil", err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.wantVar) {
+				t.Fatalf("Validate = %v, want an error naming %s", err, tc.wantVar)
+			}
+			if c.StateBackupKeep != tc.wantKeep {
+				t.Errorf("StateBackupKeep = %d, want %d", c.StateBackupKeep, tc.wantKeep)
+			}
+		})
+	}
+}
+
 func TestPruneBuildCacheDefaultsOn(t *testing.T) {
 	cfg := Load(func(string) string { return "" })
 	if !cfg.PruneBuildCache {

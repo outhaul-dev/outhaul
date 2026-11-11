@@ -1,11 +1,12 @@
-// Package blobstore talks to S3-compatible object storage (AWS S3, MinIO,
-// Cloudflare R2, Backblaze B2, Wasabi, …) with exactly the surface backups
-// and restores need: put, get, list, delete. Requests are SigV4-signed with
-// the standard library — no SDK — the same house call as the hand-rolled
-// GitHub App JWT.
-// Addressing is always path-style (endpoint/bucket/key), which every
+// Package blobstore talks to object storage — S3-compatible services (AWS S3,
+// MinIO, Cloudflare R2, Backblaze B2, Wasabi, …) and Azure Blob Storage — with
+// exactly the surface backups and restores need: put, get, list, delete.
+// Requests are signed with the standard library — no SDK — the same house
+// call as the hand-rolled GitHub App JWT.
+// S3 addressing is always path-style (endpoint/bucket/key), which every
 // S3-compatible accepts. Uploads are a single PUT, so one object is capped at
-// S3's 5 GB single-PUT limit; multipart is a deliberate seam.
+// S3's 5 GB single-PUT limit; multipart is a deliberate seam. Azure uses
+// blocks, so a large archive has no whole-request deadline.
 package blobstore
 
 import (
@@ -42,8 +43,8 @@ type Client interface {
 	Delete(ctx context.Context, key string) error
 }
 
-// Open returns a Client for an S3-compatible destination.
-func Open(d core.Destination) (Client, error) {
+// OpenS3 returns a Client for an S3-compatible destination.
+func OpenS3(d core.Destination) (Client, error) {
 	u, err := url.Parse(d.Endpoint)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return nil, fmt.Errorf("blobstore: endpoint %q is not an http(s) URL", d.Endpoint)

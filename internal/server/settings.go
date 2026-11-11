@@ -42,6 +42,20 @@ func (s *Server) renderSettingsWith(w http.ResponseWriter, r *http.Request, stat
 		return
 	}
 	data["Destinations"] = dests
+	data["AzureDestinationSet"] = s.azureDestinationSet
+	if m, ok, err := s.store.RestoreMarker(r.Context()); err != nil {
+		log.Printf("settings: read restore marker: %v", err)
+	} else if ok {
+		data["RestoreNotice"] = m
+	}
+	if s.stateBackup != nil && s.stateBackup.Schedule != "" {
+		data["StateBackup"] = *s.stateBackup
+		if run, ok, err := s.store.StateBackupRun(r.Context()); err != nil {
+			log.Printf("settings: read state backup outcome: %v", err)
+		} else if ok {
+			data["StateBackupLast"] = run
+		}
+	}
 	data["SSHAddr"] = s.sshAddr()
 	if name := r.URL.Query().Get("tested"); name != "" {
 		data["Notice"] = "Destination " + name + " is reachable and writable."

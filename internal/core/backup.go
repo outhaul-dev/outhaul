@@ -1,6 +1,9 @@
 package core
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Backup targets: what a backup snapshots.
 const (
@@ -21,17 +24,53 @@ const (
 	RunKindRestore = "restore"
 )
 
-// Destination is an S3-compatible bucket backups upload to (AWS, MinIO, R2,
-// B2, Wasabi, …). Addressed path-style; SecretKey is stored encrypted.
+// Destination kinds: which client and credentials a destination uses.
+const (
+	DestinationS3    = "s3"    // an S3-compatible endpoint with an access key and secret
+	DestinationAzure = "azure" // Azure Blob Storage, authenticated by the host's managed identity
+)
+
+// Destination is a bucket backups upload to: an S3-compatible one (AWS, MinIO,
+// R2, B2, Wasabi, …) or an Azure Blob container. S3 destinations are addressed
+// path-style and store SecretKey encrypted; the Azure one comes from the
+// environment and has no secret.
 type Destination struct {
 	ID        int64
 	Name      string // unique, human-friendly
-	Endpoint  string // e.g. https://s3.eu-west-2.amazonaws.com or http://minio:9000
+	Endpoint  string // e.g. https://s3.eu-west-2.amazonaws.com, http://minio:9000, or https://<account>.blob.core.windows.net
 	Region    string // SigV4 region; "auto" or "us-east-1" for most compatibles
 	Bucket    string
 	AccessKey string
 	SecretKey string
 	CreatedAt time.Time
+	Kind      string // DestinationS3 | DestinationAzure; "" is treated as s3 when read
+}
+
+// AzureAccount is the storage account in an Azure endpoint, or "" when the
+// endpoint is empty or is not the Azure form.
+func (d Destination) AzureAccount() string {
+	e := strings.TrimSuffix(d.Endpoint, "/")
+	for _, scheme := range []string{"https://", "http://"} {
+		if strings.HasPrefix(e, scheme) {
+			e = strings.TrimPrefix(e, scheme)
+			break
+		}
+	}
+	const suffix = ".blob.core.windows.net"
+	if !strings.HasSuffix(e, suffix) {
+		return ""
+	}
+	return strings.TrimSuffix(e, suffix)
+}
+
+// StateBackupRun is the outcome of the most recent copy of Outhaul's own
+// state, shown on Settings.
+type StateBackupRun struct {
+	At        time.Time `json:"at"`
+	OK        bool      `json:"ok"`
+	Key       string    `json:"key"`
+	SizeBytes int64     `json:"size_bytes"`
+	Reason    string    `json:"reason"`
 }
 
 // Backup is a schedule attaching one target to one destination: "dump this
