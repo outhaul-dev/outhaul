@@ -22,8 +22,11 @@ INSTALLER=${INSTALLER:-$(dirname "$0")/bootstrap.sh}
 # shellcheck disable=SC1090 # the installer is found at run time, next to this script
 OUTHAUL_INSTALLER_LIB=1 . "$INSTALLER"
 
-# Paths (tests point them at a temp tree after sourcing this file).
+# Paths (tests point them at a temp tree after sourcing this file). BIN and
+# UNIT_DIR are read by the functions bootstrap.sh now defines.
+# shellcheck disable=SC2034 # read by bootstrap.sh's functions
 BIN=/usr/local/bin/outhaul
+# shellcheck disable=SC2034 # read by bootstrap.sh's functions
 UNIT_DIR=/etc/systemd/system
 DATA_DIR=${OUTHAUL_DATA_DIR:-/var/lib/outhaul}
 UPDATE_DIR=$DATA_DIR/update
@@ -62,17 +65,8 @@ write_status() { # state from to message
 	return 1
 }
 
-# A field of the running binary's `outhaul version`; empty when it has none.
-build_field() { # name
-	"$BIN" version 2>/dev/null | sed -n "s/^$1=//p"
-}
-
 source_commit() {
 	git -C "$SRC_DIR" rev-parse HEAD
-}
-
-short() { # commit
-	if [ -n "$1" ]; then printf '%.7s\n' "$1"; else printf 'an unknown build\n'; fi
 }
 
 # Puts the Go toolchain go.mod asks for on PATH. An earlier update's copy in
@@ -100,144 +94,6 @@ cached_go_toolchain() { # version
 	else
 		note "could not keep Go $1 in $CACHE_DIR; the next update downloads it again"
 	fi
-}
-
-# Pulls the images the new build runs, so a slow download happens before
-# Outhaul stops rather than in the health window: Outhaul reconciles Traefik
-# before /healthz answers. cloudflared only where the tunnel runs.
-pull_images() { # binary
-	_images=$("$1" images) || die "the new build could not list its images"
-	_traefik=$(printf '%s\n' "$_images" | awk '$1 == "traefik" { print $2 }')
-	_cloudflared=$(printf '%s\n' "$_images" | awk '$1 == "cloudflared" { print $2 }')
-	[ -n "$_traefik" ] || die "the new build lists no Traefik image"
-	_was=$("$BIN" images 2>/dev/null | awk '$1 == "traefik" { print $2 }')
-	if [ -n "$_was" ] && [ "$_was" != "$_traefik" ]; then
-		note "Traefik's image changes from $_was to $_traefik."
-		note "This update restarts Traefik: every app is unreachable for a few seconds."
-	fi
-	spinner_start "pulling $_traefik"
-	docker pull "$_traefik" >>"$LOGFILE" 2>&1 || die "could not pull $_traefik"
-	spinner_stop 0
-	if [ -n "$_cloudflared" ] && docker container inspect outhaul-cloudflared >/dev/null 2>&1; then
-		spinner_start "pulling $_cloudflared"
-		docker pull "$_cloudflared" >>"$LOGFILE" 2>&1 || die "could not pull $_cloudflared"
-		spinner_stop 0
-	fi
-	step_ok "images pulled"
-}
-
-# Copies src over dest by way of a temp file and a rename: a new inode, so a
-# running program, or the shell reading this script, keeps the old file.
-# The temp file is dest.new, or tmp when given. cp -p keeps the owner and
-# mode, and -T replaces dest itself, whatever it is.
-replace_file() { # src dest [mode [tmp]]
-	_rf=${4:-$2.new}
-	rm -f "$_rf" || return 1
-	cp -p "$1" "$_rf" || return 1
-	if [ -n "${3:-}" ]; then chmod "$3" "$_rf" || return 1; fi
-	mv -fT "$_rf" "$2"
-}
-
-# Keeps the running version in WORK_DIR/previous: the binary,
-# outhaul.service, and the database with its -wal and -shm files when
-# present. Outhaul must be stopped. Built in previous.new, so previous/ is
-# always a whole copy. Every step is checked: callers test its status.
-snapshot() {
-	_new=$WORK_DIR/previous.new
-	rm -rf "$_new" || return 1
-	mkdir -m 0700 "$_new" || return 1
-	cp -p "$BIN" "$_new/outhaul" || return 1
-	if [ -f "$UNIT_DIR/outhaul.service" ]; then
-		cp -p "$UNIT_DIR/outhaul.service" "$_new/outhaul.service" || return 1
-	fi
-	for _f in outhaul.db outhaul.db-wal outhaul.db-shm; do
-		if [ -f "$DATA_DIR/$_f" ]; then cp -p "$DATA_DIR/$_f" "$_new/$_f" || return 1; fi
-	done
-	rm -rf "$WORK_DIR/previous" || return 1
-	mv "$_new" "$WORK_DIR/previous"
-}
-
-# Puts back what snapshot kept. A -wal or -shm file the snapshot does not
-# have is the new version's, and SQLite would replay it onto the old
-# database: it is removed. The data dir belongs to outhaul, so the database
-# files are copied in WORK_DIR and renamed into it (cp -p keeps them
-# outhaul's). Every step is checked: callers test its status.
-restore_snapshot() {
-	_p=$WORK_DIR/previous
-	[ -f "$_p/outhaul" ] || return 1
-	replace_file "$_p/outhaul" "$BIN" || return 1
-	if [ -f "$_p/outhaul.service" ]; then
-		replace_file "$_p/outhaul.service" "$UNIT_DIR/outhaul.service" || return 1
-	else
-		rm -f "$UNIT_DIR/outhaul.service" || return 1
-	fi
-	for _f in outhaul.db outhaul.db-wal outhaul.db-shm; do
-		if [ -f "$_p/$_f" ]; then
-			replace_file "$_p/$_f" "$DATA_DIR/$_f" '' "$WORK_DIR/.restore" || return 1
-		elif [ "$_f" != outhaul.db ]; then
-			rm -f "$DATA_DIR/$_f" || return 1
-		fi
-	done
-}
-
-install_new() {
-	replace_file "$SRC_DIR/outhaul" "$BIN" 0755 || return 1
-	replace_file "$SRC_DIR/deploy/outhaul.service" "$UNIT_DIR/outhaul.service" 0644
-}
-
-# Reads response headers on stdin: true when they carry X-Outhaul-Commit:
-# <commit>. An unstamped build (empty commit) sends no such header, so then
-# any 200 counts.
-answers_commit() { # commit
-	awk -v want="$1" '
-		{ sub(/\r$/, "") }
-		NR == 1 && want == "" && $2 == "200" { ok = 1 }
-		{
-			i = index($0, ":")
-			if (want == "" || i == 0 || tolower(substr($0, 1, i - 1)) != "x-outhaul-commit") next
-			v = substr($0, i + 1)
-			gsub(/^[ \t]+|[ \t]+$/, "", v)
-			if (v == want) ok = 1
-		}
-		END { exit !ok }'
-}
-
-# True once the Outhaul answering on the admin port reports commit: up to 60
-# one-second attempts.
-new_version_healthy() { # commit port
-	_i=0
-	while [ "$_i" -lt 60 ]; do
-		if curl -sS --max-time 2 -D - -o /dev/null "http://127.0.0.1:$2/healthz" 2>/dev/null | answers_commit "$1"; then
-			return 0
-		fi
-		sleep 1
-		_i=$((_i + 1))
-	done
-	return 1
-}
-
-# The commands to put the previous version back by hand.
-recovery_help() {
-	_p=$WORK_DIR/previous
-	printf 'To recover, run as root on the server:\n'
-	printf '  systemctl stop outhaul\n'
-	if [ "$SNAPSHOT_OK" = 1 ]; then
-		printf '  cp -p %s %s\n' "$_p/outhaul" "$BIN"
-		if [ -f "$_p/outhaul.service" ]; then
-			printf '  cp -p %s %s\n' "$_p/outhaul.service" "$UNIT_DIR/outhaul.service"
-		fi
-		for _f in outhaul.db outhaul.db-wal outhaul.db-shm; do
-			if [ -f "$_p/$_f" ]; then
-				# As restore_snapshot does it: copied here, renamed into the data dir.
-				printf '  cp -p %s %s && mv -fT %s %s\n' "$_p/$_f" "$WORK_DIR/.restore" "$WORK_DIR/.restore" "$DATA_DIR/$_f"
-			elif [ "$_f" != outhaul.db ]; then
-				printf '  rm -f %s\n' "$DATA_DIR/$_f"
-			fi
-		done
-		printf '  systemctl daemon-reload\n'
-	fi
-	printf '  systemctl start outhaul\n'
-	printf 'then check: journalctl -u outhaul -n 50 --no-pager\n'
 }
 
 # Logs the outcome, in the log and the journal, and writes the final status.

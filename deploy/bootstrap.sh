@@ -942,16 +942,6 @@ install_binary() {
 	step_ok "installed /usr/local/bin/outhaul"
 }
 
-# Installs the systemd unit shipped in the repo and (re)starts the service.
-install_service() {
-	install -m 0644 "$SRC_DIR/deploy/outhaul.service" /etc/systemd/system/outhaul.service
-	systemctl daemon-reload
-	if systemctl is-active --quiet outhaul; then
-		systemctl restart outhaul
-	else systemctl enable --now outhaul; fi
-	step_ok "outhaul service started"
-}
-
 # Copies src to dest by a temp file and rename, so a process that has dest
 # open or is running it keeps the old file: a new inode, never a rewrite.
 install_atomic() { # src dest mode
@@ -959,6 +949,277 @@ install_atomic() { # src dest mode
 	cp "$1" "$2.new" || return 1
 	chmod "$3" "$2.new" || return 1
 	mv -f "$2.new" "$2"
+}
+
+# Pulls the images the new build runs, so a slow download happens before
+# Outhaul stops rather than in the health window: Outhaul reconciles Traefik
+# before /healthz answers. cloudflared only where the tunnel runs.
+pull_images() { # binary
+	_images=$("$1" images) || die "the new build could not list its images"
+	_traefik=$(printf '%s\n' "$_images" | awk '$1 == "traefik" { print $2 }')
+	_cloudflared=$(printf '%s\n' "$_images" | awk '$1 == "cloudflared" { print $2 }')
+	[ -n "$_traefik" ] || die "the new build lists no Traefik image"
+	_was=$("$BIN" images 2>/dev/null | awk '$1 == "traefik" { print $2 }')
+	if [ -n "$_was" ] && [ "$_was" != "$_traefik" ]; then
+		note "Traefik's image changes from $_was to $_traefik."
+		note "This update restarts Traefik: every app is unreachable for a few seconds."
+	fi
+	spinner_start "pulling $_traefik"
+	docker pull "$_traefik" >>"$LOGFILE" 2>&1 || die "could not pull $_traefik"
+	spinner_stop 0
+	if [ -n "$_cloudflared" ] && docker container inspect outhaul-cloudflared >/dev/null 2>&1; then
+		spinner_start "pulling $_cloudflared"
+		docker pull "$_cloudflared" >>"$LOGFILE" 2>&1 || die "could not pull $_cloudflared"
+		spinner_stop 0
+	fi
+	step_ok "images pulled"
+}
+
+# Copies src over dest by way of a temp file and a rename: a new inode, so a
+# running program, or the shell reading this script, keeps the old file.
+# The temp file is dest.new, or tmp when given. cp -p keeps the owner and
+# mode, and -T replaces dest itself, whatever it is.
+replace_file() { # src dest [mode [tmp]]
+	_rf=${4:-$2.new}
+	rm -f "$_rf" || return 1
+	cp -p "$1" "$_rf" || return 1
+	if [ -n "${3:-}" ]; then chmod "$3" "$_rf" || return 1; fi
+	mv -fT "$_rf" "$2"
+}
+
+# Keeps the running version in WORK_DIR/previous: the binary,
+# outhaul.service, the database with its -wal and -shm files when present,
+# install.env and the two install drop-ins. Outhaul must be stopped. Built in
+# previous.new, so previous/ is always a whole copy. Every step is checked:
+# callers test its status.
+snapshot() {
+	_new=$WORK_DIR/previous.new
+	rm -rf "$_new" || return 1
+	mkdir -m 0700 "$_new" || return 1
+	cp -p "$BIN" "$_new/outhaul" || return 1
+	if [ -f "$UNIT_DIR/outhaul.service" ]; then
+		cp -p "$UNIT_DIR/outhaul.service" "$_new/outhaul.service" || return 1
+	fi
+	for _f in outhaul.db outhaul.db-wal outhaul.db-shm; do
+		if [ -f "$DATA_DIR/$_f" ]; then cp -p "$DATA_DIR/$_f" "$_new/$_f" || return 1; fi
+	done
+	if [ -f "$INSTALL_ENV" ]; then cp -p "$INSTALL_ENV" "$_new/install.env" || return 1; fi
+	if [ -f "$SERVICE_DROPIN" ]; then cp -p "$SERVICE_DROPIN" "$_new/outhaul.service.d.10-install.conf" || return 1; fi
+	if [ -f "$UPDATE_DROPIN" ]; then cp -p "$UPDATE_DROPIN" "$_new/outhaul-update.service.d.10-install.conf" || return 1; fi
+	rm -rf "$WORK_DIR/previous" || return 1
+	mv "$_new" "$WORK_DIR/previous"
+}
+
+# Puts back what snapshot kept. A -wal or -shm file the snapshot does not
+# have is the new version's, and SQLite would replay it onto the old
+# database: it is removed. So is an install.env or drop-in the snapshot
+# lacks: the old binary may refuse what the new flags wrote. The data dir
+# belongs to outhaul, so the database files are copied in WORK_DIR and
+# renamed into it (cp -p keeps them outhaul's). Every step is checked:
+# callers test its status.
+restore_snapshot() {
+	_p=$WORK_DIR/previous
+	[ -f "$_p/outhaul" ] || return 1
+	replace_file "$_p/outhaul" "$BIN" || return 1
+	if [ -f "$_p/outhaul.service" ]; then
+		replace_file "$_p/outhaul.service" "$UNIT_DIR/outhaul.service" || return 1
+	else
+		rm -f "$UNIT_DIR/outhaul.service" || return 1
+	fi
+	for _f in outhaul.db outhaul.db-wal outhaul.db-shm; do
+		if [ -f "$_p/$_f" ]; then
+			replace_file "$_p/$_f" "$DATA_DIR/$_f" '' "$WORK_DIR/.restore" || return 1
+		elif [ "$_f" != outhaul.db ]; then
+			rm -f "$DATA_DIR/$_f" || return 1
+		fi
+	done
+	if [ -f "$_p/install.env" ]; then
+		replace_file "$_p/install.env" "$INSTALL_ENV" || return 1
+	else
+		rm -f "$INSTALL_ENV" || return 1
+	fi
+	if [ -f "$_p/outhaul.service.d.10-install.conf" ]; then
+		replace_file "$_p/outhaul.service.d.10-install.conf" "$SERVICE_DROPIN" || return 1
+	else
+		rm -f "$SERVICE_DROPIN" || return 1
+	fi
+	if [ -f "$_p/outhaul-update.service.d.10-install.conf" ]; then
+		replace_file "$_p/outhaul-update.service.d.10-install.conf" "$UPDATE_DROPIN" || return 1
+	else
+		rm -f "$UPDATE_DROPIN" || return 1
+	fi
+}
+
+install_new() {
+	replace_file "$SRC_DIR/outhaul" "$BIN" 0755 || return 1
+	replace_file "$SRC_DIR/deploy/outhaul.service" "$UNIT_DIR/outhaul.service" 0644
+}
+
+# Reads response headers on stdin: true when they carry X-Outhaul-Commit:
+# <commit>. An unstamped build (empty commit) sends no such header, so then
+# any 200 counts.
+answers_commit() { # commit
+	awk -v want="$1" '
+		{ sub(/\r$/, "") }
+		NR == 1 && want == "" && $2 == "200" { ok = 1 }
+		{
+			i = index($0, ":")
+			if (want == "" || i == 0 || tolower(substr($0, 1, i - 1)) != "x-outhaul-commit") next
+			v = substr($0, i + 1)
+			gsub(/^[ \t]+|[ \t]+$/, "", v)
+			if (v == want) ok = 1
+		}
+		END { exit !ok }'
+}
+
+# True once the Outhaul answering on the admin port reports commit: up to 60
+# one-second attempts.
+new_version_healthy() { # commit port
+	_i=0
+	while [ "$_i" -lt 60 ]; do
+		if curl -sS --max-time 2 -D - -o /dev/null "http://127.0.0.1:$2/healthz" 2>/dev/null | answers_commit "$1"; then
+			return 0
+		fi
+		sleep 1
+		_i=$((_i + 1))
+	done
+	return 1
+}
+
+# The commands to put the previous version back by hand.
+recovery_help() {
+	_p=$WORK_DIR/previous
+	printf 'To recover, run as root on the server:\n'
+	printf '  systemctl stop outhaul\n'
+	if [ "$SNAPSHOT_OK" = 1 ]; then
+		printf '  cp -p %s %s\n' "$_p/outhaul" "$BIN"
+		if [ -f "$_p/outhaul.service" ]; then
+			printf '  cp -p %s %s\n' "$_p/outhaul.service" "$UNIT_DIR/outhaul.service"
+		fi
+		for _f in outhaul.db outhaul.db-wal outhaul.db-shm; do
+			if [ -f "$_p/$_f" ]; then
+				# As restore_snapshot does it: copied here, renamed into the data dir.
+				printf '  cp -p %s %s && mv -fT %s %s\n' "$_p/$_f" "$WORK_DIR/.restore" "$WORK_DIR/.restore" "$DATA_DIR/$_f"
+			elif [ "$_f" != outhaul.db ]; then
+				printf '  rm -f %s\n' "$DATA_DIR/$_f"
+			fi
+		done
+		if [ -f "$_p/install.env" ]; then
+			printf '  cp -p %s %s\n' "$_p/install.env" "$INSTALL_ENV"
+		else
+			printf '  rm -f %s\n' "$INSTALL_ENV"
+		fi
+		if [ -f "$_p/outhaul.service.d.10-install.conf" ]; then
+			printf '  cp -p %s %s\n' "$_p/outhaul.service.d.10-install.conf" "$SERVICE_DROPIN"
+		else
+			printf '  rm -f %s\n' "$SERVICE_DROPIN"
+		fi
+		if [ -f "$_p/outhaul-update.service.d.10-install.conf" ]; then
+			printf '  cp -p %s %s\n' "$_p/outhaul-update.service.d.10-install.conf" "$UPDATE_DROPIN"
+		else
+			printf '  rm -f %s\n' "$UPDATE_DROPIN"
+		fi
+		printf '  systemctl daemon-reload\n'
+	fi
+	printf '  systemctl start outhaul\n'
+	printf 'then check: journalctl -u outhaul -n 50 --no-pager\n'
+}
+
+# Task 7 replaces these stubs with the real writers. They exist here so the
+# swap tests run, and so both paths call the same names.
+write_install_env() { :; }
+write_dropins() { :; }
+
+# The careful swap. A first install pulls the images, installs and starts. An
+# upgrade pulls first, stops Outhaul, keeps the running version, installs,
+# starts and checks the commit, and puts the old files back when the new
+# version does not answer. It returns 1 on a failed first install or a
+# rolled-back upgrade, and never exits for a health failure: the wizard keeps
+# its completion screen and exit code.
+install_or_upgrade() { # src_dir target version
+	_src=$1 _target=$2 _version=$3
+	_from=$(build_field commit)
+	ADMIN_PORT=$(admin_port "${OUTHAUL_LISTEN_ADDR:-:8080}")
+	# Branch on the binary, not the stamp: a binary from before the stamp
+	# records no commit but is still running, and must go through the swap.
+	if [ ! -e "$BIN" ]; then
+		pull_images "$_src/outhaul" || return 1
+		install_new || die "could not install the new version"
+		write_install_env
+		write_dropins
+		systemctl daemon-reload || die "systemctl daemon-reload failed"
+		systemctl enable --now outhaul || die "could not start outhaul"
+		STARTED_SERVICE=1
+		if ! new_version_healthy "$_target" "$ADMIN_PORT"; then
+			step_fail "the new version did not answer"
+			journalctl -u outhaul -n 20 --no-pager
+			return 1
+		fi
+		return 0
+	fi
+	pull_images "$_src/outhaul" || return 1
+	printf '  .. stopping outhaul\n'
+	ROLLBACK_TO=$_from
+	STAGE=swap
+	SNAPSHOT_OK=0
+	systemctl stop outhaul || die "outhaul did not stop"
+	if snapshot; then
+		SNAPSHOT_OK=1
+	else
+		systemctl start outhaul || true
+		die "could not keep a copy of the running version"
+	fi
+	if ! install_new; then rollback_install "$_from" || true; return 1; fi
+	write_install_env
+	write_dropins
+	if ! systemctl daemon-reload; then rollback_install "$_from" || true; return 1; fi
+	if ! systemctl start outhaul; then rollback_install "$_from" || true; return 1; fi
+	STARTED_SERVICE=1
+	if ! new_version_healthy "$_target" "$ADMIN_PORT"; then
+		rollback_install "$_from" || true
+		return 1
+	fi
+	STAGE=''
+	return 0
+}
+
+# Puts the previous version back, starts it, and checks that it answers. It
+# also runs from the exit trap, so it checks every step itself and nothing
+# interrupts it. With SNAPSHOT_OK=0 there is no copy to trust: the binary
+# still in place is started instead of an older previous/.
+rollback_install() { # from
+	_from=$1
+	ROLLBACK_DONE=1
+	set +e
+	trap '' INT TERM
+	_old_port=$(admin_port "${OUTHAUL_LISTEN_ADDR:-:8080}")
+	printf '  .. rolling back to %s\n' "$(short "$_from")"
+	systemctl stop outhaul
+	_restored=1
+	if [ "$SNAPSHOT_OK" = 1 ] && ! restore_snapshot; then
+		_restored=0
+		note "could not put back every file from $WORK_DIR/previous"
+	fi
+	systemctl daemon-reload
+	systemctl start outhaul
+	if [ "$_restored" = 1 ] && new_version_healthy "$_from" "$_old_port"; then
+		ROLLED_BACK=1
+		STAGE=''
+		step_fail "the new version did not answer; rolled back to $(short "$_from")"
+		return 0
+	fi
+	STAGE=''
+	recovery_help
+	step_fail "the new version did not answer, and the old one did not come back either"
+	return 1
+}
+
+# The exit guard: a signal or a die after Outhaul stopped puts the old
+# version back, unless the explicit rollback already ran.
+swap_guard() {
+	[ "${STAGE:-}" = swap ] || return 0
+	[ "${ROLLBACK_DONE:-0}" = 0 ] || return 0
+	rollback_install "${ROLLBACK_TO:-}" || true
 }
 
 # Runs a command inside dir, a directory the outhaul user owns, so that the
@@ -982,10 +1243,10 @@ in_real_dir() { # dir command...
 # overridable for tests, and the updater itself calls this from a new tree
 # after a healthy update.
 install_updater() { # src_dir
-	_lib=${LIB_DIR:-/usr/local/lib/outhaul}
-	_units=${UNIT_DIR:-/etc/systemd/system}
-	_upd=${UPDATE_DIR:-/var/lib/outhaul/update}
-	_work=${WORK_DIR:-/var/lib/outhaul-updater}
+	_lib=$LIB_DIR
+	_units=$UNIT_DIR
+	_upd=$UPDATE_DIR
+	_work=$WORK_DIR
 	mkdir -p "$_lib" "$_units" || return 1
 	install_atomic "$1/deploy/update.sh" "$_lib/update.sh" 0755 || return 1
 	install_atomic "$1/deploy/bootstrap.sh" "$_lib/bootstrap.sh" 0644 || return 1
@@ -1062,24 +1323,6 @@ local_setup_url() { # setup_url adminport
 	printf 'http://127.0.0.1:%s/setup?token=%s\n' "$2" "${1##*token=}"
 }
 
-# Polls the admin endpoint up to ~30s. Returns 0 when it answers with ANY
-# HTTP response (no -f: a pre-setup redirect/403 still means "reachable").
-wait_healthy() { # url
-	url=$1
-	i=0
-	spinner_start "waiting for outhaul to answer"
-	while [ "$i" -lt 30 ]; do
-		if curl -sS --max-time 2 -o /dev/null "$url" 2>/dev/null; then
-			spinner_stop 0
-			return 0
-		fi
-		sleep 1
-		i=$((i + 1))
-	done
-	spinner_stop 1
-	return 1
-}
-
 # Polls the admin UI's /healthz through Traefik, the way a browser reaches it
 # under the public URL, for up to ~60s: Traefik may still be starting. Only a
 # 200 counts (-f): a 404 is Traefik without the admin route, a 502/504 is
@@ -1130,6 +1373,9 @@ completion_screen() { # mode url ports setup_url healthy(0/1) localca(0/1) publi
 	else
 		step_ok "admin UI reachable"
 	fi
+	if [ "${ROLLED_BACK:-0}" = 1 ]; then
+		note "the new version did not answer; the previous version is running again"
+	fi
 	[ -n "$ports" ] && note "firewall: $ports open"
 	# The firewall never opens the admin port, and only Let's Encrypt mode
 	# routes the admin UI through Traefik — everyone else needs a tunnel.
@@ -1175,8 +1421,37 @@ LOGFILE=/var/log/outhaul-install.log
 VERBOSE=0
 FROM_CHECKOUT=0
 CHECKOUT_DIR=.
+
+# The updater's paths, shared by the installer and the updater. Plain
+# assignments, not ${VAR:-…}: a root environment must not redirect them, and
+# the tests override them after sourcing. OUTHAUL_DATA_DIR is the one setting
+# meant to move them.
 BIN=/usr/local/bin/outhaul
+UNIT_DIR=/etc/systemd/system
+LIB_DIR=/usr/local/lib/outhaul
+DATA_DIR=${OUTHAUL_DATA_DIR:-/var/lib/outhaul}
+UPDATE_DIR=$DATA_DIR/update
+WORK_DIR=/var/lib/outhaul-updater
+# shellcheck disable=SC2034 # the updater's cached_go_toolchain reads it
+CACHE_DIR=/var/cache/outhaul
+INSTALL_ENV=/etc/outhaul/install.env
+SERVICE_DROPIN=$UNIT_DIR/outhaul.service.d/10-install.conf
+UPDATE_DROPIN=$UNIT_DIR/outhaul-update.service.d/10-install.conf
+ENV_FILE=/etc/outhaul.env
 MARKER=/var/lib/outhaul-updater/installed
+
+# What the swap did, for the exit guard and the completion screen.
+STARTED_SERVICE=0
+SNAPSHOT_OK=0
+ROLLED_BACK=0
+HEALTHY=0
+ADMIN_PORT=''
+STAGE=''
+ROLLBACK_TO=''
+ROLLBACK_DONE=0
+ENV_CHANGED=0
+DROPIN_CHANGED=0
+ENV_FILE_CHANGED=0
 
 # What this run installs (see resolve_ref, fetch_source and needs_build), and
 # the last run's record (see write_marker). TARGET_VERSION is a tag's name, or
@@ -1329,21 +1604,47 @@ main() {
 
 	migrate_slipway
 	ensure_service_user
-	if [ "$BUILD" = 1 ]; then
-		install_binary
-	fi
-	if [ ! -f /etc/outhaul.env ]; then
-		write_env_file /etc/outhaul.env "$MODE" "$PUBLIC_URL" "$ACME_EMAIL" "$SSH_ADDR" "${LOCAL_CA:-0}"
-		step_ok "wrote /etc/outhaul.env"
+	ENV_FILE_CHANGED=0
+	if [ ! -f "$ENV_FILE" ]; then
+		write_env_file "$ENV_FILE" "$MODE" "$PUBLIC_URL" "$ACME_EMAIL" "$SSH_ADDR" "${LOCAL_CA:-0}"
+		step_ok "wrote $ENV_FILE"
+		ENV_FILE_CHANGED=1
 	else
-		note "/etc/outhaul.env exists — left unchanged"
+		note "$ENV_FILE exists — left unchanged"
 	fi
+
+	ADMIN_PORT=$(admin_port "${OUTHAUL_LISTEN_ADDR:-:8080}")
 	if [ "$BUILD" = 1 ]; then
-		install_service
-		setup_updater "$SRC_DIR"
-	elif ! systemctl is-active --quiet outhaul; then
-		# Nothing to install, but the recorded build is not running.
-		systemctl enable --now outhaul || die "could not start outhaul"
+		if install_or_upgrade "$SRC_DIR" "$TARGET" "$TARGET_VERSION"; then
+			setup_updater "$SRC_DIR"
+		else
+			HEALTHY=1
+			if [ "$NONINTERACTIVE" = 1 ]; then die "outhaul did not answer"; fi
+		fi
+	else
+		write_install_env
+		write_dropins
+		# A drop-in is a unit-file change: systemd reads it on daemon-reload, not on restart.
+		if [ "$DROPIN_CHANGED" = 1 ]; then systemctl daemon-reload; fi
+		if ! systemctl is-active --quiet outhaul; then
+			# Nothing to install, but the recorded build is not running.
+			systemctl enable --now outhaul
+			STARTED_SERVICE=1
+		elif [ "$ENV_CHANGED" = 1 ] || [ "$DROPIN_CHANGED" = 1 ] || [ "$ENV_FILE_CHANGED" = 1 ]; then
+			systemctl restart outhaul
+			# shellcheck disable=SC2034 # the setup-file step reads it
+			STARTED_SERVICE=1
+		fi
+		if ! new_version_healthy "$TARGET" "$ADMIN_PORT"; then
+			if [ "$NONINTERACTIVE" = 1 ]; then die "outhaul did not answer"; fi
+			HEALTHY=1
+		fi
+	fi
+
+	if [ "$HEALTHY" = 0 ] && [ "$ROLLED_BACK" = 0 ]; then
+		# A later run reads this to tell that the same commit is installed.
+		write_marker "$TARGET" "$TARGET_REF" "$TARGET_VERSION" ||
+			note "could not record the installed version in $MARKER; the next run rebuilds"
 	fi
 
 	if [ -n "${GOROOT_TMP:-}" ]; then
@@ -1382,13 +1683,6 @@ main() {
 		else PORTS=''; fi
 	fi
 
-	HURL=$(admin_health_url "${OUTHAUL_LISTEN_ADDR:-:8080}")
-	if wait_healthy "$HURL"; then HEALTHY=0; else HEALTHY=1; fi
-	if [ "$HEALTHY" = 0 ]; then
-		# A later run reads this to tell that the same commit is installed.
-		write_marker "$TARGET" "$TARGET_REF" "$TARGET_VERSION" ||
-			note "could not record the installed version in $MARKER; the next run rebuilds"
-	fi
 	# Let's Encrypt mode serves the admin UI through Traefik, with the
 	# firewall in between: check the way a browser reaches it too.
 	PUBLIC=''
