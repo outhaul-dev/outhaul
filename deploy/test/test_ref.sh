@@ -3,6 +3,25 @@
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/assert.sh"
 OUTHAUL_INSTALLER_LIB=1 . "$here/../bootstrap.sh"
+# die() writes the log; keep it off the real install log (not writable here).
+# shellcheck disable=SC2034 # read by log_line, sourced from bootstrap.sh
+LOGFILE=/dev/null
+
+# --ref consumes the next argument even when it is empty: an empty ref means
+# the remote's HEAD, and only a missing argument is an error.
+REF=; ARG_ERRORS=
+parse_args --ref ""
+assert_eq "--ref with an empty value: REF stays empty" "" "$REF"
+assert_eq "--ref with an empty value: no error" "" "$ARG_ERRORS"
+
+REF=; ARG_ERRORS=
+parse_args --ref
+assert_contains "--ref with no value: error" "$ARG_ERRORS" "--ref needs a value"
+
+REF=; ARG_ERRORS=
+parse_args --ref "" --ref v1
+assert_eq "--ref twice: last value wins" "v1" "$REF"
+assert_eq "--ref twice: no error" "" "$ARG_ERRORS"
 
 T=$(mktemp -d)
 git init -q "$T/repo"

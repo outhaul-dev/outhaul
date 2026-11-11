@@ -1203,7 +1203,8 @@ parse_args() {
 			shift
 			;;
 		--ref)
-			if [ "$#" -ge 2 ] && [ -n "$2" ]; then
+			# An empty value is still a value: resolve_ref '' means HEAD.
+			if [ "$#" -ge 2 ]; then
 				REF=$2
 				shift
 			else
