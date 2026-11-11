@@ -294,3 +294,126 @@ func TestComposePipelineOverrideCarriesTheGate(t *testing.T) {
 		}
 	}
 }
+
+// A server that has not opted into the container policy never asks Compose to
+// normalise the stack, so its deploys are unchanged. ConfigJSON is left unset:
+// a config call would fail the parse too, but the call count is the direct
+// check.
+func TestComposePipelineWithoutPolicyNeverReadsModel(t *testing.T) {
+	h := newHarness(t)
+	app := h.composeApp(t, "shop", "docker-compose.yml", "shop.example.com")
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	if got := h.status(t, dep.ID); got.Status != core.StatusRunning {
+		t.Fatalf("status = %q (%q), want running", got.Status, got.Reason)
+	}
+	if calls := h.compose.CallsFor("config"); len(calls) != 0 {
+		t.Errorf("compose config ran without the policy: %+v", calls)
+	}
+}
+
+func TestComposePipelineRefusesAHostPathBeforeBuilding(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.ContainerPolicy = "strict"
+	h.compose.ConfigJSON = []byte(`{
+		"name": "outhaul-shop",
+		"services": {
+			"web": {
+				"image": "nginx",
+				"volumes": [{"type": "bind", "source": "/srv/data", "target": "/data"}]
+			}
+		}
+	}`)
+	app := h.composeApp(t, "shop", "docker-compose.yml", "")
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed {
+		t.Fatalf("status = %q, want failed", got.Status)
+	}
+	for _, want := range []string{`service "web"`, "volumes", "bind mount"} {
+		if !strings.Contains(got.Reason, want) {
+			t.Errorf("reason = %q, want it to mention %q", got.Reason, want)
+		}
+	}
+	if n := len(h.compose.CallsFor("build")); n != 0 {
+		t.Errorf("build calls = %d, want 0", n)
+	}
+	if n := len(h.compose.CallsFor("up")); n != 0 {
+		t.Errorf("up calls = %d, want 0", n)
+	}
+	want := `service "web": volumes: a bind mount is a host path. Use a named volume.`
+	if log := h.logOf(dep); !strings.Contains(log, want) {
+		t.Errorf("log missing %q; got:\n%s", want, log)
+	}
+}
+
+func TestComposePipelineLogsEveryViolationAndKeepsTheJSONOut(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.ContainerPolicy = "strict"
+	h.compose.ConfigJSON = []byte(`{
+		"name": "outhaul-shop",
+		"services": {
+			"web": {
+				"image": "nginx",
+				"environment": {"TOKEN": "super-secret"},
+				"ports": ["8080:80"],
+				"privileged": true
+			}
+		}
+	}`)
+	app := h.composeApp(t, "shop", "docker-compose.yml", "")
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed {
+		t.Fatalf("status = %q, want failed", got.Status)
+	}
+	log := h.logOf(dep)
+	for _, want := range []string{
+		`service "web": ports: publishing a host port is not allowed.`,
+		`service "web": privileged: a privileged container is not allowed.`,
+	} {
+		if !strings.Contains(log, want) {
+			t.Errorf("log missing %q; got:\n%s", want, log)
+		}
+	}
+	if !strings.Contains(got.Reason, "(and 1 more)") {
+		t.Errorf("reason = %q, want it to count the other violation", got.Reason)
+	}
+	for _, text := range []string{log, got.Reason} {
+		if strings.Contains(text, "super-secret") {
+			t.Errorf("the model's values leaked: %q", text)
+		}
+	}
+}
+
+func TestComposePipelineReportsAFileComposeCannotLoad(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.ContainerPolicy = "strict"
+	h.compose.FailConfig = errors.New("services.web.ports must be a list")
+	app := h.composeApp(t, "shop", "docker-compose.yml", "")
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed {
+		t.Fatalf("status = %q, want failed", got.Status)
+	}
+	if !strings.Contains(got.Reason, "read Compose file: services.web.ports must be a list") {
+		t.Errorf("reason = %q, want the compose error", got.Reason)
+	}
+	if n := len(h.compose.CallsFor("build")); n != 0 {
+		t.Errorf("build calls = %d, want 0", n)
+	}
+	if n := len(h.compose.CallsFor("up")); n != 0 {
+		t.Errorf("up calls = %d, want 0", n)
+	}
+}

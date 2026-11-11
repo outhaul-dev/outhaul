@@ -63,6 +63,35 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 		return
 	}
 
+	project := compose.ProjectName(app.Name)
+
+	// The model is compose's own normalised view of the user's file (never the
+	// override Outhaul writes). Read it only when a setting needs it, so an
+	// install that sets none of them runs no extra command.
+	var model compose.Model
+	if w.needsModel(app) {
+		model, err = compose.ReadModel(ctx, w.compose, workDir, []string{app.ComposePath}, project, out)
+		if err != nil {
+			w.fail(dep, core.StatusBuilding, "read Compose file: "+err.Error(), out)
+			return
+		}
+		policy := compose.Policy{
+			Strict:        w.cfg.StrictContainerPolicy(),
+			RoutingLabels: w.cfg.StrictContainerPolicy(),
+			WorkDir:       workDir,
+			Network:       w.cfg.Network,
+		}
+		if vs := compose.Check(model, policy); len(vs) > 0 {
+			reason, lines := policyViolationReason(vs)
+			logf(out, "This server's container policy refuses this Compose file (OUTHAUL_CONTAINER_POLICY=strict):")
+			for _, line := range lines {
+				logf(out, "%s", line)
+			}
+			w.fail(dep, core.StatusBuilding, reason, out)
+			return
+		}
+	}
+
 	// files are work-dir-relative (the runner runs in workDir); the override
 	// sits beside the user's compose file and layers domain exposure over it.
 	files := []string{app.ComposePath}
@@ -75,7 +104,6 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 		files = append(files, path.Join(path.Dir(app.ComposePath), compose.OverrideFile))
 	}
 
-	project := compose.ProjectName(app.Name)
 	logf(out, "Building stack %s...", project)
 	if err := w.compose.Build(ctx, workDir, files, project, out); err != nil {
 		w.fail(dep, core.StatusBuilding, "build failed: "+err.Error(), out)
@@ -158,6 +186,25 @@ func composeSource(app core.App) string {
 		return "template " + app.TemplateID
 	}
 	return app.RepoURL
+}
+
+// policyViolationReason formats a Compose check's violations for the deploy log
+// and the deployment's reason. The log gets every violation, indented to sit
+// under the header line; the reason is the first without that indent, plus a
+// count of the rest. No field of a Violation quotes the model's values.
+func policyViolationReason(vs []compose.Violation) (reason string, lines []string) {
+	lines = make([]string, len(vs))
+	for i, v := range vs {
+		lines[i] = fmt.Sprintf("  %s: %s: %s", v.Where, v.Option, v.Reason)
+	}
+	if len(vs) == 0 {
+		return "", lines
+	}
+	reason = strings.TrimPrefix(lines[0], "  ")
+	if n := len(vs) - 1; n > 0 {
+		reason += fmt.Sprintf(" (and %d more)", n)
+	}
+	return reason, lines
 }
 
 // envFile renders env vars in dotenv format. Values are double-quoted with
