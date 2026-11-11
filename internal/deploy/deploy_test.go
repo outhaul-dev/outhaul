@@ -185,7 +185,7 @@ func TestPipelineHappyPath(t *testing.T) {
 	if c == nil || !c.Running() {
 		t.Fatalf("app container not running: %+v", c)
 	}
-	if c.Labels["traefik.http.routers.outhaul-web-d1.rule"] != traefik.Rule("web.test", "") {
+	if c.Labels["traefik.http.routers.outhaul-web-d1.rule"] != (traefik.Routing{}).Rule("web.test", "") {
 		t.Errorf("missing/incorrect traefik rule label: %v", c.Labels)
 	}
 	spec := lastCreatedNamed(t, h, "outhaul-app-web")
@@ -704,7 +704,7 @@ func TestNixpacksAppRoutesEveryDomainRow(t *testing.T) {
 	}
 }
 
-func TestEffectiveTLSHonoursTunnel(t *testing.T) {
+func TestRoutingHonoursTunnel(t *testing.T) {
 	ctx := context.Background()
 	box, err := secret.Load(filepath.Join(t.TempDir(), "key"))
 	if err != nil {
@@ -718,13 +718,13 @@ func TestEffectiveTLSHonoursTunnel(t *testing.T) {
 
 	w := &Worker{store: st, cfg: config.Config{ACMEEmail: "ops@example.com"}} // TLSEnabled() == true
 
-	if !w.effectiveTLS(ctx) {
+	if !w.routing(ctx).TLS {
 		t.Fatal("expected TLS on when ACME set and no tunnel")
 	}
 	if err := st.SetCloudflareToken(ctx, "tok"); err != nil {
 		t.Fatalf("SetCloudflareToken: %v", err)
 	}
-	if w.effectiveTLS(ctx) {
+	if w.routing(ctx).TLS {
 		t.Fatal("expected TLS off once the tunnel is enabled")
 	}
 }

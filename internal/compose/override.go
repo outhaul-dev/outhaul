@@ -31,7 +31,7 @@ const OverrideFile = "outhaul.override.yml"
 //
 // The structure is three fixed levels deep, so it is rendered directly — no
 // YAML dependency. All user-influenced values go through quoteYAML.
-func Override(app core.App, domains []core.Domain, network string, tlsEnabled bool, certResolver, gateAddress string) []byte {
+func Override(app core.App, domains []core.Domain, network string, rt traefik.Routing) []byte {
 	byService := map[string][]core.Domain{}
 	var services []string
 	for _, d := range domains {
@@ -54,7 +54,7 @@ func Override(app core.App, domains []core.Domain, network string, tlsEnabled bo
 			"traefik.docker.network": network,
 		}
 		for _, d := range byService[svc] {
-			for k, v := range traefik.RouteLabels(traefik.RouterName(app.Name, d.ID), d.Host, d.Port, d.Path, d.InternalPath, d.WantsTLS() && tlsEnabled, certResolver, d.Protected, gateAddress) {
+			for k, v := range traefik.RouteLabels(traefik.RouterName(app.Name, d.ID), d, d.Port, rt) {
 				labels[k] = v
 			}
 		}

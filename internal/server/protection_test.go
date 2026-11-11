@@ -51,7 +51,7 @@ func newProtectionEnv(t *testing.T) (*testEnv, *fakeProxy) {
 // labelled is app's container as a deploy of rows labels it.
 func labelled(id string, app core.App, rows []core.Domain, state string) docker.Container {
 	return docker.Container{ID: id, Name: appContainerPrefix + app.Name, State: state,
-		Labels: traefik.AppLabels(app, rows, deployAppPort, true, "le", testGateAddress)}
+		Labels: traefik.AppLabels(app, rows, deployAppPort, traefik.Routing{TLS: true, CertResolver: "le", GateAddress: testGateAddress})}
 }
 
 // runContainers makes cs the app's containers: what the fake runtime lists,
@@ -1010,7 +1010,7 @@ func TestRestartRedeploysOnMismatch(t *testing.T) {
 		e, _ := newProtectionEnv(t)
 		app := seedComposeStack(t, e)
 		row := domainsOf(t, e, app.ID)[0]
-		open := traefik.AppLabels(app, []core.Domain{row}, row.Port, true, "le", testGateAddress)
+		open := traefik.AppLabels(app, []core.Domain{row}, row.Port, traefik.Routing{TLS: true, CertResolver: "le", GateAddress: testGateAddress})
 		for k, v := range open {
 			e.runtime.stack[0].Labels[k] = v
 		}

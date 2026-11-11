@@ -70,6 +70,7 @@ func main() {
 	if address == "" {
 		address = config.Config{ListenAddr: ":" + *adminPort}.GateAddress()
 	}
+	rt := traefik.Routing{TLS: *tls, GateAddress: address}
 	var routes []route
 	for _, arg := range flag.Args() {
 		r, err := parseRoute(arg)
@@ -93,14 +94,13 @@ func main() {
 			d.ID, d.Service, d.Port = int64(i+1), "web", *port
 			domains = append(domains, d)
 		}
-		os.Stdout.Write(compose.Override(core.App{Name: routes[0].router}, domains, "outhaul-gatetest-net", *tls, "", address))
+		os.Stdout.Write(compose.Override(core.App{Name: routes[0].router}, domains, "outhaul-gatetest-net", rt))
 		return
 	}
 
 	labels := map[string]string{}
 	for _, r := range routes {
-		https := *tls && r.domain().WantsTLS()
-		for k, v := range traefik.RouteLabels(r.router, r.host, *port, r.path, r.internalPath, https, "", r.protected, address) {
+		for k, v := range traefik.RouteLabels(r.router, r.domain(), *port, rt) {
 			labels[k] = v
 		}
 	}

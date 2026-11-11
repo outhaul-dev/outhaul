@@ -22,7 +22,7 @@ func TestAccessStateFor(t *testing.T) {
 	// ctr is a container labelled as a deploy of the given rows labels it.
 	ctr := func(state string, rows ...core.Domain) docker.Container {
 		return docker.Container{ID: "c", State: state,
-			Labels: traefik.AppLabels(app, rows, 3000, true, "le", testGateAddress)}
+			Labels: traefik.AppLabels(app, rows, 3000, traefik.Routing{TLS: true, CertResolver: "le", GateAddress: testGateAddress})}
 	}
 	gated := ctr("running", row(true))
 	open := ctr("running", row(false))
@@ -251,7 +251,7 @@ func TestStrayRoute(t *testing.T) {
 	// route is one container of app with one row's labels, running.
 	route := func(app core.App, d core.Domain) docker.Container {
 		return docker.Container{ID: app.Name + "-c", State: "running",
-			Labels: traefik.AppLabels(app, []core.Domain{d}, 3000, true, "le", testGateAddress)}
+			Labels: traefik.AppLabels(app, []core.Domain{d}, 3000, traefik.Routing{TLS: true, CertResolver: "le", GateAddress: testGateAddress})}
 	}
 	open := func(id int64, host, path string) core.Domain {
 		return core.Domain{ID: id, AppID: 2, Host: host, Path: path}

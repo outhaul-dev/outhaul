@@ -48,7 +48,7 @@ func TestRouteLabelsGolden(t *testing.T) {
 	got := map[string]map[string]string{}
 	for mode, m := range goldenModes {
 		for name, d := range goldenRows {
-			got[mode+"/"+name] = RouteLabels("r", d.Host, 8080, d.Path, d.InternalPath, d.WantsTLS() && m.tls, m.resolver, d.Protected, goldenGate)
+			got[mode+"/"+name] = RouteLabels("r", d, 8080, Routing{TLS: m.tls, CertResolver: m.resolver, GateAddress: goldenGate})
 		}
 	}
 	checkGolden(t, path, got)

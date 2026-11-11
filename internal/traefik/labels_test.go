@@ -12,8 +12,8 @@ import (
 func router(app string, id int64) string { return RouterName(app, id) }
 
 func TestRouteLabelsHostOnly(t *testing.T) {
-	got := RouteLabels("r", "web.example.com", 8080, "", "", false, "", false, "addr")
-	if got["traefik.http.routers.r.rule"] != Rule("web.example.com", "") {
+	got := RouteLabels("r", core.Domain{Host: "web.example.com", Path: "", InternalPath: "", Protected: false}, 8080, Routing{TLS: false, CertResolver: "", GateAddress: "addr"})
+	if got["traefik.http.routers.r.rule"] != (Routing{}).Rule("web.example.com", "") {
 		t.Errorf("rule = %q", got["traefik.http.routers.r.rule"])
 	}
 	if got["traefik.http.services.r.loadbalancer.server.port"] != "8080" {
@@ -25,8 +25,8 @@ func TestRouteLabelsHostOnly(t *testing.T) {
 }
 
 func TestRouteLabelsPathPrefixNoRewrite(t *testing.T) {
-	got := RouteLabels("r", "web.example.com", 8080, "/api", "", false, "", false, "addr")
-	if got["traefik.http.routers.r.rule"] != Rule("web.example.com", "/api") {
+	got := RouteLabels("r", core.Domain{Host: "web.example.com", Path: "/api", InternalPath: "", Protected: false}, 8080, Routing{TLS: false, CertResolver: "", GateAddress: "addr"})
+	if got["traefik.http.routers.r.rule"] != (Routing{}).Rule("web.example.com", "/api") {
 		t.Errorf("rule = %q", got["traefik.http.routers.r.rule"])
 	}
 	if got["traefik.http.routers.r.middlewares"] != "r-noident" {
@@ -35,7 +35,7 @@ func TestRouteLabelsPathPrefixNoRewrite(t *testing.T) {
 }
 
 func TestRouteLabelsStripPrefix(t *testing.T) {
-	got := RouteLabels("r", "web.example.com", 8080, "/api", "/", false, "", false, "addr")
+	got := RouteLabels("r", core.Domain{Host: "web.example.com", Path: "/api", InternalPath: "/", Protected: false}, 8080, Routing{TLS: false, CertResolver: "", GateAddress: "addr"})
 	if got["traefik.http.routers.r.middlewares"] != "r-noident,r-strip" {
 		t.Errorf("middlewares = %q, want r-noident,r-strip", got["traefik.http.routers.r.middlewares"])
 	}
@@ -48,7 +48,7 @@ func TestRouteLabelsStripPrefix(t *testing.T) {
 }
 
 func TestRouteLabelsStripThenAddPrefix(t *testing.T) {
-	got := RouteLabels("r", "web.example.com", 8080, "/api", "/v1", false, "", false, "addr")
+	got := RouteLabels("r", core.Domain{Host: "web.example.com", Path: "/api", InternalPath: "/v1", Protected: false}, 8080, Routing{TLS: false, CertResolver: "", GateAddress: "addr"})
 	if got["traefik.http.routers.r.middlewares"] != "r-noident,r-strip,r-addpfx" {
 		t.Errorf("middlewares = %q, want r-noident,r-strip,r-addpfx", got["traefik.http.routers.r.middlewares"])
 	}
@@ -61,14 +61,14 @@ func TestRouteLabelsStripThenAddPrefix(t *testing.T) {
 }
 
 func TestRouteLabelsTLSMirrorsRuleAndMiddlewares(t *testing.T) {
-	got := RouteLabels("r", "web.example.com", 8080, "/api", "/", true, "le", false, "addr")
+	got := RouteLabels("r", core.Domain{Host: "web.example.com", Path: "/api", InternalPath: "/", TLS: true}, 8080, Routing{TLS: true, CertResolver: "le", GateAddress: "addr"})
 	if got["traefik.http.routers.r-tls.entrypoints"] != "websecure" {
 		t.Errorf("missing websecure entrypoint: %v", got)
 	}
 	if got["traefik.http.routers.r-tls.tls.certresolver"] != "le" {
 		t.Errorf("certresolver not set: %v", got)
 	}
-	if got["traefik.http.routers.r-tls.rule"] != Rule("web.example.com", "/api") {
+	if got["traefik.http.routers.r-tls.rule"] != (Routing{}).Rule("web.example.com", "/api") {
 		t.Errorf("secure rule = %q", got["traefik.http.routers.r-tls.rule"])
 	}
 	if got["traefik.http.routers.r-tls.middlewares"] != "r-noident,r-strip" {
@@ -85,27 +85,27 @@ func TestAppLabelsOneRouterPerDomain(t *testing.T) {
 		{ID: 1, Host: "a.example.com"},
 		{ID: 2, Host: "b.example.com"},
 	}
-	got := AppLabels(app, domains, 8080, false, "", "addr")
+	got := AppLabels(app, domains, 8080, Routing{TLS: false, CertResolver: "", GateAddress: "addr"})
 	if got["traefik.enable"] != "true" || got["outhaul.app"] != "web" {
 		t.Errorf("ownership markers missing: %v", got)
 	}
-	if got["traefik.http.routers."+router("web", 1)+".rule"] != Rule("a.example.com", "") {
+	if got["traefik.http.routers."+router("web", 1)+".rule"] != (Routing{}).Rule("a.example.com", "") {
 		t.Errorf("router for domain 1 wrong: %v", got)
 	}
-	if got["traefik.http.routers."+router("web", 2)+".rule"] != Rule("b.example.com", "") {
+	if got["traefik.http.routers."+router("web", 2)+".rule"] != (Routing{}).Rule("b.example.com", "") {
 		t.Errorf("router for domain 2 wrong: %v", got)
 	}
 }
 
 func TestAppLabelsNoDomainsIsInternalOnly(t *testing.T) {
-	got := AppLabels(core.App{Name: "web"}, nil, 8080, false, "", "addr")
+	got := AppLabels(core.App{Name: "web"}, nil, 8080, Routing{TLS: false, CertResolver: "", GateAddress: "addr"})
 	if got["traefik.enable"] != "false" {
 		t.Errorf("app with no domains should disable Traefik: %v", got)
 	}
 }
 
 func TestRouteLabelsLocalCANoResolver(t *testing.T) {
-	got := RouteLabels("r", "web.local", 8080, "", "", true, "", false, "addr")
+	got := RouteLabels("r", core.Domain{Host: "web.local", TLS: true}, 8080, Routing{TLS: true, CertResolver: "", GateAddress: "addr"})
 	if got["traefik.http.routers.r-tls.tls"] != "true" {
 		t.Errorf("tls router missing: %v", got)
 	}
@@ -115,7 +115,7 @@ func TestRouteLabelsLocalCANoResolver(t *testing.T) {
 }
 
 func TestRouteLabelsACMEResolver(t *testing.T) {
-	got := RouteLabels("r", "web.example.com", 8080, "", "", true, "le", false, "addr")
+	got := RouteLabels("r", core.Domain{Host: "web.example.com", TLS: true}, 8080, Routing{TLS: true, CertResolver: "le", GateAddress: "addr"})
 	if got["traefik.http.routers.r-tls.tls.certresolver"] != "le" {
 		t.Errorf("certresolver = %q; want le", got["traefik.http.routers.r-tls.tls.certresolver"])
 	}
@@ -123,15 +123,15 @@ func TestRouteLabelsACMEResolver(t *testing.T) {
 
 func TestAppLabelsPerRowTLS(t *testing.T) {
 	app := core.App{Name: "web"}
-	off := AppLabels(app, []core.Domain{{ID: 1, Host: "a.example.com", TLS: true}}, 8080, false, "", "addr")
+	off := AppLabels(app, []core.Domain{{ID: 1, Host: "a.example.com", TLS: true}}, 8080, Routing{TLS: false, CertResolver: "", GateAddress: "addr"})
 	if _, ok := off["traefik.http.routers."+router("web", 1)+"-tls.tls"]; ok {
 		t.Error("no TLS router expected when globalTLS is off")
 	}
-	on := AppLabels(app, []core.Domain{{ID: 1, Host: "a.example.com", TLS: true}}, 8080, true, "le", "addr")
+	on := AppLabels(app, []core.Domain{{ID: 1, Host: "a.example.com", TLS: true}}, 8080, Routing{TLS: true, CertResolver: "le", GateAddress: "addr"})
 	if on["traefik.http.routers."+router("web", 1)+"-tls.tls"] != "true" {
 		t.Error("TLS router expected when both row.TLS and globalTLS are set")
 	}
-	opt := AppLabels(app, []core.Domain{{ID: 1, Host: "a.example.com", TLS: false}}, 8080, true, "le", "addr")
+	opt := AppLabels(app, []core.Domain{{ID: 1, Host: "a.example.com", TLS: false}}, 8080, Routing{TLS: true, CertResolver: "le", GateAddress: "addr"})
 	if _, ok := opt["traefik.http.routers."+router("web", 1)+"-tls.tls"]; ok {
 		t.Error("row that opted out of TLS should get no secure router")
 	}
@@ -148,7 +148,7 @@ func TestAppLabelsMultiDomainRoutersNameTheirService(t *testing.T) {
 		{ID: 1, Host: "console.example.com"},
 		{ID: 2, Host: "api.example.com"},
 	}
-	got := AppLabels(app, domains, 9000, false, "", "addr")
+	got := AppLabels(app, domains, 9000, Routing{TLS: false, CertResolver: "", GateAddress: "addr"})
 	for _, id := range []int64{1, 2} {
 		r := router("minio", id)
 		if svc := got["traefik.http.routers."+r+".service"]; svc != r {
@@ -161,7 +161,7 @@ func TestAppLabelsMultiDomainRoutersNameTheirService(t *testing.T) {
 // that references an undefined @file middleware is dropped by Traefik and the
 // request falls through to an open router, so nothing may point at @file.
 func TestProtectedRouteDefinesItsGateInLabels(t *testing.T) {
-	l := RouteLabels("r", "wiki.example.com", 8080, "", "", true, "le", true, "http://host.docker.internal:8080/gate/check")
+	l := RouteLabels("r", core.Domain{Host: "wiki.example.com", Path: "", InternalPath: "", Protected: true}, 8080, Routing{TLS: true, CertResolver: "le", GateAddress: "http://host.docker.internal:8080/gate/check"})
 	want := map[string]string{
 		"traefik.http.middlewares.r-gate.forwardauth.address":             "http://host.docker.internal:8080/gate/check",
 		"traefik.http.middlewares.r-gate.forwardauth.authresponseheaders": "X-Outhaul-User",
@@ -200,14 +200,14 @@ func TestProtectedRouteDefinesItsGateInLabels(t *testing.T) {
 // The gate must see the URL the visitor asked for, so it runs before any path
 // rewrite on both routers.
 func TestGateRunsBeforePathRewrites(t *testing.T) {
-	l := RouteLabels("r", "h", 8080, "/a", "/", true, "", true, "addr")
+	l := RouteLabels("r", core.Domain{Host: "h", Path: "/a", InternalPath: "/", Protected: true}, 8080, Routing{TLS: true, CertResolver: "", GateAddress: "addr"})
 	if got := l["traefik.http.routers.r.middlewares"]; got != "r-gate,r-noalias,r-strip" {
 		t.Errorf("routers.r.middlewares = %q, want r-gate,r-noalias,r-strip", got)
 	}
 	if got := l["traefik.http.routers.r-tls.middlewares"]; got != "r-gate,r-noalias,r-strip" {
 		t.Errorf("routers.r-tls.middlewares = %q, want r-gate,r-noalias,r-strip", got)
 	}
-	l = RouteLabels("r", "h", 8080, "/a", "/v1", false, "", true, "addr")
+	l = RouteLabels("r", core.Domain{Host: "h", Path: "/a", InternalPath: "/v1", Protected: true}, 8080, Routing{TLS: false, CertResolver: "", GateAddress: "addr"})
 	if got := l["traefik.http.routers.r.middlewares"]; got != "r-gate,r-noalias,r-strip,r-addpfx" {
 		t.Errorf("routers.r.middlewares = %q, want r-gate,r-noalias,r-strip,r-addpfx", got)
 	}
@@ -216,7 +216,7 @@ func TestGateRunsBeforePathRewrites(t *testing.T) {
 // An open row removes any client-sent identity header, so an app that trusts
 // it can't be fooled on a route that has no gate.
 func TestOpenRouteStripsIdentityHeader(t *testing.T) {
-	l := RouteLabels("r", "h", 8080, "", "", false, "", false, "addr")
+	l := RouteLabels("r", core.Domain{Host: "h", Path: "", InternalPath: "", Protected: false}, 8080, Routing{TLS: false, CertResolver: "", GateAddress: "addr"})
 	key := "traefik.http.middlewares.r-noident.headers.customrequestheaders.X-Outhaul-User"
 	v, ok := l[key]
 	if !ok {
@@ -242,7 +242,7 @@ func TestOpenRouteStripsIdentityHeader(t *testing.T) {
 		}
 	}
 
-	l = RouteLabels("r", "h", 8080, "/a", "/", true, "", false, "addr")
+	l = RouteLabels("r", core.Domain{Host: "h", Path: "/a", InternalPath: "/", TLS: true}, 8080, Routing{TLS: true, CertResolver: "", GateAddress: "addr"})
 	if got := l["traefik.http.routers.r.middlewares"]; got != "r-noident,r-strip" {
 		t.Errorf("routers.r.middlewares = %q, want r-noident,r-strip", got)
 	}
@@ -259,7 +259,7 @@ func TestOpenRouteStripsIdentityHeader(t *testing.T) {
 func TestProtectedRouteTellsCDNsNotToCache(t *testing.T) {
 	const prefix = "traefik.http.middlewares.r-noalias.headers.customresponseheaders."
 	for _, tls := range []bool{false, true} {
-		l := RouteLabels("r", "wiki.example.com", 8080, "/a", "/", tls, "le", true, "addr")
+		l := RouteLabels("r", core.Domain{Host: "wiki.example.com", Path: "/a", InternalPath: "/", Protected: true}, 8080, Routing{TLS: tls, CertResolver: "le", GateAddress: "addr"})
 		for _, h := range []string{"CDN-Cache-Control", "Cloudflare-CDN-Cache-Control"} {
 			if got := l[prefix+h]; got != "no-store" {
 				t.Errorf("tls %v: %s%s = %q, want no-store", tls, prefix, h, got)
@@ -282,7 +282,7 @@ func TestProtectedRouteTellsCDNsNotToCache(t *testing.T) {
 			t.Error("RowHasGate requires the CDN headers; a route deployed before them still has its gate")
 		}
 	}
-	for k := range RouteLabels("r", "wiki.example.com", 8080, "", "", true, "le", false, "addr") {
+	for k := range RouteLabels("r", core.Domain{Host: "wiki.example.com", Path: "", InternalPath: "", Protected: false}, 8080, Routing{TLS: true, CertResolver: "le", GateAddress: "addr"}) {
 		if strings.Contains(strings.ToLower(k), "customresponseheaders") {
 			t.Errorf("an open route sets a response header: %s", k)
 		}
@@ -304,13 +304,13 @@ func TestRowHasGate(t *testing.T) {
 		labels map[string]string
 		want   bool
 	}{
-		{"protected, TLS", RouteLabels("r", "h", 8080, "", "", true, "le", true, "addr"), true},
-		{"protected, no TLS", RouteLabels("r", "h", 8080, "", "", false, "", true, "addr"), true},
-		{"protected with a rewrite", RouteLabels("r", "h", 8080, "/a", "/", true, "", true, "addr"), true},
-		{"open, TLS", RouteLabels("r", "h", 8080, "", "", true, "le", false, "addr"), false},
-		{"open, no TLS", RouteLabels("r", "h", 8080, "", "", false, "", false, "addr"), false},
+		{"protected, TLS", RouteLabels("r", core.Domain{Host: "h", Path: "", InternalPath: "", Protected: true}, 8080, Routing{TLS: true, CertResolver: "le", GateAddress: "addr"}), true},
+		{"protected, no TLS", RouteLabels("r", core.Domain{Host: "h", Path: "", InternalPath: "", Protected: true}, 8080, Routing{TLS: false, CertResolver: "", GateAddress: "addr"}), true},
+		{"protected with a rewrite", RouteLabels("r", core.Domain{Host: "h", Path: "/a", InternalPath: "/", Protected: true}, 8080, Routing{TLS: true, CertResolver: "", GateAddress: "addr"}), true},
+		{"open, TLS", RouteLabels("r", core.Domain{Host: "h", Path: "", InternalPath: "", Protected: false}, 8080, Routing{TLS: true, CertResolver: "le", GateAddress: "addr"}), false},
+		{"open, no TLS", RouteLabels("r", core.Domain{Host: "h", Path: "", InternalPath: "", Protected: false}, 8080, Routing{TLS: false, CertResolver: "", GateAddress: "addr"}), false},
 		{"no labels", map[string]string{}, false},
-		{"another router's gate", RouteLabels("other", "h", 8080, "", "", true, "", true, "addr"), false},
+		{"another router's gate", RouteLabels("other", core.Domain{Host: "h", Path: "", InternalPath: "", Protected: true}, 8080, Routing{TLS: true, CertResolver: "", GateAddress: "addr"}), false},
 	}
 	for _, c := range cases {
 		if got := RowHasGate(c.labels, "r"); got != c.want {
@@ -319,7 +319,7 @@ func TestRowHasGate(t *testing.T) {
 	}
 
 	// The gate on r but not on r-tls: HTTPS visitors get through ungated.
-	l := RouteLabels("r", "h", 8080, "", "", true, "", true, "addr")
+	l := RouteLabels("r", core.Domain{Host: "h", Path: "", InternalPath: "", Protected: true}, 8080, Routing{TLS: true, CertResolver: "", GateAddress: "addr"})
 	l["traefik.http.routers.r-tls.middlewares"] = "r-noident"
 	if RowHasGate(l, "r") {
 		t.Error("gate missing from r-tls should not count as gated")
@@ -330,14 +330,14 @@ func TestRowHasGate(t *testing.T) {
 	}
 	// Traefik gives a router with no rule label a default rule, so a twin
 	// with any label at all is a router that needs the gate.
-	l = RouteLabels("r", "h", 8080, "", "", false, "", true, "addr")
+	l = RouteLabels("r", core.Domain{Host: "h", Path: "", InternalPath: "", Protected: true}, 8080, Routing{TLS: false, CertResolver: "", GateAddress: "addr"})
 	l["traefik.http.routers.r-tls.entrypoints"] = "websecure"
 	if RowHasGate(l, "r") {
 		t.Error("an ungated r-tls with no rule label should not count as gated")
 	}
 
 	// Listed, but with no forward-auth address the middleware isn't defined.
-	l = RouteLabels("r", "h", 8080, "", "", true, "", true, "addr")
+	l = RouteLabels("r", core.Domain{Host: "h", Path: "", InternalPath: "", Protected: true}, 8080, Routing{TLS: true, CertResolver: "", GateAddress: "addr"})
 	delete(l, "traefik.http.middlewares.r-gate.forwardauth.address")
 	if RowHasGate(l, "r") {
 		t.Error("gate with no forward-auth address should not count as gated")
@@ -349,7 +349,7 @@ func TestRowHasGate(t *testing.T) {
 
 	// The gate is what counts: neither the trustForwardHeader label nor the
 	// alias strip is required.
-	l = RouteLabels("r", "h", 8080, "", "", true, "", true, "addr")
+	l = RouteLabels("r", core.Domain{Host: "h", Path: "", InternalPath: "", Protected: true}, 8080, Routing{TLS: true, CertResolver: "", GateAddress: "addr"})
 	delete(l, "traefik.http.middlewares.r-gate.forwardauth.trustforwardheader")
 	l["traefik.http.routers.r.middlewares"] = "r-gate"
 	l["traefik.http.routers.r-tls.middlewares"] = "r-gate"
@@ -358,7 +358,7 @@ func TestRowHasGate(t *testing.T) {
 	}
 
 	// Listed, but not first: a rewrite would run before it.
-	l = RouteLabels("r", "h", 8080, "/a", "/", false, "", true, "addr")
+	l = RouteLabels("r", core.Domain{Host: "h", Path: "/a", InternalPath: "/", Protected: true}, 8080, Routing{TLS: false, CertResolver: "", GateAddress: "addr"})
 	l["traefik.http.routers.r.middlewares"] = "r-strip,r-gate"
 	if RowHasGate(l, "r") {
 		t.Error("gate listed after a rewrite should not count as gated")
@@ -371,7 +371,7 @@ func TestAppLabelsCarryGateForProtectedRows(t *testing.T) {
 		{ID: 1, Host: "wiki.example.com", TLS: true, Protected: true},
 		{ID: 2, Host: "wiki.example.com", Path: "/webhooks", TLS: true},
 	}
-	got := AppLabels(app, domains, 8080, true, "le", "http://host.docker.internal:9000/gate/check")
+	got := AppLabels(app, domains, 8080, Routing{TLS: true, CertResolver: "le", GateAddress: "http://host.docker.internal:9000/gate/check"})
 	if !RowHasGate(got, router("web", 1)) {
 		t.Errorf("protected row 1 lacks its gate: %v", got)
 	}
@@ -396,7 +396,7 @@ func TestProtectedRowGetsHTTPSRouterOnATLSServer(t *testing.T) {
 		{ID: 2, Host: "shop.example.com", Path: "/admin", TLS: false, Protected: true},
 		{ID: 3, Host: "plain.example.com", TLS: false},
 	}
-	got := AppLabels(app, domains, 8080, true, "le", "addr")
+	got := AppLabels(app, domains, 8080, Routing{TLS: true, CertResolver: "le", GateAddress: "addr"})
 	admin := router("shop", 2)
 	if got["traefik.http.routers."+admin+"-tls.entrypoints"] != "websecure" ||
 		got["traefik.http.routers."+admin+"-tls.tls.certresolver"] != "le" {
@@ -409,7 +409,7 @@ func TestProtectedRowGetsHTTPSRouterOnATLSServer(t *testing.T) {
 		t.Error("an open row with its TLS flag off should still get no HTTPS router")
 	}
 	// No TLS on the server (HTTP only, or the tunnel): no HTTPS routers at all.
-	off := AppLabels(app, domains, 8080, false, "", "addr")
+	off := AppLabels(app, domains, 8080, Routing{TLS: false, CertResolver: "", GateAddress: "addr"})
 	if _, ok := off["traefik.http.routers."+admin+"-tls.rule"]; ok {
 		t.Error("no HTTPS router expected when the server has no TLS")
 	}
@@ -421,7 +421,7 @@ func TestProtectedRowGetsHTTPSRouterOnATLSServer(t *testing.T) {
 // A protected row with no gate address still puts the gate first, so Traefik
 // fails the route closed, and RowHasGate never reports it as gated.
 func TestEmptyGateAddressFailsClosed(t *testing.T) {
-	l := RouteLabels("r", "h", 8080, "", "", true, "", true, "")
+	l := RouteLabels("r", core.Domain{Host: "h", Path: "", InternalPath: "", Protected: true}, 8080, Routing{TLS: true, CertResolver: "", GateAddress: ""})
 	for _, r := range []string{"r", "r-tls"} {
 		first, _, _ := strings.Cut(l["traefik.http.routers."+r+".middlewares"], ",")
 		if first != "r-gate" {
@@ -445,11 +445,11 @@ func TestHasGateLabel(t *testing.T) {
 		labels map[string]string
 		want   bool
 	}{
-		{"a protected row", AppLabels(core.App{Name: "web"}, []core.Domain{{ID: 1, Host: "h", Protected: true}}, 8080, true, "le", "addr"), true},
-		{"a protected row among open ones", AppLabels(core.App{Name: "web"}, []core.Domain{{ID: 1, Host: "h"}, {ID: 2, Host: "h", Path: "/a", Protected: true}}, 8080, false, "", "addr"), true},
-		{"a gate with no address", RouteLabels("r", "h", 8080, "", "", false, "", true, ""), true},
-		{"open rows only", AppLabels(core.App{Name: "web"}, []core.Domain{{ID: 1, Host: "h"}, {ID: 2, Host: "h", Path: "/a"}}, 8080, true, "le", "addr"), false},
-		{"internal only", AppLabels(core.App{Name: "web"}, nil, 8080, true, "le", "addr"), false},
+		{"a protected row", AppLabels(core.App{Name: "web"}, []core.Domain{{ID: 1, Host: "h", Protected: true}}, 8080, Routing{TLS: true, CertResolver: "le", GateAddress: "addr"}), true},
+		{"a protected row among open ones", AppLabels(core.App{Name: "web"}, []core.Domain{{ID: 1, Host: "h"}, {ID: 2, Host: "h", Path: "/a", Protected: true}}, 8080, Routing{TLS: false, CertResolver: "", GateAddress: "addr"}), true},
+		{"a gate with no address", RouteLabels("r", core.Domain{Host: "h", Path: "", InternalPath: "", Protected: true}, 8080, Routing{TLS: false, CertResolver: "", GateAddress: ""}), true},
+		{"open rows only", AppLabels(core.App{Name: "web"}, []core.Domain{{ID: 1, Host: "h"}, {ID: 2, Host: "h", Path: "/a"}}, 8080, Routing{TLS: true, CertResolver: "le", GateAddress: "addr"}), false},
+		{"internal only", AppLabels(core.App{Name: "web"}, nil, 8080, Routing{TLS: true, CertResolver: "le", GateAddress: "addr"}), false},
 		{"no labels", nil, false},
 		{"a forward auth not named as a gate", map[string]string{"traefik.http.middlewares.auth.forwardauth.address": "x"}, false},
 	}
@@ -465,9 +465,9 @@ func TestHasGateLabel(t *testing.T) {
 // else has no address.
 func TestRuleAddress(t *testing.T) {
 	for _, c := range []struct{ host, path string }{{"wiki.example.com", ""}, {"wiki.example.com", "/webhooks"}} {
-		rule := RouteLabels("r", c.host, 8080, c.path, "", false, "", false, "")["traefik.http.routers.r.rule"]
-		if rule != Rule(c.host, c.path) {
-			t.Errorf("Rule(%q, %q) = %q, but RouteLabels wrote %q", c.host, c.path, Rule(c.host, c.path), rule)
+		rule := RouteLabels("r", core.Domain{Host: c.host, Path: c.path, InternalPath: "", Protected: false}, 8080, Routing{TLS: false, CertResolver: "", GateAddress: ""})["traefik.http.routers.r.rule"]
+		if rule != (Routing{}).Rule(c.host, c.path) {
+			t.Errorf("(Routing{}).Rule(%q, %q) = %q, but RouteLabels wrote %q", c.host, c.path, (Routing{}).Rule(c.host, c.path), rule)
 		}
 		old := "Host(`" + c.host + "`)"
 		if c.path != "" {
@@ -499,11 +499,11 @@ func TestRuleAddress(t *testing.T) {
 // an app decodes it.
 func TestRuleRefusesTraversal(t *testing.T) {
 	const term = " && !PathRegexp(`(?i)(^|/|%2f|\\\\|%5c)(\\.|%2e){2}(/|%2f|\\\\|%5c|;|%3b|%3f|%23|%00|\\x00|$)`)"
-	if got, want := Rule("wiki.example.com", ""), "Host(`wiki.example.com`)"+term; got != want {
-		t.Errorf("Rule(host) = %q, want %q", got, want)
+	if got, want := (Routing{}).Rule("wiki.example.com", ""), "Host(`wiki.example.com`)"+term; got != want {
+		t.Errorf("(Routing{}).Rule(host) = %q, want %q", got, want)
 	}
-	if got, want := Rule("wiki.example.com", "/webhooks"), "Host(`wiki.example.com`) && PathPrefix(`/webhooks`)"+term; got != want {
-		t.Errorf("Rule(host, path) = %q, want %q", got, want)
+	if got, want := (Routing{}).Rule("wiki.example.com", "/webhooks"), "Host(`wiki.example.com`) && PathPrefix(`/webhooks`)"+term; got != want {
+		t.Errorf("(Routing{}).Rule(host, path) = %q, want %q", got, want)
 	}
 	re := regexp.MustCompile(traversalPattern)
 	// Paths as Traefik's PathRegexp sees them: escaped, with %2e and %00
@@ -543,7 +543,7 @@ func TestRoutersKeepTheirPriority(t *testing.T) {
 		}
 		want := strconv.Itoa(len(old))
 		for _, protected := range []bool{false, true} {
-			l := RouteLabels("r", c.host, 8080, c.path, "", true, "le", protected, "addr")
+			l := RouteLabels("r", core.Domain{Host: c.host, Path: c.path, TLS: true, Protected: protected}, 8080, Routing{TLS: true, CertResolver: "le", GateAddress: "addr"})
 			for _, r := range []string{"r", "r-tls"} {
 				if got := l["traefik.http.routers."+r+".priority"]; got != want {
 					t.Errorf("%s%s (protected %v): routers.%s.priority = %q, want %q (the length of %s)", c.host, c.path, protected, r, got, want, old)

@@ -380,7 +380,7 @@ func TestReconcileKeepsTheGateHostWhileAContainerIsGated(t *testing.T) {
 	}
 
 	app := core.App{Name: "wiki"}
-	gated := traefik.AppLabels(app, []core.Domain{{ID: 1, Host: "wiki.example.com", Protected: true}}, 8080, true, "le", "http://host.docker.internal:8080/gate/check")
+	gated := traefik.AppLabels(app, []core.Domain{{ID: 1, Host: "wiki.example.com", Protected: true}}, 8080, traefik.Routing{TLS: true, CertResolver: "le", GateAddress: "http://host.docker.internal:8080/gate/check"})
 	id, err := fake.CreateContainer(ctx, docker.ContainerSpec{Name: "outhaul-app-wiki", Image: "img:1", Labels: gated})
 	if err != nil {
 		t.Fatal(err)
