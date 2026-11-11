@@ -177,18 +177,45 @@ func (s *Server) streamContainerLogs(w http.ResponseWriter, r *http.Request, res
 		logs.Close()
 	}()
 
+	flusher.Flush() // the page's open fires now, even while the container is quiet
+
 	sc := bufio.NewScanner(logs)
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
-	for sc.Scan() {
-		writeSSE(w, "log", sc.Text())
-		flusher.Flush()
+	lines := make(chan string)
+	go func() {
+		defer close(lines)
+		for sc.Scan() {
+			select {
+			case lines <- sc.Text():
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	ticker := time.NewTicker(ssePingEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			writeSSEComment(w, "ping")
+			flusher.Flush()
+		case line, open := <-lines:
+			if !open {
+				if ctx.Err() != nil {
+					return
+				}
+				// Stream EOF: the container stopped (or was never running).
+				writeSSE(w, "done", "")
+				flusher.Flush()
+				return
+			}
+			writeSSE(w, "log", line)
+			flusher.Flush()
+		}
 	}
-	if ctx.Err() != nil {
-		return // client went away or the server is stopping; nothing to tell it
-	}
-	// Stream EOF: the container stopped (or was never running).
-	writeSSE(w, "done", "")
-	flusher.Flush()
 }
 
 // runtimeLogTarget resolves which container's logs to stream. It returns a
