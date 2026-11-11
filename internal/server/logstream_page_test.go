@@ -24,6 +24,9 @@ func TestLogPagesLoadTheSharedStreamScript(t *testing.T) {
 	check := func(name, path string) {
 		t.Helper()
 		page := body(t, e.get(t, path))
+		if !strings.Contains(page, "/static/logstream.js") {
+			t.Errorf("%s page does not load logstream.js", name)
+		}
 		if !strings.Contains(page, "outhaulLogStream(") {
 			t.Errorf("%s page does not use outhaulLogStream", name)
 		}

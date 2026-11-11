@@ -95,6 +95,24 @@ func TestRuntimeLogStreamPingsWhileQuiet(t *testing.T) {
 	}
 }
 
+func TestRuntimeLogStreamHeadersArriveBeforeFirstLine(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	app := seedRunningApp(t, e, "")
+	e.runtime.follow = &blockingLogs{closed: make(chan struct{})}
+	old := ssePingEvery
+	ssePingEvery = time.Hour // no ping may stand in for the early flush
+	t.Cleanup(func() { ssePingEvery = old })
+
+	resp, err := e.getWithin(t, "/apps/"+itoa(app.ID)+"/logs", 500*time.Millisecond)
+	if err != nil {
+		t.Fatalf("headers did not arrive before the first log line: %v", err)
+	}
+	e.srv.CloseStreams()
+	_, _ = io.ReadAll(resp.Body) // wait for the handler to read ssePingEvery and return
+	resp.Body.Close()
+}
+
 func TestDatabaseLogStreamPingsWhileQuiet(t *testing.T) {
 	e := newTestEnv(t)
 	e.login(t)
