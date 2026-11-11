@@ -170,6 +170,22 @@ Each update's log is in `/var/lib/outhaul-updater/log` on the server
 If an update leaves Outhaul down, the log says how to put the previous
 version back.
 
+### Restoring Outhaul's own state
+
+`restore-state` puts a state copy back on a fresh install, from a file or from
+the Azure container:
+
+```sh
+outhaul restore-state --from latest --key-file /root/secret.key
+outhaul restore-state --from 20261111T021500Z --key-file /root/secret.key
+outhaul restore-state --list
+```
+
+It fills an empty install only, proves the key before replacing anything, and
+leaves the old database and key beside the new ones. The full steps, the
+environment it needs and what a rebuild does not bring back are in
+[docs/STATE-BACKUP.md](docs/STATE-BACKUP.md).
+
 ## Configuration
 
 No config files — defaults with `OUTHAUL_*` environment overrides:

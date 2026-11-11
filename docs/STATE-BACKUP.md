@@ -216,3 +216,102 @@ The running-server check is a guard against a forgotten `systemctl stop`, not
 a lock: nothing holds off a start in the instant between the last check and the
 rename. A `-wal` left beside a database that is renamed away would be replayed
 into the new file, which is why the sidecars move with it.
+
+### The first start after a restore
+
+`serve` already fails deployments and databases that were in flight, re-creates
+the Docker network and Traefik, and sweeps previews whose pull request has
+closed. When the marker is present, a pass then runs once, after that and after
+the deploy worker has started. It is retried each minute until it has run to its
+end; a failure inside one step is recorded, not retried.
+
+It only creates what is missing:
+
+1. **Images.** A deployment row whose `outhaul/…` image is not on this host is
+   marked pruned, so no rollback offers it.
+2. **Managed databases.** Each row with status `running` and no container is
+   provisioned again with the same name, user and password, and an empty data
+   directory, before any app. Rows that are `stopped` or `failed` are left.
+3. **Apps.** Each app with a live deployment and no container of its own gets
+   the deploy a protection change would queue: a kept image is started again,
+   and without one the app is built from source. Ordinary apps go first, then
+   previews. A push-deploy app whose repository is missing is skipped and
+   listed.
+4. The marker becomes done, with what was re-created, queued, failed, or waits
+   for a push. Settings shows the same to system admins until one dismisses it.
+
+Left to a person: restoring each database's and volume's data from its
+schedule's Restore page, which needs the database running and the volume
+present, so after the pass; and pushing push-deploy apps again.
+
+Whether an app was stopped is read from Docker, not stored, so an app stopped
+at backup time is deployed again. An app comes back at its branch's head, not
+at the commit that was running, unless its image was kept.
+
+### What a rebuild loses
+
+| What | In the state backup | After a restore |
+| --- | --- | --- |
+| `outhaul.db` | yes, without sign-in sessions | put back by `restore-state` |
+| `secret.key` | never | supplied by a person |
+| Sign-in sessions, protected-route sessions, one-time codes | no: removed from the copy | everyone signs in again |
+| `traefik/acme/acme.json` (ACME account, certificates, private keys) | no | Traefik orders again: one wildcard under R1, otherwise one order per host, which a host with many names must weigh against Let's Encrypt's limits |
+| `traefik/dynamic`, `traefik/certs`, `work/`, `update/`, `git-hook.sock` | no | written again at startup |
+| `ca/` (the local CA's root and key) | no: a private key | a new root at first start, which devices must trust again, unless the old directory is copied back first |
+| `git/<app>.git` (push-deploy repositories) | no | the next `git push` re-creates the repository and deploys. Until then the app is not redeployed |
+| `ssh_host_ed25519_key` | no: a private key | a new host key; people who push see a host-key warning once |
+| `databases/<name>/` (managed database data) | no | from each database's own schedule. One with no schedule, and every Redis, comes back empty |
+| App volumes | no | from each app's own schedule, or empty |
+| Images, containers, the network, Traefik | no | `ensureInfra` re-creates the network and Traefik; images are rebuilt or pulled |
+| Build logs | in memory only | lost, as at any restart |
+| The binary, the unit, `/etc/outhaul.env`, `/etc/outhaul/azure.env` | not Outhaul's state | the installer and the infrastructure write them |
+
+### The steps a person follows
+
+1. Build the host and install Outhaul as usual: the version that made the
+   backup or a newer one, with the same environment files. The installer
+   starts it. Don't create an account.
+2. `systemctl stop outhaul`.
+3. Put the key on the host, for example `/root/secret.key`, mode 0600.
+4. Run the restore with the service's environment:
+
+   ```
+   systemd-run --wait --pipe --collect \
+     -p EnvironmentFile=/etc/outhaul.env \
+     -p EnvironmentFile=/etc/outhaul/azure.env \
+     /usr/local/bin/outhaul restore-state --from latest \
+     --key-file /root/secret.key
+   ```
+
+   With a file downloaded by hand, give its path in place of `latest`. If it
+   refuses, nothing has changed.
+5. `systemctl start outhaul`, and follow `journalctl -u outhaul -f`.
+6. Sign in again. Settings lists what still needs its data.
+7. For each database and app with a schedule, open its Restore page and
+   restore the newest archive. Restart an app that started without its data.
+8. Push each push-deploy app again, accepting the new host key.
+9. Remove the key copy (`shred -u /root/secret.key`) and, once all is well,
+   the `*.before-restore-*` files in the data directory.
+10. Press Run now on the State backup panel, and see a new copy arrive.
+
+### What only the real host can show
+
+For the infrastructure side to run on the staging host. It goes in the pull
+requests and here.
+
+1. Test on the `Azure Blob` row succeeds. With the role taken away it names
+   the role; with a container that doesn't exist it says so.
+2. Run now on the State backup panel puts `_outhaul-state/<stamp>.db.gz` in
+   the container, and the panel shows its size.
+3. A database schedule and a volume schedule on `Azure Blob` run. An archive
+   larger than 8 MiB restores from its Restore page.
+4. A run more than a day after the first succeeds: the token was refreshed.
+5. On a machine that isn't an Azure VM, with the pair set, Test fails within
+   seconds and names the metadata service.
+6. `restore-state` refuses with Outhaul running, and with a wrong key, and
+   leaves the database and key as they were.
+7. The drill: a new VM from an empty disk, the same environment files, the
+   steps above. The apps answer again, `acme.json` holds one wildcard, and a
+   database and a volume restore from their archives.
+8. The next night's state backup appears, and the empty install made before
+   the restore uploaded nothing.

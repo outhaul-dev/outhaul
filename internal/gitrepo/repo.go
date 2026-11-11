@@ -36,6 +36,16 @@ func (m *Manager) Path(app string) (string, error) {
 	return filepath.Join(m.Root, app+".git"), nil
 }
 
+// Exists reports whether app's bare repository is present.
+func (m *Manager) Exists(app string) bool {
+	dir, err := m.Path(app)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(dir, "HEAD"))
+	return err == nil
+}
+
 // Init creates the bare repo for app if absent and (re)writes its post-receive
 // hook. Idempotent: initializing an existing repo is not an error.
 func (m *Manager) Init(app string) error {

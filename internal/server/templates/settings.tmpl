@@ -123,6 +123,22 @@
   {{end}}
 </section>
 
+{{with .RestoreNotice}}
+<section class="panel" id="restore-notice">
+  <h2 class="panel-title">Restore</h2>
+  {{if .Pending}}
+  <p class="env-note">Restored on {{fmtTime .RestoredAt}}. The first-start pass is still running; it retries each minute until it has re-created what it can.</p>
+  {{else}}
+  <p class="env-note">Restored on {{fmtTime .RestoredAt}}. The first start has re-created what it can.</p>
+  {{if .Databases}}<p class="muted env-note">Databases re-created: <span class="mono">{{range $i, $n := .Databases}}{{if $i}}, {{end}}{{$n}}{{end}}</span></p>{{end}}
+  {{if .Queued}}<p class="muted env-note">Deploys queued: <span class="mono">{{range $i, $n := .Queued}}{{if $i}}, {{end}}{{$n}}{{end}}</span></p>{{end}}
+  {{if .WaitingPush}}<p class="muted env-note">Waiting for a git push: <span class="mono">{{range $i, $n := .WaitingPush}}{{if $i}}, {{end}}{{$n}}{{end}}</span></p>{{end}}
+  {{if .Failed}}<p class="muted env-note">Failed: <span class="mono">{{range $i, $n := .Failed}}{{if $i}}, {{end}}{{$n}}{{end}}</span></p>{{end}}
+  <form method="post" action="/settings/restore/dismiss" class="inline"><button type="submit" class="btn btn-quiet">Dismiss</button></form>
+  {{end}}
+</section>
+{{end}}
+
 <section class="panel">
   <h2 class="panel-title">Backup destinations</h2>
   {{if .Destinations}}

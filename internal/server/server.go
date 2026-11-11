@@ -51,6 +51,7 @@ type Deployer interface {
 // asynchronous (it can pull an image); the rest are immediate.
 type Databases interface {
 	Provision(d core.Database)
+	ProvisionSync(ctx context.Context, d core.Database) error
 	Start(ctx context.Context, d core.Database) error
 	Stop(ctx context.Context, d core.Database) error
 	Remove(ctx context.Context, d core.Database) error
@@ -77,6 +78,7 @@ type Runtime interface {
 	ContainerLogs(ctx context.Context, id string, tail int) (io.ReadCloser, error)
 	ContainerStats(ctx context.Context, id string) (docker.Stats, error)
 	RemoveImage(ctx context.Context, ref string) error
+	ListImages(ctx context.Context, refPattern string) ([]string, error)
 	ListVolumesFull(ctx context.Context, match map[string]string) ([]docker.VolumeInfo, error)
 	RemoveVolume(ctx context.Context, name string, force bool) error
 }
@@ -97,6 +99,8 @@ type Server struct {
 	sources   *gitsource.Registry // providers for connected git sources
 	previews  PreviewHandler      // routes pull_request webhooks to the preview manager; nil disables previews
 	metrics   metricsSampler      // host/self resource sampler for the Metrics page
+
+	restoreEvery time.Duration // how often the first-start pass retries; tests shorten it
 
 	pages      map[string]*template.Template
 	setupToken string
@@ -177,6 +181,7 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 		serverIP:          serverIP,
 		tlsEnabled:        tlsEnabled,
 		setupToken:        setupToken,
+		restoreEvery:      time.Minute,
 		stateTokens:       map[string]time.Time{},
 		backfillAttempted: map[int64]bool{},
 		discover:          sso.Discover,

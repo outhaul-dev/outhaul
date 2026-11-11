@@ -359,6 +359,7 @@ func serve() error {
 		Prefix:      cfg.StateBackupPrefix,
 	})
 	srv.SetHTTPSPort(cfg.HTTPSPort)
+	go srv.RunRestorePass(workerCtx)
 	srv.SetBuild(update.Current())
 	srv.SetUpdates(updates, checker)
 	if certMgr != nil {

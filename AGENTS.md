@@ -63,9 +63,26 @@ it.
   data migration, seed old-schema rows with `openMigratedBefore`
   (`internal/store/migrate_webhook_token_test.go`).
 - **Values sealed with `secret.key`.** When you add a sealed column, also add
-  it to `sealedQueries` in `internal/store/sealed.go`. Startup uses that list
-  to refuse to replace a lost key while values encrypted with it exist. The
-  SSO client secret (`sso_client_secret`) is one example.
+  it to `sealedColumns` in `internal/store/sealed.go`, with a condition when
+  the column may be empty. Startup uses that list to refuse to replace a lost
+  key while values encrypted with it exist; `CheckSealed` uses the same list
+  to prove a key against a state copy before `restore-state` replaces
+  anything. The SSO client secret (`sso_client_secret`) is one example.
+- **The Azure backup row belongs to the environment.** `SyncAzureDestination`
+  keeps the single `kind=azure` row in step with
+  `OUTHAUL_BACKUP_AZURE_ACCOUNT` and `..._CONTAINER`. It has no secret, it can't
+  be added or removed on Settings while those settings are set, and when they
+  are unset it is cleared but kept while a schedule still uses it.
+- **`restore-state` moves, never deletes.** The old key and database go to
+  `*.before-restore-<stamp>` together, key first; a survived `-wal` after the
+  staged copy closes is a refusal, and the staged file is checked and stripped
+  before anything is replaced. A copy from an older Outhaul is migrated on the
+  staged file, so a migration failure leaves the host untouched.
+- **The restore marker and first-start pass.** `restore-state` writes
+  `state_restore` in settings; `serve` runs the pass while it is pending, once
+  a minute, until it has run to its end. It only creates what is missing and
+  records a per-target failure instead of stopping. See
+  `docs/STATE-BACKUP.md`.
 - **SSO accounts** are keyed by issuer and subject and are never linked by
   email. An SSO account has no password and can't use the password form. See
   `docs/SSO.md`.
