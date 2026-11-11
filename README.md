@@ -185,6 +185,8 @@ No config files — defaults with `OUTHAUL_*` environment overrides:
 | `OUTHAUL_ACME_DNS_PROVIDER` | (empty)          | A [lego DNS provider](https://go-acme.github.io/lego/dns/) code, such as `azuredns`; empty uses the HTTP-01 challenge, which needs port 80 |
 | `OUTHAUL_ACME_DNS_ENV`  | (empty)              | Comma-separated names of environment variables passed to Traefik for the DNS provider, e.g. `AZURE_CLIENT_ID,AZURE_SUBSCRIPTION_ID` — see docs/BEHIND-A-PROXY.md |
 | `OUTHAUL_TLS_WILDCARD`  | (empty)              | A wildcard such as `*.shared.demo.example.com`; one certificate covers every host exactly one label under it — see docs/BEHIND-A-PROXY.md |
+| `OUTHAUL_REQUIRE_HEADER_NAME` | (empty)        | A request header every route requires, such as `X-Azure-FDID`; set with its value — see docs/BEHIND-A-PROXY.md |
+| `OUTHAUL_REQUIRE_HEADER_VALUE` | (empty)       | The required header's value: letters, digits and `-._~+/=:`, at most 256 characters |
 | `OUTHAUL_LOCAL_CA`      | `false`              | serve HTTPS from the built-in local CA (LAN installs; excludes OUTHAUL_ACME_EMAIL) — see docs/LOCAL-CA.md |
 | `OUTHAUL_HTTPS_PORT`    | `443`                | Host port for HTTPS                        |
 | `OUTHAUL_HTTP_PORT`     | `80`                 | `80`, or `off` for HTTPS only (no plain-HTTP entrypoint); `off` needs HTTPS and can't be combined with a Cloudflare Tunnel — see docs/BEHIND-A-PROXY.md |

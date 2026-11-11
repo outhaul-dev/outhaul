@@ -279,9 +279,35 @@ func RuleAddress(rule string) (host, urlPath string, ok bool) {
 		}
 	}
 	if rest != "" && rest != traversalTerm {
-		return "", "", false
+		withHeader, ok := strings.CutPrefix(rest, traversalTerm)
+		if !ok {
+			return "", "", false
+		}
+		if withHeader != "" {
+			if _, _, ok := parseHeaderTerm(withHeader); !ok {
+				return "", "", false
+			}
+		}
 	}
 	return host, urlPath, true
+}
+
+// parseHeaderTerm reads one " && Header(`name`, `value`)" term, with a
+// non-empty name and value and no backtick in either.
+func parseHeaderTerm(s string) (name, value string, ok bool) {
+	s, found := strings.CutPrefix(s, " && Header(`")
+	if !found {
+		return "", "", false
+	}
+	name, s, found = strings.Cut(s, "`, `")
+	if !found || name == "" || strings.Contains(name, "`") {
+		return "", "", false
+	}
+	value, s, found = strings.Cut(s, "`)")
+	if !found || value == "" || strings.Contains(value, "`") || s != "" {
+		return "", "", false
+	}
+	return name, value, true
 }
 
 // SameAddress reports whether rule (a router's rule label) names host and

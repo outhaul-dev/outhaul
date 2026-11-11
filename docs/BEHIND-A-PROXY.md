@@ -43,6 +43,25 @@ it when the wildcard is turned on over the same `acme.json`; it is not
 re-issued from the wildcard until the stored certificate is no longer used.
 `deploy/test/integration_ingress.sh` reports what a run sees.
 
+## The required header
+
+`OUTHAUL_REQUIRE_HEADER_NAME` and `OUTHAUL_REQUIRE_HEADER_VALUE` put a header
+term in every router's rule: the admin route's too. Traefik answers 404 for a
+request that lacks the header or carries another value; the name matches in any
+case. Both settings or neither.
+
+The value is limited to letters, digits and `-._~+/=:`, at most 256 characters,
+so no rule writer or YAML emitter has to escape it. It is never shown in the UI
+or written to a log line; an error names the variable, not the value. The name
+appears on no page either.
+
+This header is only as good as the network rule in front of the host. Anyone
+who can reach the host directly can send it. It is not a secret: a container's
+labels in Docker show it.
+
+With port 80 open as well, its redirect to HTTPS answers before any rule is
+read, so the header is not checked there; it is checked on 443.
+
 ## HTTPS only
 `OUTHAUL_HTTP_PORT=off` publishes no port 80. Traefik has no `web` entrypoint
 and every router is on `websecure`; there is no plain-HTTP router and no

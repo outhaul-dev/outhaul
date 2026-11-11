@@ -239,3 +239,32 @@ func TestComposeOverrideProtectedRowGetsHTTPSRouter(t *testing.T) {
 		t.Errorf("no HTTPS router expected without TLS on the server:\n%s", off)
 	}
 }
+
+func TestOverrideCarriesTheHeader(t *testing.T) {
+	app := core.App{Name: "shop"}
+	domains := []core.Domain{
+		{ID: 1, Host: "shop.example.com", Service: "web", Port: 3000, TLS: true, Protected: true},
+		{ID: 2, Host: "shop.example.com", Path: "/api", Service: "web", Port: 3000, TLS: true},
+	}
+	got := string(Override(app, domains, "outhaul", traefik.Routing{
+		TLS: true, CertResolver: "le", GateAddress: "addr",
+		HeaderName: "X-Azure-FDID", HeaderValue: "Ab0-._~+/=:",
+	}))
+	suffix := " && Header(`X-Azure-FDID`, `Ab0-._~+/=:`)"
+	rules := 0
+	for _, line := range strings.Split(got, "\n") {
+		if !strings.Contains(line, `.rule": `) {
+			continue
+		}
+		rules++
+		if !strings.HasSuffix(strings.TrimSpace(line), suffix+`"`) && !strings.Contains(line, suffix) {
+			t.Errorf("rule line does not end with the header term: %s", line)
+		}
+	}
+	if rules == 0 {
+		t.Fatal("the override carries no rules")
+	}
+	if !strings.Contains(got, "Ab0-._~+/=:") {
+		t.Error("the header value is not preserved in the override")
+	}
+}

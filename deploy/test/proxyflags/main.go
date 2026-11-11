@@ -2,7 +2,7 @@
 // its proxy for an ACME install, so deploy/test/integration_ingress.sh can
 // start a real Traefik from the real proxySpec code.
 //
-//	proxyflags [-http-off] [-wildcard W] [-dns-provider P] [-dns-env NAME=value]... cmd|env
+//	proxyflags [-http-off] [-wildcard W] [-dns-provider P] [-dns-env NAME=value]... [-header NAME=VALUE] cmd|env
 //
 // cmd prints one flag per line; env prints one NAME=value per line.
 package main
@@ -33,9 +33,10 @@ func main() {
 	dnsProvider := flag.String("dns-provider", "", "lego DNS provider code")
 	var dnsEnv stringList
 	flag.Var(&dnsEnv, "dns-env", "NAME=value passed to Traefik (repeatable)")
+	header := flag.String("header", "", "NAME=VALUE every rule requires")
 	flag.Parse()
 	if flag.NArg() != 1 || (flag.Arg(0) != "cmd" && flag.Arg(0) != "env") {
-		fmt.Fprintln(os.Stderr, "usage: proxyflags [-http-off] [-wildcard W] [-dns-provider P] [-dns-env NAME=value]... cmd|env")
+		fmt.Fprintln(os.Stderr, "usage: proxyflags [-http-off] [-wildcard W] [-dns-provider P] [-dns-env NAME=value]... [-header NAME=VALUE] cmd|env")
 		os.Exit(2)
 	}
 	pc := traefik.ProxyConfig{
@@ -50,6 +51,14 @@ func main() {
 		DNSProvider:    *dnsProvider,
 		DNSEnv:         dnsEnv,
 		Routing:        traefik.Routing{TLS: true, CertResolver: "le", HTTPOff: *httpOff, Wildcard: *wildcard},
+	}
+	if *header != "" {
+		name, value, ok := strings.Cut(*header, "=")
+		if !ok || name == "" || value == "" {
+			fmt.Fprintln(os.Stderr, "proxyflags: -header wants NAME=VALUE")
+			os.Exit(2)
+		}
+		pc.Routing.HeaderName, pc.Routing.HeaderValue = name, value
 	}
 	cmd, env := traefik.ProxyFlags(pc)
 	var lines []string

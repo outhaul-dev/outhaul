@@ -16,6 +16,8 @@ type Routing struct {
 	GateAddress  string // the forward-auth address protected rows call
 	HTTPOff      bool   // no web entrypoint: every row has one router, on websecure
 	Wildcard     string // a wildcard certificate's host, when one is requested; "" = none
+	HeaderName   string // a request header every router's rule requires; "" = none
+	HeaderValue  string // the header's value; never logged or shown
 }
 
 // RoutingFrom builds the settings routers are written from. A Cloudflare
@@ -28,6 +30,8 @@ func RoutingFrom(cfg config.Config, tunnelOn bool) Routing {
 		GateAddress:  cfg.GateAddress(),
 		HTTPOff:      cfg.HTTPOff && !tunnelOn,
 		Wildcard:     cfg.TLSWildcard,
+		HeaderName:   cfg.RequireHeaderName,
+		HeaderValue:  cfg.RequireHeaderValue,
 	}
 }
 
@@ -37,7 +41,18 @@ func RoutingFrom(cfg config.Config, tunnelOn bool) Routing {
 // something outside the route, which may be a protected page, so the request
 // isn't routed at all.
 func (rt Routing) Rule(host, urlPath string) string {
-	return addressRule(host, urlPath) + traversalTerm
+	return addressRule(host, urlPath) + traversalTerm + rt.headerTerm()
+}
+
+// HeaderRequired reports whether every router must carry the request header.
+func (rt Routing) HeaderRequired() bool { return rt.HeaderName != "" }
+
+// headerTerm is the rule's last term, requiring the configured request header.
+func (rt Routing) headerTerm() string {
+	if rt.HeaderName == "" {
+		return ""
+	}
+	return " && Header(`" + rt.HeaderName + "`, `" + rt.HeaderValue + "`)"
 }
 
 // routeWantsTLS reports whether a row gets its HTTPS router under rt: the

@@ -338,10 +338,6 @@ func writeAdminDynamicConfig(pc ProxyConfig) error {
 	if err := os.MkdirAll(pc.DynamicDir, 0o700); err != nil {
 		return err
 	}
-	port := pc.AdminPort
-	if port == "" {
-		port = "8080"
-	}
 	entrypoint, tlsBlock := "websecure", "\n      tls:\n        certResolver: le"
 	switch {
 	case pc.TunnelMode:
@@ -354,7 +350,7 @@ func writeAdminDynamicConfig(pc ProxyConfig) error {
 		// resolver and certificate, so it must name no tls setting.
 		tlsBlock = ""
 	}
-	return os.WriteFile(path, []byte(adminDynamicConfig(pc.AdminHost, port, entrypoint, tlsBlock)), 0o644)
+	return os.WriteFile(path, []byte(adminDynamicConfig(pc, entrypoint, tlsBlock)), 0o644)
 }
 
 // removeStaleLocalCertsConfig clears localca's file-provider cert list when
@@ -378,12 +374,16 @@ func removeStaleLocalCertsConfig(pc ProxyConfig) error {
 // sits on the plain-HTTP web entrypoint; under LocalCA it uses the
 // file-provider tls store (tls: {}); otherwise it uses websecure with an
 // on-demand Let's Encrypt cert.
-func adminDynamicConfig(host, port, entrypoint, tlsBlock string) string {
+func adminDynamicConfig(pc ProxyConfig, entrypoint, tlsBlock string) string {
+	port := pc.AdminPort
+	if port == "" {
+		port = "8080"
+	}
 	return fmt.Sprintf(`# Managed by Outhaul — routes the admin UI. Do not edit by hand.
 http:
   routers:
     outhaul-admin:
-      rule: "Host(`+"`%s`"+`)"
+      rule: "Host(`+"`%s`"+`)"%s
       entryPoints:
         - %s
       service: outhaul-admin%s
@@ -392,5 +392,5 @@ http:
       loadBalancer:
         servers:
           - url: "http://host.docker.internal:%s"
-`, host, entrypoint, tlsBlock, port)
+`, pc.AdminHost, pc.Routing.headerTerm(), entrypoint, tlsBlock, port)
 }

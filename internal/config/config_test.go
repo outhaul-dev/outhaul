@@ -636,3 +636,70 @@ func TestHTTPOffWithDNSChallenge(t *testing.T) {
 		t.Errorf("Validate: %v", err)
 	}
 }
+
+func TestRequireHeaderSetting(t *testing.T) {
+	load := func(env map[string]string) Config {
+		return Load(func(k string) string { return env[k] })
+	}
+	ok := load(map[string]string{
+		"OUTHAUL_REQUIRE_HEADER_NAME":  "X-Azure-FDID",
+		"OUTHAUL_REQUIRE_HEADER_VALUE": "8f7c1a2e-0000-4000-8000-000000000000",
+	})
+	if err := ok.Validate(); err != nil {
+		t.Errorf("Validate: %v", err)
+	}
+	if !ok.HeaderRequired() || ok.RequireHeaderName != "X-Azure-FDID" || ok.RequireHeaderValue != "8f7c1a2e-0000-4000-8000-000000000000" {
+		t.Errorf("header settings = %q, %q, required %v", ok.RequireHeaderName, ok.RequireHeaderValue, ok.HeaderRequired())
+	}
+	if load(nil).HeaderRequired() {
+		t.Error("no header set should not require one")
+	}
+
+	for env, want := range map[string]string{
+		"OUTHAUL_REQUIRE_HEADER_NAME=X-Azure-FDID": "OUTHAUL_REQUIRE_HEADER_VALUE",
+		"OUTHAUL_REQUIRE_HEADER_VALUE=abc-123":     "OUTHAUL_REQUIRE_HEADER_NAME",
+	} {
+		var e map[string]string
+		for _, kv := range []string{env} {
+			k, v, _ := strings.Cut(kv, "=")
+			e = map[string]string{k: v}
+		}
+		err := load(e).Validate()
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: error %v does not name %s", env, err, want)
+		}
+	}
+
+	for _, name := range []string{"X Azure", "X_Azure", "X:Azure"} {
+		err := load(map[string]string{
+			"OUTHAUL_REQUIRE_HEADER_NAME":  name,
+			"OUTHAUL_REQUIRE_HEADER_VALUE": "abc-123",
+		}).Validate()
+		if err == nil || !strings.Contains(err.Error(), "OUTHAUL_REQUIRE_HEADER_NAME") {
+			t.Errorf("name %q: error %v does not name OUTHAUL_REQUIRE_HEADER_NAME", name, err)
+		}
+	}
+	err := load(map[string]string{"OUTHAUL_REQUIRE_HEADER_VALUE": "abc-123"}).Validate()
+	if err == nil || !strings.Contains(err.Error(), "OUTHAUL_REQUIRE_HEADER_NAME") {
+		t.Errorf("empty name with a value: error %v does not name OUTHAUL_REQUIRE_HEADER_NAME", err)
+	}
+	for _, value := range []string{"a`b", `a"b`, "a b", "a$b", "a\nb", `a\b`, strings.Repeat("a", 257)} {
+		err := load(map[string]string{
+			"OUTHAUL_REQUIRE_HEADER_NAME":  "X-Azure-FDID",
+			"OUTHAUL_REQUIRE_HEADER_VALUE": value,
+		}).Validate()
+		if err == nil || !strings.Contains(err.Error(), "OUTHAUL_REQUIRE_HEADER_VALUE") {
+			t.Errorf("value %q: error %v does not name OUTHAUL_REQUIRE_HEADER_VALUE", value, err)
+		}
+		if err != nil && strings.Contains(err.Error(), value) && len(value) > 3 {
+			t.Errorf("value %q: error leaks the value: %q", value, err)
+		}
+	}
+	okValue := load(map[string]string{
+		"OUTHAUL_REQUIRE_HEADER_NAME":  "X-Azure-FDID",
+		"OUTHAUL_REQUIRE_HEADER_VALUE": "Ab0-._~+/=:",
+	})
+	if err := okValue.Validate(); err != nil {
+		t.Errorf("a valid value: %v", err)
+	}
+}

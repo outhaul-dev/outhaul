@@ -4,8 +4,8 @@
 // traefik.AppLabels does (core.Domain.WantsTLS), so the integration test
 // covers the real label code.
 //
-//	gatelabels [-port 8000] [-tls] [-http-off] [-wildcard W] [-resolver NAME] [-admin-port 8080 | -gate URL] ROUTE...
-//	gatelabels -compose [-port 8000] [-tls] [-http-off] [-wildcard W] [-resolver NAME] [-admin-port 8080 | -gate URL] ROUTE...
+//	gatelabels [-port 8000] [-tls] [-http-off] [-wildcard W] [-resolver NAME] [-header NAME=VALUE] [-admin-port 8080 | -gate URL] ROUTE...
+//	gatelabels -compose [-port 8000] [-tls] [-http-off] [-wildcard W] [-resolver NAME] [-header NAME=VALUE] [-admin-port 8080 | -gate URL] ROUTE...
 //
 // Each ROUTE is "router,host,path,internalPath,open|protected[,notls]"; an
 // empty path or internal path is allowed. notls turns the row's own TLS flag
@@ -64,6 +64,7 @@ func main() {
 	httpOff := flag.Bool("http-off", false, "publish no plain HTTP: every route has one router on websecure")
 	wildcard := flag.String("wildcard", "", "the wildcard certificate every covered host inherits")
 	resolver := flag.String("resolver", "", `the TLS cert resolver ("le" under Let's Encrypt; empty under the local CA)`)
+	header := flag.String("header", "", "NAME=VALUE every rule requires")
 	adminPort := flag.String("admin-port", "8080", "Outhaul's admin port; the gate address is config.GateAddress for it")
 	gate := flag.String("gate", "", "forward-auth address to use instead of the one -admin-port gives")
 	asCompose := flag.Bool("compose", false, "print the Compose override instead of a label file")
@@ -74,6 +75,14 @@ func main() {
 		address = config.Config{ListenAddr: ":" + *adminPort}.GateAddress()
 	}
 	rt := traefik.Routing{TLS: *tls, CertResolver: *resolver, GateAddress: address, HTTPOff: *httpOff, Wildcard: *wildcard}
+	if *header != "" {
+		name, value, ok := strings.Cut(*header, "=")
+		if !ok || name == "" || value == "" {
+			fmt.Fprintln(os.Stderr, "gatelabels: -header wants NAME=VALUE")
+			os.Exit(2)
+		}
+		rt.HeaderName, rt.HeaderValue = name, value
+	}
 	var routes []route
 	for _, arg := range flag.Args() {
 		r, err := parseRoute(arg)
