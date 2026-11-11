@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -552,11 +553,11 @@ func TestHTTPOffRefusesAnEnabledTunnel(t *testing.T) {
 // visible without waiting for it to succeed.
 type countingNetwork struct {
 	*docker.Fake
-	calls int
+	calls atomic.Int64
 }
 
 func (c *countingNetwork) EnsureNetwork(context.Context, string) error {
-	c.calls++
+	c.calls.Add(1)
 	return errors.New("docker unreachable")
 }
 
@@ -604,7 +605,7 @@ func TestReconcileIsRetriedWhileAHeaderIsRequired(t *testing.T) {
 }
 
 func TestStartupDoesNotRetryWithoutAHeader(t *testing.T) {
-	cfg := config.Config{DataDir: t.TempDir(), Network: "outhaul", TraefikImage: config.DefaultTraefikImage, ListenAddr: ":8080"}
+	cfg := config.Config{DataDir: t.TempDir(), Network: "outhaul", TraefikImage: config.DefaultTraefikImage, ListenAddr: ":8080", AdminDirect: true}
 	st, err := openStore(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -615,8 +616,8 @@ func TestStartupDoesNotRetryWithoutAHeader(t *testing.T) {
 	defer cancel()
 	ensureInfra(ctx, f, cfg, st)
 	time.Sleep(50 * time.Millisecond)
-	if f.calls != 1 {
-		t.Errorf("EnsureNetwork calls = %d, want 1 (no retry without a header)", f.calls)
+	if f.calls.Load() != 1 {
+		t.Errorf("EnsureNetwork calls = %d, want 1 (no retry without a header)", f.calls.Load())
 	}
 }
 
@@ -769,5 +770,84 @@ func TestWarnsWhenTheHeaderDoesNotCoverTheAdminPort(t *testing.T) {
 	cfg = config.Config{AdminDirect: true}
 	if adminPortWarning(cfg) != "" {
 		t.Error("no header should not warn")
+	}
+}
+
+func TestAdminGatewayBindFailureIsNotFatal(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	blocker, err := net.Listen("tcp", fmt.Sprintf("127.0.0.2:%d", port))
+	if err != nil {
+		t.Skipf("cannot bind 127.0.0.2: %v", err)
+	}
+	defer blocker.Close()
+
+	cfg := config.Config{AdminDirect: false, ListenAddr: fmt.Sprintf(":%d", port)}
+	httpServer := newHTTPServer(cfg.ListenAddr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), func() {})
+	defer httpServer.Close()
+	gateway := func(context.Context) (string, error) { return "127.0.0.2", nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errs := make(chan error, 4)
+	serveAdmin(ctx, httpServer, cfg, gateway, 10*time.Millisecond, errs)
+
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
+	if err != nil {
+		t.Fatalf("loopback is not reachable: %v", err)
+	}
+	resp.Body.Close()
+	select {
+	case err := <-errs:
+		t.Fatalf("a gateway bind failure ended the server: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	blocker.Close()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.2:%d/", port))
+		if err == nil {
+			resp.Body.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the gateway listener never retried: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestStartupRetriesWhenAdminDirectIsOff(t *testing.T) {
+	old := reconcileRetryInterval
+	reconcileRetryInterval = time.Millisecond
+	t.Cleanup(func() { reconcileRetryInterval = old })
+
+	cfg := config.Config{
+		DataDir: t.TempDir(), Network: "outhaul", TraefikImage: config.DefaultTraefikImage,
+		ListenAddr: ":8080", AdminDirect: false, PublicURL: "https://outhaul.example.com",
+		ACMEEmail: "ops@example.com",
+	}
+	st, err := openStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	f := &countingNetwork{Fake: docker.NewFake()}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ensureInfra(ctx, f, cfg, st)
+	deadline := time.Now().Add(2 * time.Second)
+	for f.calls.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if f.calls.Load() < 2 {
+		t.Fatalf("EnsureNetwork calls = %d, want a retry while OUTHAUL_ADMIN_DIRECT=off", f.calls.Load())
 	}
 }

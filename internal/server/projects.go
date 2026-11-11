@@ -158,6 +158,8 @@ func (s *Server) renderProject(w http.ResponseWriter, r *http.Request, status in
 		"Projects":         projects,
 		"SelectedProject":  p.ID,
 		"InProject":        true,
+		"HTTPSOnly":        s.routing.HTTPOff,
+		"ProtectedHTTPS":   s.protectedOverHTTPS(r.Context()),
 		"Return":           "/projects/" + strconv.FormatInt(p.ID, 10),
 		"DBForm":           dbForm,
 		"Members":          members,

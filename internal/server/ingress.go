@@ -82,7 +82,7 @@ func (s *Server) served(cs []docker.Container) []docker.Container {
 	}
 	out := make([]docker.Container, 0, len(cs))
 	for _, c := range cs {
-		if !s.routing.Ignores(c.Labels) {
+		if !s.routing.Unserved(c.Labels) {
 			out = append(out, c)
 		}
 	}

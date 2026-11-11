@@ -238,8 +238,12 @@ func TestAppPageSaysNotServed(t *testing.T) {
 	}
 
 	e.srv.SetRouting(traefik.Routing{TLS: true, HTTPOff: true})
+	if got := page(); !strings.Contains(got, notice) {
+		t.Errorf("a container labelled for web should say the app isn't served with HTTP off")
+	}
+	e.runtime.stack[0].Labels = traefik.AppLabels(app, rows, deployAppPort, traefik.Routing{TLS: true, HTTPOff: true})
 	if got := page(); strings.Contains(got, notice) {
-		t.Errorf("HTTP off alone should not say the app isn't served")
+		t.Errorf("a container labelled for websecure should not say the app isn't served with HTTP off")
 	}
 }
 

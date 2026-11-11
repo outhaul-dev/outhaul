@@ -123,4 +123,18 @@ func TestHTTPSOnlyLinksAreHTTPS(t *testing.T) {
 	if strings.Contains(domains, `href="http://plain.example.com"`) {
 		t.Error("the Domains page links the row over plain HTTP")
 	}
+	apps := body(t, e.get(t, "/apps"))
+	if !strings.Contains(apps, `href="https://plain.example.com"`) {
+		t.Error("the Apps page does not link the row over HTTPS")
+	}
+	if strings.Contains(apps, `href="http://plain.example.com"`) {
+		t.Error("the Apps page links the row over plain HTTP")
+	}
+	project := body(t, e.get(t, "/projects/1"))
+	if !strings.Contains(project, `href="https://plain.example.com"`) {
+		t.Error("the Project page does not link the row over HTTPS")
+	}
+	if strings.Contains(project, `href="http://plain.example.com"`) {
+		t.Error("the Project page links the row over plain HTTP")
+	}
 }

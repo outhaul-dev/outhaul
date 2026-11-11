@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/docker"
 	"github.com/outhaul-dev/outhaul/internal/localca"
@@ -788,5 +789,29 @@ func TestProxyMapsGateHostWithAGateway(t *testing.T) {
 	mapped, known := ProxyMapsGateHost(ctx, f, pc)
 	if !mapped || !known {
 		t.Errorf("ProxyMapsGateHost = %v, %v; want true, true", mapped, known)
+	}
+}
+
+// stopFails is a Docker whose container stop fails.
+type stopFails struct{ *docker.Fake }
+
+func (stopFails) StopContainer(context.Context, string, time.Duration) error {
+	return errors.New("stop failed")
+}
+
+// If the old Traefik can't be stopped, the caller must hear about it: it is
+// still serving without the required header.
+func TestHeaderRequiredReportsAStopFailure(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+	if err := EnsureProxy(ctx, f, testProxyConfig(), nil); err != nil {
+		t.Fatalf("initial EnsureProxy: %v", err)
+	}
+	f.FailPull = func(string) error { return errors.New("registry down") }
+	pc := testProxyConfig()
+	pc.Routing = Routing{HeaderName: "X-Azure-FDID", HeaderValue: "abc-123"}
+	err := EnsureProxy(ctx, stopFails{f}, pc, nil)
+	if err == nil || !strings.Contains(err.Error(), "stop") {
+		t.Fatalf("EnsureProxy = %v, want an error naming the failed stop", err)
 	}
 }

@@ -394,3 +394,27 @@ func TestRoutedContainersCarryTheStamp(t *testing.T) {
 		}
 	}
 }
+
+func TestUnserved(t *testing.T) {
+	web := map[string]string{
+		"traefik.enable":                     "true",
+		"traefik.http.routers.r.entrypoints": "web",
+	}
+	secure := map[string]string{
+		"traefik.enable":                     "true",
+		"traefik.http.routers.r.entrypoints": "websecure",
+	}
+	if !(Routing{HTTPOff: true}).Unserved(web) {
+		t.Error("HTTP off: a router on web is not served")
+	}
+	if (Routing{HTTPOff: true}).Unserved(secure) {
+		t.Error("HTTP off: a router on websecure is served")
+	}
+	if (Routing{}).Unserved(web) {
+		t.Error("HTTP on: a router on web is served")
+	}
+	rt := Routing{HeaderName: "X-Azure-FDID", HeaderValue: "abc-123"}
+	if !rt.Unserved(map[string]string{"traefik.enable": "true"}) {
+		t.Error("a header-required container with no stamp is not served")
+	}
+}

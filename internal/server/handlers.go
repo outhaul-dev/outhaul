@@ -86,6 +86,7 @@ func (s *Server) handleAppsList(w http.ResponseWriter, r *http.Request) {
 	data := map[string]any{
 		"Title": "Apps", "Active": "apps", "Apps": rows,
 		"Projects": projects, "SelectedProject": selectedProject(projects),
+		"HTTPSOnly": s.routing.HTTPOff, "ProtectedHTTPS": s.protectedOverHTTPS(r.Context()),
 	}
 	for k, v := range s.gitSourceData(r) {
 		data[k] = v
@@ -647,6 +648,7 @@ func (s *Server) renderAppsWithError(w http.ResponseWriter, r *http.Request, msg
 	data := map[string]any{
 		"Title": "Apps", "Active": "apps", "Apps": rows,
 		"Projects": projects, "SelectedProject": selected,
+		"HTTPSOnly": s.routing.HTTPOff, "ProtectedHTTPS": s.protectedOverHTTPS(r.Context()),
 		"Error":      msg,
 		"Form":       submittedAppForm(r),
 		"OpenDialog": "app-dialog",
@@ -966,7 +968,7 @@ func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, status in
 	}
 	if csErr == nil {
 		for _, c := range cs {
-			if answers(c) && s.routing.Ignores(c.Labels) {
+			if answers(c) && s.routing.Unserved(c.Labels) {
 				data["NotServed"] = true
 			}
 		}

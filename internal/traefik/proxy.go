@@ -150,7 +150,9 @@ func EnsureProxy(ctx context.Context, dc docker.Client, pc ProxyConfig, logOut i
 		local, lerr := dc.ListImages(ctx, pc.Image)
 		if lerr != nil || len(local) == 0 {
 			if existing != nil && existing.Running() {
-				_ = dc.StopContainer(ctx, existing.ID, proxyStopTimeout)
+				if stopErr := dc.StopContainer(ctx, existing.ID, proxyStopTimeout); stopErr != nil {
+					return fmt.Errorf("pull traefik image: %w; stopping the old Traefik, which has no constraint for the required header, failed: %v", err, stopErr)
+				}
 			}
 			return fmt.Errorf("pull traefik image: %w", err)
 		}

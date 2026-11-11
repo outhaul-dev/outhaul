@@ -96,6 +96,29 @@ func (rt Routing) Ignores(labels map[string]string) bool {
 	return rt.HeaderRequired() && rt.Stale(labels)
 }
 
+// Unserved reports whether Traefik cannot serve a container with these
+// labels: either its stamp is stale under a required header, or it names the
+// web entrypoint while the server publishes no port 80.
+func (rt Routing) Unserved(labels map[string]string) bool {
+	if rt.Ignores(labels) {
+		return true
+	}
+	if !rt.HTTPOff {
+		return false
+	}
+	for k, v := range labels {
+		if !strings.HasPrefix(k, "traefik.http.routers.") || !strings.HasSuffix(k, ".entrypoints") {
+			continue
+		}
+		for _, ep := range strings.Split(v, ",") {
+			if strings.TrimSpace(ep) == "web" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // headerTerm is the rule's last term, requiring the configured request header.
 func (rt Routing) headerTerm() string {
 	if rt.HeaderName == "" {

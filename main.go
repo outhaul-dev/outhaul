@@ -296,6 +296,7 @@ func serve() error {
 	// reconciles the proxy, as turning sign-in on does, and links it over
 	// HTTPS when protected rows are served that way (as the pages do).
 	previews.SetProxyControl(infra)
+	previews.SetHTTPSOnly(cfg.HTTPOff)
 	previews.SetProtectedHTTPS(func(ctx context.Context) bool {
 		if cfg.TLSEnabled() {
 			return true
@@ -323,7 +324,6 @@ func serve() error {
 	}
 	srv.SetRepos(repos)
 	srv.SetRouting(traefik.RoutingFrom(cfg, false))
-	previews.SetHTTPSOnly(cfg.HTTPOff)
 	go func() {
 		for {
 			if _, err := srv.RedeployStale(workerCtx); err == nil {
@@ -405,6 +405,10 @@ func (ic *infraController) Gateway() string {
 // enabled) the cloudflared connector. Failures are logged, not fatal, so the
 // admin UI still starts (e.g. when Docker is down). It returns a controller the
 // server uses to toggle the tunnel at runtime.
+// reconcileRetryInterval is how often a failed startup reconcile is retried.
+// It is a variable so tests can shorten it.
+var reconcileRetryInterval = 30 * time.Second
+
 func ensureInfra(ctx context.Context, dc docker.Client, cfg config.Config, st *store.Store) *infraController {
 	ic := &infraController{dc: dc, st: st, cfg: cfg}
 	pingCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -412,15 +416,15 @@ func ensureInfra(ctx context.Context, dc docker.Client, cfg config.Config, st *s
 
 	if err := dc.Ping(pingCtx); err != nil {
 		log.Printf("WARNING: Docker not reachable (%v); deploys will fail until it is available", err)
-		if cfg.HeaderRequired() {
-			go ic.retryReconcile(ctx, 30*time.Second)
+		if cfg.HeaderRequired() || !cfg.AdminDirect {
+			go ic.retryReconcile(ctx, reconcileRetryInterval)
 		}
 		return ic
 	}
 	if err := ic.reconcile(pingCtx); err != nil {
 		log.Printf("WARNING: could not ensure infrastructure: %v", err)
-		if cfg.HeaderRequired() {
-			go ic.retryReconcile(ctx, 30*time.Second)
+		if cfg.HeaderRequired() || !cfg.AdminDirect {
+			go ic.retryReconcile(ctx, reconcileRetryInterval)
 		}
 		return ic
 	}
@@ -780,36 +784,40 @@ func serveAdmin(ctx context.Context, s *http.Server, cfg config.Config, gateway 
 		}()
 		return nil
 	}
-	gw, err := gateway(ctx)
-	if err != nil {
-		gw = ""
-	}
-	for _, addr := range adminAddrs(cfg, gw) {
-		if err := listen(addr); err != nil {
-			errs <- fmt.Errorf("listen %s: %w", addr, err)
-			return
+	if cfg.AdminDirect {
+		if err := listen(cfg.ListenAddr); err != nil {
+			errs <- fmt.Errorf("listen %s: %w", cfg.ListenAddr, err)
 		}
-	}
-	if cfg.AdminDirect || gw != "" {
 		return
 	}
+	// Loopback is the host's own address and must be there from the start; a
+	// failure is fatal, as the ordinary ListenAndServe error was.
+	loopback := net.JoinHostPort("127.0.0.1", cfg.AdminPort())
+	if err := listen(loopback); err != nil {
+		errs <- fmt.Errorf("listen %s: %w", loopback, err)
+		return
+	}
+	// The Docker gateway may not exist yet (Docker was unreachable at boot) or
+	// may not be bindable yet. Look it up and try again until it works; a
+	// failure here never takes the loopback listener down.
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
+			gw, err := gateway(ctx)
+			if err == nil && gw != "" {
+				addr := net.JoinHostPort(gw, cfg.AdminPort())
+				if err := listen(addr); err == nil {
+					return
+				} else {
+					log.Printf("admin: could not listen on the Docker gateway %s: %v; retrying", addr, err)
+				}
+			}
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
 			}
-			gw, err := gateway(ctx)
-			if err != nil || gw == "" {
-				continue
-			}
-			if err := listen(net.JoinHostPort(gw, cfg.AdminPort())); err != nil {
-				errs <- fmt.Errorf("listen %s: %w", gw, err)
-			}
-			return
 		}
 	}()
 }
