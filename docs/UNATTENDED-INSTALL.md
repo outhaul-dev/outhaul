@@ -6,9 +6,11 @@ never reads stdin, and names every missing or malformed flag before it changes
 anything. That is the mode for cloud-init, an image build, or a
 configuration-management run.
 
-The wizard is unchanged. A run without `--non-interactive` asks the same
-questions it always has, and a flag that is an answer to one of those questions
-is refused with exit 2 unless `--non-interactive` is also given.
+The wizard asks the same questions on the terminal, but it shares the new
+behaviour on this page: Docker's three states, the pinned nixpacks whose
+checksum is fatal in both modes, and re-runs that leave an installed commit
+alone. A flag that is an answer to one of those questions is refused with exit
+2 unless `--non-interactive` is also given.
 
 This page covers the unattended flags, where the answers go, what a re-run does,
 how to pin a version, and how to read a failure. For the proxy settings that
@@ -47,7 +49,7 @@ how to pin a version, and how to read a failure. For the proxy settings that
 | `--env-file` | a path; repeatable | no | none |
 | `--ref` | a tag, a branch, or a full 40-character commit | no | `OUTHAUL_REF`, then the remote's `HEAD` |
 | `--from-checkout` | a directory | no | the installer fetches the repository |
-| `--verbose` | | no | the log is not mirrored |
+| `--verbose` | | no | the wizard does not mirror its log to the terminal; an unattended run's log is only ever the file |
 | `-h`, `--help` | | no | |
 
 - Every flag is checked before anything is installed. All problems are printed
@@ -116,8 +118,10 @@ service instead of starting it with half its settings. A run with neither
 `--non-interactive` nor `--env-file` leaves both drop-ins alone, so a plain
 `curl … | sh` on such a host does not drop its env files.
 
-Editing an env file restarts nothing, and a re-run does not notice. After
-changing one, run `systemctl restart outhaul`.
+Editing `/etc/outhaul.env` or an `--env-file` by hand restarts nothing: a
+re-run does not compare their contents. After changing one, run
+`systemctl restart outhaul`. `install.env` is different: a non-interactive
+re-run rewrites it, and restarts the service when the content changed.
 
 ## What a re-run does
 
@@ -135,7 +139,9 @@ wrote.
 
 `--from-checkout` always builds. With no `--ref`, the target is the remote's
 `HEAD`; with `OUTHAUL_REF` or `--ref`, it is that ref. A commit ref with
-nothing to do needs no network.
+nothing to do needs no network to build. A `letsencrypt` run still performs its
+DNS check first, fetching this server's public IP and resolving the name;
+`tunnel`, `local`, `local-ca` and `proxy` need none for a no-op run.
 
 A wizard re-run never writes `install.env` and, with no `--env-file`, leaves
 the drop-ins alone. It still follows the same table, so it no longer rebuilds an

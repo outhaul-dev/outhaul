@@ -148,20 +148,25 @@ URL. Otherwise it is on `localhost:8080`: reach it over an SSH tunnel,
 ### Unattended
 
 For cloud-init, an image build, or a configuration-management run, pass
-`--non-interactive` and every answer as a flag. From a checkout:
+`--non-interactive` and every answer as a flag. From a checkout of the commit
+you want to install:
 
 ```sh
-commit=0123456789abcdef0123456789abcdef01234567  # a full 40-character commit
-sh deploy/bootstrap.sh --non-interactive --ref "$commit" \
+sh deploy/bootstrap.sh --non-interactive --from-checkout . \
   --ingress letsencrypt --public-url https://paas.example.com \
   --acme-email ops@example.com --git-ssh off --updates off
 ```
+
+`--from-checkout` builds the tree you have. To install a commit you have not
+checked out, use `--ref <full 40-character commit>` instead, which fetches it
+from `OUTHAUL_REPO`; the two cannot be combined.
 
 It never prompts or reads stdin. It installs Docker only with
 `--install-docker`, and installs, enables or changes ufw only with
 `--firewall ufw`. Its answers go to `/etc/outhaul/install.env` and a systemd
 drop-in, and it never writes `/etc/outhaul.env`. It logs to
-`/var/log/outhaul-install.log` and exits non-zero on failure. See
+`/var/log/outhaul-install.log` and exits 1 on a failed run. Bad flags exit 2
+before the log is opened, so nothing is logged for those. See
 [docs/UNATTENDED-INSTALL.md](docs/UNATTENDED-INSTALL.md) for the flags, the env
 files, re-runs and rollback.
 

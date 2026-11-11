@@ -207,6 +207,8 @@ unit file:
 
 ```ini
 # /etc/systemd/system/outhaul.service.d/10-install.conf
+# Example. Create /etc/outhaul/extra.env first, or drop that line: a missing
+# EnvironmentFile stops the service.
 [Service]
 EnvironmentFile=/etc/outhaul/install.env
 EnvironmentFile=/etc/outhaul/extra.env
