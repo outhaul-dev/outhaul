@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-11-container-guard-rails-design.md`. Read it first; this plan implements R7 and the final “Where R6 and R7 meet” commit. R6 is `docs/superpowers/plans/2026-11-11-container-policy.md`.
 
-**Base:** Start from a branch that contains the R6 plan (its model reader, `compose.Check`, and `core.Limits`) and the proxy-ingress plan (Task 1's `traefik.Routing`, R3's `Config.HeaderRequired()`).
+**Base:** Start from a branch that contains the R6 plan (including its Task 10 header case) and the proxy-ingress plan (Task 1's `traefik.Routing` and R3's `Config.HeaderRequired()`).
 
 ## Global Constraints
 
@@ -23,7 +23,7 @@
 - Every path that creates a container Outhaul owns sets the effective limit: single-container apps (including the health-check container), Compose services through the override, databases and preview databases, and backup/restore/data-removal helpers. Traefik and cloudflared get none.
 - A changed limit applies when the container is next created. Nothing is redeployed at startup and no running container is updated.
 - The Compose model holds every interpolated value. It is never logged, stored, or quoted in an error.
-- Migration 0029 adds three columns to `apps`; 0 means the server default. Nothing is sealed, so `sealedQueries` does not change.
+- The next free migration (0029 at `06150cc`; check before landing, because other plans add migrations too) adds three columns to `apps`; 0 means the server default. `CreateApp` leaves them at 0, so a preview that copies its parent carries no limits. Nothing is sealed, so `sealedQueries` does not change.
 - The limits route is `POST /apps/{id}/limits` at `levelSystemAdmin`; the panel exists only when at least one `OUTHAUL_DEFAULT_*` is set, and the route answers 404 otherwise.
 - The build cap counts only deployments that have to build. A rollback, or a protection-change redeploy that arrives with an image, never waits for a build slot. A build slot is released when the deployment leaves `building`, not when the whole pipeline ends.
 - Test first: write the failing test, watch it fail for the stated reason, then implement. Use `docker.Fake`, `compose.Fake`, and the server test environment.
@@ -57,7 +57,7 @@ The inputs most likely to bite that no requirement spells out. Each has its test
 | `internal/backup/manager.go`, `restore.go` | the default on backup and restore helpers | 3 |
 | `internal/compose/override.go`, `limits.go` (new) | `Extra`, `LimitExtras`, per-service override additions | 4 |
 | `internal/deploy/pipeline_compose.go` | read the model for limits, write extras, pass `Policy.Max` | 4, 8 |
-| `internal/store/migrations/0029_app_limits.sql`, `apps.go` | per-app limit columns and `SetAppLimits` | 5 |
+| `internal/store/migrations/<next>_app_limits.sql`, `apps.go` | per-app limit columns and `SetAppLimits` | 5 |
 | `internal/server/limits.go` (new), `server.go`, `routes.go`, `handlers.go`, `templates/app.tmpl` | the limits route and panel | 5 |
 | `internal/server/stats.go`, `metrics.go`, templates | live limits and processes | 6 |
 | `internal/store/deployments.go`, `internal/deploy/worker.go` | `NextClaimable(canBuild)`, the build semaphore | 7 |
@@ -370,7 +370,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add internal/deploy internal/dbaas internal/backup main.go
+git add internal/deploy internal/dbaas internal/backup internal/traefik internal/tunnel main.go
 git commit -m "feat(deploy): give every Outhaul container its default limits"
 ```
 
@@ -379,7 +379,7 @@ git commit -m "feat(deploy): give every Outhaul container its default limits"
 ## Task 4: Compose service limits through the override
 
 **Files:**
-- Create: `internal/compose/limits.go`, `internal/compose/limits_test.go`
+- Create: `internal/compose/limits.go`, `internal/compose/limits_test.go`, `internal/compose/testdata/override.golden`
 - Modify: `internal/compose/override.go`, `internal/compose/compose_test.go`, `internal/deploy/pipeline_compose.go`, `internal/deploy/deploy_compose_test.go`
 - Test: the same files
 
@@ -403,7 +403,29 @@ type Extra struct {
 func LimitExtras(m Model, limit core.Limits) (map[string]Extra, error)
 ```
 
-- [ ] **Step 1: Write the failing `LimitExtras` tests**
+- [ ] **Step 1: Record today's override bytes**
+
+The proxy-ingress plan pins route labels and Traefik's spec, not `compose.Override`. Before changing its signature, add `TestOverrideGolden` in `internal/compose`:
+
+```go
+func TestOverrideGolden(t *testing.T) {
+	// app "shop"; one protected host, one open path, one protected path;
+	// network "outhaul"; Routing{TLS: true, CertResolver: "le",
+	// GateAddress: "http://host.docker.internal:8080/gate/check"}
+	got := Override(app, domains, network, rt)
+	// compare with testdata/override.golden; -update rewrites it
+}
+```
+
+Run: `go test ./internal/compose/ -run OverrideGolden -update && go test ./internal/compose/ -run OverrideGolden`
+Expected: PASS; `internal/compose/testdata/override.golden` exists.
+
+```bash
+git add internal/compose/compose_test.go internal/compose/testdata/override.golden
+git commit -m "test(compose): pin today's override output"
+```
+
+- [ ] **Step 2: Write the failing `LimitExtras` tests**
 
 Table-driven, one row per resource and placement:
 
@@ -432,11 +454,11 @@ func TestLimitExtrasZeroLimitReturnsNothing(t *testing.T) { /* nil map */ }
 Run: `go test ./internal/compose/ -run LimitExtras`
 Expected: FAIL; `Extra` and `LimitExtras` are not defined.
 
-- [ ] **Step 2: Write the failing `Override` tests**
+- [ ] **Step 3: Write the failing `Override` tests**
 
 ```go
 func TestOverrideWithNoExtrasIsUnchanged(t *testing.T) {
-	// call with nil extra; compare with the R1-R4 golden output
+	// call with nil extra; compare with testdata/override.golden byte for byte
 }
 
 func TestOverrideWritesTopLevelLimits(t *testing.T) {
@@ -456,7 +478,8 @@ func TestOverrideWritesInsideAnExistingDeployBlock(t *testing.T) {
 
 func TestOverrideAddsAServiceWithNoDomain(t *testing.T) {
 	// extra for "worker", domains empty
-	// want: services.worker with its limits and no networks or labels
+	// want: services.worker with its limits, no networks or labels, and no
+	// top-level networks: block (nothing joins the shared network)
 }
 
 func TestOverrideKeepsRoutedServices(t *testing.T) {
@@ -467,7 +490,7 @@ func TestOverrideKeepsRoutedServices(t *testing.T) {
 Run: `go test ./internal/compose/ -run Override`
 Expected: FAIL; `Override` still has the old signature and no extras.
 
-- [ ] **Step 3: Implement `LimitExtras` and the override**
+- [ ] **Step 4: Implement `LimitExtras` and the override**
 
 `LimitExtras` reads `Service.Raw` to decide what the service set:
 
@@ -479,9 +502,11 @@ Compose leaves a zero out of the model, so a fixture with `mem_limit: 0` has no 
 
 `InDeploy` is true when the service already has a `deploy.resources.limits` object. The extra's `Limits` holds only the non-zero fields the service did not set. If Outhaul would add a memory limit (`!memSet && limit.Memory > 0`) and the service reserves more than that through `mem_reservation` or `deploy.resources.reservations.memory`, return an error naming both figures.
 
-`Override` unions the domain services and the extra keys, sorted. It writes the existing network and labels for services with domains. For each extra, if `InDeploy` it writes `deploy.resources.limits` with `cpus` as a number, `memory` as a quoted string of bytes, and `pids` as a number; otherwise it writes `cpus`, `mem_limit` (bytes, unquoted) and `pids_limit` at the service level. Use `quoteYAML` for the quoted memory and for unsigned values where needed. With a nil map the output must equal the R1-R4 golden output byte for byte.
+`Override` unions the domain services and the extra keys, sorted. It writes the existing network and labels for services with domains. For each extra, if `InDeploy` it writes `deploy.resources.limits` with `cpus` as a number, `memory` as a quoted string of bytes, and `pids` as a number; otherwise it writes `cpus`, `mem_limit` (bytes, unquoted) and `pids_limit` at the service level. Use `quoteYAML` for the quoted memory and for unsigned values where needed.
 
-- [ ] **Step 4: Integrate the pipeline**
+The top-level `networks:` block is written only when at least one service has a domain. When the override exists only for limits, no service joins the shared network, so the block is omitted. With a nil map the output must equal `testdata/override.golden` byte for byte.
+
+- [ ] **Step 5: Integrate the pipeline**
 
 Extend `Worker.needsModel` (from the R6 plan) to `w.cfg.StrictContainerPolicy() || w.cfg.HeaderRequired() || w.limits(ctx, app) != (core.Limits{})`. Because `limits` may read a preview's parent, change the signature to `needsModel(ctx context.Context, app core.App) bool` and update the R6 call site.
 
@@ -505,7 +530,7 @@ if len(domains) > 0 || len(extra) > 0 {
 
 When no limit is set, `LimitExtras` returns nil and the override is written only for domains, exactly as before. Update every other `Override` call site and test to the new signature, passing `nil` extras.
 
-- [ ] **Step 5: Write the pipeline tests**
+- [ ] **Step 6: Write the pipeline tests**
 
 ```go
 func TestComposePipelineAddsLimitsToEveryService(t *testing.T) {
@@ -527,12 +552,12 @@ func TestComposePipelineWithoutLimitsWritesOnlyDomains(t *testing.T) {
 Run: `go test ./internal/deploy/ -run 'ComposePipeline.*Limits|Reservation'`
 Expected: FAIL until the integration is complete.
 
-- [ ] **Step 6: Run everything**
+- [ ] **Step 7: Run everything**
 
 Run: `go build ./... && go vet ./... && go test ./internal/compose/ ./internal/deploy/`
 Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add internal/compose internal/deploy
@@ -544,8 +569,8 @@ git commit -m "feat(compose): add per-service limits through the override"
 ## Task 5: A limit for one app: migration, store, route and panel
 
 **Files:**
-- Create: `internal/store/migrations/0029_app_limits.sql`, `internal/server/limits.go`, `internal/server/limits_test.go`
-- Modify: `internal/core/app.go`, `internal/store/apps.go`, `internal/store/apps_test.go` (or a new `apps_limits_test.go`), `internal/server/server.go`, `internal/server/routes.go`, `internal/server/handlers.go`, `internal/server/templates/app.tmpl`, `internal/deploy/worker.go`, `main.go`
+- Create: `internal/store/migrations/<next>_app_limits.sql`, `internal/server/limits.go`, `internal/server/limits_test.go`
+- Modify: `internal/core/app.go`, `internal/store/apps.go`, `internal/store/apps_test.go` (or a new `apps_limits_test.go`), `internal/previewmgr/manager_test.go`, `internal/server/server.go`, `internal/server/routes.go`, `internal/server/handlers.go`, `internal/server/templates/app.tmpl`, `internal/deploy/worker.go`, `main.go`
 - Test: the store and server tests
 
 **Interfaces:**
@@ -576,15 +601,17 @@ func (w *Worker) limits(ctx context.Context, app core.App) core.Limits
 
 - [ ] **Step 1: Write the failing migration and store tests**
 
-Use `openMigratedBefore(t, "0029")` to seed an old-schema app, then run `migrate` and assert its limits are zero. Add:
+Use `openMigratedBefore(t, "<next>")` (the migration number chosen in Step 2) to seed an old-schema app, then run `migrate` and assert its limits are zero. Add:
 
 ```go
 func TestAppLimitsRoundTrip(t *testing.T) {
 	// SetAppLimits(id, {500, 1<<30, 512}); GetApp returns the same
 }
 
-func TestCreateAppWithLimits(t *testing.T) {
-	// CreateApp with Limits set; GetApp returns them
+func TestNewAppsStartWithoutLimits(t *testing.T) {
+	// CreateApp with a caller struct whose Limits copy a parent's values
+	// (the preview path does `child := parent`); both the returned app and a
+	// fresh GetApp read zero
 }
 ```
 
@@ -593,7 +620,7 @@ Expected: FAIL; the columns and field do not exist.
 
 - [ ] **Step 2: Implement the migration and store**
 
-Create `0029_app_limits.sql` (or the next free number if another plan landed first):
+Create `<next>_app_limits.sql`, checking the next free number first (0029 at `06150cc`):
 
 ```sql
 ALTER TABLE apps ADD COLUMN limit_cpus_milli INTEGER NOT NULL DEFAULT 0;
@@ -601,7 +628,7 @@ ALTER TABLE apps ADD COLUMN limit_memory_bytes INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE apps ADD COLUMN limit_pids INTEGER NOT NULL DEFAULT 0;
 ```
 
-Append the three columns to `appCols`; add them to the `INSERT` and its values; add them to `scanApp`; add `SetAppLimits`. Do not add them to `sealedQueries`; they are not secret.
+Append the three columns to `appCols` and `scanApp`; add `SetAppLimits`. Do **not** add them to `CreateAppWithDomains`'s `INSERT`, so every new row starts at 0. That matters for previews: `internal/previewmgr/manager.go` makes a child with `child := parent`, and an INSERT that copied the copied fields would store the parent's limits on the preview. Also clear `app.Limits` before `CreateAppWithDomains` returns: it returns the caller's struct, not a re-read, so the copied parent values would otherwise survive in memory even though the row is zero. Do not add the columns to `sealedQueries`; they are not secret.
 
 - [ ] **Step 3: Write the failing route tests**
 
@@ -629,7 +656,8 @@ func TestAppLimitsMayBeAboveOrBelowTheDefault(t *testing.T) {
 }
 
 func TestPreviewLimitsCannotBeChanged(t *testing.T) {
-	// a preview app -> 400 or 404, and its row keeps zero limits
+	// a preview app -> 400 with "a preview uses its parent's limits", and its
+	// row keeps zero limits
 }
 ```
 
@@ -687,7 +715,7 @@ In `renderAppPage`, add to the data map:
 ```go
 "LimitsAvailable": s.hasDefaultLimits(),
 "Limits":          effective,   // app.Limits.Or(s.defaultLimits), or the parent's for a preview
-"LimitSources":    sources,     // "server default" or "set for this app" per field
+"LimitSources":    sources,     // "server default" or "set for this app"; for a preview, "set for the parent app"
 "DefaultLimits":   s.defaultLimits,
 ```
 
@@ -711,6 +739,8 @@ return stored.Or(w.cfg.DefaultLimits)
 
 Add a deploy test where a preview's parent has memory 2 GiB and the preview's own row has nothing; the created spec has 2 GiB. Add a test where the parent lookup fails and the default still applies.
 
+Add `TestPreviewStartsWithNoLimits` to `internal/previewmgr/manager_test.go`: set the parent's limits with `SetAppLimits`, spawn a preview through the existing harness, and assert both the returned child and a fresh `GetApp` read zero limits (the parent struct was copied, but the INSERT does not carry the columns and `CreateApp` clears the copy). The preview page test in Step 5 already asserts the parent's values are shown.
+
 - [ ] **Step 8: Run everything**
 
 Run: `go build ./... && go vet ./... && go test ./internal/store/ ./internal/server/ ./internal/deploy/`
@@ -719,7 +749,7 @@ Expected: PASS.
 - [ ] **Step 9: Commit**
 
 ```bash
-git add internal/store internal/server internal/deploy internal/core main.go
+git add internal/store internal/previewmgr internal/server internal/deploy internal/core main.go
 git commit -m "feat(apps): store and edit one app's limits"
 ```
 
@@ -747,9 +777,14 @@ type appStatsResponse struct {
 // internal/server/metrics.go
 type containerStat struct {
 	// existing fields...
-	CPU  string `json:"cpu"`  // "12.3% · limit 1"
-	Mem  string `json:"mem"`  // "118 MiB · of 1.0 GiB" when limited
-	Pids string `json:"pids"` // "12 · limit 512"
+	CPU  string `json:"cpu"`            // "12.3% · limit 1" when limited
+	Mem  string `json:"mem"`            // "118 MiB · of 1.0 GiB" when limited
+	Pids string `json:"pids,omitempty"` // "12 · limit 512"; empty when no limit
+}
+
+type metricsSample struct {
+	// existing fields...
+	Processes bool `json:"processes,omitempty"` // any row has a process limit
 }
 ```
 
@@ -775,8 +810,9 @@ func TestAppStatsStackWithDifferentLimits(t *testing.T) {
 }
 
 func TestAppStatsWithoutLimitsShowsToday(t *testing.T) {
-	// CPULimit 0, MemLimited false, PidsLimit 0
-	// want: CPUSub "", MemSub "usage" (or empty, as today), PidsSub ""
+	// CPULimit 0, MemLimited false, MemLimit 31<<30, PidsLimit 0
+	// want: CPUSub "", MemSub "of 31 GiB" (today's host-total text),
+	//       Pids "", PidsSub ""
 }
 ```
 
@@ -785,17 +821,27 @@ Expected: FAIL; the response has no limit fields.
 
 - [ ] **Step 2: Implement the aggregation**
 
-Add a helper `commonLimit` that returns `(value, same bool, any bool)` for a slice of per-sample values. For CPU, format with `fmtCPU` (trim trailing zeros: `1`, `0.5`, `1.5`). For memory, set `MemSub` to `"of "+fmtBytes(limit)` when every sampled container has `MemLimited` and the same `MemLimit`, `"limits differ"` when some have a memory limit and they differ, and leave it empty when none has one (the template keeps “usage”). For processes, sum `Pids`; set `PidsSub` to `"of N"` when every sampled container has the same `PidsLimit > 0`, `"limits differ"` when they differ, and empty when none has one. `CPUSub` is `"limit N CPU"` when all agree, `"limits differ"` when they differ, empty when none.
+Add a helper `commonLimit` that returns `(value, same bool, any bool)` for a slice of per-sample values. For CPU, format with `fmtCPU` (trim trailing zeros: `1`, `0.5`, `1.5`).
+
+For memory, keep today's text when no sampled container has a limit: `MemSub = "of "+fmtBytes(agg.MemLimit)` using the maximum `MemLimit` (the host total). When every sampled container has `MemLimited` and the same `MemLimit`, use `"of "+fmtBytes(limit)`. When some have a memory limit and they differ, use `"limits differ"`. Never replace today's host-total text with “usage”.
+
+For processes, set `Pids` and `PidsSub` only when at least one sampled container has `PidsLimit > 0`; otherwise leave both empty so the page renders no Processes figure. Sum `Pids`; `PidsSub` is `"of N"` when every sampled container has the same `PidsLimit > 0`, and `"limits differ"` when they differ. `CPUSub` is `"limit N CPU"` when all agree, `"limits differ"` when they differ, empty when none.
 
 - [ ] **Step 3: Update the app template**
 
-Add a Processes stat:
+Add a Processes stat, hidden by default:
 
 ```html
-<div class="stat"><div class="stat-label">Processes</div><div class="stat-value" id="metric-pids">—</div><div class="stat-sub" id="metric-pids-sub">processes</div></div>
+<div class="stat" id="metric-pids-stat" hidden><div class="stat-label">Processes</div><div class="stat-value" id="metric-pids">—</div><div class="stat-sub" id="metric-pids-sub">processes</div></div>
 ```
 
-Add `id="metric-cpu-sub"` to the CPU sub-line and update the poller to set `s.cpuSub`, `s.pids`, `s.pidsSub`; reset them in `dashes()`. Keep the existing `metric-mem-sub` behaviour.
+Add `id="metric-cpu-sub"` to the CPU sub-line (its default text stays “100% = one core”). Update the poller:
+
+- set `cpuSub` to `s.cpuSub || '100% = one core'`;
+- set `memSub` to `s.memSub || 'usage'` (the server supplies today's `of 31 GiB` when there is no limit);
+- set `pids`/`pidsSub` and unhide `metric-pids-stat` only when `s.pids` is non-empty; otherwise hide it.
+
+Reset all of them in `dashes()`.
 
 - [ ] **Step 4: Write the failing metrics tests**
 
@@ -803,11 +849,14 @@ Add `id="metric-cpu-sub"` to the CPU sub-line and update the poller to set `s.cp
 func TestMetricsSampleShowsLimitsAndProcesses(t *testing.T) {
 	// one container with CPULimit 1, MemLimited true, MemLimit 1<<30,
 	// Pids 12, PidsLimit 512
-	// want: CPU contains "limit 1", Mem contains "of 1.0 GiB", Pids "12 · limit 512"
+	// want: Processes true, CPU contains "limit 1", Mem contains "of 1.0 GiB",
+	//       Pids "12 · limit 512"
 }
 
 func TestMetricsSampleWithoutLimits(t *testing.T) {
-	// CPU has no "limit", Mem has no "of", Pids is just the count
+	// CPULimit 0, MemLimited false, MemLimit 31<<30, PidsLimit 0
+	// want: Processes false, CPU has no "limit", Mem is today's usage text
+	// with no "of", Pids ""
 }
 ```
 
@@ -816,7 +865,7 @@ Expected: FAIL; `containerStat` has no fields.
 
 - [ ] **Step 5: Implement the metrics rows and template**
 
-In `containerStats`, build `CPU: fmt.Sprintf("%.1f%% · limit %s", st.CPUPercent, fmtCPU(st.CPULimit))` when `CPULimit > 0`, else today's percentage. Build `Mem` with ` · of <limit>` only when `MemLimited`. Build `Pids: fmt.Sprintf("%d · limit %d", st.Pids, st.PidsLimit)` when `PidsLimit > 0`, else the count. Add a Processes column to `metrics.tmpl` between Memory and Net I/O, and render `c.pids`.
+In `containerStats`, build `CPU: fmt.Sprintf("%.1f%% · limit %s", st.CPUPercent, fmtCPU(st.CPULimit))` when `CPULimit > 0`, else today's percentage. Build `Mem` with ` · of <limit>` only when `MemLimited`, else today's usage text. Build `Pids: fmt.Sprintf("%d · limit %d", st.Pids, st.PidsLimit)` only when `PidsLimit > 0`; otherwise leave it empty. Set `metricsSample.Processes` when any row has a non-empty `Pids`. Add a Processes column to `metrics.tmpl` between Memory and Net I/O, hidden by default; the poller shows it only when `sample.processes` is true.
 
 - [ ] **Step 6: Run everything**
 
@@ -852,6 +901,8 @@ func (s *Store) NextClaimable(ctx context.Context, canBuild bool) (*core.Deploym
 
 // internal/deploy/worker.go
 buildSlots chan struct{} // nil when the setting is unset
+buildHeld  map[int64]bool // guarded by Worker.mu; which deployment holds a build slot
+claim      func(ctx context.Context, id int64) (bool, error) // default store.ClaimDeployment; a test seam
 func (w *Worker) releaseBuild(id int64)
 func (w *Worker) holdBuild(id int64)
 
@@ -914,14 +965,25 @@ func TestBuildCapDoesNotJumpAnOlderQueuedBuild(t *testing.T) {
 	// app A: older queued build, newer rollback; with the cap full, the
 	// rollback is not claimed before the older build
 }
+
+func TestBuildSlotIsReleasedWhenTheClaimFails(t *testing.T) {
+	// cap 1; queue one build; h.worker.claim returns an error
+	// call dispatch; want len(h.worker.buildSlots) == 0 afterwards
+}
+
+func TestBuildSlotIsReleasedWhenTheClaimLosesTheRace(t *testing.T) {
+	// cap 1; queue one build; h.worker.claim returns (false, nil) once and
+	// cancels the dispatch context, so the loop ends after the failed claim
+	// want: len(h.worker.buildSlots) == 0 afterwards
+}
 ```
 
-Run: `go test ./internal/deploy/ -run BuildCap`
+Run: `go test ./internal/deploy/ -run 'BuildCap|BuildSlot'`
 Expected: FAIL; the worker has no build semaphore.
 
 - [ ] **Step 4: Implement the build semaphore**
 
-In `NewWorker`, set `buildSlots: make(chan struct{}, cfg.MaxConcurrentBuilds)` when `cfg.MaxConcurrentBuilds > 0`; otherwise leave it nil. Replace `maxConcurrent` with `core.MaxPipelines` in the pipeline semaphore.
+In `NewWorker`, set `buildSlots: make(chan struct{}, cfg.MaxConcurrentBuilds)` when `cfg.MaxConcurrentBuilds > 0`; otherwise leave it nil. Initialize `buildHeld: map[int64]bool{}`. Set `claim: st.ClaimDeployment` so the tests can replace it. Replace `maxConcurrent` with `core.MaxPipelines` in the pipeline semaphore.
 
 In `dispatch`, after taking the pipeline slot:
 
@@ -937,7 +999,11 @@ if !canBuild {
 dep, err := w.store.NextClaimable(ctx, canBuild)
 ```
 
-If `NextClaimable` returns nil or an error, release the pipeline slot and the build slot (if one was taken). Before `ClaimDeployment`, if `canBuild` is false and `dep.Image == ""`, release the pipeline slot, log, and return: the query should never produce that, and claiming it would leave a row stuck in `building`. After a successful claim, if `dep.Image != ""`, release the build slot immediately; otherwise `w.holdBuild(dep.ID)`.
+If `NextClaimable` returns nil or an error, release the pipeline slot and the build slot (if one was taken). Before claiming, if `canBuild` is false and `dep.Image == ""`, release the pipeline slot, log, and return: the query should never produce that, and claiming it would leave a row stuck in `building`.
+
+Claim through `w.claim(ctx, dep.ID)`. On a claim error, release the pipeline slot and the build slot, log, and return. On `!ok` (lost the race), release the pipeline slot and the build slot, then `continue` to the next claimable row. After a successful claim, if `dep.Image != ""`, release the build slot immediately; otherwise `w.holdBuild(dep.ID)`.
+
+Leaking on either claim path would stop every build until a restart when the cap is 1; the two tests in Step 3 pin both releases.
 
 `releaseBuild` is idempotent and guarded by the worker's mutex: if the ID is held, delete it, receive from `buildSlots`, and call `w.Notify()`. `holdBuild` records the ID. Call `releaseBuild`:
 

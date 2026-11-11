@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-11-container-guard-rails-design.md`. Read it first; this plan implements R6 and the shared Compose-model reader. R7 is `docs/superpowers/plans/2026-11-11-container-limits.md`.
 
-**Base:** Start from a branch that contains the proxy-ingress plan's Task 1 (`traefik.Routing`, `Worker.routing`) and R3 (`Config.HeaderRequired()`). Both are used directly by Tasks 4 and 5. If the proxy-ingress plan is not merged yet, execute it first; do not start this plan from the docs-only branch.
+**Base:** Tasks 1–9 have no proxy-ingress dependency; they can start from this branch. Task 10 (the request-header case) requires R3 from the proxy-ingress plan (`Config.HeaderRequired()`) and runs after that lands.
 
 ## Global Constraints
 
@@ -22,12 +22,13 @@
 - Strict mode is an allow-list: a key not named in the spec's tables is refused as unknown. Unknown keys are a feature, not a gap.
 - A refusal names the service and the option. The build log lists every violation; the deployment reason is the first with a count of the rest.
 - Local paths are compared as text after `filepath.Clean`, against `WorkDir` as given and as `filepath.EvalSymlinks` resolves it. Symlinks inside the checkout are not followed.
-- The label rule refuses any `traefik.*` or `outhaul.*` key in a Compose file's merged `labels` map, in any case. It is on in strict mode and while a request header is required.
+- The label rule refuses any `traefik.*` or `outhaul.*` key in a Compose file's merged `labels` map, in any case. It is on in strict mode; Task 10 adds the request-header case.
+- Top-level keys whose lowercased name starts with `x-` are allowed. Compose keeps them as extension fields; an anchor's contents are resolved into the services and are still checked. Service-level `x-*` keys are dropped by Compose and never reach the model.
 - Managed databases publish no host port in strict mode. Preview databases never have one.
 - Test first: write the failing test, watch it fail for the stated reason, then implement. Use `compose.Fake`, `docker.Fake`, and the deploy harness. What depends on real Compose behaviour runs `docker compose` with no daemon.
 - This repository is public: `example.com` names only, in code, tests, fixtures and docs.
 - Commits: `feat(scope): summary` or `fix(scope): summary`, with a body saying what someone saw go wrong and what changed.
-- Docs travel with the code. Every task that adds a setting or a rule updates `README.md` or `docs/GUARD-RAILS.md` in the same commit. Task 9 finishes the documents.
+- Docs travel with the code. Every task that adds a setting or a rule updates `README.md` or `docs/GUARD-RAILS.md` in the same commit. Task 9 finishes the strict-mode documents; Task 10 adds the header-required lines.
 - After each task: `go build ./... && go vet ./... && go test ./...`. Before calling the plan done: `go test -race -timeout 30m ./...`.
 - The real-Compose tests skip when `docker compose version` cannot run. They need no Docker daemon.
 
@@ -54,14 +55,15 @@ The inputs most likely to bite that no requirement spells out. Each has its test
 | `internal/compose/env.go` (new) | the reduced environment for strict mode | 6 |
 | `internal/core/limits.go` (new) | `Limits` and `Or`, shared with the R7 plan | 2 |
 | `internal/config/config.go` | `OUTHAUL_CONTAINER_POLICY` | 2 |
-| `internal/deploy/pipeline_compose.go` | read, check, pull, inspect, override | 4, 5, 6 |
-| `internal/deploy/pipeline.go` | single-container image-label refusal | 5 |
-| `internal/deploy/worker.go` | `needsModel`, the policy gathered from config | 4, 5 |
+| `internal/deploy/pipeline_compose.go` | read, check, pull, inspect, override; header case | 4, 5, 6, 10 |
+| `internal/deploy/pipeline.go` | single-container image-label refusal; header case | 5, 10 |
+| `internal/deploy/worker.go` | `needsModel`, the policy gathered from config; header case | 4, 5, 10 |
 | `internal/dbaas/manager.go` | omit a database port in strict mode | 7 |
 | `internal/server/databases.go`, `projects.go`, `templates/database.tmpl`, `templates/project.tmpl` | refuse and hide the port; the stop-publishing button | 7 |
 | `main.go` | strict setters, reduced Compose environment, startup port notice | 6, 7 |
 | `internal/catalog/policy_test.go` (new) | every template passes strict `Check` | 8 |
-| `docs/GUARD-RAILS.md` (new), `README.md`, `ARCHITECTURE.md`, `AGENTS.md`, `docs/PROTECTED-ROUTES.md`, `docs/BEHIND-A-PROXY.md` | the policy, the label rule, the real-host checks | 2, 3, 5, 9 |
+| `docs/GUARD-RAILS.md` (new), `README.md`, `ARCHITECTURE.md`, `AGENTS.md` | the policy, the label rule, the real-host checks | 2, 3, 5, 9, 10 |
+| `docs/PROTECTED-ROUTES.md`, `docs/BEHIND-A-PROXY.md` | the header-required label rule | 10 |
 
 ---
 
@@ -119,7 +121,7 @@ type Fake struct {
 
 - [ ] **Step 1: Write the failing `ParseModel` tests**
 
-Create `internal/compose/testdata/model/normalised.json` by running the command against a fixture with a web service that builds and a db service that sets `restart: always` and `deploy.restart_policy: on-failure`. Add a second fixture with an unknown service key (`x-example: kept`), `labels` as a map (Compose has already merged `label_file`), and `mem_limit: 0` (Compose leaves it out).
+Create `internal/compose/testdata/model/normalised.json` by running the command against a fixture with a web service that builds and a db service that sets `restart: always` and `deploy.restart_policy: on-failure`. Add a second, hand-written JSON fixture with an unknown service key (`x-example: kept`): Compose drops service-level `x-*` keys, so it cannot be recorded from the command. Include `labels` as a map (Compose has already merged `label_file`) and `mem_limit: 0` (Compose leaves it out) in the recorded fixture.
 
 In `internal/compose/model_test.go`:
 
@@ -279,9 +281,11 @@ Create one fixture pair per refused option under `internal/compose/testdata/poli
 docker compose -p policy -f <name>.yml config --format json --no-env-resolution
 ```
 
+Two cases cannot come from a real Compose file and are hand-written JSON with no `.yml`: a service-level key Compose does not know (Compose drops service-level `x-*`), and a top-level key that is neither `x-*` nor a standard section (Compose refuses the file before printing a model). Name them `unknown-service-key.json` and `unknown-top-level-key.json`, and mark them in the table as "pure only" so the real-Compose run skips them.
+
 In `policy_test.go`, a table names each JSON file, the policy and the expected violations. Cover at least:
 
-- refused service keys: `privileged`, `cap_add`, `devices`, `cgroup_parent`, `ports`, `uts`, `userns_mode`, `device_cgroup_rules`, `gpus`, `runtime`, `use_api_socket`, `provider`, `pre_start`, `container_name`, `oom_kill_disable`, `mac_address`, `external_links`, `annotations`, `cpu_rt_runtime`, `cpu_rt_period`, `cpu_count`, `cpu_percent`, `credential_spec`, `isolation`, `models`, and an unknown `x-key`;
+- refused service keys: `privileged`, `cap_add`, `devices`, `cgroup_parent`, `ports`, `uts`, `userns_mode`, `device_cgroup_rules`, `gpus`, `runtime`, `use_api_socket`, `provider`, `pre_start`, `container_name`, `oom_kill_disable`, `mac_address`, `external_links`, `annotations`, `cpu_rt_runtime`, `cpu_rt_period`, `cpu_count`, `cpu_percent`, `credential_spec`, `isolation`, `models`, and the hand-written unknown service key;
 - allowed service keys as written: `cap_drop`, `command`, `cpus`, `depends_on`, `environment`, `expose`, `healthcheck`, `image`, `mem_limit`, `pids_limit`, `read_only`, `restart`, `user`, `working_dir`, and the rest of the spec's allow-list;
 - conditional keys: `volumes` with a named or anonymous volume and with a `tmpfs` passes; a bind, `image`, `npipe` or `cluster` volume is refused. `volumes_from` a service passes; `container:…` is refused. `network_mode` `none` and `service:db` pass; `host` and `container:…` are refused. `pid`, `ipc`, `cgroup`, `security_opt`, `networks`, `secrets`, `configs`, `post_start`, `pre_stop`, `deploy` and `oom_score_adj` follow the spec's tables.
 
@@ -325,7 +329,8 @@ git commit -m "feat(compose): refuse the Compose keys that reach the host"
 
 Add fixtures and table rows for:
 
-- top-level sections: `name`, `services`, `volumes`, `networks`, `secrets`, `configs` pass; `x-anything` and every other section is refused;
+- top-level sections: `name`, `services`, `volumes`, `networks`, `secrets`, `configs` pass; any key whose lowercased name starts with `x-` passes as an extension field; every other section is refused (hand-written JSON, because Compose refuses the file before printing a model);
+- anchors: a top-level `x-common: &common` with an image and environment passes on its own; a service that uses `<<: *common` still has those values in its own model entry and is checked (add a `privileged` or host path there and it is refused);
 - `volumes.<v>`: default `name`, `labels`, `driver: local` pass; `driver_opts`, another driver, `external`, another `name` are refused;
 - `networks.<n>`: default `name`, `labels`, `internal`, `attachable`, `enable_ipv4`, `enable_ipv6`, `driver: bridge`, an empty `ipam` pass; `driver_opts`, another driver, `ipam` with a subnet or driver, another `name` are refused; `external: true` passes only when `name == Policy.Network`;
 - `secrets.<s>` and `configs.<c>`: `environment`, `content`, `labels`, the default `name` pass; `file`, `external`, `driver`, `driver_opts`, `template_driver` are refused;
@@ -340,7 +345,7 @@ Expected: FAIL; the new cases report no violations.
 
 - [ ] **Step 2: Implement the rest of `Check`**
 
-When `p.Strict`, walk `m.Raw` in sorted key order for the top-level allow-list. For each section decode its entries and check the spec's tables. For paths, use a helper:
+When `p.Strict`, walk `m.Raw` in sorted key order for the top-level allow-list. A key whose lowercased name starts with `x-` is an extension field and passes; every other key must be `name`, `services`, `volumes`, `networks`, `secrets` or `configs`. For each section decode its entries and check the spec's tables. For paths, use a helper:
 
 ```go
 func inside(workDir, p string) bool // text-clean first; also try EvalSymlinks(workDir)
@@ -355,19 +360,25 @@ Add `TestCheckAgainstRealCompose` in `policy_test.go`:
 ```go
 func TestCheckAgainstRealCompose(t *testing.T) {
 	if !composeAvailable(t) {
-		t.Skip("docker compose is not installed")
+		t.Skip("docker compose 2.35 or newer is not installed")
 	}
+	dir := filepath.Join("testdata", "policy")
 	for _, tc := range policyCases {
-		// run: docker compose -p policy -f testdata/policy/<name>.yml config --format json --no-env-resolution
-		// ParseModel, Check with the same policy, compare violations to tc.want
+		if tc.pureOnly {
+			continue
+		}
+		// run: docker compose -p policy -f <name>.yml config --format json --no-env-resolution
+		// from dir, ParseModel, Check with WorkDir = dir, then compare only
+		// Where and Option to tc.want: reason text may name the fixture's
+		// absolute path instead of /work
 	}
 }
 ```
 
-`composeAvailable` runs `docker compose version` and skips on error. The command runs in `testdata/policy` so relative paths resolve as they did when recorded. Do not start a daemon.
+`composeAvailable` reads `docker compose version` (or `version --short`), parses the first `v?N.N` and returns true only when major is above 2, or major is 2 and minor is at least 35. It returns false when the command is missing or older, and the test skips. The command runs in `testdata/policy` so relative paths resolve; do not start a daemon.
 
 Run: `go test ./internal/compose/ -run CheckAgainstRealCompose`
-Expected: PASS on a host with Compose 2.35 or newer; SKIP when it is missing. If a case fails, the allow-list and the installed Compose disagree; fix the allow-list, not the test.
+Expected: PASS on a host with Compose 2.35 or newer; SKIP when it is missing or older. If a case fails, the allow-list and the installed Compose disagree; fix the allow-list, not the test.
 
 - [ ] **Step 4: Run everything**
 
@@ -390,13 +401,14 @@ git commit -m "feat(compose): check top-level sections, build paths and routing 
 - Test: `internal/deploy/deploy_compose_test.go`, `internal/deploy/deploy_test.go`
 
 **Interfaces:**
-- Consumes: `compose.ReadModel`, `compose.Check`, `compose.Policy` from Tasks 1–3; `Config.StrictContainerPolicy` and `Config.HeaderRequired` from Task 2 and the proxy plan.
+- Consumes: `compose.ReadModel`, `compose.Check`, `compose.Policy` from Tasks 1–3; `Config.StrictContainerPolicy` from Task 2.
 - Produces:
 
 ```go
 // internal/deploy/worker.go
 // needsModel reports whether any setting needs the normalised Compose model.
-// R7 adds the app's effective limit; R10 adds its restart setting.
+// Task 10 adds the header case; R7 adds the app's effective limit; R10 adds
+// its restart setting.
 func (w *Worker) needsModel(app core.App) bool
 
 // internal/deploy/pipeline_compose.go
@@ -424,18 +436,13 @@ func TestComposePipelineLogsEveryViolationAndKeepsTheJSONOut(t *testing.T) {
 	// want: both lines in the log, "super-secret" absent from the log and reason
 }
 
-func TestComposePipelineChecksLabelsWhenAHeaderIsRequired(t *testing.T) {
-	// cfg.RequireHeaderName/Value set; strict off; ConfigJSON has a traefik.* label
-	// want: refused before Build
-}
-
 func TestComposePipelineReportsAFileComposeCannotLoad(t *testing.T) {
 	// h.compose.FailConfig = errors.New("services.web.ports must be a list")
 	// want: failed building with that message, no Build and no Up
 }
 ```
 
-Run: `go test ./internal/deploy/ -run 'ComposePipeline.*(Model|Refuses|Logs|Labels|CannotLoad)'`
+Run: `go test ./internal/deploy/ -run 'ComposePipeline.*(Model|Refuses|Logs|CannotLoad)'`
 Expected: FAIL; `ConfigJSON` is unused and the pipeline never calls `Config`.
 
 - [ ] **Step 2: Implement the read and check**
@@ -453,17 +460,13 @@ if w.needsModel(app) {
 	}
 	policy := compose.Policy{
 		Strict:        w.cfg.StrictContainerPolicy(),
-		RoutingLabels: w.cfg.StrictContainerPolicy() || w.cfg.HeaderRequired(),
+		RoutingLabels: w.cfg.StrictContainerPolicy(),
 		WorkDir:       workDir,
 		Network:       w.cfg.Network,
 	}
 	if vs := compose.Check(model, policy); len(vs) > 0 {
 		reason, lines := policyViolationReason(vs)
-		if w.cfg.StrictContainerPolicy() {
-			logf(out, "This server's container policy refuses this Compose file (OUTHAUL_CONTAINER_POLICY=strict):")
-		} else {
-			logf(out, "This server refuses a Compose file that adds its own routing while a request header is required:")
-		}
+		logf(out, "This server's container policy refuses this Compose file (OUTHAUL_CONTAINER_POLICY=strict):")
 		for _, line := range lines {
 			logf(out, "%s", line)
 		}
@@ -473,7 +476,7 @@ if w.needsModel(app) {
 }
 ```
 
-Move `project := compose.ProjectName(app.Name)` above this block; do not compute it twice. `needsModel` returns `w.cfg.StrictContainerPolicy() || w.cfg.HeaderRequired()`.
+Move `project := compose.ProjectName(app.Name)` above this block; do not compute it twice. `needsModel` returns `w.cfg.StrictContainerPolicy()`; Task 10 adds the header case.
 
 `policyViolationReason` formats each violation as `  service "web": ports: <reason>`, returns the first without the leading two spaces, and appends ` (and N more)` when there are more. Keep all text free of the model's values except the path in a violation, which is the point of the message.
 
@@ -494,11 +497,11 @@ git commit -m "feat(deploy): refuse a Compose file before building it"
 ## Task 5: Images that carry routing labels
 
 **Files:**
-- Modify: `internal/compose/compose.go:28-46,102-120`, `internal/compose/fake.go:23-34`, `internal/deploy/pipeline.go:78-120,315-329`, `internal/deploy/pipeline_compose.go:80-107`, `internal/deploy/fork_build_test.go`
+- Modify: `internal/compose/compose.go:28-46,102-120`, `internal/compose/fake.go:23-34`, `internal/docker/fake.go:17-63,412-416`, `internal/deploy/pipeline.go:78-120,315-329`, `internal/deploy/pipeline_compose.go:80-107`, `internal/deploy/fork_build_test.go`
 - Test: `internal/deploy/deploy_test.go`, `internal/deploy/deploy_compose_test.go`, `internal/deploy/fork_build_test.go`
 
 **Interfaces:**
-- Consumes: `Config.StrictContainerPolicy`, `Config.HeaderRequired`, and the model from Task 4.
+- Consumes: `Config.StrictContainerPolicy` and the model from Task 4. Task 10 adds the header case.
 - Produces:
 
 ```go
@@ -542,7 +545,7 @@ Change `refuseRoutingLabels` to take a `why` clause and return:
 fmt.Errorf("refusing an image that carries traefik labels %s: %s", why, strings.Join(keys, ", "))
 ```
 
-Call it when `app.IsForkPreview()` (why `"in a fork preview"`), when `w.cfg.HeaderRequired()` (why `"while a request header is required"`), or when `w.cfg.StrictContainerPolicy()` (why `"under this server's strict container policy"`). For a deployment that arrived with an image, call it once before the `building -> deploying` transition. For a built image, call it after the build. Update the fork test's expected text to `traefik labels`.
+Call it when `app.IsForkPreview()` (why `"in a fork preview"`) or when `w.cfg.StrictContainerPolicy()` (why `"under this server's strict container policy"`). Task 10 adds the header case. For a deployment that arrived with an image, call it once before the `building -> deploying` transition. For a built image, call it after the build. Update the fork test's expected text to `traefik labels`.
 
 - [ ] **Step 3: Write the failing Compose image tests**
 
@@ -555,9 +558,8 @@ func TestComposePolicyPullsAndRefusesATraefikImage(t *testing.T) {
 }
 
 func TestComposePolicyRefusesAnImageThatIsNotOnTheServer(t *testing.T) {
-	// ImageLabels returns an empty map for a missing ref in the fake;
-	// configure FakeConfigJSON with an image whose labels map is absent and
-	// use a docker fake that reports a not-found error
+	// ConfigJSON names an image that is not on the server; the docker fake's
+	// FailImageLabels reports a not-found error
 }
 
 func TestComposePolicyReportsAPullFailure(t *testing.T) {
@@ -575,13 +577,13 @@ Expected: FAIL; the Compose pipeline never pulls or inspects.
 
 `Docker.Pull` runs `pull --policy missing --ignore-buildable` through `run`. `Fake.Pull` records `Call{Verb: "pull"}` and honours `FailPull`.
 
-In `runComposePipeline`, after `compose.Build` and before the `building -> deploying` transition, when strict or a header is required:
+In `runComposePipeline`, after `compose.Build` and before the `building -> deploying` transition, when strict is on (Task 10 adds the header case):
 
 1. `w.compose.Pull(ctx, workDir, files, project, out)`; on error fail in `building`.
 2. For each service in `model.Services`, `labels, err := w.docker.ImageLabels(ctx, svc.Image)`; on error fail naming the service and image.
 3. If any lowercased key starts with `traefik.`, fail naming the service, the image and the sorted label keys.
 
-A service with `pull_policy: always` can change its tag at `up`; the message says the check is at pull time. Do not check images when neither strict nor a header is required.
+A service with `pull_policy: always` can change its tag at `up`; the message says the check is at pull time. Do not check images when strict is off; Task 10 adds the header condition.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -591,7 +593,7 @@ Expected: PASS.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add internal/compose internal/deploy
+git add internal/compose internal/docker internal/deploy
 git commit -m "feat(deploy): refuse images that route themselves"
 ```
 
@@ -748,7 +750,13 @@ if cfg.StrictContainerPolicy() {
 }
 ```
 
-Do not restart or reprovision anything at startup. Add a `main_test.go` test around a small helper `warnPublishedDatabasePorts(st, strict)` that captures the log output, or test the rendered pages and provision path only if the startup line is already covered by an existing startup test pattern.
+Do not restart or reprovision anything at startup. Put the notice in:
+
+```go
+func warnPublishedDatabasePorts(ctx context.Context, st *store.Store, strict bool, logf func(string, ...any))
+```
+
+`serve` calls it with `log.Printf`. In `main_test.go`, seed a database with `ExtPort > 0`, call the helper with a `logf` that appends to a slice, and assert one line names the database and the port; with `strict == false`, assert no lines. This pins the "restarts none" behaviour without starting the worker.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -788,7 +796,7 @@ func TestEveryTemplatePassesTheStrictPolicy(t *testing.T) {
 }
 ```
 
-The raw template text contains `${domain}` and generated secrets; `--no-env-resolution` and an unset environment leave them empty, which is fine because the policy checks keys and shapes, not values. `composeAvailable` repeats the `docker compose version` check from Task 3; keep it local to the test package.
+The raw template text contains `${domain}` and generated secrets; `--no-env-resolution` and an unset environment leave them empty, which is fine because the policy checks keys and shapes, not values. `composeAvailable` repeats Task 3's version check and returns false for Compose older than 2.35 as well as for a missing command; keep it local to the test package.
 
 - [ ] **Step 2: Run the test**
 
@@ -808,7 +816,7 @@ git commit -m "test(catalog): every template passes the strict policy"
 
 **Files:**
 - Create: `docs/GUARD-RAILS.md`
-- Modify: `README.md`, `ARCHITECTURE.md`, `AGENTS.md`, `docs/PROTECTED-ROUTES.md`, `docs/BEHIND-A-PROXY.md`
+- Modify: `README.md`, `ARCHITECTURE.md`, `AGENTS.md`
 - Test: `go build ./... && go vet ./... && go test ./...`, then `go test -race -timeout 30m ./...`
 
 **Interfaces:**
@@ -821,7 +829,8 @@ Use the plain, second-person style of `docs/SSO.md`. Cover:
 
 - what `OUTHAUL_CONTAINER_POLICY=strict` is for, and that roles are not containment;
 - a table of what a Compose file may not contain, with what to write instead (`ports` -> a domain, a host path -> a named volume, `privileged`/`cap_add`/`devices` -> no substitute, `network_mode: host` -> the stack network, `file` secrets -> `environment` or `content`);
-- the `traefik.*`/`outhaul.*` label rule and why an image's own labels matter;
+- that top-level `x-*` extension keys are allowed, and an anchor's contents are still checked once Compose resolves them into a service;
+- the `traefik.*`/`outhaul.*` label rule in strict mode and why an image's own labels matter (Task 10 adds the header-required case);
 - where strict mode applies: Compose deploys, database ports, single-container image checks; not Traefik/cloudflared, not builds;
 - that reading a Compose file needs Docker Compose 2.35 or newer, and what the error says on an older host;
 - the real-host checks below, marked as not yet run.
@@ -830,8 +839,8 @@ Use the plain, second-person style of `docs/SSO.md`. Cover:
 
 - `README.md`: the `OUTHAUL_CONTAINER_POLICY` row (added in Task 2); check the wording matches the parser.
 - `ARCHITECTURE.md`: add a “Container guard rails (opt-in)” section with the model reader, the allow-list, the label and image checks, and that the earlier non-goal “Restricting Compose files” no longer holds in strict mode. Add `compose/model.go` and `compose/policy.go` to the package layout.
-- `AGENTS.md`, “Decisions to keep”: strict mode is an allow-list, so a new Compose key is refused until someone lists it; the model is never logged; a refusal names the service and the option; database ports are refused under strict mode.
-- `docs/PROTECTED-ROUTES.md` and `docs/BEHIND-A-PROXY.md`: one line each that a Compose file's own `traefik.*` labels are refused while a header is required, and in strict mode.
+- `AGENTS.md`, “Decisions to keep”: strict mode is an allow-list, so a new Compose key is refused until someone lists it; top-level `x-*` extension keys are the exception; the model is never logged; a refusal names the service and the option; database ports are refused under strict mode.
+- `docs/PROTECTED-ROUTES.md` and `docs/BEHIND-A-PROXY.md` are updated by Task 10, when the header case exists.
 
 - [ ] **Step 3: Run the full check**
 
@@ -863,4 +872,76 @@ Record the results in `docs/GUARD-RAILS.md` under “Testing so far” when they
 ```bash
 git add docs README.md ARCHITECTURE.md AGENTS.md
 git commit -m "docs(guard-rails): what strict mode refuses and what to write instead"
+```
+
+---
+
+## Task 10: The request-header case (after R3)
+
+This is the only part of R6 that needs R3 from the proxy-ingress plan. Run it after that lands. It adds the second reason the label and image rules exist: while a request header is required, no Compose file or image may add a route of its own.
+
+**Files:**
+- Modify: `internal/deploy/pipeline_compose.go`, `internal/deploy/worker.go`, `internal/deploy/pipeline.go`, `internal/deploy/deploy_compose_test.go`, `internal/deploy/deploy_test.go`, `internal/deploy/fork_build_test.go`
+- Modify: `docs/GUARD-RAILS.md`, `docs/PROTECTED-ROUTES.md`, `docs/BEHIND-A-PROXY.md`
+- Test: the deploy tests
+
+**Interfaces:**
+- Consumes: `Config.HeaderRequired()` from the proxy-ingress R3 plan; `refuseRoutingLabels(ctx, image, why)` from Task 5; `needsModel` from Task 4.
+- Produces: no new names. `needsModel` and `Policy.RoutingLabels` now include the header case.
+
+- [ ] **Step 1: Write the failing header tests**
+
+```go
+func TestComposePipelineChecksLabelsWhenAHeaderIsRequired(t *testing.T) {
+	// strict off; cfg.RequireHeaderName/Value set; ConfigJSON has a traefik.* label
+	// want: refused before Build, log says a request header is required
+}
+
+func TestHeaderRequiredRefusesAnImageWithTraefikLabels(t *testing.T) {
+	// strict off; header on; h.docker.ImageLabelsByRef["outhaul/web:1"] has traefik.*
+	// want: failed building before any canonical container is created
+}
+
+func TestHeaderRequiredRefusesARollbackImageWithTraefikLabels(t *testing.T) {
+	// dep.Image pre-set; header on; same labels
+	// want: failed before the building -> deploying transition
+}
+```
+
+Run: `go test ./internal/deploy/ -run 'HeaderRequired|HeaderIsRequired'`
+Expected: FAIL; the pipeline ignores the header setting.
+
+- [ ] **Step 2: Implement the header case**
+
+- `needsModel` returns `w.cfg.StrictContainerPolicy() || w.cfg.HeaderRequired()`.
+- `Policy.RoutingLabels` is `w.cfg.StrictContainerPolicy() || w.cfg.HeaderRequired()`.
+- The refusal log header is the strict one when strict is on, otherwise `This server refuses a Compose file that adds its own routing while a request header is required:`.
+- The Compose image check (`Runner.Pull` then `ImageLabels`) runs when strict or a header is required.
+- The single-container `refuseRoutingLabels` call runs when the app is a fork preview, strict is on, or a header is required, with the why clause `while a request header is required` for the header-only case.
+
+If R3's `refuseRoutingLabels` change lands after Task 5, rebase Task 5 onto it and keep both the existing fork/strict conditions and R3's header condition; Task 10 is the point where both are present.
+
+- [ ] **Step 3: Run the deploy tests**
+
+Run: `go test ./internal/deploy/`
+Expected: PASS.
+
+- [ ] **Step 4: Update the documents**
+
+- `docs/GUARD-RAILS.md`: the label rule now also applies while a request header is required, and an image with `traefik.*` labels is refused in that mode too.
+- `docs/PROTECTED-ROUTES.md` and `docs/BEHIND-A-PROXY.md`: one line each that a Compose file's own `traefik.*` labels, and an image's own `traefik.*` labels, are refused while a header is required.
+
+- [ ] **Step 5: Run the full check**
+
+Run: `go build ./... && go vet ./... && go test ./...`
+Expected: PASS.
+
+Run: `go test -race -timeout 30m ./...`
+Expected: PASS.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add internal/deploy docs
+git commit -m "feat(deploy): refuse self-routing Compose files and images while a header is required"
 ```
