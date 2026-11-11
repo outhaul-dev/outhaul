@@ -1202,6 +1202,13 @@ write_dropins() {
 	done <<EOF
 $ENV_FILES
 EOF
+	# A malformed ENV_FILES (a blank line, say) can reach here with no file
+	# to name. A body of only [Service] would drop install.env and so
+	# re-enable the :2222 listener, so leave both drop-ins alone.
+	case "$_dropin" in
+	*"EnvironmentFile="*) ;;
+	*) return 0 ;;
+	esac
 	# Drop the last newline: write_if_changed adds one.
 	_dropin=${_dropin%?}
 	if write_if_changed "$SERVICE_DROPIN" "$_dropin" 0644; then DROPIN_CHANGED=1; fi
@@ -1665,14 +1672,21 @@ parse_args() {
 			;;
 		--env-file)
 			# ENV_FILES is newline-separated, so a newline in a path
-			# cannot be written down: refuse it here.
+			# cannot be written down: refuse it here. An empty value
+			# would add a blank line, which makes ENV_FILES look
+			# non-empty and later writes a drop-in with no file, so
+			# refuse it too.
 			if take_value "$@"; then
-				case "$ARG_VALUE" in
-				*'
+				if [ -z "$ARG_VALUE" ]; then
+					arg_error "--env-file needs a value"
+				else
+					case "$ARG_VALUE" in
+					*'
 '*) arg_error "--env-file path contains a newline" ;;
-				*) ENV_FILES="${ENV_FILES}${ARG_VALUE}
+					*) ENV_FILES="${ENV_FILES}${ARG_VALUE}
 " ;;
-				esac
+					esac
+				fi
 				shift
 			fi
 			;;

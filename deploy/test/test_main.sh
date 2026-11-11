@@ -50,6 +50,7 @@ assert_eq "the accepted command" 0 "$(arg_rc --non-interactive --ingress local -
 T=$(mktemp -d)
 : >"$T/env"
 stat() { echo '0 600'; }
+assert_eq "empty env file value" 2 "$(arg_rc --non-interactive --ingress local --env-file '')"
 assert_eq "relative env file" 2 "$(arg_rc --non-interactive --ingress local --env-file rel.env)"
 assert_eq "missing env file" 2 "$(arg_rc --non-interactive --ingress local --env-file /no/such/file)"
 stat() { echo '1000 600'; }
@@ -82,6 +83,21 @@ assert_eq "env files in order" "/a
 # shellcheck disable=SC2034 # OUTHAUL_REF is read by main, not by this snippet
 assert_eq "flag beats OUTHAUL_REF" from-flag \
 	"$( OUTHAUL_REF=from-env REF=from-env; parse_args --ref from-flag; printf '%s\n' "$REF" )"
+
+# A malformed ENV_FILES (one blank line, as an empty --env-file once left it)
+# must not write a body of only [Service]: that drops install.env and so
+# re-enables the :2222 listener on a host installed with --git-ssh off.
+SERVICE_DROPIN=$T/malformed/outhaul.service.d/10-install.conf
+UPDATE_DROPIN=$T/malformed/outhaul-update.service.d/10-install.conf
+mkdir -p "$(dirname "$SERVICE_DROPIN")" "$(dirname "$UPDATE_DROPIN")"
+printf 'sentinel\n' >"$SERVICE_DROPIN"
+printf 'sentinel\n' >"$UPDATE_DROPIN"
+# shellcheck disable=SC2034 # read by write_dropins, sourced from bootstrap.sh
+ENV_FILES='
+'
+NONINTERACTIVE=0 write_dropins
+assert_eq "a blank env file keeps the service drop-in" sentinel "$(cat "$SERVICE_DROPIN")"
+assert_eq "a blank env file keeps the update drop-in" sentinel "$(cat "$UPDATE_DROPIN")"
 
 rm -rf "$T"
 
