@@ -10,6 +10,15 @@ OUTHAUL_REPO="${OUTHAUL_REPO:-https://github.com/outhaul-dev/outhaul.git}"
 NONINTERACTIVE=0
 INSTALL_DOCKER=0
 
+# nixpacks is pinned: one version, one archive per architecture, each with the
+# SHA-256 GitHub publishes for that asset. NIXPACKS_REPLACE=1 (--nixpacks on)
+# lets the unattended installer replace a different installed version.
+NIXPACKS_VERSION=1.41.0
+NIXPACKS_SHA256_AMD64=0f55de7874507b9cf7502113120bd96f2ab6979f78d10eaf2eb2ade9207b3af6
+NIXPACKS_SHA256_ARM64=912bd02dd2bb6f9c3a9ed965fe8a68b4aa318dc7a2546e2eca6f2806a894ba39
+NIXPACKS_PATH=/usr/local/bin/nixpacks
+NIXPACKS_REPLACE=${NIXPACKS_REPLACE:-0}
+
 # ------------------------------------------------------------------ helpers --
 
 # Prints the concrete Go version to download (e.g. 1.26.4). Prefers the
@@ -453,20 +462,94 @@ ensure_git() {
 	[ "$rc" -eq 0 ] || die "git install failed — see ${LOGFILE:-the install log}"
 }
 
-# Optional — caller gates on ask_yes_no.
-ensure_nixpacks() {
-	if command -v nixpacks >/dev/null 2>&1; then
-		step_ok "nixpacks present"
-		return
-	fi
-	spinner_start "installing nixpacks"
+# Maps uname -m to the nixpacks release asset's target triple.
+nixpacks_target() { # uname_m
+	case "$1" in
+	x86_64 | amd64) echo x86_64-unknown-linux-musl ;;
+	aarch64 | arm64) echo aarch64-unknown-linux-musl ;;
+	*) return 1 ;;
+	esac
+}
+
+# Prints the pinned SHA-256 for the host's architecture.
+nixpacks_sha256() { # uname_m
+	case "$1" in
+	x86_64 | amd64) printf '%s\n' "$NIXPACKS_SHA256_AMD64" ;;
+	aarch64 | arm64) printf '%s\n' "$NIXPACKS_SHA256_ARM64" ;;
+	*) return 1 ;;
+	esac
+}
+
+# Prints the installed nixpacks version, or nothing when there is none.
+nixpacks_installed_version() {
+	command -v nixpacks >/dev/null 2>&1 || return 0
+	nixpacks --version 2>/dev/null | awk '{print $NF}'
+}
+
+# Downloads the pinned archive, verifies its checksum and installs the binary
+# by rename. A wrong checksum is fatal in every mode: the host asked for the
+# pin, and something other than it arrived.
+install_nixpacks_pin() {
+	arch=$(uname -m)
+	target=$(nixpacks_target "$arch") || die "unsupported architecture for nixpacks: $arch"
+	sum=$(nixpacks_sha256 "$arch") || die "unsupported architecture for nixpacks: $arch"
+	NIXPACKS_TMP=$(mktemp -d)
+	archive=$NIXPACKS_TMP/nixpacks.tar.gz
+	url="https://github.com/railwayapp/nixpacks/releases/download/v$NIXPACKS_VERSION/nixpacks-v$NIXPACKS_VERSION-$target.tar.gz"
+	spinner_start "downloading nixpacks $NIXPACKS_VERSION ($target)"
 	set +e
-	curl -fsSL https://nixpacks.com/install.sh | bash >>"${LOGFILE:-/dev/null}" 2>&1
+	curl -fsSL "$url" -o "$archive" >>"${LOGFILE:-/dev/null}" 2>&1
 	rc=$?
 	set -e
 	spinner_stop "$rc"
-	# Optional: a failure is not fatal — Dockerfile/compose apps still deploy.
-	[ "$rc" -eq 0 ] || note "nixpacks install failed — you can retry later; Dockerfile/compose apps work without it"
+	if [ "$rc" -ne 0 ]; then
+		rm -rf "$NIXPACKS_TMP"
+		NIXPACKS_TMP=''
+		if [ "$NONINTERACTIVE" = 1 ]; then
+			die "could not download nixpacks $NIXPACKS_VERSION from $url"
+		fi
+		note "could not download nixpacks $NIXPACKS_VERSION — you can retry later; Dockerfile/compose apps work without it"
+		return 0
+	fi
+	if ! echo "$sum  $archive" | sha256sum -c - >>"${LOGFILE:-/dev/null}" 2>&1; then
+		rm -rf "$NIXPACKS_TMP"
+		NIXPACKS_TMP=''
+		die "nixpacks checksum mismatch — refusing to install"
+	fi
+	step_ok "nixpacks $NIXPACKS_VERSION checksum verified"
+	if ! tar -C "$NIXPACKS_TMP" -xzf "$archive"; then
+		rm -rf "$NIXPACKS_TMP"
+		NIXPACKS_TMP=''
+		die "could not extract nixpacks $NIXPACKS_VERSION"
+	fi
+	if ! install_atomic "$NIXPACKS_TMP/nixpacks" "$NIXPACKS_PATH" 0755; then
+		rm -rf "$NIXPACKS_TMP"
+		NIXPACKS_TMP=''
+		die "could not install nixpacks to $NIXPACKS_PATH"
+	fi
+	rm -rf "$NIXPACKS_TMP"
+	NIXPACKS_TMP=''
+	step_ok "installed nixpacks $NIXPACKS_VERSION"
+}
+
+# Optional — caller gates on WANT_NIXPACKS. A version other than the pin is
+# left alone unless NIXPACKS_REPLACE=1: replacing a working build tool is the
+# operator's call, not the installer's.
+ensure_nixpacks() {
+	v=$(nixpacks_installed_version)
+	if [ -z "$v" ]; then
+		install_nixpacks_pin
+		return
+	fi
+	if [ "$v" = "$NIXPACKS_VERSION" ]; then
+		step_ok "nixpacks $NIXPACKS_VERSION present"
+		return
+	fi
+	if [ "$NIXPACKS_REPLACE" = 1 ]; then
+		install_nixpacks_pin
+		return
+	fi
+	note "nixpacks $v is installed; the installer pins $NIXPACKS_VERSION (re-run with --non-interactive --nixpacks on to replace it)"
 }
 
 # Pure: true only for a bare 64-char hex sha256 digest. Guards against a checksum
@@ -1027,6 +1110,7 @@ cleanup() {
 	remove_build_swap || true
 	if [ "${FROM_CHECKOUT:-0}" != 1 ] && [ -n "${SRC_DIR:-}" ]; then rm -rf "$SRC_DIR"; fi
 	if [ -n "${GOROOT_TMP:-}" ]; then rm -rf "$GOROOT_TMP"; fi
+	if [ -n "${NIXPACKS_TMP:-}" ]; then rm -rf "$NIXPACKS_TMP"; fi
 }
 
 # Ingress-mode menu. Sets MODE (a/b/c), PUBLIC_URL, ACME_EMAIL, LOCAL_CA (0/1).
