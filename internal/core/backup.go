@@ -63,6 +63,16 @@ func (d Destination) AzureAccount() string {
 	return strings.TrimSuffix(e, suffix)
 }
 
+// StateBackupRun is the outcome of the most recent copy of Outhaul's own
+// state, shown on Settings.
+type StateBackupRun struct {
+	At        time.Time `json:"at"`
+	OK        bool      `json:"ok"`
+	Key       string    `json:"key"`
+	SizeBytes int64     `json:"size_bytes"`
+	Reason    string    `json:"reason"`
+}
+
 // Backup is a schedule attaching one target to one destination: "dump this
 // database (or tar this stack's volumes) on this cron, keep the newest N".
 type Backup struct {

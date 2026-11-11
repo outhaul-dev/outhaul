@@ -8,12 +8,14 @@ package backup
 import (
 	"compress/gzip"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -29,6 +31,18 @@ import (
 
 // helperImage tars volumes; busybox ships tar+gzip in ~2 MB.
 const helperImage = "busybox:stable"
+
+// StateDir is the object directory state copies live under. No app or
+// database can be named it, so a schedule's keys cannot collide.
+const StateDir = "_outhaul-state"
+
+// StateBackup is the manager's copy of the state-backup settings.
+type StateBackup struct {
+	Schedule    string
+	Destination string // a destination name; "" means the kind=azure row
+	Keep        int
+	Prefix      string
+}
 
 // runTimeout bounds one backup run end to end (dump + upload + prune).
 const runTimeout = 2 * time.Hour
@@ -49,6 +63,8 @@ type Manager struct {
 	stopped  bool           // set by Stop: no new runs start
 
 	hold func() bool // when it returns true, Tick starts nothing
+
+	state StateBackup // Outhaul's own state copy settings; empty schedule disables it
 
 	timeout time.Duration      // bounds one run; runTimeout outside tests
 	base    context.Context    // parent of every run's context; cancelled by Stop
@@ -151,6 +167,18 @@ func (m *Manager) Run(ctx context.Context) {
 // down. RunNow and RestoreNow are unaffected. Call before Run.
 func (m *Manager) SetHold(hold func() bool) { m.hold = hold }
 
+// SetStateBackup installs the state-backup settings. Call before Run.
+func (m *Manager) SetStateBackup(s StateBackup) { m.state = s }
+
+// RunStateNow copies Outhaul's own state in the background. It does nothing
+// when no schedule is set; the reserved ID 0 keeps it from overlapping itself.
+func (m *Manager) RunStateNow() {
+	if m.state.Schedule == "" {
+		return
+	}
+	m.launch(0, func(ctx context.Context) { m.runState(ctx) })
+}
+
 // Tick starts every enabled backup whose schedule matches now (local time).
 func (m *Manager) Tick(ctx context.Context, now time.Time) {
 	if m.hold != nil && m.hold() {
@@ -159,18 +187,133 @@ func (m *Manager) Tick(ctx context.Context, now time.Time) {
 	backups, err := m.store.ListEnabledBackups(ctx)
 	if err != nil {
 		log.Printf("backup: list schedules: %v", err)
+	} else {
+		for _, b := range backups {
+			s, err := cron.Parse(b.Schedule)
+			if err != nil {
+				log.Printf("backup %d: bad schedule %q: %v", b.ID, b.Schedule, err)
+				continue
+			}
+			if s.Matches(now) {
+				m.RunNow(b)
+			}
+		}
+	}
+	m.tickState(ctx, now)
+}
+
+// tickState starts a state copy when its schedule matches now.
+func (m *Manager) tickState(ctx context.Context, now time.Time) {
+	if m.state.Schedule == "" {
 		return
 	}
-	for _, b := range backups {
-		s, err := cron.Parse(b.Schedule)
+	s, err := cron.Parse(m.state.Schedule)
+	if err != nil {
+		log.Printf("state backup: bad schedule %q: %v", m.state.Schedule, err)
+		return
+	}
+	if s.Matches(now) {
+		m.RunStateNow()
+	}
+}
+
+// runState executes one state copy and records its outcome.
+func (m *Manager) runState(ctx context.Context) {
+	has, err := m.store.HasUser(ctx)
+	if err != nil {
+		log.Printf("state backup: read accounts: %v", err)
+		return
+	}
+	if !has {
+		log.Printf("state backup: skipped: no account yet")
+		return
+	}
+	key, size, runErr := m.executeState(ctx)
+	rctx := context.WithoutCancel(ctx)
+	outcome := core.StateBackupRun{At: time.Now().UTC(), OK: runErr == nil, Key: key, SizeBytes: size}
+	if runErr != nil {
+		outcome.Reason = m.failure(ctx, runErr)
+		log.Printf("WARNING: state backup failed: %s", outcome.Reason)
+	} else {
+		log.Printf("state backup: uploaded %s (%d bytes)", key, size)
+	}
+	if err := m.store.SetStateBackupRun(rctx, outcome); err != nil {
+		log.Printf("state backup: record outcome: %v", err)
+	}
+}
+
+// executeState snapshots the database, gzips it, uploads it under StateDir and
+// prunes older copies.
+func (m *Manager) executeState(ctx context.Context) (string, int64, error) {
+	dest, err := m.stateDestination(ctx)
+	if err != nil {
+		return "", 0, err
+	}
+	blob, err := m.dial(dest)
+	if err != nil {
+		return "", 0, err
+	}
+	now := time.Now()
+	snap := filepath.Join(m.workDir, fmt.Sprintf("backup-state-%s-%s.db", Stamp(now), randSuffix()))
+	if err := m.store.Snapshot(ctx, snap); err != nil {
+		return "", 0, err
+	}
+	defer os.Remove(snap)
+
+	f, err := m.stage(true, func(w io.Writer) error {
+		src, err := os.Open(snap)
 		if err != nil {
-			log.Printf("backup %d: bad schedule %q: %v", b.ID, b.Schedule, err)
-			continue
+			return err
 		}
-		if s.Matches(now) {
-			m.RunNow(b)
+		defer src.Close()
+		_, err = io.Copy(w, src)
+		return err
+	})
+	if err != nil {
+		return "", 0, err
+	}
+	defer f.close()
+
+	key := JoinKey(m.state.Prefix, StateDir, Stamp(now)+".db.gz")
+	if err := blob.Put(ctx, key, f.file, f.size); err != nil {
+		return key, 0, err
+	}
+	if err := m.prune(ctx, blob, JoinKey(m.state.Prefix, StateDir)+"/", ".db.gz", m.state.Keep); err != nil {
+		return key, f.size, fmt.Errorf("uploaded, but pruning old state copies failed: %w", err)
+	}
+	return key, f.size, nil
+}
+
+// stateDestination finds the destination each run uses: the configured name,
+// or the environment's Azure row.
+func (m *Manager) stateDestination(ctx context.Context) (core.Destination, error) {
+	dests, err := m.store.ListDestinations(ctx)
+	if err != nil {
+		return core.Destination{}, err
+	}
+	if m.state.Destination != "" {
+		for _, d := range dests {
+			if d.Name == m.state.Destination {
+				return d, nil
+			}
+		}
+		return core.Destination{}, fmt.Errorf("destination %q does not exist; set OUTHAUL_STATE_BACKUP_DESTINATION to a destination name or the Azure pair", m.state.Destination)
+	}
+	for _, d := range dests {
+		if d.Kind == core.DestinationAzure {
+			return d, nil
 		}
 	}
+	return core.Destination{}, errors.New("no destination: set OUTHAUL_STATE_BACKUP_DESTINATION to a destination name or OUTHAUL_BACKUP_AZURE_ACCOUNT and OUTHAUL_BACKUP_AZURE_CONTAINER")
+}
+
+// randSuffix keeps two snapshots in the same second apart.
+func randSuffix() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%x", b)
 }
 
 // RunNow executes a backup in the background, skipping silently if the same
@@ -259,12 +402,12 @@ func (m *Manager) execute(ctx context.Context, b core.Backup) (string, int64, er
 	}
 }
 
-// stamp names archives; UTC and filename-safe, and lexicographic order is
+// Stamp names archives; UTC and filename-safe, and lexicographic order is
 // chronological order (retention pruning relies on that).
-func stamp(t time.Time) string { return t.UTC().Format("20060102T150405Z") }
+func Stamp(t time.Time) string { return t.UTC().Format("20060102T150405Z") }
 
-// joinKey builds an object key from a user prefix and parts.
-func joinKey(prefix string, parts ...string) string {
+// JoinKey builds an object key from a user prefix and parts.
+func JoinKey(prefix string, parts ...string) string {
 	return path.Join(append([]string{strings.Trim(prefix, "/")}, parts...)...)
 }
 
@@ -304,11 +447,11 @@ func (m *Manager) backupDatabase(ctx context.Context, b core.Backup, blob blobst
 	}
 	defer f.close()
 
-	key := joinKey(b.Prefix, db.Name, stamp(time.Now())+ext)
+	key := JoinKey(b.Prefix, db.Name, Stamp(time.Now())+ext)
 	if err := blob.Put(ctx, key, f.file, f.size); err != nil {
 		return key, 0, err
 	}
-	if err := m.prune(ctx, blob, joinKey(b.Prefix, db.Name)+"/", ext, b.Retention); err != nil {
+	if err := m.prune(ctx, blob, JoinKey(b.Prefix, db.Name)+"/", ext, b.Retention); err != nil {
 		return key, f.size, fmt.Errorf("uploaded, but pruning old backups failed: %w", err)
 	}
 	return key, f.size, nil
@@ -367,7 +510,7 @@ func (m *Manager) backupAppVolumes(ctx context.Context, b core.Backup, blob blob
 		return "", 0, fmt.Errorf("pull %s: %w", helperImage, err)
 	}
 
-	ts := stamp(time.Now())
+	ts := Stamp(time.Now())
 	var lastKey string
 	var total int64
 	for i, vol := range vols {
@@ -398,7 +541,7 @@ func (m *Manager) backupAppVolumes(ctx context.Context, b core.Backup, blob blob
 		if err != nil {
 			return lastKey, total, err
 		}
-		key := joinKey(b.Prefix, app.Name, vol, ts+".tar.gz")
+		key := JoinKey(b.Prefix, app.Name, vol, ts+".tar.gz")
 		err = blob.Put(ctx, key, f.file, f.size)
 		size := f.size
 		f.close()
@@ -406,7 +549,7 @@ func (m *Manager) backupAppVolumes(ctx context.Context, b core.Backup, blob blob
 			return key, total, err
 		}
 		lastKey, total = key, total+size
-		if err := m.prune(ctx, blob, joinKey(b.Prefix, app.Name, vol)+"/", ".tar.gz", b.Retention); err != nil {
+		if err := m.prune(ctx, blob, JoinKey(b.Prefix, app.Name, vol)+"/", ".tar.gz", b.Retention); err != nil {
 			return key, total, fmt.Errorf("uploaded, but pruning old backups failed: %w", err)
 		}
 	}

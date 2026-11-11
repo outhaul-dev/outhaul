@@ -154,6 +154,23 @@ func serve() error {
 	if err := st.SyncAzureDestination(context.Background(), cfg.BackupAzureAccount, cfg.BackupAzureContainer); err != nil {
 		return fmt.Errorf("sync the Azure backup destination: %w", err)
 	}
+	if cfg.StateBackupDestination != "" {
+		dests, err := st.ListDestinations(context.Background())
+		if err != nil {
+			log.Printf("WARNING: read backup destinations: %v", err)
+		} else {
+			found := false
+			for _, d := range dests {
+				if d.Name == cfg.StateBackupDestination {
+					found = true
+					break
+				}
+			}
+			if !found {
+				log.Printf("WARNING: OUTHAUL_STATE_BACKUP_DESTINATION=%q names no destination; state backups will fail until it is added in Settings", cfg.StateBackupDestination)
+			}
+		}
+	}
 
 	if n, err := st.RecoverActive(context.Background(), "interrupted by restart"); err != nil {
 		return fmt.Errorf("crash recovery: %w", err)
@@ -247,6 +264,12 @@ func serve() error {
 		log.Printf("recovered %d interrupted backup/restore run(s) as failed", n)
 	}
 	backups.SetHold(updates.InProgress)
+	backups.SetStateBackup(backup.StateBackup{
+		Schedule:    cfg.StateBackupSchedule,
+		Destination: cfg.StateBackupDestination,
+		Keep:        cfg.StateBackupKeep,
+		Prefix:      cfg.StateBackupPrefix,
+	})
 	go backups.Run(workerCtx)
 	go checker.Run(workerCtx)
 

@@ -191,6 +191,10 @@ No config files — defaults with `OUTHAUL_*` environment overrides:
 | `OUTHAUL_SERVER_IP`     | (auto-detected)      | Public IP embedded in generated `sslip.io` template domains |
 | `OUTHAUL_BACKUP_AZURE_ACCOUNT` | (empty)      | Storage account for the Azure Blob backup destination; set with `OUTHAUL_BACKUP_AZURE_CONTAINER` — see docs/STATE-BACKUP.md |
 | `OUTHAUL_BACKUP_AZURE_CONTAINER` | (empty)    | Private container for that destination; the host's managed identity needs "Storage Blob Data Contributor" on it |
+| `OUTHAUL_STATE_BACKUP_SCHEDULE` | (empty)     | Five-field cron for a copy of Outhaul's own database; unset disables it — see docs/STATE-BACKUP.md |
+| `OUTHAUL_STATE_BACKUP_DESTINATION` | (empty)  | Destination name for that copy; unset uses the Azure row |
+| `OUTHAUL_STATE_BACKUP_KEEP` | `30`              | State copies kept; `0` keeps all |
+| `OUTHAUL_STATE_BACKUP_PREFIX` | (empty)        | Key prefix for state copies, for hosts sharing a container |
 
 `AZURE_CLIENT_ID` is not an `OUTHAUL_*` setting: when the VM has more than one
 managed identity, set it to the one Outhaul should use.

@@ -100,6 +100,7 @@ type harness struct {
 	store  *store.Store
 	docker *docker.Fake
 	blob   *fakeBlob
+	box    *secret.Box
 }
 
 func newHarness(t *testing.T) *harness {
@@ -119,7 +120,7 @@ func newHarness(t *testing.T) *harness {
 	blob := &fakeBlob{objects: map[string][]byte{}}
 	m := NewManager(st, fake, dir, func(core.Destination) (blobstore.Client, error) { return blob, nil })
 	m.runDone = make(chan struct{}, 8)
-	return &harness{m: m, store: st, docker: fake, blob: blob}
+	return &harness{m: m, store: st, docker: fake, blob: blob, box: box}
 }
 
 func (h *harness) destination(t *testing.T) core.Destination {

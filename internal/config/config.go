@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/outhaul-dev/outhaul/internal/cron"
 )
 
 // DefaultTraefikImage is the Traefik image Outhaul pulls and manages. Pinned to
@@ -49,7 +51,13 @@ type Config struct {
 	BackupAzureContainer string // OUTHAUL_BACKUP_AZURE_CONTAINER; its private container
 	AzureClientID        string // AZURE_CLIENT_ID; the managed identity, when the VM has more than one
 
-	problems []error // malformed OUTHAUL_* values; reported by Validate
+	StateBackupSchedule    string // OUTHAUL_STATE_BACKUP_SCHEDULE; unset disables state backups
+	StateBackupDestination string // OUTHAUL_STATE_BACKUP_DESTINATION; "" means the Azure row
+	StateBackupKeep        int    // OUTHAUL_STATE_BACKUP_KEEP; 0 keeps every copy
+	StateBackupPrefix      string // OUTHAUL_STATE_BACKUP_PREFIX; keeps hosts sharing a container apart
+
+	stateBackupKeepSet bool    // OUTHAUL_STATE_BACKUP_KEEP was present
+	problems           []error // malformed OUTHAUL_* values; reported by Validate
 }
 
 // Getenv matches os.Getenv; injected so Load is testable without touching the
@@ -84,7 +92,13 @@ func Load(getenv Getenv) Config {
 		BackupAzureAccount:   getenv("OUTHAUL_BACKUP_AZURE_ACCOUNT"),
 		BackupAzureContainer: getenv("OUTHAUL_BACKUP_AZURE_CONTAINER"),
 		AzureClientID:        getenv("AZURE_CLIENT_ID"),
+
+		StateBackupSchedule:    p.cron("OUTHAUL_STATE_BACKUP_SCHEDULE"),
+		StateBackupDestination: getenv("OUTHAUL_STATE_BACKUP_DESTINATION"),
+		StateBackupKeep:        p.count("OUTHAUL_STATE_BACKUP_KEEP", 30),
+		StateBackupPrefix:      p.keyPrefix("OUTHAUL_STATE_BACKUP_PREFIX"),
 	}
+	c.stateBackupKeepSet = getenv("OUTHAUL_STATE_BACKUP_KEEP") != ""
 	c.problems = p.problems
 	return c
 }
@@ -174,6 +188,19 @@ func (c Config) Validate() error {
 		if c.AzureClientID != "" && !azureClientIDRe.MatchString(c.AzureClientID) {
 			errs = append(errs, fmt.Errorf("AZURE_CLIENT_ID=%q: want a GUID such as 8f7c1a2e-0000-4000-8000-000000000000", c.AzureClientID))
 		}
+	}
+	if c.StateBackupSchedule == "" {
+		if c.StateBackupDestination != "" {
+			errs = append(errs, fmt.Errorf("OUTHAUL_STATE_BACKUP_DESTINATION=%q: needs OUTHAUL_STATE_BACKUP_SCHEDULE", c.StateBackupDestination))
+		}
+		if c.StateBackupPrefix != "" {
+			errs = append(errs, fmt.Errorf("OUTHAUL_STATE_BACKUP_PREFIX=%q: needs OUTHAUL_STATE_BACKUP_SCHEDULE", c.StateBackupPrefix))
+		}
+		if c.stateBackupKeepSet {
+			errs = append(errs, errors.New("OUTHAUL_STATE_BACKUP_KEEP: needs OUTHAUL_STATE_BACKUP_SCHEDULE"))
+		}
+	} else if c.StateBackupDestination == "" && (c.BackupAzureAccount == "" || c.BackupAzureContainer == "") {
+		errs = append(errs, errors.New("OUTHAUL_STATE_BACKUP_SCHEDULE needs a destination: set OUTHAUL_STATE_BACKUP_DESTINATION, or OUTHAUL_BACKUP_AZURE_ACCOUNT and OUTHAUL_BACKUP_AZURE_CONTAINER"))
 	}
 	return errors.Join(errs...)
 }
@@ -345,6 +372,34 @@ func (p *parser) url(key string) string {
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		p.reject(key, v, "an absolute URL such as https://paas.example.com")
 		return ""
+	}
+	return v
+}
+
+// stateBackupPrefixRe is a key prefix: segments of letters, digits, '.', '_'
+// and '-', joined by single slashes.
+var stateBackupPrefixRe = regexp.MustCompile(`^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$`)
+
+// cron parses a five-field cron expression; empty stays empty.
+func (p *parser) cron(key string) string {
+	v := p.getenv(key)
+	if v == "" {
+		return ""
+	}
+	if _, err := cron.Parse(v); err != nil {
+		p.reject(key, v, "a 5-field cron expression such as 15 2 * * *")
+	}
+	return v
+}
+
+// keyPrefix parses a slash-separated object-key prefix; empty stays empty.
+func (p *parser) keyPrefix(key string) string {
+	v := p.getenv(key)
+	if v == "" {
+		return ""
+	}
+	if !stateBackupPrefixRe.MatchString(v) {
+		p.reject(key, v, "letters, digits, '-', '_', '.' and '/', with no '/' at either end")
 	}
 	return v
 }

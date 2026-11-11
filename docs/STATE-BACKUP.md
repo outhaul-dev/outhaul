@@ -68,3 +68,45 @@ schedules, and the row goes away at the next start.
 
 The add form on Settings is unchanged: destinations added there are
 S3-compatible ones, with an access key and a secret.
+
+## Scheduled copies of Outhaul's own state
+
+A schedule copies `outhaul.db` — apps, domains, variables, accounts, SSO
+settings — to a destination of either kind. The copy is made while Outhaul
+runs and is consistent; it leaves out every sign-in session, protected-route
+session and one-time code, so everyone signs in again after a restore.
+
+It does **not** include `secret.key`, the `git/` repositories, app volumes,
+managed database data, `acme.json`, the local CA's key or the SSH host key.
+Each of those has its own story; the restore section says what comes back and
+what does not.
+
+| Variable | Values | Default |
+| --- | --- | --- |
+| `OUTHAUL_STATE_BACKUP_SCHEDULE` | a five-field cron expression in server-local time | unset: no state copies |
+| `OUTHAUL_STATE_BACKUP_DESTINATION` | the name of a destination on Settings | unset: the Azure row |
+| `OUTHAUL_STATE_BACKUP_KEEP` | a whole number; `0` keeps every copy | `30` |
+| `OUTHAUL_STATE_BACKUP_PREFIX` | a key prefix: letters, digits, `-`, `_`, `.` and `/`, with no `/` at either end | empty |
+
+The schedule needs a destination: either `OUTHAUL_STATE_BACKUP_DESTINATION`, or
+the Azure pair above. A destination name that matches nothing is a warning at
+startup and the failure reason of every run, not a refusal to start; add the
+destination in Settings and the next run finds it.
+
+`OUTHAUL_STATE_BACKUP_PREFIX` keeps hosts that share a container apart. A copy
+lands at `<prefix>/_outhaul-state/<stamp>.db.gz`, where the stamp is UTC in
+`20060102T150405Z` form. No app or database can be named `_outhaul-state`, so
+this directory cannot collide with a schedule's objects.
+
+Retention keeps the newest `OUTHAUL_STATE_BACKUP_KEEP` copies directly in that
+directory; `0` keeps them all.
+
+An install with no account is never copied, on schedule or by Run now: the
+installer starts an empty Outhaul on a rebuilt host before anyone restores, and
+that empty state must not become the newest copy. The skip is logged as
+`state backup: skipped: no account yet`.
+
+The copy runs through the same scheduler as database and volume backups, so an
+update in progress holds it back, and stopping Outhaul cancels it. The outcome
+is logged (`WARNING` on failure) and kept as the last state-backup outcome shown
+on Settings.

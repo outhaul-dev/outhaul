@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -97,6 +98,32 @@ func (s *Store) SyncAzureDestination(ctx context.Context, account, container str
 
 func azureEndpoint(account string) string {
 	return "https://" + account + ".blob.core.windows.net"
+}
+
+// stateBackupRunKey holds the last state-backup outcome in settings.
+const stateBackupRunKey = "state_backup_last"
+
+// StateBackupRun returns the most recent state-backup outcome. ok is false
+// when no run has been recorded.
+func (s *Store) StateBackupRun(ctx context.Context) (core.StateBackupRun, bool, error) {
+	v, ok, err := s.GetSetting(ctx, stateBackupRunKey)
+	if err != nil || !ok {
+		return core.StateBackupRun{}, false, err
+	}
+	var r core.StateBackupRun
+	if err := json.Unmarshal([]byte(v), &r); err != nil {
+		return core.StateBackupRun{}, false, fmt.Errorf("store: decode %s: %w", stateBackupRunKey, err)
+	}
+	return r, true, nil
+}
+
+// SetStateBackupRun records the most recent state-backup outcome.
+func (s *Store) SetStateBackupRun(ctx context.Context, r core.StateBackupRun) error {
+	b, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	return s.SetSetting(ctx, stateBackupRunKey, string(b))
 }
 
 func (s *Store) GetDestination(ctx context.Context, id int64) (core.Destination, error) {

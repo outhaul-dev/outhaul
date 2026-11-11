@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
 )
@@ -186,6 +187,26 @@ func TestSyncAzureDestination(t *testing.T) {
 	if len(dests) != 1 || dests[0].ID != keptID ||
 		dests[0].Endpoint != "https://examplebackups.blob.core.windows.net" || dests[0].Bucket != "outhaul" {
 		t.Fatalf("restored row = %+v", dests)
+	}
+}
+
+func TestStateBackupRunRoundTrips(t *testing.T) {
+	s := openWithBox(t)
+	ctx := context.Background()
+	if _, ok, err := s.StateBackupRun(ctx); ok || err != nil {
+		t.Fatalf("absent outcome = ok %v, err %v", ok, err)
+	}
+	at := time.Date(2026, 11, 11, 2, 15, 0, 0, time.UTC)
+	want := core.StateBackupRun{At: at, OK: true, Key: "p/_outhaul-state/x.db.gz", SizeBytes: 42}
+	if err := s.SetStateBackupRun(ctx, want); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.StateBackupRun(ctx)
+	if err != nil || !ok {
+		t.Fatalf("StateBackupRun = ok %v, err %v", ok, err)
+	}
+	if !got.At.Equal(want.At) || got.OK != want.OK || got.Key != want.Key || got.SizeBytes != want.SizeBytes || got.Reason != want.Reason {
+		t.Errorf("outcome = %+v, want %+v", got, want)
 	}
 }
 

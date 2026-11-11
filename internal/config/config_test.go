@@ -404,6 +404,83 @@ func TestAzureClientIDSetting(t *testing.T) {
 	}
 }
 
+func TestStateBackupSettings(t *testing.T) {
+	cases := []struct {
+		name     string
+		withPair bool
+		env      map[string]string
+		wantVar  string
+		wantKeep int
+	}{
+		{"azure pair", true, map[string]string{"OUTHAUL_STATE_BACKUP_SCHEDULE": "15 2 * * *"}, "", 30},
+		{"destination", false, map[string]string{
+			"OUTHAUL_STATE_BACKUP_SCHEDULE": "15 2 * * *", "OUTHAUL_STATE_BACKUP_DESTINATION": "minio",
+		}, "", 30},
+		{"schedule alone", false, map[string]string{"OUTHAUL_STATE_BACKUP_SCHEDULE": "15 2 * * *"}, "OUTHAUL_STATE_BACKUP_SCHEDULE", 30},
+		{"bad schedule", false, map[string]string{
+			"OUTHAUL_STATE_BACKUP_SCHEDULE": "15 2 * *", "OUTHAUL_STATE_BACKUP_DESTINATION": "minio",
+		}, "OUTHAUL_STATE_BACKUP_SCHEDULE", 30},
+		{"destination without schedule", false, map[string]string{"OUTHAUL_STATE_BACKUP_DESTINATION": "minio"}, "OUTHAUL_STATE_BACKUP_DESTINATION", 30},
+		{"prefix without schedule", false, map[string]string{"OUTHAUL_STATE_BACKUP_PREFIX": "prod/state"}, "OUTHAUL_STATE_BACKUP_PREFIX", 30},
+		{"keep without schedule", false, map[string]string{"OUTHAUL_STATE_BACKUP_KEEP": "7"}, "OUTHAUL_STATE_BACKUP_KEEP", 7},
+		{"prefix valid", false, map[string]string{
+			"OUTHAUL_STATE_BACKUP_SCHEDULE": "15 2 * * *", "OUTHAUL_STATE_BACKUP_DESTINATION": "minio",
+			"OUTHAUL_STATE_BACKUP_PREFIX": "prod/state",
+		}, "", 30},
+		{"prefix double slash", false, map[string]string{
+			"OUTHAUL_STATE_BACKUP_SCHEDULE": "15 2 * * *", "OUTHAUL_STATE_BACKUP_DESTINATION": "minio",
+			"OUTHAUL_STATE_BACKUP_PREFIX": "prod//state",
+		}, "OUTHAUL_STATE_BACKUP_PREFIX", 30},
+		{"prefix leading slash", false, map[string]string{
+			"OUTHAUL_STATE_BACKUP_SCHEDULE": "15 2 * * *", "OUTHAUL_STATE_BACKUP_DESTINATION": "minio",
+			"OUTHAUL_STATE_BACKUP_PREFIX": "/prod",
+		}, "OUTHAUL_STATE_BACKUP_PREFIX", 30},
+		{"prefix trailing slash", false, map[string]string{
+			"OUTHAUL_STATE_BACKUP_SCHEDULE": "15 2 * * *", "OUTHAUL_STATE_BACKUP_DESTINATION": "minio",
+			"OUTHAUL_STATE_BACKUP_PREFIX": "prod/",
+		}, "OUTHAUL_STATE_BACKUP_PREFIX", 30},
+		{"keep negative", false, map[string]string{
+			"OUTHAUL_STATE_BACKUP_SCHEDULE": "15 2 * * *", "OUTHAUL_STATE_BACKUP_DESTINATION": "minio",
+			"OUTHAUL_STATE_BACKUP_KEEP": "-1",
+		}, "OUTHAUL_STATE_BACKUP_KEEP", 30},
+		{"keep garbage", false, map[string]string{
+			"OUTHAUL_STATE_BACKUP_SCHEDULE": "15 2 * * *", "OUTHAUL_STATE_BACKUP_DESTINATION": "minio",
+			"OUTHAUL_STATE_BACKUP_KEEP": "many",
+		}, "OUTHAUL_STATE_BACKUP_KEEP", 30},
+		{"keep unset", false, map[string]string{
+			"OUTHAUL_STATE_BACKUP_SCHEDULE": "15 2 * * *", "OUTHAUL_STATE_BACKUP_DESTINATION": "minio",
+		}, "", 30},
+		{"keep zero", false, map[string]string{
+			"OUTHAUL_STATE_BACKUP_SCHEDULE": "15 2 * * *", "OUTHAUL_STATE_BACKUP_DESTINATION": "minio",
+			"OUTHAUL_STATE_BACKUP_KEEP": "0",
+		}, "", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{}
+			if tc.withPair {
+				env["OUTHAUL_BACKUP_AZURE_ACCOUNT"] = "examplebackups"
+				env["OUTHAUL_BACKUP_AZURE_CONTAINER"] = "outhaul"
+			}
+			for k, v := range tc.env {
+				env[k] = v
+			}
+			c := Load(func(k string) string { return env[k] })
+			err := c.Validate()
+			if tc.wantVar == "" {
+				if err != nil {
+					t.Fatalf("Validate = %v, want nil", err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.wantVar) {
+				t.Fatalf("Validate = %v, want an error naming %s", err, tc.wantVar)
+			}
+			if c.StateBackupKeep != tc.wantKeep {
+				t.Errorf("StateBackupKeep = %d, want %d", c.StateBackupKeep, tc.wantKeep)
+			}
+		})
+	}
+}
+
 func TestPruneBuildCacheDefaultsOn(t *testing.T) {
 	cfg := Load(func(string) string { return "" })
 	if !cfg.PruneBuildCache {

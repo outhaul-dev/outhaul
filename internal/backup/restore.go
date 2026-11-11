@@ -62,13 +62,13 @@ func (m *Manager) RestoreDir(ctx context.Context, b core.Backup) (string, error)
 		if err != nil {
 			return "", fmt.Errorf("load database: %w", err)
 		}
-		return joinKey(b.Prefix, db.Name), nil
+		return JoinKey(b.Prefix, db.Name), nil
 	case core.BackupTargetApp:
 		app, err := m.store.GetApp(ctx, b.TargetID)
 		if err != nil {
 			return "", fmt.Errorf("load app: %w", err)
 		}
-		return joinKey(b.Prefix, app.Name), nil
+		return JoinKey(b.Prefix, app.Name), nil
 	default:
 		return "", fmt.Errorf("unknown backup target kind %q", b.TargetKind)
 	}
