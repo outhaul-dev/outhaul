@@ -124,6 +124,24 @@ esac
 public_url=${GATETEST_PUBLIC_URL:-}
 route_host=${GATETEST_ROUTE_HOST:-}
 route_cookie=${GATETEST_ROUTE_COOKIE:-}
+header=${GATETEST_HEADER:-}
+http_off=${GATETEST_HTTP_OFF:-0}
+case $header in
+'' | *=*) ;;
+*)
+	echo "GATETEST_HEADER: want NAME=value" >&2
+	exit 2
+	;;
+esac
+case $http_off in
+0 | 1) ;;
+*)
+	echo "GATETEST_HTTP_OFF: want 1 or 0" >&2
+	exit 2
+	;;
+esac
+schemes="http https"
+if [ "$http_off" = 1 ]; then schemes=https; fi
 if [ "$mode" = outhaul ]; then
 	if [ -n "$route_host$route_cookie" ] && { [ -z "$route_host" ] || [ -z "$route_cookie" ]; }; then
 		echo "GATETEST_ROUTE_HOST and GATETEST_ROUTE_COOKIE are set together, or not at all" >&2
@@ -240,8 +258,11 @@ routes="gt-wiki,wiki.test,,,protected gt-hooks,wiki.test,/webhooks,,open gt-shop
 if [ "$mode" = outhaul ] && [ -n "$route_host" ]; then
 	routes="$routes gt-real,$route_host,,,protected"
 fi
+label_flags="-tls -port 8000"
+[ -n "$header" ] && label_flags="$label_flags -header $header"
+[ "$http_off" = 1 ] && label_flags="$label_flags -http-off"
 # shellcheck disable=SC2086 # one word per route
-"$work/gatelabels" -tls -port 8000 -admin-port "$admin_port" $routes >"$work/labels" || die "gatelabels"
+"$work/gatelabels" $label_flags -admin-port "$admin_port" $routes >"$work/labels" || die "gatelabels"
 printf 'outhaul.gatetest=true\n' >>"$work/labels"
 echo "labels on the backend:"
 sed 's/^/  /' "$work/labels"
@@ -253,7 +274,8 @@ if [ "$mode" = stub ]; then
 	# the reverse. "old" also carries probe routers on re.test, which show
 	# whether PathRegexp sees a path escaped or decoded, and an escaped NUL as
 	# %00 or as the byte.
-	"$work/gatelabels" -port 8000 'gt-mixnew-host,mix1.test,,,open' 'gt-mixnew-api,mix2.test,/api,,open' >"$work/labels-new" ||
+	# shellcheck disable=SC2086
+	"$work/gatelabels" $label_flags 'gt-mixnew-host,mix1.test,,,open' 'gt-mixnew-api,mix2.test,/api,,open' >"$work/labels-new" ||
 		die "gatelabels"
 	printf 'outhaul.gatetest=true\n' >>"$work/labels-new"
 	old_router() { # name rule
@@ -397,7 +419,7 @@ probe_outhaul() {
 }
 docker run -d --name "$app_c" --network "$net" --label-file "$work/labels" \
 	"$python_image" python -u -c "$echo_py" >/dev/null || die "start the echo backend"
-if [ "$mode" = stub ]; then
+if [ "$mode" = stub ] && [ "$http_off" = 0 ]; then
 	for b in old new; do
 		docker run -d --name "outhaul-gatetest-$b" --network "$net" --label-file "$work/labels-$b" -e "GATETEST_NAME=$b" \
 			"$python_image" python -u -c "$echo_py" >/dev/null || die "start the $b backend"
@@ -407,8 +429,12 @@ start_traefik() { # name, mapped|unmapped, extra Traefik arguments...
 	name=$1
 	if [ "$2" = mapped ]; then hosts="host.docker.internal:$gate_ip"; else hosts=; fi
 	shift 2
+	web_args=--entrypoints.web.address=:80
+	web_publish="-p 127.0.0.1::80"
+	if [ "$http_off" = 1 ]; then web_args=; web_publish=; fi
+	# shellcheck disable=SC2086
 	docker run -d --name "$name" --network "$net" ${hosts:+--add-host "$hosts"} \
-		-p 127.0.0.1::80 -p 127.0.0.1::443 -p 127.0.0.1::8080 \
+		$web_publish -p 127.0.0.1::443 -p 127.0.0.1::8080 \
 		-v "$docker_sock:/var/run/docker.sock:ro" \
 		-e "DOCKER_API_VERSION=$api_version" \
 		"$traefik_image" \
@@ -416,7 +442,7 @@ start_traefik() { # name, mapped|unmapped, extra Traefik arguments...
 		--providers.docker.exposedbydefault=true \
 		"--providers.docker.network=$net" \
 		'--providers.docker.constraints=Label(`outhaul.gatetest`,`true`)' \
-		--entrypoints.web.address=:80 \
+		$web_args \
 		--entrypoints.websecure.address=:443 \
 		--api.insecure=true \
 		--log.level=INFO --log.nocolor=true "$@" >/dev/null || die "start $name"
@@ -438,8 +464,13 @@ host_port() { # container, container port
 http_port=$(host_port "$traefik_c" 80)
 https_port=$(host_port "$traefik_c" 443)
 api_port=$(host_port "$traefik_c" 8080)
-[ -n "$http_port" ] && [ -n "$https_port" ] && [ -n "$api_port" ] || die "find Traefik's loopback ports"
-echo "Main Traefik $traefik_image on 127.0.0.1: web $http_port, websecure $https_port, api $api_port"
+if [ "$http_off" = 1 ]; then
+	[ -n "$https_port" ] && [ -n "$api_port" ] || die "find Traefik's loopback ports"
+	echo "Main Traefik $traefik_image on 127.0.0.1: websecure $https_port, api $api_port (no web entrypoint)"
+else
+	[ -n "$http_port" ] && [ -n "$https_port" ] && [ -n "$api_port" ] || die "find Traefik's loopback ports"
+	echo "Main Traefik $traefik_image on 127.0.0.1: web $http_port, websecure $https_port, api $api_port"
+fi
 if [ "$mode" = stub ]; then
 	trusting_http_port=$(host_port "$trusting_c" 80)
 	trusting_https_port=$(host_port "$trusting_c" 443)
@@ -447,12 +478,17 @@ if [ "$mode" = stub ]; then
 	redirect_https_port=$(host_port "$redirect_c" 443)
 	unmapped_http_port=$(host_port "$unmapped_c" 80)
 	unmapped_https_port=$(host_port "$unmapped_c" 443)
-	[ -n "$trusting_http_port" ] && [ -n "$trusting_https_port" ] &&
-		[ -n "$redirect_http_port" ] && [ -n "$redirect_https_port" ] &&
-		[ -n "$unmapped_http_port" ] && [ -n "$unmapped_https_port" ] || die "find Traefik's loopback ports"
-	echo "Trusting Traefik on 127.0.0.1: web $trusting_http_port, websecure $trusting_https_port"
-	echo "Redirecting Traefik on 127.0.0.1: web $redirect_http_port, websecure $redirect_https_port"
-	echo "Unmapped Traefik on 127.0.0.1: web $unmapped_http_port, websecure $unmapped_https_port"
+	if [ "$http_off" = 1 ]; then
+		[ -n "$trusting_https_port" ] || die "find Traefik's loopback ports"
+		echo "Trusting Traefik on 127.0.0.1: websecure $trusting_https_port (no web entrypoint)"
+	else
+		[ -n "$trusting_http_port" ] && [ -n "$trusting_https_port" ] &&
+			[ -n "$redirect_http_port" ] && [ -n "$redirect_https_port" ] &&
+			[ -n "$unmapped_http_port" ] && [ -n "$unmapped_https_port" ] || die "find Traefik's loopback ports"
+		echo "Trusting Traefik on 127.0.0.1: web $trusting_http_port, websecure $trusting_https_port"
+		echo "Redirecting Traefik on 127.0.0.1: web $redirect_http_port, websecure $redirect_https_port"
+		echo "Unmapped Traefik on 127.0.0.1: web $unmapped_http_port, websecure $unmapped_https_port"
+	fi
 	echo "Gate stub at $gate_ip, mapped as host.docker.internal in every Traefik but the unmapped one"
 else
 	echo "Outhaul at $outhaul_addr, mapped as host.docker.internal; the gate is http://host.docker.internal:$admin_port/gate/check"
@@ -477,6 +513,9 @@ req() {
 	esac
 	: >"$work/h"
 	: >"$work/b"
+	if [ -n "$header" ]; then
+		set -- "$@" -H "${header%%=*}: ${header#*=}"
+	fi
 	curl -sS -k --max-time 15 -o "$work/b" -D "$work/h" -w '%{http_code}' \
 		--connect-to "::127.0.0.1:$port" "$scheme://$host$path" "$@" 2>"$work/err" || true
 }
@@ -494,14 +533,14 @@ count_lines() { # how many lines of $1 equal $2
 	printf '%s\n' "$1" | grep -cFx -- "$2"
 }
 
-if [ "$mode" = stub ]; then vias="main trusting redirect unmapped"; else vias=main; fi
+if [ "$mode" = stub ] && [ "$http_off" = 1 ]; then vias="main trusting"; elif [ "$mode" = stub ]; then vias="main trusting redirect unmapped"; else vias=main; fi
 for via in $vias; do
-	if [ "$via" = redirect ]; then first=https; else first=http; fi
+	if [ "$via" = redirect ] || [ "$http_off" = 1 ]; then first=https; else first=http; fi
 	ready=no
 	i=0
 	while [ $i -lt 30 ]; do
 		if [ "$(req "$first" shop.test /)" = 200 ] && [ "$(req https shop.test /)" = 200 ] &&
-			{ [ "$mode" = outhaul ] || [ "$via" = redirect ] || [ "$(req http mix2.test /)" = 200 ]; }; then
+			{ [ "$mode" = outhaul ] || [ "$via" = redirect ] || [ "$http_off" = 1 ] || [ "$(req http mix2.test /)" = 200 ]; }; then
 			ready=yes
 			break
 		fi
@@ -511,6 +550,7 @@ for via in $vias; do
 	[ "$ready" = yes ] || die "the $via Traefik never served shop.test (the open row). Last status: $(req https shop.test /)"
 done
 via=main
+if [ "$http_off" = 1 ]; then info "GATETEST_HTTP_OFF=1: plain-HTTP checks are skipped"; fi
 echo
 
 # The Accept header a browser sends with a page load.
@@ -577,7 +617,7 @@ outhaul_checks() {
 	fi
 	echo
 
-	for scheme in http https; do
+	for scheme in $schemes; do
 		echo "== $scheme"
 		code=$(req "$scheme" wiki.test /page -H "$browser_accept")
 		check_sign_in "$code" "$scheme" wiki.test /page %2Fpage
@@ -690,7 +730,7 @@ outhaul_checks() {
 		fail "Outhaul's address refuses connections once it has stopped" "the test network gets: $got"
 		return
 	fi
-	for scheme in http https; do
+	for scheme in $schemes; do
 		for target in "wiki.test /page" "shop.test /admin/x"; do
 			set -- $target
 			code=$(req "$scheme" "$1" "$2" -H "$browser_accept")
@@ -757,23 +797,31 @@ api_has() {
 api_has middlewares/gt-shop-noident@docker \
 	"Traefik loads gt-shop-noident, emptying X-Outhaul-User and every other spelling of it" \
 	'"customRequestHeaders":{"X-Outhaul-User":"","X-Outhaul_User":"","X_Outhaul-User":"","X_Outhaul_User":""}' \
-	'"usedBy":["gt-shop-tls@docker","gt-shop@docker"]'
+	"$([ "$http_off" = 1 ] && echo '"usedBy":["gt-shop@docker"]' || echo '"usedBy":["gt-shop-tls@docker","gt-shop@docker"]')"
 api_has middlewares/gt-wiki-noalias@docker \
 	"Traefik loads gt-wiki-noalias, emptying every other spelling of X-Outhaul-User" \
 	'"customRequestHeaders":{"X-Outhaul_User":"","X_Outhaul-User":"","X_Outhaul_User":""}' \
-	'"usedBy":["gt-wiki-tls@docker","gt-wiki@docker"]'
+	"$([ "$http_off" = 1 ] && echo '"usedBy":["gt-wiki@docker"]' || echo '"usedBy":["gt-wiki-tls@docker","gt-wiki@docker"]')"
 if docker logs "$traefik_c" 2>&1 | grep -q 'trustForwardHeader is not configured'; then
 	fail "Traefik raises no trustForwardHeader warning for the gate" \
 		"$(docker logs "$traefik_c" 2>&1 | grep 'trustForwardHeader is not configured' | head -2)"
 else
 	pass "Traefik raises no trustForwardHeader warning for the gate (it is set to false)"
 fi
-if grep -q '^traefik\.http\.routers\.gt-admin-tls\.middlewares=gt-admin-gate,' "$work/labels"; then
+if [ "$http_off" = 1 ]; then
+	if grep -q '^traefik\.http\.routers\.gt-admin\.middlewares=gt-admin-gate,' "$work/labels"; then
+		pass "gt-admin (protected, its own TLS flag off) has its HTTPS-only router, gated"
+	else
+		fail "gt-admin (protected, its own TLS flag off) has its HTTPS-only router, gated" "$(grep gt-admin "$work/labels")"
+	fi
+elif grep -q '^traefik\.http\.routers\.gt-admin-tls\.middlewares=gt-admin-gate,' "$work/labels"; then
 	pass "gt-admin (protected, its own TLS flag off) has an HTTPS router, gated"
 else
 	fail "gt-admin (protected, its own TLS flag off) has an HTTPS router, gated" "$(grep gt-admin-tls "$work/labels")"
 fi
-for r in gt-wiki gt-wiki-tls gt-hooks gt-hooks-tls gt-shop gt-shop-tls gt-admin gt-admin-tls; do
+routers="gt-wiki gt-hooks gt-shop gt-admin"
+if [ "$http_off" = 0 ]; then routers="$routers gt-wiki-tls gt-hooks-tls gt-shop-tls gt-admin-tls"; fi
+for r in $routers; do
 	info=$(api "routers/$r@docker")
 	case $info in
 	*'"status":"enabled"'*) pass "router $r is enabled" ;;
@@ -786,11 +834,14 @@ case $info in
 	pass "gt-admin runs the gate, then the alias strip, then the path strip" ;;
 *) fail "gt-admin runs the gate, then the alias strip, then the path strip" "API: $info" ;;
 esac
-compose_out=$("$work/gatelabels" -compose -tls -port 8000 'gt,wiki.test,,,protected' 'gt,wiki.test,/webhooks,,open' \
+# shellcheck disable=SC2086
+compose_out=$("$work/gatelabels" -compose $label_flags 'gt,wiki.test,,,protected' 'gt,wiki.test,/webhooks,,open' \
 	'gt,wiki.test,/admin,,protected,notls')
 printf 'services:\n  web:\n    image: %s\n' "$python_image" >"$work/compose.yml"
 printf '%s\n' "$compose_out" >"$work/override.yml"
 merged=$(docker compose -p outhaul-gatetest-compose -f "$work/compose.yml" -f "$work/override.yml" config 2>&1)
+d3_want='traefik.http.routers.outhaul-gt-d3-tls.middlewares: outhaul-gt-d3-gate,outhaul-gt-d3-noalias'
+if [ "$http_off" = 1 ]; then d3_want='traefik.http.routers.outhaul-gt-d3.middlewares: outhaul-gt-d3-gate,outhaul-gt-d3-noalias'; fi
 for want in \
 	'traefik.http.middlewares.outhaul-gt-d2-noident.headers.customrequestheaders.X-Outhaul-User: ""' \
 	'traefik.http.middlewares.outhaul-gt-d2-noident.headers.customrequestheaders.X_Outhaul_User: ""' \
@@ -802,7 +853,7 @@ for want in \
 	'traefik.http.middlewares.outhaul-gt-d1-gate.forwardauth.trustforwardheader: "false"' \
 	'traefik.http.middlewares.outhaul-gt-d1-noalias.headers.customresponseheaders.CDN-Cache-Control: no-store' \
 	'traefik.http.middlewares.outhaul-gt-d1-noalias.headers.customresponseheaders.Cloudflare-CDN-Cache-Control: no-store' \
-	'traefik.http.routers.outhaul-gt-d3-tls.middlewares: outhaul-gt-d3-gate,outhaul-gt-d3-noalias'; do
+	"$d3_want"; do
 	if printf '%s\n' "$merged" | grep -qF -- "$want"; then
 		pass "docker compose keeps $want"
 	else
@@ -814,8 +865,8 @@ done
 # single-container app's labels do: the rule's backslashes survive YAML, and
 # its $ survives Compose's interpolation.
 if docker compose -p outhaul-gatetest-compose -f "$work/compose.yml" -f "$work/override.yml" create >"$work/err" 2>&1; then
-	for pair in 'outhaul-gt-d1 gt-wiki' 'outhaul-gt-d1-tls gt-wiki-tls' 'outhaul-gt-d2 gt-hooks' 'outhaul-gt-d2-tls gt-hooks-tls'; do
-		set -- $pair
+	check_compose_pair() {
+		set -- $1
 		for key in rule priority; do
 			want=$(sed -n "s/^traefik\\.http\\.routers\\.$2\\.$key=//p" "$work/labels")
 			got=$(docker inspect --format "{{index .Config.Labels \"traefik.http.routers.$1.$key\"}}" "$compose_c")
@@ -825,7 +876,12 @@ if docker compose -p outhaul-gatetest-compose -f "$work/compose.yml" -f "$work/o
 				fail "the Compose container's $1 $key is exactly the single-container label" "got:  $got" "want: $want"
 			fi
 		done
-	done
+	}
+	if [ "$http_off" = 1 ]; then
+		for pair in 'outhaul-gt-d1 gt-wiki' 'outhaul-gt-d2 gt-hooks'; do check_compose_pair "$pair"; done
+	else
+		for pair in 'outhaul-gt-d1 gt-wiki' 'outhaul-gt-d1-tls gt-wiki-tls' 'outhaul-gt-d2 gt-hooks' 'outhaul-gt-d2-tls gt-hooks-tls'; do check_compose_pair "$pair"; done
+	fi
 else
 	fail "docker compose creates a container from the override" "$(cat "$work/err")"
 fi
@@ -834,8 +890,8 @@ docker network rm outhaul-gatetest-compose_default >/dev/null 2>&1
 echo
 
 echo "== which host.docker.internal answers for the gate"
-for target in "main http" "main https" "trusting http" "redirect https"; do
-	set -- $target
+check_mapping() {
+	set -- $1
 	via=$1
 	tid=$((tid + 1))
 	code=$(req "$2" wiki.test /page -H 'Accept: text/html' -H "X-Gatetest-Id: $tid")
@@ -846,22 +902,32 @@ for target in "main http" "main https" "trusting http" "redirect https"; do
 		fail "$2 via the $1 Traefik: want the mapped stub's 302, and no call to the alias" \
 			"status=$code" "gate saw: $(gate_lines "$tid")" "alias saw: $(alias_lines "$tid")" "$(cat "$work/b")"
 	fi
-done
-via=unmapped
-tid=$((tid + 1))
-code=$(req http wiki.test /page -H 'Accept: text/html' -H "X-Gatetest-Id: $tid")
-body=$(cat "$work/b")
-if [ "$code" = 200 ] && [ "$(count_lines "$body" 'h x-outhaul-user: eve')" = 1 ] &&
-	[ -n "$(alias_lines "$tid")" ] && [ -z "$(gate_lines "$tid")" ]; then
-	pass "control: with no /etc/hosts entry, the alias answers for host.docker.internal (its 200 and 'eve' reach the backend), so the checks above tell the two apart"
+}
+if [ "$http_off" = 1 ]; then
+	check_mapping "main https"
 else
-	fail "control: with no /etc/hosts entry, want the alias's 200 and 'eve' at the backend" \
-		"status=$code" "gate saw: $(gate_lines "$tid")" "alias saw: $(alias_lines "$tid")" "$body"
+	check_mapping "main http"
+	check_mapping "main https"
+	check_mapping "trusting http"
+	check_mapping "redirect https"
+fi
+if [ "$http_off" = 0 ]; then
+	via=unmapped
+	tid=$((tid + 1))
+	code=$(req http wiki.test /page -H 'Accept: text/html' -H "X-Gatetest-Id: $tid")
+	body=$(cat "$work/b")
+	if [ "$code" = 200 ] && [ "$(count_lines "$body" 'h x-outhaul-user: eve')" = 1 ] &&
+		[ -n "$(alias_lines "$tid")" ] && [ -z "$(gate_lines "$tid")" ]; then
+		pass "control: with no /etc/hosts entry, the alias answers for host.docker.internal (its 200 and 'eve' reach the backend), so the checks above tell the two apart"
+	else
+		fail "control: with no /etc/hosts entry, want the alias's 200 and 'eve' at the backend" \
+			"status=$code" "gate saw: $(gate_lines "$tid")" "alias saw: $(alias_lines "$tid")" "$body"
+	fi
 fi
 via=main
 echo
 
-for scheme in http https; do
+for scheme in $schemes; do
 	echo "== $scheme"
 
 	# A protected path under an open host: the stub's 302 and Set-Cookie reach the client.
@@ -1080,7 +1146,7 @@ probe_said() {
 		printf 'status %s, gate asked: %s, the backend got nothing' "$code" "$gated"
 	fi
 }
-for scheme in http https; do
+for scheme in $schemes; do
 	echo "== $scheme, paths as written"
 	# Every router refuses a path with a ".." segment in any spelling, so none
 	# reaches the app through a row's router: Traefik's own clean-up resolves
@@ -1168,6 +1234,9 @@ for scheme in http https; do
 	echo
 done
 
+if [ "$http_off" = 1 ]; then
+	info "GATETEST_HTTP_OFF=1: the PathRegexp probes are plain HTTP, so they are skipped"
+else
 echo "== what PathRegexp sees"
 probe http re.test /a%2fb
 case $(sed -n 's/^h x-gatetest-router: //p' "$work/b") in
@@ -1200,6 +1269,7 @@ for p in /a%00b /a%00b%2fc; do
 	esac
 done
 echo
+fi
 
 # A row's router names its priority: the length of its rule without the
 # traversal term, which is the priority Traefik gave a container deployed
@@ -1207,20 +1277,23 @@ echo
 # the host; on mix2.test the reverse. The path row wins for its prefix either
 # way, as before.
 echo "== priority, between containers deployed before and after the traversal term"
-for target in 'mix1.test /api/x old' 'mix1.test /other new' 'mix2.test /api/x new' 'mix2.test /other old'; do
-	set -- $target
-	probe http "$1" "$2"
-	if [ "$code" = 200 ] && [ "$backend" = "$3" ] && [ "$seen" = "$2" ]; then
-		pass "http $1$2: the $3 container answers ($(probe_said))"
-	else
-		fail "http $1$2: want the $3 container" "$(probe_said)"
-	fi
-done
+if [ "$http_off" = 1 ]; then
+	info "GATETEST_HTTP_OFF=1: the priority probes are plain HTTP, so they are skipped"
+else
+	for target in 'mix1.test /api/x old' 'mix1.test /other new' 'mix2.test /api/x new' 'mix2.test /other old'; do
+		set -- $target
+		probe http "$1" "$2"
+		if [ "$code" = 200 ] && [ "$backend" = "$3" ] && [ "$seen" = "$2" ]; then
+			pass "http $1$2: the $3 container answers ($(probe_said))"
+		else
+			fail "http $1$2: want the $3 container" "$(probe_said)"
+		fi
+	done
+fi
 # api_priority ROUTER: the priority Traefik's API gives it
 api_priority() { api "routers/$1" | sed -n 's/.*"priority":\([0-9-][0-9]*\).*/\1/p'; }
-for target in 'gt-wiki wiki.test -' 'gt-wiki-tls wiki.test -' 'gt-hooks wiki.test /webhooks' 'gt-hooks-tls wiki.test /webhooks' \
-	'gt-admin shop.test /admin' 'gt-admin-tls shop.test /admin' 'gt-mixold-api mix1.test /api' 'gt-mixold-host mix2.test -'; do
-	set -- $target
+check_priority() {
+	set -- $1
 	rule="Host(\`$2\`)"
 	if [ "$3" != - ]; then rule="$rule && PathPrefix(\`$3\`)"; fi
 	got=$(api_priority "$1@docker")
@@ -1229,25 +1302,37 @@ for target in 'gt-wiki wiki.test -' 'gt-wiki-tls wiki.test -' 'gt-hooks wiki.tes
 	else
 		fail "router $1 has priority ${#rule}, the length of $rule" "API: $(api "routers/$1@docker")"
 	fi
-done
+}
+if [ "$http_off" = 1 ]; then
+	for target in 'gt-wiki wiki.test -' 'gt-hooks wiki.test /webhooks' 'gt-admin shop.test /admin'; do check_priority "$target"; done
+else
+	for target in 'gt-wiki wiki.test -' 'gt-wiki-tls wiki.test -' 'gt-hooks wiki.test /webhooks' 'gt-hooks-tls wiki.test /webhooks' 'gt-admin shop.test /admin' 'gt-admin-tls shop.test /admin' 'gt-mixold-api mix1.test /api' 'gt-mixold-host mix2.test -'; do check_priority "$target"; done
+fi
 # The routers outside the rows: the redirect Traefik's entrypoint redirect and
 # what the API lists of its own.
-redirect_api_port=$(host_port "$redirect_c" 8080)
-redirect_api() { curl -sS --max-time 5 "http://127.0.0.1:$redirect_api_port/api/http/$1" 2>/dev/null; }
-internal=$(redirect_api routers | grep -o '"name":"[^"]*@internal"' | sed 's/^"name":"//; s/"$//')
-if [ -z "$internal" ]; then
-	info "the redirect Traefik's API lists no internal routers"
+if [ "$http_off" = 1 ]; then
+	info "GATETEST_HTTP_OFF=1: the redirect Traefik's internal routers are not checked"
+else
+	redirect_api_port=$(host_port "$redirect_c" 8080)
+	redirect_api() { curl -sS --max-time 5 "http://127.0.0.1:$redirect_api_port/api/http/$1" 2>/dev/null; }
+	internal=$(redirect_api routers | grep -o '"name":"[^"]*@internal"' | sed 's/^"name":"//; s/"$//')
+	if [ -z "$internal" ]; then
+		info "the redirect Traefik's API lists no internal routers"
+	fi
+	for name in $internal; do
+		obj=$(redirect_api "routers/$name")
+		prio=$(printf '%s' "$obj" | sed -n 's/.*"priority":\([0-9-]*\).*/\1/p')
+		info "the redirect Traefik's internal router $name has priority ${prio:-unset}"
+	done
 fi
-for name in $internal; do
-	obj=$(redirect_api "routers/$name")
-	prio=$(printf '%s' "$obj" | sed -n 's/.*"priority":\([0-9-]*\).*/\1/p')
-	info "the redirect Traefik's internal router $name has priority ${prio:-unset}"
-done
 echo
 
 # Under TLS, Outhaul's web entrypoint redirects every request to websecure, so
 # only HTTPS routers serve. The protected /admin row's own TLS flag is off: it
 # still has its HTTPS router, or shop.test's open one would answer /admin.
+if [ "$http_off" = 1 ]; then
+	info "GATETEST_HTTP_OFF=1: the web-to-websecure redirect checks are skipped"
+else
 echo "== HTTPS behind the web-to-websecure redirect"
 via=redirect
 code=$(req https shop.test /)
@@ -1289,6 +1374,8 @@ if [ "$code" = 200 ] && [ "$(count_lines "$body" 'h x-outhaul-user: dana')" = 1 
 else
 	fail "https shop.test/admin/x, gate says 200: want dana only, on path /x" "status=$code" "$body"
 fi
+
+fi
 via=main
 echo
 
@@ -1297,12 +1384,14 @@ echo
 # a freed address waits for ARP to give up.)
 echo "== the gate stopped"
 docker kill -s USR1 "$gate_c" >/dev/null || die "stop the gate stub"
+gate_scheme=https
+if [ "$http_off" = 0 ]; then gate_scheme=http; fi
 i=0
-while [ $i -lt 10 ] && [ "$(req http wiki.test /page -H 'Cookie: gatetest=ok')" != 500 ]; do
+while [ $i -lt 10 ] && [ "$(req "$gate_scheme" wiki.test /page -H 'Cookie: gatetest=ok')" != 500 ]; do
 	sleep 1
 	i=$((i + 1))
 done
-for scheme in http https; do
+for scheme in $schemes; do
 	for target in "wiki.test /page" "shop.test /admin/x"; do
 		set -- $target
 		code=$(req "$scheme" "$1" "$2" -H 'Cookie: gatetest=ok' -H 'Accept: text/html')

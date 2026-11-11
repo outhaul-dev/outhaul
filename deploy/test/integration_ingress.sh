@@ -43,6 +43,9 @@ chall_image=${INGTEST_CHALLTESTSRV_IMAGE:-ghcr.io/letsencrypt/pebble-challtestsr
 python_image=python:3-slim
 domain=shared.demo.example.com
 wildcard="*.$domain"
+header_name=X-Probe-Id
+header_value=abc-123
+send_header=1
 outside=other.example.org
 docker_sock=${INGTEST_DOCKER_SOCK:-/var/run/docker.sock}
 
@@ -64,7 +67,7 @@ cleanup() {
 	if [ -n "$dns_pid" ]; then kill "$dns_pid" >/dev/null 2>&1 || true; fi
 	docker rm -f outhaul-ingtest-traefik outhaul-ingtest-traefik-http-off outhaul-ingtest-traefik-nowild \
 		outhaul-ingtest-app1 outhaul-ingtest-app2 outhaul-ingtest-app3 outhaul-ingtest-outside \
-		outhaul-ingtest-app-off outhaul-ingtest-app-nowild \
+		outhaul-ingtest-app-off outhaul-ingtest-app-nowild outhaul-ingtest-nostamp outhaul-ingtest-oldstamp \
 		outhaul-ingtest-pebble outhaul-ingtest-chall >/dev/null 2>&1 || true
 	docker network rm "$net" >/dev/null 2>&1 || true
 	rm -rf "$work"
@@ -165,7 +168,7 @@ EOF
 start_backend() {
 	name=$1 host=$2
 	shift 2
-	"$work/gatelabels" -tls -resolver le -wildcard "$wildcard" -port 8000 "$@" \
+	"$work/gatelabels" -tls -resolver le -wildcard "$wildcard" -port 8000 -header "$header_name=$header_value" "$@" \
 		"$name,$host,,,open" >"$work/labels-$name" || die "gatelabels for $name"
 	printf 'traefik.enable=true\nouthaul.ingtest=true\n' >>"$work/labels-$name"
 	docker run -d --name "outhaul-ingtest-$name" --network "$net" --label-file "$work/labels-$name" \
@@ -196,7 +199,6 @@ start_traefik() {
 		"$traefik_image" \
 		$(cat "$work/cmd-$name") \
 		"--providers.docker.network=$net" \
-		'--providers.docker.constraints=Label(`outhaul.ingtest`,`true`)' \
 		--api.insecure=true \
 		--certificatesresolvers.le.acme.caserver=https://pebble:14000/dir \
 		--certificatesresolvers.le.acme.dnschallenge.resolvers=challtestsrv:8053 \
@@ -214,6 +216,7 @@ request() { # SCHEME HOST PATH [curl args...] -> status code; body in $work/b
 	https) port=$https_port ;;
 	*) port=$http_port ;;
 	esac
+	if [ "$send_header" = 1 ]; then set -- "$@" -H "$header_name: $header_value"; fi
 	curl -sS -k --max-time 20 -o "$work/b" -w '%{http_code}' \
 		--connect-to "::127.0.0.1:$port" "$scheme://$host$path" "$@" 2>"$work/err" || true
 }
@@ -262,12 +265,14 @@ san() { # HOST -> the certificate a request for HOST is served with
 	openssl s_client -connect "127.0.0.1:$https_port" -servername "$1" </dev/null 2>/dev/null |
 		openssl x509 -noout -ext subjectAltName 2>/dev/null | tr -d ' \n'
 }
+api() { curl -sS --max-time 5 "http://127.0.0.1:$api_port/api/http/$1" 2>/dev/null; }
 
 echo "== the wildcard is issued once"
-start_traefik outhaul-ingtest-traefik "$work/acme" -wildcard "$wildcard"
+start_traefik outhaul-ingtest-traefik "$work/acme" -wildcard "$wildcard" -header "$header_name=$header_value"
 http_port=$(host_port outhaul-ingtest-traefik 80)
 https_port=$(host_port outhaul-ingtest-traefik 443)
-[ -n "$http_port" ] && [ -n "$https_port" ] || die "find Traefik's loopback ports"
+api_port=$(host_port outhaul-ingtest-traefik 8080)
+[ -n "$http_port" ] && [ -n "$https_port" ] && [ -n "$api_port" ] || die "find Traefik's loopback ports"
 start_backend app1 "app1.$domain"
 wait_for https "app1.$domain" 60 || die "app1 under the wildcard never answered 200; Traefik log: $(docker logs outhaul-ingtest-traefik 2>&1 | tail -20)"
 wait_for_cert "$work/acme/acme.json" 1 60 || die "the wildcard was never issued"
@@ -311,10 +316,60 @@ case $got in
 esac
 echo
 
+echo "== the required header"
+code=$(request https "app1.$domain" /)
+[ "$code" = 200 ] && pass "the right header routes to app1" || fail "the right header routes to app1" "status=$code" "$(cat "$work/b")"
+send_header=0
+code=$(request https "app1.$domain" /)
+[ "$code" = 404 ] && pass "a missing header gets 404" || fail "a missing header gets 404" "status=$code"
+code=$(request https "app1.$domain" / -H "$header_name: def-456")
+[ "$code" = 404 ] && pass "a wrong header value gets 404" || fail "a wrong header value gets 404" "status=$code"
+code=$(request https "app1.$domain" / -H "X-Other: $header_value")
+[ "$code" = 404 ] && pass "the right value under another header name gets 404" || fail "the right value under another header name gets 404" "status=$code"
+code=$(request https "app1.$domain" / -H "x-probe-id: $header_value")
+[ "$code" = 200 ] && pass "the header's name matches in any case" || fail "the header's name matches in any case" "status=$code"
+send_header=1
+
+# A container labelled without the header carries no stamp, so Traefik ignores
+# it; so does one labelled under an older value.
+"$work/gatelabels" -tls -resolver le -wildcard "$wildcard" -port 8000 "nostamp,nostamp.$domain,,,open" >"$work/labels-nostamp" || die "gatelabels for nostamp"
+printf 'traefik.enable=true\nouthaul.ingtest=true\n' >>"$work/labels-nostamp"
+docker run -d --name outhaul-ingtest-nostamp --network "$net" --label-file "$work/labels-nostamp" \
+	-e INGTEST_NAME=nostamp "$python_image" python -u -c "$echo_py" >/dev/null || die "start nostamp"
+start_backend oldstamp "oldstamp.$domain" -header "X-Probe-Id=old-999"
+sleep 2
+code=$(request https "nostamp.$domain" /)
+[ "$code" = 404 ] && pass "a container labelled without the header has no route (404)" || fail "a container labelled without the header has no route" "status=$code"
+code=$(request https "oldstamp.$domain" /)
+[ "$code" = 404 ] && pass "a container labelled under an older header value has no route (404)" || fail "a container labelled under an older header value has no route" "status=$code"
+for router in nostamp oldstamp; do
+	case $(api "routers/$router@docker") in
+	*'"status":"enabled"'*) fail "Traefik lists no router for $router" "API: $(api "routers/$router@docker")" ;;
+	*) pass "Traefik lists no router for $router" ;;
+	esac
+done
+
+# The header does not buy a ".." path a route. Traefik's own clean-up resolves
+# the plain forms before any rule is read, so those reach the row they name
+# (the same clean-up integration_gate.sh checks); the spellings that reach the
+# router still escaped get 404.
+for p in '/x/..%2f' '/x/..;/' '/x/..%00'; do
+	code=$(request https "app1.$domain" "$p" --path-as-is)
+	[ "$code" = 404 ] && pass "app1$p with the right header still gets 404" || fail "app1$p with the right header still gets 404" "status=$code" "$(cat "$work/b")"
+done
+code=$(request https "app1.$domain" '/x/../' --path-as-is)
+seen=$(sed -n 's/^path: //p' "$work/b" | head -1)
+if [ "$code" = 404 ] || { [ "$code" = 200 ] && [ "$seen" = / ]; }; then
+	pass "app1/x/../ is cleaned to / before a rule is read (status $code, path '${seen:-none}')"
+else
+	fail "app1/x/../ is either refused or cleaned to /" "status=$code path='$seen'"
+fi
+echo
+
 echo "== HTTPS only publishes no port 80"
 docker rm -f outhaul-ingtest-traefik outhaul-ingtest-app1 outhaul-ingtest-app2 outhaul-ingtest-app3 outhaul-ingtest-outside >/dev/null 2>&1
 start_backend app-off "app1.$domain" -http-off
-start_traefik outhaul-ingtest-traefik-http-off "$work/acme-http-off" -http-off -wildcard "$wildcard"
+start_traefik outhaul-ingtest-traefik-http-off "$work/acme-http-off" -http-off -wildcard "$wildcard" -header "$header_name=$header_value"
 http_off_c=outhaul-ingtest-traefik-http-off
 https_port=$(host_port "$http_off_c" 443)
 [ -n "$https_port" ] || die "find the HTTPS-only Traefik's HTTPS port"
@@ -322,6 +377,12 @@ https_port=$(host_port "$http_off_c" 443)
 	fail "the HTTPS-only Traefik publishes no port 80" "docker port: $(docker port "$http_off_c")"
 wait_for https "app1.$domain" 60 || die "the HTTPS-only Traefik never served app1"
 wait_for_cert "$work/acme-http-off/acme.json" 1 60 || die "the HTTPS-only Traefik never obtained a certificate"
+code=$(request https "app1.$domain" /)
+[ "$code" = 200 ] && pass "with HTTP off, the right header routes to app1" || fail "with HTTP off, the right header routes to app1" "status=$code"
+send_header=0
+code=$(request https "app1.$domain" /)
+[ "$code" = 404 ] && pass "with HTTP off, a missing header gets 404" || fail "with HTTP off, a missing header gets 404" "status=$code"
+send_header=1
 if docker logs "$http_off_c" 2>&1 | grep -q "EntryPoint doesn't exist"; then
 	fail "the HTTPS-only Traefik logs no 'EntryPoint doesn't exist'" "$(docker logs "$http_off_c" 2>&1 | grep "EntryPoint doesn't exist" | head -2)"
 else
@@ -332,7 +393,7 @@ echo
 
 echo "== turning the wildcard on after a host has its own certificate"
 start_backend app-nowild "app1.$domain" -wildcard ""
-start_traefik outhaul-ingtest-traefik-nowild "$work/acme-nowild"
+start_traefik outhaul-ingtest-traefik-nowild "$work/acme-nowild" -header "$header_name=$header_value"
 https_port=$(host_port outhaul-ingtest-traefik-nowild 443)
 [ -n "$https_port" ] || die "find the no-wildcard Traefik's HTTPS port"
 wait_for https "app1.$domain" 60 || die "the no-wildcard Traefik never served app1"
@@ -341,7 +402,7 @@ sleep 2
 before=$(san "app1.$domain")
 docker rm -f outhaul-ingtest-traefik-nowild outhaul-ingtest-app-nowild >/dev/null 2>&1
 start_backend app-nowild "app1.$domain"
-start_traefik outhaul-ingtest-traefik-nowild "$work/acme-nowild" -wildcard "$wildcard"
+start_traefik outhaul-ingtest-traefik-nowild "$work/acme-nowild" -wildcard "$wildcard" -header "$header_name=$header_value"
 https_port=$(host_port outhaul-ingtest-traefik-nowild 443)
 [ -n "$https_port" ] || die "find the wildcard Traefik's HTTPS port"
 wait_for https "app1.$domain" 60 || die "the wildcard Traefik never served app1"
@@ -349,6 +410,24 @@ after=$(san "app1.$domain")
 info "with its own certificate first: $before"
 info "after restarting with the wildcard on the same acme.json: $after"
 docker rm -f outhaul-ingtest-traefik-nowild >/dev/null 2>&1
+echo
+
+echo "== integration_gate.sh with the header"
+if sh "$root/deploy/test/integration_gate.sh" >"$work/gate.log" 2>&1; then
+	pass "integration_gate.sh passes without a header"
+else
+	fail "integration_gate.sh passes without a header" "$(tail -5 "$work/gate.log")"
+fi
+if GATETEST_HEADER="$header_name=$header_value" sh "$root/deploy/test/integration_gate.sh" >"$work/gate-header.log" 2>&1; then
+	pass "integration_gate.sh passes with the header"
+else
+	fail "integration_gate.sh passes with the header" "$(tail -5 "$work/gate-header.log")"
+fi
+if GATETEST_HEADER="$header_name=$header_value" GATETEST_HTTP_OFF=1 sh "$root/deploy/test/integration_gate.sh" >"$work/gate-off.log" 2>&1; then
+	pass "integration_gate.sh passes with the header and HTTP off"
+else
+	fail "integration_gate.sh passes with the header and HTTP off" "$(tail -5 "$work/gate-off.log")"
+fi
 echo
 
 finish

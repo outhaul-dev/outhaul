@@ -111,6 +111,9 @@ func main() {
 	}
 
 	labels := map[string]string{}
+	if stamp := rt.Stamp(); stamp != "" {
+		labels[traefik.IngressLabel] = stamp
+	}
 	for _, r := range routes {
 		for k, v := range traefik.RouteLabels(r.router, r.domain(), *port, rt) {
 			labels[k] = v
