@@ -237,8 +237,11 @@ commit, the ref and the tag's name.
 
 A tag can move. A run that names a tag installs whatever that tag points at when
 it runs, so a moved tag changes what a re-run installs. **For production, pin a
-full 40-character commit.** A commit cannot move, and `--ref` with a commit
-needs no network when that commit is already installed.
+full 40-character commit.** A commit cannot move, and a `--ref` naming a commit
+needs no network to build when that commit is already installed. A
+`letsencrypt` run is the exception: it still fetches this server's public IP and
+resolves the name, as described above. `tunnel`, `local`, `local-ca` and
+`proxy` need no network for a no-op run.
 
 The repository is `OUTHAUL_REPO`, by default the upstream repository. The
 installer itself should be fetched at the commit it installs, so the script root
