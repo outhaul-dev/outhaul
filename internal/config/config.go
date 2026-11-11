@@ -47,6 +47,7 @@ type Config struct {
 	HealthTimeout      time.Duration // deploy health-check deadline
 	ImageKeep          int           // built images kept per app; 0 disables pruning
 	PruneBuildCache    bool          // nightly prune of the daemon-wide build cache; off for a shared host
+	AdminDirect        bool          // the admin UI listens on every interface (default); false: loopback + the Docker gateway
 
 	PublicURL string // externally reachable base URL of the admin UI (for GitHub callbacks/webhooks); empty disables GitHub App setup
 	ServerIP  string // public IP used in generated sslip.io template domains; empty means auto-detect
@@ -85,6 +86,7 @@ func Load(getenv Getenv) Config {
 		HealthTimeout:      p.duration("OUTHAUL_HEALTH_TIMEOUT", 60*time.Second),
 		ImageKeep:          p.count("OUTHAUL_IMAGE_KEEP", 5),
 		PruneBuildCache:    p.boolDefault("OUTHAUL_PRUNE_BUILD_CACHE", true),
+		AdminDirect:        p.boolDefault("OUTHAUL_ADMIN_DIRECT", true),
 
 		PublicURL: p.url("OUTHAUL_PUBLIC_URL"),
 		ServerIP:  p.ip("OUTHAUL_SERVER_IP"),
@@ -172,6 +174,14 @@ func (c Config) Validate() error {
 	}
 	if c.RequireHeaderValue != "" && c.RequireHeaderName == "" {
 		errs = append(errs, errors.New("OUTHAUL_REQUIRE_HEADER_VALUE needs OUTHAUL_REQUIRE_HEADER_NAME"))
+	}
+	if !c.AdminDirect {
+		if !c.PublicURLSet() {
+			errs = append(errs, errors.New("OUTHAUL_ADMIN_DIRECT=off needs OUTHAUL_PUBLIC_URL, so the admin UI can be reached through Traefik"))
+		}
+		if host, _, err := net.SplitHostPort(c.ListenAddr); err == nil && host != "" {
+			errs = append(errs, errors.New("OUTHAUL_ADMIN_DIRECT=off needs OUTHAUL_LISTEN_ADDR to give a port but not a host, such as :8080"))
+		}
 	}
 	if c.HTTPOff {
 		switch {

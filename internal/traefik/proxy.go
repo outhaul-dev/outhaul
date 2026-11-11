@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -86,6 +85,11 @@ type ProxyConfig struct {
 	// required header) join it. ACME, LocalCA and TunnelMode stay ProxyConfig's
 	// own fields.
 	Routing Routing
+
+	// GateHost is the address host.docker.internal maps to; "" uses Docker's
+	// host-gateway. The admin port is closed to every other address with
+	// OUTHAUL_ADMIN_DIRECT=off, so Traefik must reach this one.
+	GateHost string
 }
 
 // adminRoutingEnabled reports whether the admin UI should be published
@@ -186,13 +190,27 @@ func ProxyMapsGateHost(ctx context.Context, dc docker.Client, pc ProxyConfig) (m
 	pc.ProtectedRoutes = true
 	on := proxySpec(pc)
 	if have == on.Labels["outhaul.config-hash"] {
-		return slices.Contains(on.ExtraHosts, "host.docker.internal:host-gateway"), true
+		return mapsGateHost(on.ExtraHosts, pc.GateHost), true
 	}
 	pc.ProtectedRoutes = false
 	if have == proxySpec(pc).Labels["outhaul.config-hash"] {
 		return false, true
 	}
 	return false, false
+}
+
+// mapsGateHost reports whether extra hosts maps host.docker.internal, either
+// to the host gateway or to the configured gateway address.
+func mapsGateHost(extraHosts []string, gateHost string) bool {
+	for _, h := range extraHosts {
+		if h == "host.docker.internal:host-gateway" {
+			return true
+		}
+		if gateHost != "" && h == "host.docker.internal:"+gateHost {
+			return true
+		}
+	}
+	return false
 }
 
 // ProxyFlags returns the flags and environment proxySpec gives the managed
@@ -243,7 +261,11 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 		mounts = append(mounts, docker.Mount{Source: pc.DynamicDir, Target: "/etc/traefik/dynamic", ReadOnly: true})
 	}
 	if pc.adminRoutingEnabled() || pc.ProtectedRoutes {
-		extraHosts = append(extraHosts, "host.docker.internal:host-gateway")
+		host := "host.docker.internal:host-gateway"
+		if pc.GateHost != "" {
+			host = "host.docker.internal:" + pc.GateHost
+		}
+		extraHosts = append(extraHosts, host)
 	}
 
 	if (pc.ACME || pc.LocalCA) && !pc.TunnelMode {

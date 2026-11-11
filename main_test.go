@@ -249,7 +249,7 @@ func TestReconcileMapsTheGateHostWhileARouteIsProtected(t *testing.T) {
 	adminOn := config.Config{
 		DataDir: t.TempDir(), Network: "outhaul", TraefikImage: config.DefaultTraefikImage,
 		CloudflaredImage: config.DefaultCloudflaredImage, HTTPSPort: "443", ListenAddr: ":8080",
-		PublicURL: "https://outhaul.example.com", ACMEEmail: "ops@example.com",
+		PublicURL: "https://outhaul.example.com", ACMEEmail: "ops@example.com", AdminDirect: true,
 	}
 	adminOff := adminOn
 	adminOff.PublicURL = "" // no admin host, so no admin route
@@ -345,6 +345,7 @@ func TestReconcileKeepsTheGateHostWhileAContainerIsGated(t *testing.T) {
 	cfg := config.Config{
 		DataDir: t.TempDir(), Network: "outhaul", TraefikImage: config.DefaultTraefikImage,
 		CloudflaredImage: config.DefaultCloudflaredImage, HTTPSPort: "443", ListenAddr: ":8080",
+		AdminDirect: true,
 	} // no public URL: no admin route
 	st, err := openStore(cfg)
 	if err != nil {
@@ -452,7 +453,7 @@ func TestReconcileProxyNamesWhatFailed(t *testing.T) {
 	cfg := config.Config{
 		DataDir: t.TempDir(), Network: "outhaul", TraefikImage: config.DefaultTraefikImage,
 		CloudflaredImage: config.DefaultCloudflaredImage, HTTPSPort: "443", ListenAddr: ":8080",
-		PublicURL: "https://outhaul.example.com", ACMEEmail: "ops@example.com",
+		PublicURL: "https://outhaul.example.com", ACMEEmail: "ops@example.com", AdminDirect: true,
 	}
 	st, err := openStore(cfg)
 	if err != nil {
@@ -498,7 +499,7 @@ func TestReconcileProxyOutlivesTheRequest(t *testing.T) {
 	cfg := config.Config{
 		DataDir: t.TempDir(), Network: "outhaul", TraefikImage: config.DefaultTraefikImage,
 		CloudflaredImage: config.DefaultCloudflaredImage, HTTPSPort: "443", ListenAddr: ":8080",
-		PublicURL: "https://outhaul.example.com", ACMEEmail: "ops@example.com",
+		PublicURL: "https://outhaul.example.com", ACMEEmail: "ops@example.com", AdminDirect: true,
 	}
 	st, err := openStore(cfg)
 	if err != nil {
@@ -616,5 +617,157 @@ func TestStartupDoesNotRetryWithoutAHeader(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if f.calls != 1 {
 		t.Errorf("EnsureNetwork calls = %d, want 1 (no retry without a header)", f.calls)
+	}
+}
+
+func TestAdminAddrs(t *testing.T) {
+	on := config.Config{AdminDirect: true, ListenAddr: ":8080"}
+	if got := adminAddrs(on, "172.30.0.1"); len(got) != 1 || got[0] != ":8080" {
+		t.Errorf("admin direct on: %v, want [:8080]", got)
+	}
+	off := config.Config{AdminDirect: false, ListenAddr: ":8080"}
+	if got := adminAddrs(off, "172.30.0.1"); strings.Join(got, ",") != "127.0.0.1:8080,172.30.0.1:8080" {
+		t.Errorf("admin direct off: %v, want the loopback and gateway addresses", got)
+	}
+	noGateway := config.Config{AdminDirect: false, ListenAddr: ":9090"}
+	if got := adminAddrs(noGateway, ""); len(got) != 1 || got[0] != "127.0.0.1:9090" {
+		t.Errorf("no gateway yet: %v, want [127.0.0.1:9090]", got)
+	}
+}
+
+func TestAdminListensOnLoopbackUntilDockerAnswers(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	cfg := config.Config{AdminDirect: false, ListenAddr: fmt.Sprintf(":%d", port)}
+	httpServer := newHTTPServer(cfg.ListenAddr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), func() {})
+	defer httpServer.Close()
+
+	calls := 0
+	gateway := func(context.Context) (string, error) {
+		calls++
+		if calls <= 2 {
+			return "", errors.New("docker unreachable")
+		}
+		return "127.0.0.2", nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errs := make(chan error, 4)
+	serveAdmin(ctx, httpServer, cfg, gateway, 10*time.Millisecond, errs)
+
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
+	if err != nil {
+		t.Fatalf("loopback is not reachable at once: %v", err)
+	}
+	resp.Body.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.2:%d/", port))
+		if err == nil {
+			resp.Body.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the gateway address never became reachable: %v", err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case err := <-errs:
+		t.Fatalf("serveAdmin reported an error: %v", err)
+	default:
+	}
+}
+
+func TestProxyConfigUsesTheGateway(t *testing.T) {
+	cfg := config.Config{
+		DataDir: t.TempDir(), Network: "outhaul", TraefikImage: config.DefaultTraefikImage,
+		ListenAddr: ":8080", AdminDirect: false, PublicURL: "https://outhaul.example.com",
+		ACMEEmail: "ops@example.com",
+	}
+	st, err := openStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	f := docker.NewFake()
+	if f.Gateways == nil {
+		f.Gateways = map[string]string{}
+	}
+	f.Gateways["outhaul"] = "172.30.0.1"
+	ic := &infraController{dc: f, st: st, cfg: cfg}
+	if err := ic.reconcile(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := ic.proxyConfig(context.Background(), false, false).GateHost; got != "172.30.0.1" {
+		t.Errorf("GateHost = %q, want the fake's gateway", got)
+	}
+}
+
+func TestAdminDirectOffNeedsSomethingPublishingIt(t *testing.T) {
+	cfg := config.Config{AdminDirect: false}
+	err := adminPublishError(cfg, false)
+	if err == nil || !strings.Contains(err.Error(), "OUTHAUL_ADMIN_DIRECT") {
+		t.Fatalf("adminPublishError = %v, want an error naming OUTHAUL_ADMIN_DIRECT", err)
+	}
+	https := cfg
+	https.ACMEEmail = "ops@example.com"
+	if err := adminPublishError(https, false); err != nil {
+		t.Errorf("with HTTPS: %v", err)
+	}
+	if err := adminPublishError(cfg, true); err != nil {
+		t.Errorf("with the tunnel: %v", err)
+	}
+}
+
+func TestDisableTunnelRefusedWhenOnlyItPublishesTheAdminUI(t *testing.T) {
+	cfg := config.Config{
+		DataDir: t.TempDir(), Network: "outhaul", TraefikImage: config.DefaultTraefikImage,
+		ListenAddr: ":8080", AdminDirect: false,
+	}
+	st, err := openStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SetCloudflareToken(context.Background(), "tok"); err != nil {
+		t.Fatal(err)
+	}
+	ic := &infraController{dc: docker.NewFake(), st: st, cfg: cfg}
+	err = ic.Disable(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "OUTHAUL_ADMIN_DIRECT") {
+		t.Fatalf("Disable = %v, want an error naming OUTHAUL_ADMIN_DIRECT", err)
+	}
+	if on, err := st.TunnelEnabled(context.Background()); err != nil || !on {
+		t.Errorf("TunnelEnabled = %v, %v; the tunnel must stay enabled", on, err)
+	}
+}
+
+func TestWarnsWhenTheHeaderDoesNotCoverTheAdminPort(t *testing.T) {
+	cfg := config.Config{AdminDirect: true, RequireHeaderName: "X-Probe-Id", RequireHeaderValue: "abc-123"}
+	warning := adminPortWarning(cfg)
+	if warning == "" {
+		t.Fatal("a required header with the admin port open should warn")
+	}
+	for _, secret := range []string{"X-Probe-Id", "abc-123"} {
+		if strings.Contains(warning, secret) {
+			t.Errorf("the warning contains %q: %s", secret, warning)
+		}
+	}
+	cfg.AdminDirect = false
+	if adminPortWarning(cfg) != "" {
+		t.Error("admin direct off should not warn")
+	}
+	cfg = config.Config{AdminDirect: true}
+	if adminPortWarning(cfg) != "" {
+		t.Error("no header should not warn")
 	}
 }

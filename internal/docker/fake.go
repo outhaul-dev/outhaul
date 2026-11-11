@@ -31,6 +31,7 @@ type Fake struct {
 	Runs    []ContainerSpec              // RunContainer specs, in order
 
 	Images           map[string]bool              // local image tags (test-settable)
+	Gateways         map[string]string            // network name -> IPv4 gateway (test-settable)
 	ImageLabelsByRef map[string]map[string]string // image ref -> labels baked into it (test-settable)
 	RemovedImages    []string                     // refs passed to RemoveImage, in order
 	ImagePrunes      int                          // PruneImages invocations
@@ -87,6 +88,20 @@ func NewFake() *Fake {
 func (f *Fake) Ping(context.Context) error { return nil }
 
 func (f *Fake) ServerAPIVersion(context.Context) string { return "1.44" }
+
+// NetworkGateway returns the test's gateway for a network, 172.30.0.1 when it
+// has no entry, and an error for a network that doesn't exist.
+func (f *Fake) NetworkGateway(_ context.Context, name string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.Networks[name] {
+		return "", fmt.Errorf("network %q not found", name)
+	}
+	if gw := f.Gateways[name]; gw != "" {
+		return gw, nil
+	}
+	return "172.30.0.1", nil
+}
 
 func (f *Fake) PullImage(_ context.Context, ref string, out io.Writer) error {
 	f.mu.Lock()

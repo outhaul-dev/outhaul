@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -178,6 +179,12 @@ func serve() error {
 		if err := httpOffTunnelError(cfg, on); err != nil {
 			return err
 		}
+		if err := adminPublishError(cfg, on); err != nil {
+			return err
+		}
+	}
+	if warning := adminPortWarning(cfg); warning != "" {
+		log.Print(warning)
 	}
 	if cfg.LocalCAEnabled() {
 		if on, err := st.TunnelEnabled(context.Background()); err == nil && on {
@@ -348,12 +355,10 @@ func serve() error {
 	httpServer := newHTTPServer(cfg.ListenAddr, srv.Handler(), srv.CloseStreams)
 
 	serverErr := make(chan error, 1)
-	go func() {
-		log.Printf("listening on %s", cfg.ListenAddr)
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			serverErr <- err
-		}
-	}()
+	log.Printf("listening on %s", strings.Join(adminAddrs(cfg, infra.Gateway()), ", "))
+	serveAdmin(workerCtx, httpServer, cfg, func(ctx context.Context) (string, error) {
+		return dc.NetworkGateway(ctx, cfg.Network)
+	}, 5*time.Second, serverErr)
 
 	// Wait for a signal or a fatal server error.
 	sig := make(chan os.Signal, 1)
@@ -382,6 +387,18 @@ type infraController struct {
 	// handlers) can't race and leave Traefik/cloudflared in a state that
 	// doesn't match the last-persisted tunnel token.
 	mu sync.Mutex
+
+	// gateway is the host's address on Outhaul's Docker network, read while
+	// OUTHAUL_ADMIN_DIRECT=off. Traefik maps host.docker.internal to it, and
+	// the admin UI listens there.
+	gateway string
+}
+
+// Gateway returns the Docker network gateway last read by reconcile, or "".
+func (ic *infraController) Gateway() string {
+	ic.mu.Lock()
+	defer ic.mu.Unlock()
+	return ic.gateway
 }
 
 // ensureInfra brings up the shared network, Traefik, and (if the tunnel is
@@ -452,6 +469,18 @@ func (ic *infraController) reconcile(ctx context.Context) error {
 	if !protected {
 		protected = ic.gatedContainersRemain(ctx, tunnelOn)
 	}
+	if !ic.cfg.AdminDirect {
+		// The admin UI will listen only on loopback and this address, and
+		// Traefik maps host.docker.internal to it instead of host-gateway.
+		if err := ic.dc.EnsureNetwork(ctx, ic.cfg.Network); err != nil {
+			return fmt.Errorf("ensure network %q: %w", ic.cfg.Network, err)
+		}
+		gw, err := ic.dc.NetworkGateway(ctx, ic.cfg.Network)
+		if err != nil {
+			return fmt.Errorf("read the gateway of network %q: %w", ic.cfg.Network, err)
+		}
+		ic.gateway = gw
+	}
 	if tunnelOn {
 		// Bring the tunnel up before flipping Traefik to its portless posture,
 		// so the current Traefik keeps serving until the connector is live.
@@ -517,6 +546,9 @@ func (ic *infraController) proxyConfig(ctx context.Context, tunnelOn, protectedR
 		DynamicDir:       ic.cfg.DynamicDir(),
 		ProtectedRoutes:  protectedRoutes,
 		Routing:          traefik.RoutingFrom(ic.cfg, false),
+	}
+	if !ic.cfg.AdminDirect {
+		pc.GateHost = ic.gateway
 	}
 	if tunnelOn {
 		pc.TunnelMode = true
@@ -605,6 +637,9 @@ func (ic *infraController) ReconcileProxy(_ context.Context) error {
 // with Enable, this runs on a detached context (see Enable) so the reconcile
 // that recreates Traefik isn't cancelled by the request that triggered it.
 func (ic *infraController) Disable(_ context.Context) error {
+	if err := adminPublishError(ic.cfg, false); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	if err := ic.st.ClearCloudflareToken(ctx); err != nil {
@@ -690,6 +725,93 @@ func newHTTPServer(addr string, h http.Handler, onShutdown func()) *http.Server 
 	}
 	s.RegisterOnShutdown(onShutdown)
 	return s
+}
+
+// adminAddrs is where the admin UI listens. By default that is
+// OUTHAUL_LISTEN_ADDR, on every interface. With OUTHAUL_ADMIN_DIRECT=off it is
+// loopback (the host itself) and, once known, the IPv4 gateway of Outhaul's
+// own Docker network, which is the host's address on that bridge and the only
+// one Traefik can reach.
+func adminAddrs(cfg config.Config, gateway string) []string {
+	if cfg.AdminDirect {
+		return []string{cfg.ListenAddr}
+	}
+	addrs := []string{net.JoinHostPort("127.0.0.1", cfg.AdminPort())}
+	if gateway != "" {
+		addrs = append(addrs, net.JoinHostPort(gateway, cfg.AdminPort()))
+	}
+	return addrs
+}
+
+// adminPublishError refuses an admin port that nothing can publish: with
+// OUTHAUL_ADMIN_DIRECT=off the UI is on loopback and the Docker bridge, so it
+// needs Traefik (HTTPS) or the tunnel to reach anyone else.
+func adminPublishError(cfg config.Config, tunnelOn bool) error {
+	if cfg.AdminDirect || cfg.TLSEnabled() || tunnelOn {
+		return nil
+	}
+	return fmt.Errorf("OUTHAUL_ADMIN_DIRECT=off needs HTTPS or a Cloudflare Tunnel to publish the admin UI, or it is reachable on loopback only")
+}
+
+// adminPortWarning is the startup warning for the one posture the header does
+// not cover: a required header with the admin port still open on every
+// interface. It names neither the header nor its value.
+func adminPortWarning(cfg config.Config) string {
+	if !cfg.AdminDirect || !cfg.HeaderRequired() {
+		return ""
+	}
+	return "WARNING: a request header is required on every route, but the admin port listens on every interface, where Traefik doesn't check it. Set OUTHAUL_ADMIN_DIRECT=off, or keep other machines from that port."
+}
+
+// serveAdmin serves s on adminAddrs. With OUTHAUL_ADMIN_DIRECT=off and no
+// gateway yet (Docker wasn't reachable at boot), it listens on loopback at
+// once, then looks the gateway up every interval and adds that listener once.
+// Listen errors go to errs; a loopback listen failure is fatal to startup.
+func serveAdmin(ctx context.Context, s *http.Server, cfg config.Config, gateway func(context.Context) (string, error), interval time.Duration, errs chan<- error) {
+	listen := func(addr string) error {
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			return err
+		}
+		go func() {
+			if err := s.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errs <- fmt.Errorf("serve %s: %w", addr, err)
+			}
+		}()
+		return nil
+	}
+	gw, err := gateway(ctx)
+	if err != nil {
+		gw = ""
+	}
+	for _, addr := range adminAddrs(cfg, gw) {
+		if err := listen(addr); err != nil {
+			errs <- fmt.Errorf("listen %s: %w", addr, err)
+			return
+		}
+	}
+	if cfg.AdminDirect || gw != "" {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+			gw, err := gateway(ctx)
+			if err != nil || gw == "" {
+				continue
+			}
+			if err := listen(net.JoinHostPort(gw, cfg.AdminPort())); err != nil {
+				errs <- fmt.Errorf("listen %s: %w", gw, err)
+			}
+			return
+		}
+	}()
 }
 
 // shutdown performs graceful shutdown: stop the worker first so in-flight

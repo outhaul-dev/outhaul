@@ -754,3 +754,39 @@ func TestHeaderRequiredStopsTraefikItCannotReplace(t *testing.T) {
 		t.Error("the old Traefik is still running without the constraint")
 	}
 }
+
+func TestGateHostMapping(t *testing.T) {
+	pc := adminProxyConfig(t)
+	pc.GateHost = "172.30.0.1"
+	spec := proxySpec(pc)
+	if len(spec.ExtraHosts) != 1 || spec.ExtraHosts[0] != "host.docker.internal:172.30.0.1" {
+		t.Errorf("extra hosts = %v, want host.docker.internal:172.30.0.1", spec.ExtraHosts)
+	}
+	withGateway := spec.Labels["outhaul.config-hash"]
+	pc.GateHost = ""
+	if proxySpec(pc).Labels["outhaul.config-hash"] == withGateway {
+		t.Error("changing GateHost should change the config hash")
+	}
+
+	none := adminProxyConfig(t)
+	none.GateHost = "172.30.0.1"
+	none.AdminHost = ""
+	none.ProtectedRoutes = false
+	if hosts := proxySpec(none).ExtraHosts; len(hosts) != 0 {
+		t.Errorf("no admin route and no protected route: extra hosts = %v, want none", hosts)
+	}
+}
+
+func TestProxyMapsGateHostWithAGateway(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+	pc := adminProxyConfig(t)
+	pc.GateHost = "172.30.0.1"
+	if err := EnsureProxy(ctx, f, pc, nil); err != nil {
+		t.Fatalf("EnsureProxy: %v", err)
+	}
+	mapped, known := ProxyMapsGateHost(ctx, f, pc)
+	if !mapped || !known {
+		t.Errorf("ProxyMapsGateHost = %v, %v; want true, true", mapped, known)
+	}
+}

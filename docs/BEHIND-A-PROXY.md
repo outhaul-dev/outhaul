@@ -118,3 +118,39 @@ says "This app isn't being served" and that deploying it brings it back. That is
 what someone sees when the startup redeploy failed. If Traefik itself can't be
 replaced, it is stopped rather than left serving containers without the check;
 Outhaul retries the reconcile until it succeeds.
+
+## The admin port
+
+By default the admin UI listens on every interface
+(`OUTHAUL_LISTEN_ADDR`, `:8080`), and anything that can reach that port gets
+the admin UI over plain HTTP, past Traefik and so past the required header.
+
+With `OUTHAUL_ADMIN_DIRECT=off`, Outhaul listens on two addresses only, on the
+port `OUTHAUL_LISTEN_ADDR` gives:
+
+- loopback, for the host itself: the installer's health check, and someone
+  with a shell on the host;
+- the gateway address of Outhaul's own Docker network (`OUTHAUL_NETWORK`),
+  which is the host's address on that network's bridge. Traefik is on that
+  network.
+
+Traefik's `host.docker.internal` is mapped to that gateway address instead of
+Docker's `host-gateway`, and the admin UI is reachable only through Traefik, at
+the public URL. A connection to the host's other addresses is refused. The
+gate's address in app labels stays `http://host.docker.internal:<port>/gate/check`,
+so no app needs redeploying.
+
+It needs `OUTHAUL_PUBLIC_URL` and HTTPS or a Cloudflare Tunnel: otherwise
+nothing would publish the UI. `OUTHAUL_LISTEN_ADDR` may give a port but not a
+host. First-boot setup uses the public URL, which the startup hint prints when
+Traefik publishes the admin UI.
+
+Reading the gateway needs Docker. If Docker can't be reached at startup,
+Outhaul listens on loopback only and adds the gateway address once Docker
+answers, checking every five seconds.
+
+App containers on Outhaul's network can still reach the port at the gateway
+address, as they can today; they get the same sign-in page as anyone. And when
+a header is required with `OUTHAUL_ADMIN_DIRECT=on`, Outhaul logs a warning at
+startup that the admin port isn't covered by the header. It doesn't refuse to
+start: a firewall may be doing that job.

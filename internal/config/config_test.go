@@ -703,3 +703,55 @@ func TestRequireHeaderSetting(t *testing.T) {
 		t.Errorf("a valid value: %v", err)
 	}
 }
+
+func TestAdminDirectSetting(t *testing.T) {
+	load := func(env map[string]string) Config {
+		return Load(func(k string) string { return env[k] })
+	}
+	for _, v := range []string{"", "on", "true"} {
+		cfg := load(map[string]string{"OUTHAUL_ADMIN_DIRECT": v})
+		if !cfg.AdminDirect {
+			t.Errorf("OUTHAUL_ADMIN_DIRECT=%q -> AdminDirect false, want true", v)
+		}
+	}
+	for _, v := range []string{"off", "OFF", "false"} {
+		cfg := load(map[string]string{"OUTHAUL_ADMIN_DIRECT": v, "OUTHAUL_PUBLIC_URL": "https://outhaul.example.com", "OUTHAUL_ACME_EMAIL": "ops@example.com"})
+		if cfg.AdminDirect {
+			t.Errorf("OUTHAUL_ADMIN_DIRECT=%q -> AdminDirect true, want false", v)
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("OUTHAUL_ADMIN_DIRECT=%q with HTTPS and a public URL: %v", v, err)
+		}
+	}
+	cfg := load(map[string]string{"OUTHAUL_ADMIN_DIRECT": "proxy"})
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "OUTHAUL_ADMIN_DIRECT") {
+		t.Errorf("OUTHAUL_ADMIN_DIRECT=proxy: error %v does not name the variable", err)
+	}
+
+	noURL := load(map[string]string{"OUTHAUL_ADMIN_DIRECT": "off", "OUTHAUL_ACME_EMAIL": "ops@example.com"})
+	err := noURL.Validate()
+	if err == nil {
+		t.Fatal("admin direct off without a public URL: Validate accepted it")
+	}
+	for _, want := range []string{"OUTHAUL_ADMIN_DIRECT", "OUTHAUL_PUBLIC_URL"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+
+	withHost := load(map[string]string{
+		"OUTHAUL_ADMIN_DIRECT": "off", "OUTHAUL_ACME_EMAIL": "ops@example.com",
+		"OUTHAUL_PUBLIC_URL": "https://outhaul.example.com", "OUTHAUL_LISTEN_ADDR": "127.0.0.1:8080",
+	})
+	err = withHost.Validate()
+	if err == nil || !strings.Contains(err.Error(), "OUTHAUL_LISTEN_ADDR") {
+		t.Errorf("a listen host: error %v does not name OUTHAUL_LISTEN_ADDR", err)
+	}
+	portOnly := load(map[string]string{
+		"OUTHAUL_ADMIN_DIRECT": "off", "OUTHAUL_ACME_EMAIL": "ops@example.com",
+		"OUTHAUL_PUBLIC_URL": "https://outhaul.example.com", "OUTHAUL_LISTEN_ADDR": ":9090",
+	})
+	if err := portOnly.Validate(); err != nil {
+		t.Errorf("a port-only listen address: %v", err)
+	}
+}

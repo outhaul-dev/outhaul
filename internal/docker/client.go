@@ -86,6 +86,10 @@ type Client interface {
 	// client otherwise defaults to a version modern daemons reject.
 	ServerAPIVersion(ctx context.Context) string
 
+	// NetworkGateway returns the IPv4 gateway of the named network: the host's
+	// address on its bridge.
+	NetworkGateway(ctx context.Context, name string) (string, error)
+
 	// PullImage pulls ref, streaming progress to out (may be nil).
 	PullImage(ctx context.Context, ref string, out io.Writer) error
 
