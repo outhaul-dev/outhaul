@@ -317,6 +317,20 @@ func serve() error {
 	srv.SetRepos(repos)
 	srv.SetRouting(traefik.RoutingFrom(cfg, false))
 	previews.SetHTTPSOnly(cfg.HTTPOff)
+	go func() {
+		for {
+			if _, err := srv.RedeployStale(workerCtx); err == nil {
+				return
+			} else {
+				log.Printf("ingress: redeploying apps for the routing settings failed; retrying in a minute: %v", err)
+			}
+			select {
+			case <-workerCtx.Done():
+				return
+			case <-time.After(time.Minute):
+			}
+		}
+	}()
 	if sshSrv != nil {
 		srv.SetSSHControl(sshSrv)
 	}

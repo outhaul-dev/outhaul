@@ -958,11 +958,20 @@ func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, status in
 				openOnProtected[d.ID] = true
 			}
 		}
-		if csErr == nil && len(cs) > 0 && protectionMismatch(domains, app.Name, cs, protectedHosts) {
+		// A stale stamp counts the same way as a protection mismatch: Restart must
+		// never bring old rules back.
+		if csErr == nil && len(cs) > 0 && (protectionMismatch(domains, app.Name, cs, protectedHosts) || s.anyStale(cs)) {
 			data["RestartDeploys"] = true
 		}
 	}
-	states := accessStates(domains, app.Name, cs, csErr, deployments)
+	if csErr == nil {
+		for _, c := range cs {
+			if answers(c) && s.routing.Ignores(c.Labels) {
+				data["NotServed"] = true
+			}
+		}
+	}
+	states := accessStates(domains, app.Name, s.served(cs), csErr, deployments)
 	if csErr == nil {
 		s.strayAccess(r, domains, app.Name, states)
 	}
@@ -1758,7 +1767,7 @@ func (s *Server) restartDeploysInstead(w http.ResponseWriter, r *http.Request) b
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return true
 	}
-	if !protectionMismatch(domains, app.Name, cs, protectedHosts) {
+	if !protectionMismatch(domains, app.Name, cs, protectedHosts) && !s.anyStale(cs) {
 		return false
 	}
 	dep, err := s.queueProtectionDeploy(r.Context(), app)

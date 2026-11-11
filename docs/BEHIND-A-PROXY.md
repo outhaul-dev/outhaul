@@ -92,3 +92,29 @@ header term. The deploy fails and names the labels.
 A Compose file can write `traefik.*` labels on its own services. On a service
 Outhaul doesn't route, Traefik's constraint ignores them. On a service Outhaul
 does route, they sit beside Outhaul's own labels and are not checked yet.
+
+## When a setting changes
+
+Settings are read at startup. A change that alters Traefik's flags or
+environment recreates the Traefik container; the pages and the deploy log say
+so before it happens.
+
+Containers keep the labels they were created with. At startup Outhaul lists its
+containers and finds the routed ones whose stamp differs from the current
+settings. For each running app it queues the deploy a protection change would
+queue: a Nixpacks or Dockerfile app whose running image is still on the server
+redeploys that image without building; otherwise, and always for a Compose app,
+a normal deploy ships the head of the branch (or the newest matching tag), and
+a template app redeploys its own Compose file. A stopped app is left alone;
+its next deploy carries the change. The log has one line per app and one
+summary line.
+
+If the containers can't be listed, Outhaul tries again every minute until the
+check has run once. Restart deploys instead of restarting when a container's
+stamp is stale, so it never brings old rules back.
+
+While a request header is required, an app whose containers Traefik is ignoring
+says "This app isn't being served" and that deploying it brings it back. That is
+what someone sees when the startup redeploy failed. If Traefik itself can't be
+replaced, it is stopped rather than left serving containers without the check;
+Outhaul retries the reconcile until it succeeds.

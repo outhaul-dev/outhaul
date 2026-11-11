@@ -15,6 +15,7 @@
 </div>
 {{with .Notice}}<div class="alert alert-warn" role="alert">{{.}}</div>{{end}}
 {{if .RestartDeploys}}<div class="alert alert-warn">Restart will deploy this app instead, so its domains' sign-in settings reach its containers. {{with .ProtectionWarning}}<strong>{{.}}</strong>{{end}}</div>{{end}}
+{{if .NotServed}}<div class="alert alert-warn">This app isn't being served. Its containers were deployed before the server's routing settings changed. Deploy it to bring it back.</div>{{end}}
 
 <nav class="tabs" id="app-tabs"{{with .OpenTab}} data-default="{{.}}"{{end}}>
   <a href="#overview" data-tab-link="overview">Overview</a>
