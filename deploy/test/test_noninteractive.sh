@@ -133,10 +133,12 @@ curl() {
 
 sleep() { :; }
 
-# A start prints both setup hints, with the same token in each.
+# A start prints both setup hints, with the same token in each, after the
+# failure that made the run read the journal.
 journalctl() {
 	printf 'journalctl %s\n' "$*" >>"$T/calls"
 	[ "$NO_SETUP" = 1 ] && return 0
+	printf 'Jul 13 12:00:00 host outhaul[1]: level=error msg="listen tcp :8080: bind: address already in use"\n'
 	printf 'Jul 13 12:00:00 host outhaul[1]:   open: https://o.example.com/setup?token=abc\n'
 	printf 'Jul 13 12:00:00 host outhaul[1]:   or, over an SSH tunnel to port 8080: http://localhost:8080/setup?token=abc\n'
 }
@@ -331,6 +333,15 @@ assert_eq "rollback: the old binary is back" "$OLD" "$(commit_of "$BIN")"
 assert_contains "rollback: install.env is the old one" "$(cat "$INSTALL_ENV")" "OUTHAUL_UPDATES=off"
 assert_contains "rollback: the log says so" "$(cat "$T/log")" "rolled back"
 assert_eq "rollback: the log ends FAILED" "FAILED exit 1" "$(tail -1 "$T/log")"
+# The failed new version's journal lines, printed and logged once, before the
+# old version is started over them. They carry no setup URL or token.
+assert_eq "rollback: the journal's failure line is printed" 1 "$(grep -c 'address already in use' "$T/stdout" || true)"
+assert_eq "rollback: the journal's failure line is in the log" 1 "$(log_has 'address already in use')"
+assert_eq "rollback: the journal's two setup lines are in the log, withheld" 2 "$(log_has '<setup URL withheld>')"
+assert_eq "rollback: the URL is not in the log" 0 "$(log_has 'o\.example\.com/setup')"
+assert_eq "rollback: the token is not in the log" 0 "$(log_has 'token=abc')"
+assert_eq "rollback: the URL is not in stdout" 0 "$(grep -c '/setup?token=' "$T/stdout" || true)"
+assert_eq "rollback: the token is not in stdout" 0 "$(grep -c 'token=abc' "$T/stdout" || true)"
 
 # ------------------------- 7. a first install that never answers fails --
 

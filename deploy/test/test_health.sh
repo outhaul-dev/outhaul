@@ -115,6 +115,20 @@ assert_eq "leaves other journal lines alone" "plain line" \
 journalctl() { :; }
 assert_ok "an empty journal tail is not a failure" print_journal_tail
 
+# One tail per run: a rollback prints the failed new version's lines, so the
+# die that follows must not print the restarted old version's lines too.
+# Called directly, as the installer calls it: a command substitution would
+# hide the guard's own shell.
+journalctl() { printf 'Jul 13 12:00:00 host outhaul[1]: bind: address already in use\n'; }
+# shellcheck disable=SC2034 # read by print_journal_tail in the sourced installer
+JOURNAL_TAIL_PRINTED=0
+: >"$T/tail1"
+: >"$T/tail2"
+print_journal_tail >"$T/tail1"
+print_journal_tail >"$T/tail2"
+assert_contains "the first tail prints" "$(cat "$T/tail1")" "address already in use"
+assert_eq "a second tail prints nothing" "" "$(cat "$T/tail2")"
+
 rm -rf "$T"
 
 [ "${TESTS_FAIL:-0}" -eq 0 ]

@@ -1367,6 +1367,10 @@ rollback_install() { # from
 	ROLLBACK_DONE=1
 	set +e
 	trap '' INT TERM
+	# The journal's last lines are the failed new version's: read them before
+	# the old version is started over them. Once per run, so a die that
+	# already printed the tail does not print the restarted old version's.
+	print_journal_tail
 	printf '  .. rolling back to %s\n' "$(short "$_from")"
 	systemctl stop outhaul
 	_restored=1
@@ -1531,8 +1535,12 @@ redact_setup_url() {
 
 # The service's last lines after a failed check, with the setup URL withheld.
 # In an unattended run they also go to the log, so the log says why it
-# failed without ever carrying the token.
+# failed without ever carrying the token. At most one tail per run: a rollback
+# prints the failed new version's lines, and the die that follows must not
+# print the restarted old version's.
 print_journal_tail() {
+	[ "${JOURNAL_TAIL_PRINTED:-0}" = 0 ] || return 0
+	JOURNAL_TAIL_PRINTED=1
 	_tail=$(journalctl -u outhaul -n 20 --no-pager 2>/dev/null | redact_setup_url) || _tail=''
 	if [ -n "$_tail" ]; then
 		printf '%s\n' "$_tail"
@@ -1758,6 +1766,9 @@ PREV_COMMIT=''
 STAGE=''
 ROLLBACK_TO=''
 ROLLBACK_DONE=0
+# Whether this run has printed the journal tail: at most once, so a rollback's
+# lines are the failed new version's and not the restarted old version's.
+JOURNAL_TAIL_PRINTED=0
 ENV_CHANGED=0
 DROPIN_CHANGED=0
 ENV_FILE_CHANGED=0
