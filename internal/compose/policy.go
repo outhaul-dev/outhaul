@@ -771,9 +771,19 @@ func sectionEntries(m Model, section string) map[string]json.RawMessage {
 	return defs
 }
 
-// checkHooks refuses a privileged post_start or pre_stop hook. Compose fills
-// the rest of a hook with the service's own image and networking, so only
-// privileged is a choice the file made.
+// hookKeys are the only keys a post_start or pre_stop hook may set. Compose
+// fills the rest of a hook with the service's own image and networking, so a
+// key not named here is a choice the strict allow-list never listed.
+var hookKeys = map[string]struct{}{
+	"command":     {},
+	"user":        {},
+	"environment": {},
+	"working_dir": {},
+}
+
+// checkHooks walks each hook's keys against hookKeys. privileged keeps its own
+// reason; every other unlisted key is refused as unknown, so a hook key a newer
+// Compose adds does not run unchecked.
 func checkHooks(key string) serviceCheck {
 	return func(_ Model, raw json.RawMessage, _ Policy, add func(string, string)) {
 		var hooks []map[string]json.RawMessage
@@ -782,8 +792,14 @@ func checkHooks(key string) serviceCheck {
 			return
 		}
 		for _, hook := range hooks {
-			if _, ok := hook["privileged"]; ok {
-				add(key, "a hook may not run privileged.")
+			for _, k := range sortedKeys(hook) {
+				if k == "privileged" {
+					add(key, "a hook may not run privileged.")
+					continue
+				}
+				if _, ok := hookKeys[k]; !ok {
+					add(key+"."+k, unknownKeyReason)
+				}
 			}
 		}
 	}

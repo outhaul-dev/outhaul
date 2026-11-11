@@ -214,9 +214,18 @@ var policyCases = []policyCase{
 	{
 		name: "hooks", file: "hooks.json", policy: strictPolicy,
 		want: []Violation{
-			{Where: `service "web"`, Option: "post_start"},
-			{Where: `service "web"`, Option: "pre_stop"},
+			{Where: `service "web"`, Option: "post_start", Reason: "a hook may not run privileged."},
+			{Where: `service "web"`, Option: "pre_stop", Reason: "a hook may not run privileged."},
 		},
+	},
+	{name: "hooks allowed", file: "hooks-allowed.json", policy: strictPolicy},
+	{
+		name: "unknown hook key", file: "unknown-hook-key.json", policy: strictPolicy, pureOnly: true,
+		want: []Violation{{
+			Where:  `service "web"`,
+			Option: "post_start.devices",
+			Reason: "this key is not in the server's Compose allow-list.",
+		}},
 	},
 	{
 		name: "deploy", file: "deploy.json", policy: strictPolicy,
