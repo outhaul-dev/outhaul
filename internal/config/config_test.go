@@ -334,6 +334,37 @@ func TestSSHAddrOff(t *testing.T) {
 	}
 }
 
+func TestUpdatesSetting(t *testing.T) {
+	for _, tc := range []struct {
+		in, want string
+		off      bool
+	}{
+		{"", "main", false}, {"main", "main", false}, {"MAIN", "main", false},
+		{"off", "off", true}, {"OFF", "off", true}, {" off ", "off", true},
+	} {
+		c := Load(func(k string) string {
+			if k == "OUTHAUL_UPDATES" {
+				return tc.in
+			}
+			return ""
+		})
+		if c.Updates != tc.want || c.UpdatesOff() != tc.off {
+			t.Errorf("OUTHAUL_UPDATES=%q -> %q/%v, want %q/%v", tc.in, c.Updates, c.UpdatesOff(), tc.want, tc.off)
+		}
+	}
+	for _, v := range []string{"weekly", "releases"} {
+		c := Load(func(k string) string {
+			if k == "OUTHAUL_UPDATES" {
+				return v
+			}
+			return ""
+		})
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "want main or off") {
+			t.Errorf("OUTHAUL_UPDATES=%q: Validate = %v, want 'want main or off'", v, err)
+		}
+	}
+}
+
 func TestValidateAcceptsWellFormedValues(t *testing.T) {
 	env := map[string]string{
 		"OUTHAUL_HEALTH_TIMEOUT": "2m",

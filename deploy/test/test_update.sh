@@ -231,6 +231,7 @@ setup() {
 	HEALTHY="$OLD $NEW"  # commits that answer /healthz once started
 	BUILD=ok PULL=ok CF_RUNNING=0 NEW_UNIT=1
 	unset OUTHAUL_LISTEN_ADDR
+	unset OUTHAUL_UPDATES
 }
 
 # update_main exits, so it runs in a subshell, with errexit as under systemd.
@@ -640,6 +641,23 @@ set +e
 (set -e; update_main) 2>/dev/full
 set -e
 assert_eq "journal unwritable: a failed rollback still reports" failed "$(field state)"
+
+# Updates off: the request goes, nothing else changes.
+setup
+before=$(cat "$UPDATE_DIR/status")
+OUTHAUL_UPDATES=off run_update
+assert_eq "off: exit 0" 0 "$RC"
+assert_eq "off: request removed" no "$(exists "$UPDATE_DIR/request")"
+assert_eq "off: status unchanged" "$before" "$(cat "$UPDATE_DIR/status")"
+assert_eq "off: Outhaul never stopped" "" "$(systemctl_calls)"
+assert_contains "off: one journal line" "$(journal_lines)" "updates are off"
+
+# An unknown value is off.
+setup
+OUTHAUL_UPDATES=weekly run_update
+assert_eq "unknown value: exit 0" 0 "$RC"
+assert_eq "unknown value: request removed" no "$(exists "$UPDATE_DIR/request")"
+assert_eq "unknown value: Outhaul never stopped" "" "$(systemctl_calls)"
 
 # The real paths, and the data dir from /etc/outhaul.env.
 assert_eq "default paths" "/usr/local/bin/outhaul /etc/systemd/system /var/lib/outhaul /var/lib/outhaul/update /var/lib/outhaul-updater /var/cache/outhaul" \

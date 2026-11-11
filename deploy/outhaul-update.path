@@ -3,10 +3,11 @@
 #
 # Outhaul (user outhaul) asks for an update by creating the request file in
 # its data dir; this starts the root updater. The request carries nothing:
-# the only thing Outhaul can ask for is "update to the newest main".
+# the only thing Outhaul can ask for is "update to the newest main". With
+# OUTHAUL_UPDATES=off the updater removes the request and changes nothing.
 
 [Unit]
-Description=Outhaul updater trigger
+Description=Outhaul updater trigger: updates from main, or nothing when OUTHAUL_UPDATES=off
 
 [Path]
 PathExists=/var/lib/outhaul/update/request

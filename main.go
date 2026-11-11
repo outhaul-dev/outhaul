@@ -214,11 +214,12 @@ func serve() error {
 	worker.SetPruner(pruner)
 
 	// An update stops Outhaul, so while one is requested or running the worker
-	// and the backup scheduler start nothing new.
-	updates := update.NewDir(cfg.UpdateDir(), update.LogPath, time.Now)
-	worker.SetHold(updates.InProgress)
-	checker := update.NewChecker(update.Current(),
-		&update.Comparer{Client: &http.Client{Timeout: 15 * time.Second}}, time.Now)
+	// and the backup scheduler start nothing new. With updates off neither is
+	// held, and no check ever leaves the server.
+	updates, checker, updatesOff := newUpdates(cfg)
+	if !updatesOff {
+		worker.SetHold(updates.InProgress)
+	}
 
 	workerCtx, stopWorker := context.WithCancel(context.Background())
 	workerDone := make(chan struct{})
@@ -241,9 +242,11 @@ func serve() error {
 	} else if n > 0 {
 		log.Printf("recovered %d interrupted backup/restore run(s) as failed", n)
 	}
-	backups.SetHold(updates.InProgress)
+	if !updatesOff {
+		backups.SetHold(updates.InProgress)
+		go checker.Run(workerCtx)
+	}
 	go backups.Run(workerCtx)
-	go checker.Run(workerCtx)
 
 	// Daily disk-cleanup sweep (image retention, dangling images, build cache).
 	go pruner.Run(workerCtx)
@@ -317,7 +320,11 @@ func serve() error {
 	srv.SetProxyControl(infra)
 	srv.SetHTTPSPort(cfg.HTTPSPort)
 	srv.SetBuild(update.Current())
-	srv.SetUpdates(updates, checker)
+	if updatesOff {
+		srv.SetUpdatesOff()
+	} else {
+		srv.SetUpdates(updates, checker)
+	}
 	if certMgr != nil {
 		srv.SetCertSync(certMgr)
 		srv.SetLocalCAFile(localca.RootPath(cfg.CADir()))
@@ -347,6 +354,20 @@ func serve() error {
 	}
 
 	return shutdown(httpServer, stopWorker, workerDone, backups.Stop)
+}
+
+// newUpdates builds the Updates panel's directory, shared with the root
+// updater, and the check of the running build against main. With updates off
+// it builds neither and creates nothing: no checker means no request ever
+// leaves the server, and no update can be requested.
+func newUpdates(cfg config.Config) (d *update.Dir, k *update.Checker, off bool) {
+	if cfg.UpdatesOff() {
+		return nil, nil, true
+	}
+	d = update.NewDir(cfg.UpdateDir(), update.LogPath, time.Now)
+	k = update.NewChecker(update.Current(),
+		&update.Comparer{Client: &http.Client{Timeout: 15 * time.Second}}, time.Now)
+	return d, k, false
 }
 
 // infraController reconciles the managed Traefik proxy and cloudflared connector

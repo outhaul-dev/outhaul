@@ -305,6 +305,16 @@ update_main() {
 	exec 3<>/dev/null
 	# The journal, for to_journal.
 	exec 4>&2
+	# OUTHAUL_UPDATES=off (or anything but main) leaves the server alone. The
+	# request is removed so Outhaul does not hold work for an update that will
+	# not happen; a symlinked update directory is refused, and the run still
+	# succeeds.
+	_mode=$(printf '%s' "${OUTHAUL_UPDATES:-main}" | tr '[:upper:]' '[:lower:]')
+	if [ "$_mode" != main ]; then
+		in_update_dir rm -f request 2>/dev/null || true
+		to_journal "updates are off; nothing changed"
+		exit 0
+	fi
 	# An updater installed by an earlier installer has no directory of its own.
 	mkdir -p "$WORK_DIR"
 	chgrp outhaul "$WORK_DIR"

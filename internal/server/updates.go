@@ -28,6 +28,7 @@ const (
 	updateRunningCopy      = "An update is already running."
 	updateInterruptedCopy  = "The updater stopped without reporting a result. On the server, see " + update.LogPath + " and journalctl -u outhaul-update."
 	updateStuckCopy        = "Outhaul has not come back. On the server: sudo cat " + update.LogPath
+	updateOffCopy          = "Updates are off. This server is upgraded by re-running the installer."
 )
 
 // SetBuild records the running binary's build stamp, which /healthz (to
@@ -50,7 +51,15 @@ func fromLoopback(r *http.Request) bool {
 // panel, its routes and the navigation badge are absent.
 func (s *Server) SetUpdates(d *update.Dir, k *update.Checker) { s.updates, s.checker = d, k }
 
+// SetUpdatesOff marks updates as off (OUTHAUL_UPDATES=off): the panel shows
+// the running build and an explanation, and the update routes stay absent.
+func (s *Server) SetUpdatesOff() { s.updatesOff = true }
+
 func (s *Server) updatesWired() bool { return s.updates != nil && s.checker != nil }
+
+// updatesPanelShown reports whether the Settings page has an Updates panel: it
+// is wired for updates, or it says why updates are off.
+func (s *Server) updatesPanelShown() bool { return s.updatesWired() || s.updatesOff }
 
 // updateInProgress reports an update requested or running. Manual backups and
 // restores are refused meanwhile: the updater is about to stop Outhaul.
@@ -75,6 +84,7 @@ type updatesPanel struct {
 	Blocked    string        // why Update cannot run now; "" if it can
 	Confirm    string
 	Stuck      string // the status line once Outhaul has not answered for three minutes
+	Off        bool   // updates are off: show the build and why, and nothing else
 }
 
 type updateCommit struct {
@@ -89,6 +99,9 @@ type updateResult struct {
 }
 
 func (s *Server) updatesPanel(ctx context.Context) *updatesPanel {
+	if s.updatesOff {
+		return &updatesPanel{Build: s.build, Off: true, Summary: updateOffCopy}
+	}
 	p := &updatesPanel{Build: s.build, Confirm: updateConfirmCopy, Stuck: updateStuckCopy, InProgress: s.updates.InProgress()}
 	blocked, err := s.updateBlocked(ctx)
 	if err != nil {

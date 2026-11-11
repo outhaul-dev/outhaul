@@ -32,6 +32,7 @@ type Config struct {
 	TraefikImage     string // image used for the managed Traefik container
 	CloudflaredImage string // image used for the managed cloudflared connector
 	Network          string // shared Docker network app containers + Traefik join
+	Updates          string // "main" updates from main; "off" never updates
 
 	ACMEEmail       string        // Let's Encrypt account email; empty disables TLS
 	ACMEStaging     bool          // use the LE staging CA (avoid rate limits)
@@ -64,6 +65,7 @@ func Load(getenv Getenv) Config {
 		TraefikImage:     or(getenv("OUTHAUL_TRAEFIK_IMAGE"), DefaultTraefikImage),
 		CloudflaredImage: or(getenv("OUTHAUL_CLOUDFLARED_IMAGE"), DefaultCloudflaredImage),
 		Network:          or(getenv("OUTHAUL_NETWORK"), "outhaul"),
+		Updates:          p.word("OUTHAUL_UPDATES", "main", "main", "off"),
 
 		ACMEEmail:       firstField(getenv("OUTHAUL_ACME_EMAIL")),
 		ACMEStaging:     p.bool("OUTHAUL_ACME_STAGING"),
@@ -129,6 +131,10 @@ func (c Config) TLSEnabled() bool { return c.ACMEEnabled() || c.LocalCAEnabled()
 // SSHOff reports whether the git-push SSH server is turned off. The bare
 // repositories and the hook socket stay; only the listener is skipped.
 func (c Config) SSHOff() bool { return strings.EqualFold(c.SSHAddr, "off") }
+
+// UpdatesOff reports whether Outhaul updates are turned off: the panel shows
+// the running build without the forms, and the root updater changes nothing.
+func (c Config) UpdatesOff() bool { return c.Updates == "off" }
 
 // CertResolver is the Traefik certresolver TLS routers should reference;
 // empty when certs come from the file provider (local CA) instead of ACME.
@@ -248,6 +254,22 @@ func (p *parser) boolDefault(key string, fallback bool) bool {
 		return false
 	}
 	p.reject(key, v, "true or false")
+	return fallback
+}
+
+// word accepts one of allowed (in any case) and stores it lower-cased; empty
+// takes the fallback. Anything else is a problem naming the choices.
+func (p *parser) word(key, fallback string, allowed ...string) string {
+	v := strings.TrimSpace(p.getenv(key))
+	if v == "" {
+		return fallback
+	}
+	for _, a := range allowed {
+		if strings.EqualFold(v, a) {
+			return strings.ToLower(a)
+		}
+	}
+	p.reject(key, v, strings.Join(allowed, " or "))
 	return fallback
 }
 

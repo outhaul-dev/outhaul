@@ -7,7 +7,10 @@
 {{with .Updates}}
 <section class="panel" id="updates">
   <h2 class="panel-title">Updates</h2>
-  <p>Running <span class="mono">{{.Build.Short}}</span>{{if .Build.Local}} <span class="muted">(local build)</span>{{end}}</p>
+  <p>Running <span class="mono">{{.Build.Short}}</span>{{if .Build.Local}} <span class="muted">(local build)</span>{{end}}{{if .Build.Version}} <span class="muted">version {{.Build.Version}}</span>{{end}}</p>
+  {{if .Off}}
+  <p>{{.Summary}}</p>
+  {{else}}
   {{with .Last}}<p>Last update: <span class="badge {{.Class}}">{{.Label}}</span> {{.Message}} <span class="muted">{{fmtTime .At}}</span></p>{{end}}
   {{if .LastLog}}
   <details class="update-row update-last-log"{{if .LastOpen}} open{{end}}>
@@ -92,6 +95,7 @@
     <button type="submit" class="btn btn-primary" id="update-button"{{if .Blocked}} disabled{{end}}>Update</button>
     {{if .Blocked}}<span class="muted">{{.Blocked}}</span>{{end}}
   </form>
+  {{end}}
   {{end}}
 </section>
 {{end}}

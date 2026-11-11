@@ -538,3 +538,14 @@ func TestSSHListenAddrOff(t *testing.T) {
 		t.Errorf("stored setting: got (%q, %v), want (\":2200\", true)", addr, on)
 	}
 }
+
+func TestNewUpdatesOff(t *testing.T) {
+	d, k, off := newUpdates(config.Config{Updates: "off"})
+	if !off || d != nil || k != nil {
+		t.Fatalf("off: got (%v, %v, %v), want (nil, nil, true)", d, k, off)
+	}
+	d, k, off = newUpdates(config.Config{Updates: "main", DataDir: t.TempDir()})
+	if off || d == nil || k == nil {
+		t.Fatalf("main: got (%v, %v, %v), want a Dir and a Checker", d, k, off)
+	}
+}
