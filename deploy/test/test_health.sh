@@ -101,6 +101,20 @@ curl() { printf '%s\n' "$*" > "$args"; return 0; }
 assert_ok "public check without a header" wait_public_healthy o.example.com 443 '' '' >/dev/null
 assert_eq "no header: no -K" 0 "$(grep -c -- '-K -' "$args" || true)"
 
+# The updater's own copy of the journal tail is update.sh's; the installer's
+# redaction hides any line carrying the one-time setup URL, not only the
+# "open:" line: printSetupHint prints the SSH-tunnel line with the same token.
+assert_eq "redacts the open: line" "<setup URL withheld>" \
+	"$(printf 'x open: https://o.example.com/setup?token=abc\n' | redact_setup_url)"
+assert_eq "redacts the SSH-tunnel line too" "<setup URL withheld>" \
+	"$(printf 'x or, over an SSH tunnel to port 8080: http://localhost:8080/setup?token=abc\n' | redact_setup_url)"
+assert_eq "leaves other journal lines alone" "plain line" \
+	"$(printf 'plain line\n' | redact_setup_url)"
+
+# A service with no journal lines must not fail the tail; it just prints none.
+journalctl() { :; }
+assert_ok "an empty journal tail is not a failure" print_journal_tail
+
 rm -rf "$T"
 
 [ "${TESTS_FAIL:-0}" -eq 0 ]

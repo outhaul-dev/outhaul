@@ -32,5 +32,17 @@ assert_contains "LE mode, public route down: says so" "$bad" "admin UI not answe
 assert_contains "LE mode, public route down: ssh hint" "$bad" "$hint"
 assert_contains "LE mode, public route down: local setup url" "$bad" "http://127.0.0.1:8080/setup?token=abc"
 assert_contains "LE mode, public route down: the ufw rule Traefik needs" "$bad" "ufw allow in on outhaul to any port 8080 proto tcp"
+assert_contains "proxy mode: shown like Let's Encrypt" \
+	"$(completion_screen p 'https://paas.example.com' '22 443' '' 0 0)" \
+	"HTTPS: Let's Encrypt configured for https://paas.example.com"
+
+# A rolled-back upgrade says the previous version is running again.
+# shellcheck disable=SC2034 # read by completion_screen
+ROLLED_BACK=1
+rolled=$(completion_screen c '' '' '' 0 0)
+assert_contains "rolled back: the screen says the old version is back" "$rolled" \
+	"the new version did not answer; the previous version is running again"
+# shellcheck disable=SC2034 # read by completion_screen
+ROLLED_BACK=0
 
 [ "${TESTS_FAIL:-0}" -eq 0 ]

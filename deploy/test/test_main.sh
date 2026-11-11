@@ -99,6 +99,16 @@ NONINTERACTIVE=0 write_dropins
 assert_eq "a blank env file keeps the service drop-in" sentinel "$(cat "$SERVICE_DROPIN")"
 assert_eq "a blank env file keeps the update drop-in" sentinel "$(cat "$UPDATE_DROPIN")"
 
+# --help exits 0 and lists the unattended flag; bad flags exit 2 before the
+# log is opened, so nothing on the host changes.
+help_out=$( ( parse_args --help ) 2>&1 || true )
+assert_eq "--help exits 0" 0 "$( ( parse_args --help ) >/dev/null 2>&1; echo $? )"
+assert_contains "help lists --non-interactive" "$help_out" "--non-interactive"
+# shellcheck disable=SC2034 # read by main, which opens it
+LOGFILE=$T/main.log
+assert_eq "bad flags exit 2" 2 "$( if ( main --bogus ) >/dev/null 2>&1; then echo 0; else echo $?; fi )"
+assert_fail "bad flags leave no log" [ -e "$T/main.log" ]
+
 rm -rf "$T"
 
 [ "${TESTS_FAIL:-0}" -eq 0 ]

@@ -192,11 +192,18 @@ ask_value() { # prompt default
 
 # ------------------------------------------------------------------- ui --
 
-# Sets COLOR, UNICODE, WIDTH globals. Call once at startup.
+# Sets COLOR, UNICODE, WIDTH globals. Call once at startup. An unattended
+# run's stdout has no colour: cloud-init copies it to its own log and to the
+# serial console.
 init_ui() {
-	COLOR=$(detect_color_level)
-	case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in *[Uu][Tt][Ff]-8* | *[Uu][Tt][Ff]8*) UNICODE=1 ;; *) UNICODE=0 ;; esac
-	[ "$COLOR" = 0 ] && UNICODE=0
+	if [ "${NONINTERACTIVE:-0}" = 1 ]; then
+		COLOR=0
+		UNICODE=0
+	else
+		COLOR=$(detect_color_level)
+		case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in *[Uu][Tt][Ff]-8* | *[Uu][Tt][Ff]8*) UNICODE=1 ;; *) UNICODE=0 ;; esac
+		[ "$COLOR" = 0 ] && UNICODE=0
+	fi
 	WIDTH=$(tput cols 2>/dev/null || echo 80)
 	[ -n "$WIDTH" ] || WIDTH=80
 }
@@ -238,6 +245,7 @@ step_ok() {
 	printf '  %s ' "$m"
 	_c 0
 	printf '%s\n' "$1"
+	log_event "ok $1"
 }
 step_fail() {
 	[ "${UNICODE:-0}" = 1 ] && m='✖' || m='x'
@@ -245,22 +253,34 @@ step_fail() {
 	printf '  %s ' "$m"
 	_c 0
 	printf '%s\n' "$1"
+	log_event "fail $1"
 }
 note() {
 	_c 90
 	printf '    %s\n' "$1"
 	_c 0
+	log_event "note $1"
 }
 
 # Raw log mirror (Task 20 wires LOGFILE); safe if unset.
 log_line() { [ -n "${LOGFILE:-}" ] && printf '%s\n' "$*" >>"$LOGFILE" 2>/dev/null || true; }
+
+# The unattended log's step lines. The wizard's log holds only the commands'
+# raw output, and its step lines go to the terminal; a full disk must not stop
+# an install, so a failed append is ignored.
+log_event() {
+	[ "${NONINTERACTIVE:-0}" = 1 ] || return 0
+	[ -n "${LOGFILE:-}" ] || return 0
+	printf '%s\n' "$*" >>"$LOGFILE" 2>/dev/null || true
+	return 0
+}
 
 die() {
 	_c '1;31'
 	printf 'error: ' >&2
 	_c 0
 	printf '%s\n' "$1" >&2
-	log_line "ERROR: $1"
+	log_event "die $1"
 	exit 1
 }
 
@@ -381,6 +401,10 @@ preflight() {
 		step_ok "$distro detected"
 	else
 		step_fail "unsupported distro: ${distro:-unknown} (V1 targets Debian and Ubuntu)"
+		# An unattended run has no one to ask, and its answer is no.
+		if [ "${NONINTERACTIVE:-0}" = 1 ]; then
+			die "unsupported distro: ${distro:-unknown}"
+		fi
 		ask_yes_no "  Continue anyway?" n || die "aborted on unsupported distro"
 	fi
 	arch=$(uname -m)
@@ -618,7 +642,13 @@ BUILD_SWAP=/var/lib/outhaul-build.swap
 maybe_add_swap() { # mem_kb swap_kb
 	need_swap "$1" "$2" || return 0
 	note "low memory — the Go build may be OOM-killed without extra swap"
-	ask_yes_no "  Create a temporary 2 GB swapfile for the build?" y || return 0
+	# An unattended run takes the safe answer: the build would otherwise run
+	# out of memory. The file is removed after the build either way.
+	if [ "${NONINTERACTIVE:-0}" = 1 ]; then
+		note "creating a temporary 2 GB swapfile for the build"
+	elif ! ask_yes_no "  Create a temporary 2 GB swapfile for the build?" y; then
+		return 0
+	fi
 	[ -e "$BUILD_SWAP" ] && return 0
 	spinner_start "creating build swapfile"
 	# Mark now so cleanup removes the file even if swapon fails partway through.
@@ -807,7 +837,8 @@ port_in_use() { # port
 	else netstat -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]$1\$"; fi
 }
 
-# Warns (does not hard-fail) about DNS/port issues before choosing ACME.
+# Warns (does not hard-fail) about DNS/port issues before choosing ACME. An
+# unattended run continues on a mismatch, with the warning; the wizard asks.
 acme_preflight() { # domain
 	dom=$1
 	pub=$(host_public_ip)
@@ -817,8 +848,12 @@ acme_preflight() { # domain
 	if [ -n "$pub" ] && ! domain_ip_matches "$pub" "$ips"; then
 		step_fail "$dom does not point at this server"
 		note "create a DNS A record:  $dom  A  $pub"
-		ask_yes_no "  Continue with Let's Encrypt anyway?" n ||
-			die "fix DNS, then re-run the installer"
+		if [ "${NONINTERACTIVE:-0}" = 1 ]; then
+			note "continuing; Let's Encrypt may fail until the record is right"
+		else
+			ask_yes_no "  Continue with Let's Encrypt anyway?" n ||
+				die "fix DNS, then re-run the installer"
+		fi
 	else
 		step_ok "$dom points at this server"
 	fi
@@ -1291,7 +1326,7 @@ install_or_upgrade() { # src_dir target version
 		ADMIN_PORT=$(admin_port "$(service_env OUTHAUL_LISTEN_ADDR :8080)")
 		if ! new_version_healthy "$_target" "$ADMIN_PORT"; then
 			step_fail "the new version did not answer"
-			journalctl -u outhaul -n 20 --no-pager
+			print_journal_tail
 			return 1
 		fi
 		return 0
@@ -1488,11 +1523,42 @@ url_host() { # url
 	printf '%s\n' "${h%%:*}"
 }
 
+# Withholds any journal line carrying the one-time setup URL: both the
+# "open:" line and the "or, over an SSH tunnel" line hold the same token.
+redact_setup_url() {
+	sed 's#.*/setup?token=.*#<setup URL withheld>#'
+}
+
+# The service's last lines after a failed check, with the setup URL withheld.
+# In an unattended run they also go to the log, so the log says why it
+# failed without ever carrying the token.
+print_journal_tail() {
+	_tail=$(journalctl -u outhaul -n 20 --no-pager 2>/dev/null | redact_setup_url) || _tail=''
+	if [ -n "$_tail" ]; then
+		printf '%s\n' "$_tail"
+		if [ "${NONINTERACTIVE:-0}" = 1 ]; then log_event "$_tail"; fi
+	fi
+	return 0
+}
+
 # Extracts the one-time setup URL from a stream of journald lines: the
 # newest "open: URL" hint, since a re-run restarts the service, which prints
 # a new token. With a public URL, that line holds the public one.
 extract_setup_url() {
 	grep -oE 'open: https?://[^ ]+/setup\?token=[A-Za-z0-9_-]+' | tail -1 | sed 's/^open: //'
+}
+
+# Writes the one-time setup URL beside its destination and renames it in:
+# root:root, mode 0600. A later restart makes it stale. The host asked for
+# the file, so a failure is fatal.
+write_setup_file() { # path url
+	_dir=$(dirname "$1")
+	_tmp=$(mktemp "$_dir/.outhaul-setup.XXXXXX") || die "could not write $1"
+	if printf '%s\n' "$2" >"$_tmp" && chmod 0600 "$_tmp" && mv -fT "$_tmp" "$1"; then
+		return 0
+	fi
+	rm -f "$_tmp"
+	die "could not write $1"
 }
 
 # The setup URL to open over an SSH tunnel to the admin port.
@@ -1592,14 +1658,16 @@ completion_screen() { # mode url ports setup_url healthy(0/1) localca(0/1) publi
 	_c '1;32'
 	printf '  Outhaul is installed\n'
 	_c 0
-	if [ "$healthy" != 0 ]; then
-		step_fail "admin UI did not answer yet (check: journalctl -u outhaul)"
-	elif [ "$public" = 0 ]; then
-		step_ok "Traefik serves the admin UI at $url (checked from this server)"
-	elif [ "$public" = 1 ]; then
+	# A failed public check sets HEALTHY too, so the marker is not written; the
+	# public message is the more useful one, so it comes first.
+	if [ "$public" = 1 ]; then
 		step_fail "admin UI not answering at $url yet"
 		note "Traefik may still be starting or getting a certificate (check: docker logs outhaul-traefik)"
 		note "with ufw on, Traefik also needs: ufw allow in on $bridge to any port $port proto tcp"
+	elif [ "$healthy" != 0 ]; then
+		step_fail "admin UI did not answer yet (check: journalctl -u outhaul)"
+	elif [ "$public" = 0 ]; then
+		step_ok "Traefik serves the admin UI at $url (checked from this server)"
 	else
 		step_ok "admin UI reachable"
 	fi
@@ -1637,7 +1705,11 @@ completion_screen() { # mode url ports setup_url healthy(0/1) localca(0/1) publi
 		a | p) note "if it does not open: ssh -L $port:127.0.0.1:$port you@this-server, then open $(local_setup_url "$setup" "$port")" ;;
 		esac
 	else
-		note "find the setup URL with: journalctl -u outhaul | grep -i setup"
+		if [ "${NONINTERACTIVE:-0}" = 1 ] && [ -n "${SETUP_URL_FILE:-}" ]; then
+			note "the one-time setup URL is in $SETUP_URL_FILE"
+		else
+			note "find the setup URL with: journalctl -u outhaul | grep -i setup"
+		fi
 	fi
 	# Confetti flourish (skipped in plain mode).
 	if [ "${COLOR:-0}" -ge 1 ] && [ "${UNICODE:-0}" = 1 ]; then
@@ -2032,6 +2104,47 @@ apply_answers() {
 	UPDATES=$(lower "$UPDATES")
 }
 
+# Opens the install log. The wizard truncates it: its step lines go to the
+# terminal and its raw command output goes here. An unattended run appends,
+# mode 0600, with the UTC time and the arguments first (no flag takes a
+# secret). A log that cannot be written is no reason to fail the install:
+# the run continues without one. --verbose mirrors the log only in the
+# wizard; an unattended run's log stays the file.
+init_log() {
+	if [ "${NONINTERACTIVE:-0}" != 1 ]; then
+		: >"$LOGFILE" 2>/dev/null || LOGFILE=/dev/null
+		[ "${VERBOSE:-0}" = 1 ] && LOGFILE=/dev/stderr
+		return 0
+	fi
+	if [ "$LOGFILE" != /dev/null ]; then
+		{
+			mkdir -p "$(dirname "$LOGFILE")" &&
+				: >>"$LOGFILE" &&
+				chmod 0600 "$LOGFILE"
+		} 2>/dev/null || LOGFILE=/dev/null
+	fi
+	if [ "$LOGFILE" != /dev/null ]; then
+		printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >>"$LOGFILE" 2>/dev/null || true
+	fi
+	return 0
+}
+
+# The exit trap: a signal or a die during the swap puts the old version back
+# first, then the log gets its result line and cleanup runs. The same code
+# exits, so an interrupted run logs FAILED, not OK.
+on_exit() {
+	_rc=$?
+	trap - EXIT
+	swap_guard || true
+	if [ "$_rc" -eq 0 ]; then
+		log_event "OK installed"
+	else
+		log_event "FAILED exit $_rc"
+	fi
+	cleanup || true
+	exit "$_rc"
+}
+
 cleanup() {
 	if [ -n "${SPIN_PID:-}" ]; then kill "$SPIN_PID" 2>/dev/null || true; fi
 	remove_build_swap || true
@@ -2076,9 +2189,10 @@ main() {
 	REF=${OUTHAUL_REF:-}
 	parse_args "$@"
 	check_args
-	: >"$LOGFILE" 2>/dev/null || LOGFILE=/dev/null
-	if [ "$VERBOSE" = 1 ]; then LOGFILE=/dev/stderr; fi
-	trap cleanup EXIT INT TERM
+	init_log "$@"
+	trap on_exit EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
 	open_prompt_fd "$0"
 	if [ "$NONINTERACTIVE" = 1 ]; then
 		# No prompts, and apt must not ask either.
@@ -2093,6 +2207,9 @@ main() {
 
 	if [ "$NONINTERACTIVE" = 1 ]; then
 		apply_answers
+		# Only Let's Encrypt needs the DNS check; proxy mode's DNS points at
+		# the proxy. The wizard checks inside choose_ingress.
+		if [ "$MODE" = a ]; then acme_preflight "$(url_host "$PUBLIC_URL")"; fi
 	else
 		choose_ingress
 		PUBLIC_URL=$(normalize_public_url "$PUBLIC_URL")
@@ -2171,6 +2288,9 @@ main() {
 			setup_updater "$SRC_DIR"
 		else
 			HEALTHY=1
+			# The wizard keeps its completion screen and exits 0, as its
+			# screen has always done. An unattended run fails, and the
+			# journal's last lines are already in its output and log.
 			if [ "$NONINTERACTIVE" = 1 ]; then die "outhaul did not answer"; fi
 		fi
 	else
@@ -2191,7 +2311,10 @@ main() {
 		fi
 		ADMIN_PORT=$(admin_port "$(service_env OUTHAUL_LISTEN_ADDR :8080)")
 		if ! new_version_healthy "$TARGET" "$ADMIN_PORT"; then
-			if [ "$NONINTERACTIVE" = 1 ]; then die "outhaul did not answer"; fi
+			if [ "$NONINTERACTIVE" = 1 ]; then
+				print_journal_tail
+				die "outhaul did not answer"
+			fi
 			HEALTHY=1
 		else
 			# No tree to install from, but the path unit follows the
@@ -2200,14 +2323,10 @@ main() {
 		fi
 	fi
 
-	if [ "$HEALTHY" = 0 ] && [ "$ROLLED_BACK" = 0 ]; then
-		# A later run reads this to tell that the same commit is installed.
-		write_marker "$TARGET" "$TARGET_REF" "$TARGET_VERSION" ||
-			note "could not record the installed version in $MARKER; the next run rebuilds"
-	fi
-
 	if [ -n "${GOROOT_TMP:-}" ]; then
-		if ask_yes_no "  Remove the downloaded Go toolchain (~150 MB)?" y; then
+		# An unattended run removes it without asking: nothing else needs it,
+		# and it is ~150 MB.
+		if [ "$NONINTERACTIVE" = 1 ] || ask_yes_no "  Remove the downloaded Go toolchain (~150 MB)?" y; then
 			rm -rf "$GOROOT_TMP"
 			GOROOT_TMP=''
 			step_ok "removed Go toolchain"
@@ -2243,14 +2362,24 @@ main() {
 				stop) systemctl stop outhaul || true ;;
 				esac
 				if [ "$NONINTERACTIVE" = 1 ]; then
+					print_journal_tail
 					die "the proxy's switches did not take effect"
 				fi
 				HEALTHY=1
 			fi
 		else
 			PUBLIC=1
+			# The run's overall result is a failure too: no marker, and an
+			# unattended run fails, with the journal's last lines in its
+			# output and log (the token is withheld).
+			HEALTHY=1
+			if [ "$NONINTERACTIVE" = 1 ]; then
+				print_journal_tail
+				die "the admin UI did not answer at $PUBLIC_URL"
+			fi
 		fi
 	fi
+
 	# Only the service's current run: a re-run restarted it with a new token,
 	# and an earlier run's hint is stale. -b is the fallback without systemd's
 	# invocation ID.
@@ -2261,7 +2390,28 @@ main() {
 		SETUP=$(journalctl -u outhaul -b --no-pager 2>/dev/null | extract_setup_url)
 	fi
 
-	completion_screen "$MODE" "$PUBLIC_URL" "$PORTS" "$SETUP" "$HEALTHY" "${LOCAL_CA:-0}" "$PUBLIC"
+	if [ -n "${SETUP_URL_FILE:-}" ]; then
+		if [ -n "$SETUP" ]; then
+			write_setup_file "$SETUP_URL_FILE" "$SETUP"
+		elif [ "$STARTED_SERVICE" = 1 ]; then
+			# This run's start printed no URL: setup is done, and the file
+			# (if a later restart made it stale) has no business staying.
+			rm -f "$SETUP_URL_FILE" 2>/dev/null || true
+		fi
+	fi
+
+	if [ "$HEALTHY" = 0 ] && [ "$ROLLED_BACK" = 0 ]; then
+		# A later run reads this to tell that the same commit is installed.
+		write_marker "$TARGET" "$TARGET_REF" "$TARGET_VERSION" ||
+			note "could not record the installed version in $MARKER; the next run rebuilds"
+	fi
+
+	# An unattended run's stdout goes to cloud-init's log and the serial
+	# console, so it never prints the setup URL; completion_screen points at
+	# the journal or the setup file instead.
+	_screen_setup=$SETUP
+	if [ "$NONINTERACTIVE" = 1 ]; then _screen_setup=''; fi
+	completion_screen "$MODE" "$PUBLIC_URL" "$PORTS" "$_screen_setup" "$HEALTHY" "${LOCAL_CA:-0}" "$PUBLIC"
 }
 
 # Run main only when executed, not when sourced by the test suite.
