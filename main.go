@@ -254,6 +254,8 @@ func serve() error {
 
 	// Database manager (databases-as-a-service).
 	dbm := dbaas.NewManager(st, dc, cfg.Network, cfg.DatabasesDir())
+	dbm.SetPolicy(cfg.StrictContainerPolicy())
+	warnPublishedDatabasePorts(context.Background(), st, cfg.StrictContainerPolicy(), log.Printf)
 
 	// Backup scheduler (dumps + volume tarballs to S3-compatible storage).
 	// Runs a dead process left "running" are failed before any can start.
@@ -357,6 +359,7 @@ func serve() error {
 	srv.SetTunnelControl(infra)
 	srv.SetProxyControl(infra)
 	srv.SetHTTPSPort(cfg.HTTPSPort)
+	srv.SetContainerPolicy(cfg.StrictContainerPolicy())
 	srv.SetBuild(update.Current())
 	if updatesOff {
 		srv.SetUpdatesOff()
@@ -748,6 +751,26 @@ func reserveAdminHost(ctx context.Context, st *store.Store, host string, logf fu
 		logf("WARNING: app %q has the domain %s%s, which is Outhaul's own address (OUTHAUL_PUBLIC_URL). "+
 			"An app there shares the admin UI's origin and cookies. Delete that domain on the app's page; Outhaul leaves it in place.",
 			d.AppName, d.Host, d.Path)
+	}
+}
+
+// warnPublishedDatabasePorts names every database whose row still asks for a
+// host port while the strict container policy forbids one. The mapping lasts
+// until the container is next replaced, so nothing is restarted or
+// reprovisioned at startup: the operator clears it from the database's page.
+func warnPublishedDatabasePorts(ctx context.Context, st *store.Store, strict bool, logf func(string, ...any)) {
+	if !strict {
+		return
+	}
+	dbs, err := st.ListDatabases(ctx)
+	if err != nil {
+		logf("WARNING: could not check databases for published ports: %v", err)
+		return
+	}
+	for _, d := range dbs {
+		if d.ExtPort > 0 {
+			logf("WARNING: database %q publishes port %d, which OUTHAUL_CONTAINER_POLICY=strict does not allow; open its page and stop publishing it", d.Name, d.ExtPort)
+		}
 	}
 }
 

@@ -896,6 +896,52 @@ func TestNewUpdatesOff(t *testing.T) {
 	}
 }
 
+// The strict container policy forbids a published database port, but a row
+// that still has one keeps publishing it until its container is replaced.
+// Startup names each such row and changes nothing.
+func TestStrictPolicyWarnsAboutPublishedDatabasePorts(t *testing.T) {
+	ctx := context.Background()
+	st, err := openStore(config.Config{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	for _, d := range []core.Database{
+		{Name: "shop", Engine: core.EnginePostgres, Image: "postgres:17", Password: "pw", ExtPort: 5433},
+		{Name: "stock", Engine: core.EnginePostgres, Image: "postgres:17", Password: "pw"},
+	} {
+		if _, err := st.CreateDatabase(ctx, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var warnings []string
+	logf := func(format string, args ...any) { warnings = append(warnings, fmt.Sprintf(format, args...)) }
+	warnPublishedDatabasePorts(ctx, st, true, logf)
+
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %q, want one, for the database that publishes a port", warnings)
+	}
+	if !strings.Contains(warnings[0], `"shop"`) || !strings.Contains(warnings[0], "5433") {
+		t.Errorf("warning = %q, want it to name the database and its port", warnings[0])
+	}
+	dbs, err := st.ListDatabases(ctx)
+	if err != nil || len(dbs) != 2 {
+		t.Fatalf("databases after the warning = %+v (err %v), want both rows", dbs, err)
+	}
+	for _, d := range dbs {
+		if d.Status != core.DBCreating {
+			t.Errorf("database %q status = %q, want it left as it was (nothing is provisioned at startup)", d.Name, d.Status)
+		}
+	}
+
+	warnings = nil
+	warnPublishedDatabasePorts(ctx, st, false, logf)
+	if len(warnings) != 0 {
+		t.Errorf("warnings with the strict policy off = %q", warnings)
+	}
+}
+
 // Every Compose runner shares one environment. With the strict container
 // policy off it is nil, so runs inherit exactly as before. With it on it is
 // the keep-list, and not even the setting that turned it on (an OUTHAUL_*

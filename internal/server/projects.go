@@ -165,6 +165,7 @@ func (s *Server) renderProject(w http.ResponseWriter, r *http.Request, status in
 		"Members":          members,
 		"Shareable":        shareable,
 		"IsDefaultProject": p.ID == core.DefaultProjectID,
+		"StrictPolicy":     s.strictPolicy,
 	}
 	if errMsg != "" {
 		data["Error"] = errMsg

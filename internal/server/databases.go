@@ -103,6 +103,10 @@ func (s *Server) handleCreateDatabase(w http.ResponseWriter, r *http.Request) {
 		s.renderProject(w, r, http.StatusBadRequest, p, msg, dbForm)
 		return
 	}
+	if s.strictPolicy && extPort > 0 {
+		s.renderProject(w, r, http.StatusBadRequest, p, portRefused, dbForm)
+		return
+	}
 	if image == "" {
 		image = dbaas.DefaultImage(engine)
 	}
@@ -143,6 +147,16 @@ func parseExtPort(v string) (int, string) {
 	return n, ""
 }
 
+// SetContainerPolicy records whether the strict container policy is on
+// (OUTHAUL_CONTAINER_POLICY). Under it a managed database publishes no host
+// port: the forms refuse one and the pages stop offering it. Call before
+// Handler.
+func (s *Server) SetContainerPolicy(strict bool) { s.strictPolicy = strict }
+
+// portRefused is the message the database forms return when the strict
+// container policy forbids the port they were given.
+const portRefused = "This server's container policy doesn't allow published ports. Leave the field empty."
+
 // renderDatabase renders the database detail page (also used to redisplay it
 // with an error after a rejected action).
 func (s *Server) renderDatabase(w http.ResponseWriter, r *http.Request, status int, d core.Database, errMsg string) {
@@ -169,6 +183,7 @@ func (s *Server) renderDatabase(w http.ResponseWriter, r *http.Request, status i
 		"Database":       d,
 		"Project":        p,
 		"ContainerState": containerState,
+		"StrictPolicy":   s.strictPolicy,
 	}
 	// The connection details hold the password, so a viewer gets none of them
 	// and a copy of the database without it.
@@ -241,6 +256,10 @@ func (s *Server) handleDatabaseSettings(w http.ResponseWriter, r *http.Request) 
 	extPort, msg := parseExtPort(r.FormValue("external_port"))
 	if msg != "" {
 		s.renderDatabase(w, r, http.StatusBadRequest, d, msg)
+		return
+	}
+	if s.strictPolicy && extPort > 0 {
+		s.renderDatabase(w, r, http.StatusBadRequest, d, portRefused)
 		return
 	}
 	if err := s.store.SetDatabaseExtPort(r.Context(), d.ID, extPort); err != nil {
