@@ -25,6 +25,7 @@ shellcheck -s sh --severity=warning deploy/bootstrap.sh deploy/update.sh deploy/
 
 sh deploy/test/integration_gate.sh  # protected-route labels on a real Traefik (not in CI)
 sh deploy/test/integration_ingress.sh  # DNS-01, the wildcard and HTTPS-only ports on a real Traefik, Pebble and challtestsrv (not in CI)
+sh deploy/test/integration_proxy.sh  # a real Outhaul and Traefik behind a stand-in CDN and OIDC provider, end to end (not in CI)
 sh deploy/dev/run.sh   # the full stack in a container, against the host Docker daemon
 ```
 
@@ -48,6 +49,14 @@ hasn't been run against a real Outhaul yet.
 checks DNS-01, the wildcard and the HTTPS-only ports. It needs outbound DNS
 from its Traefik to challtestsrv; it starts only `outhaul-ingtest-*`
 containers, on loopback ports, and removes them when it ends.
+
+`deploy/test/integration_proxy.sh` builds a privileged Debian container with
+its own Docker daemon (`deploy/test/Dockerfile.proxytest`), runs a real Outhaul
+and Traefik inside it, and puts a stand-in CDN (nginx) and OIDC provider
+(`deploy/test/oidcstub`) in front. It starts only `outhaul-proxytest-*`
+containers and removes them when it ends. It has found real defects (an admin
+route the YAML parser rejected), so run it after changing how a router or the
+admin route is written.
 
 `go build .` leaves an `outhaul` binary in the repository root. Don't commit
 it.

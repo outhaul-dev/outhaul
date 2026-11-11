@@ -392,7 +392,10 @@ domains on a real Traefik (`traefik:v3.7.6`, Outhaul's default), with a small
 stand-in answering for Outhaul, and checks what reaches the app. The rest is covered
 by Outhaul's unit tests.
 
-The whole flow with a real Outhaul, a real browser and a real SSO provider hasn't been
-run yet, and neither has the script's mode that uses a running Outhaul in place of the
-stand-in (`--outhaul`). Tunnel mode hasn't been tried. If something behaves
-differently from what's described here, open an issue.
+`deploy/test/integration_proxy.sh` runs a real Outhaul and Traefik behind a
+stand-in CDN, with a stand-in OIDC provider, and checks sign-in, the route cookie,
+`X-Outhaul-User` reaching an app, an open path under a protected host, webhooks and
+the required header. The whole flow with a real CDN, a real browser and a real SSO
+provider hasn't been run yet, and neither has the script's mode that uses a running
+Outhaul in place of the stand-in (`--outhaul`). Tunnel mode hasn't been tried. If
+something behaves differently from what's described here, open an issue.
