@@ -2,13 +2,21 @@ package compose
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
 	"testing"
 )
 
-// strictPolicy is the policy for Outhaul's strict mode. WorkDir is set even
-// though this task's checks do not read paths: the path fixtures do later.
+// strictPolicy is the policy for Outhaul's strict mode. The recorded path
+// fixtures place the checkout at /work.
 var strictPolicy = Policy{Strict: true, WorkDir: "/work"}
+
+// networkPolicy is strictPolicy with the shared network a stack may join.
+var networkPolicy = Policy{Strict: true, WorkDir: "/work", Network: "outhaul"}
 
 // policyCases names every recorded or hand-written model under
 // testdata/policy. A want entry with an empty Reason only requires it to be
@@ -17,7 +25,7 @@ var strictPolicy = Policy{Strict: true, WorkDir: "/work"}
 // pureOnly marks JSON that cannot come from `docker compose config`: Compose
 // drops service-level x-* keys and refuses a top-level key that is neither an
 // extension field nor a standard section before it prints a model. The
-// real-Compose test (Task 3) skips these rows.
+// real-Compose test skips these rows.
 var policyCases = []policyCase{
 	// Refused service keys, one fixture each.
 	{
@@ -188,6 +196,8 @@ var policyCases = []policyCase{
 	{
 		name: "secrets", file: "secrets.json", policy: strictPolicy,
 		want: []Violation{
+			{Where: `secret "extbad"`, Option: "external"},
+			{Where: `secret "filebad"`, Option: "file"},
 			{Where: `service "web"`, Option: "secrets"},
 			{Where: `service "web"`, Option: "secrets"},
 		},
@@ -195,6 +205,8 @@ var policyCases = []policyCase{
 	{
 		name: "configs", file: "configs.json", policy: strictPolicy,
 		want: []Violation{
+			{Where: `config "extbad"`, Option: "external"},
+			{Where: `config "filebad"`, Option: "file"},
 			{Where: `service "web"`, Option: "configs"},
 			{Where: `service "web"`, Option: "configs"},
 		},
@@ -225,6 +237,146 @@ var policyCases = []policyCase{
 			{Where: `service "web"`, Option: "volumes"},
 			{Where: `service "web"`, Option: "volumes"},
 		},
+	},
+
+	// Top-level sections.
+	{name: "top-level sections", file: "top-level-allowed.json", policy: networkPolicy},
+	{name: "extension field", file: "extension-field.json", policy: strictPolicy, pureOnly: true},
+	{
+		name: "unknown top-level key", file: "unknown-top-level-key.json", policy: strictPolicy, pureOnly: true,
+		want: []Violation{{
+			Where:  "compose file",
+			Option: "future_section",
+			Reason: "this section is not in the server's Compose allow-list.",
+		}},
+	},
+	{name: "anchors", file: "anchors.json", policy: strictPolicy},
+	{
+		name: "anchors resolved into a service", file: "anchors-refused.json", policy: strictPolicy,
+		want: []Violation{{Where: `service "web"`, Option: "privileged"}},
+	},
+	{
+		name: "top-level volumes", file: "volumes-top-level.json", policy: strictPolicy,
+		want: []Violation{
+			{Where: `volume "custom"`, Option: "name"},
+			{Where: `volume "extra"`, Option: "external"},
+			{Where: `volume "host"`, Option: "driver"},
+			{Where: `volume "opts"`, Option: "driver_opts"},
+		},
+	},
+	{
+		name: "top-level networks", file: "networks-top-level.json", policy: networkPolicy,
+		want: []Violation{
+			{Where: `network "custom"`, Option: "name"},
+			{Where: `network "driver"`, Option: "driver"},
+			{Where: `network "extra"`, Option: "external"},
+			{Where: `network "ipamdriver"`, Option: "ipam.driver"},
+			{Where: `network "opts"`, Option: "driver_opts"},
+			{Where: `network "other"`, Option: "external"},
+			{Where: `network "subnet"`, Option: "ipam.config"},
+		},
+	},
+	{
+		name: "external network not the shared one", file: "top-level-allowed.json",
+		policy: Policy{Strict: true, WorkDir: "/work", Network: "othernet"},
+		want:   []Violation{{Where: `network "shared"`, Option: "external"}},
+	},
+	{
+		name: "top-level secrets", file: "secrets-top-level.json", policy: strictPolicy,
+		want: []Violation{
+			{Where: `secret "drvbad"`, Option: "driver"},
+			{Where: `secret "drvbad"`, Option: "file"},
+			{Where: `secret "namegood"`, Option: "name"},
+			{Where: `secret "optsbad"`, Option: "driver_opts"},
+			{Where: `secret "optsbad"`, Option: "file"},
+			{Where: `secret "tmplbad"`, Option: "file"},
+			{Where: `secret "tmplbad"`, Option: "template_driver"},
+			{Where: `service "web"`, Option: "secrets"},
+			{Where: `service "web"`, Option: "secrets"},
+			{Where: `service "web"`, Option: "secrets"},
+		},
+	},
+	{
+		name: "top-level configs", file: "configs-top-level.json", policy: strictPolicy,
+		want: []Violation{
+			{Where: `config "namegood"`, Option: "name"},
+			{Where: `config "tmplbad"`, Option: "file"},
+			{Where: `config "tmplbad"`, Option: "template_driver"},
+			{Where: `service "web"`, Option: "configs"},
+		},
+	},
+	{
+		name: "secret and config driver options", file: "secret-config-extra.json", policy: strictPolicy, pureOnly: true,
+		want: []Violation{
+			{Where: `config "configdriver"`, Option: "driver"},
+			{Where: `config "configopts"`, Option: "driver_opts"},
+			{Where: `secret "secretdriver"`, Option: "driver"},
+			{Where: `secret "secretopts"`, Option: "driver_opts"},
+		},
+	},
+
+	// Build.
+	{name: "build allowed", file: "build-allowed.json", policy: strictPolicy},
+	{
+		name: "build refused", file: "build-refused.json", policy: strictPolicy,
+		want: []Violation{
+			{Where: `secret "filebad"`, Option: "file"},
+			{Where: `service "dockerfile"`, Option: "build.dockerfile"},
+			{Where: `service "imageouthaul"`, Option: "image"},
+			{Where: `service "nethost"`, Option: "build.network"},
+			{Where: `service "netother"`, Option: "build.network"},
+			{Where: `service "oci"`, Option: "build.context"},
+			{Where: `service "outside"`, Option: "build.context"},
+			{Where: `service "secretfile"`, Option: "build.secrets"},
+			{Where: `service "tagouthaul"`, Option: "build.tags"},
+		},
+	},
+	{
+		name: "build refused keys", file: "build-refused-keys.json", policy: strictPolicy,
+		want: []Violation{
+			{Where: `service "web"`, Option: "build.cache_from"},
+			{Where: `service "web"`, Option: "build.cache_to"},
+			{Where: `service "web"`, Option: "build.entitlements"},
+			{Where: `service "web"`, Option: "build.isolation"},
+			{Where: `service "web"`, Option: "build.privileged"},
+			{Where: `service "web"`, Option: "build.ssh"},
+		},
+	},
+	{
+		name: "unknown build key", file: "unknown-build-key.json", policy: strictPolicy, pureOnly: true,
+		want: []Violation{{
+			Where:  `service "web"`,
+			Option: "build.future_option",
+			Reason: "this key is not in the server's Compose allow-list.",
+		}},
+	},
+
+	// Paths.
+	{
+		name: "paths", file: "paths.json", policy: strictPolicy,
+		want: []Violation{
+			{Where: `service "web"`, Option: "build.additional_contexts.outside"},
+			{Where: `service "web"`, Option: "env_file"},
+		},
+	},
+	{
+		name: "label_file outside the checkout", file: "label-file-outside.json", policy: strictPolicy, pureOnly: true,
+		want: []Violation{{Where: `service "web"`, Option: "label_file"}},
+	},
+
+	// Routing labels, refused even with strict off.
+	{
+		name: "routing labels", file: "routing-labels.json",
+		policy: Policy{RoutingLabels: true, WorkDir: "/work"},
+		want: []Violation{
+			{Where: `service "web"`, Option: "labels.Outhaul.App"},
+			{Where: `service "web"`, Option: "labels.TRAEFIK.ENABLE"},
+			{Where: `service "web"`, Option: "labels.traefik.http.routers.evil.rule"},
+		},
+	},
+	{
+		name: "routing labels allowed", file: "routing-labels.json",
+		policy: Policy{WorkDir: "/work"},
 	},
 
 	// Strict off is no allow-list at all.
@@ -266,6 +418,138 @@ func TestCheckServiceAllowList(t *testing.T) {
 				if tc.want[i].Reason != "" && got[i].Reason != tc.want[i].Reason {
 					t.Errorf("violation %d Reason = %q, want %q", i, got[i].Reason, tc.want[i].Reason)
 				}
+			}
+		})
+	}
+}
+
+var composeVersion = regexp.MustCompile(`v?([0-9]+)\.([0-9]+)`)
+
+// composeAvailable reports whether the installed Compose is 2.35 or newer,
+// the first release with `config --no-env-resolution`.
+func composeAvailable(t *testing.T) bool {
+	t.Helper()
+	for _, args := range [][]string{{"compose", "version", "--short"}, {"compose", "version"}} {
+		out, err := exec.Command("docker", args...).Output()
+		if err != nil {
+			continue
+		}
+		m := composeVersion.FindStringSubmatch(string(out))
+		if m == nil {
+			continue
+		}
+		major, _ := strconv.Atoi(m[1])
+		minor, _ := strconv.Atoi(m[2])
+		return major > 2 || (major == 2 && minor >= 35)
+	}
+	return false
+}
+
+// TestCheckAgainstRealCompose runs every fixture that Compose can load through
+// the installed `docker compose`, so the allow-list is compared with what
+// Compose really prints. Reasons may name the fixture's absolute path where
+// the pure test names /work, so only Where and Option are compared.
+func TestCheckAgainstRealCompose(t *testing.T) {
+	if !composeAvailable(t) {
+		t.Skip("docker compose 2.35 or newer is not installed")
+	}
+	dir := filepath.Join("testdata", "policy")
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range policyCases {
+		if tc.pureOnly {
+			continue
+		}
+		t.Run(tc.name, func(t *testing.T) {
+			yml := strings.TrimSuffix(tc.file, ".json") + ".yml"
+			cmd := exec.Command("docker", "compose", "-p", "policy", "-f", yml,
+				"config", "--format", "json", "--no-env-resolution")
+			cmd.Dir = dir
+			b, err := cmd.Output()
+			if err != nil {
+				t.Fatalf("docker compose config %s: %v", yml, err)
+			}
+			m, err := ParseModel(b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p := tc.policy
+			p.WorkDir = absDir
+			got := Check(m, p)
+			if !sameWhereOption(got, tc.want) {
+				t.Errorf("Check() = %+v, want Where and Option of %+v", got, tc.want)
+			}
+			for _, v := range got {
+				if v.Reason == "" {
+					t.Errorf("violation %+v has an empty Reason", v)
+				}
+			}
+		})
+	}
+}
+
+func sameWhereOption(got, want []Violation) bool {
+	keys := func(vs []Violation) []string {
+		out := make([]string, 0, len(vs))
+		for _, v := range vs {
+			out = append(out, v.Where+"\x00"+v.Option)
+		}
+		sort.Strings(out)
+		return out
+	}
+	g, w := keys(got), keys(want)
+	if len(g) != len(w) {
+		return false
+	}
+	for i := range g {
+		if g[i] != w[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestInside(t *testing.T) {
+	base := t.TempDir()
+	checkout := filepath.Join(base, "checkout")
+	if err := os.MkdirAll(filepath.Join(checkout, "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(checkout, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(checkout, "escape")); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name    string
+		workDir string
+		path    string
+		want    bool
+	}{
+		{"inside", checkout, filepath.Join(checkout, "app"), true},
+		{"the checkout itself", checkout, checkout, true},
+		{"outside", checkout, outside, false},
+		{"climbing out", checkout, filepath.Join(checkout, "..", "outside"), false},
+		{"sibling with the same prefix", checkout, checkout + "-other", false},
+		{"symlinked checkout, resolved path", link, filepath.Join(checkout, "app"), true},
+		{"symlinked checkout, path as given", link, filepath.Join(link, "app"), true},
+		{"symlink out of the checkout is not followed", checkout, filepath.Join(checkout, "escape", "file"), true},
+		{"missing checkout falls back to text", filepath.Join(base, "missing"), filepath.Join(base, "missing", "app"), true},
+		{"no checkout", "", filepath.Join(checkout, "app"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := inside(tc.workDir, tc.path); got != tc.want {
+				t.Errorf("inside(%q, %q) = %v, want %v", tc.workDir, tc.path, got, tc.want)
 			}
 		})
 	}

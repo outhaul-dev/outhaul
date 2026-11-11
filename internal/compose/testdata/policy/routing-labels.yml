@@ -1,0 +1,10 @@
+name: policy
+services:
+  web:
+    image: nginx:1.27
+    labels:
+      Outhaul.App: example
+      TRAEFIK.ENABLE: "true"
+      example.com/team: platform
+    label_file:
+      - ./routing.labels

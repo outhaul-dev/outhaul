@@ -3,6 +3,7 @@ package compose
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -28,21 +29,29 @@ type Violation struct {
 	Reason string
 }
 
-// Check returns every way m breaks p. The allow-list runs only in strict mode.
+// Check returns every way m breaks p. The allow-list runs in strict mode; the
+// routing-label rule runs whenever p.RoutingLabels is set, strict or not.
+// Violations are ordered by Where, keeping the order the keys were checked.
 func Check(m Model, p Policy) []Violation {
-	if !p.Strict {
-		return nil
-	}
 	var out []Violation
-	for _, s := range m.Services {
-		out = append(out, checkService(m, s)...)
+	if p.Strict {
+		out = append(out, checkTopLevel(m, p)...)
+		for _, s := range m.Services {
+			out = append(out, checkService(m, s, p)...)
+		}
 	}
+	if p.RoutingLabels {
+		for _, s := range m.Services {
+			out = append(out, checkRoutingLabels(s)...)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Where < out[j].Where })
 	return out
 }
 
 // checkService walks one service's keys in sorted order against the three
 // sets: allowed as written, allowed with a check, and refused by name.
-func checkService(m Model, s Service) []Violation {
+func checkService(m Model, s Service, p Policy) []Violation {
 	where := fmt.Sprintf("service %q", s.Name)
 	var out []Violation
 	add := func(option, reason string) {
@@ -50,7 +59,7 @@ func checkService(m Model, s Service) []Violation {
 	}
 	for _, key := range sortedKeys(s.Raw) {
 		if check, ok := conditionalKeys[key]; ok {
-			check(m, s.Raw[key], add)
+			check(m, s.Raw[key], p, add)
 			continue
 		}
 		if reason, ok := refusedKeys[key]; ok {
@@ -62,13 +71,214 @@ func checkService(m Model, s Service) []Violation {
 		}
 		add(key, unknownKeyReason)
 	}
+	if _, builds := s.Raw["build"]; builds && strings.HasPrefix(s.Image, "outhaul/") {
+		add("image", "an image under outhaul/ is reserved for Outhaul's rollback images.")
+	}
 	return out
 }
 
 const (
-	unknownKeyReason = "this key is not in the server's Compose allow-list."
-	unexpectedShape  = "this option could not be read."
+	unknownKeyReason     = "this key is not in the server's Compose allow-list."
+	unknownSectionReason = "this section is not in the server's Compose allow-list."
+	unexpectedShape      = "this option could not be read."
 )
+
+// topLevelSections are the only standard top-level sections strict mode
+// allows. A key whose lowercased name starts with x- is an extension field and
+// is also allowed; anchors written there are resolved into services and
+// checked there.
+var topLevelSections = map[string]struct{}{
+	"name":     {},
+	"services": {},
+	"volumes":  {},
+	"networks": {},
+	"secrets":  {},
+	"configs":  {},
+}
+
+// checkTopLevel walks the model's top-level keys in sorted order. Section
+// entries are checked against the spec's tables.
+func checkTopLevel(m Model, p Policy) []Violation {
+	var out []Violation
+	for _, key := range sortedKeys(m.Raw) {
+		if strings.HasPrefix(strings.ToLower(key), "x-") {
+			continue
+		}
+		if _, ok := topLevelSections[key]; !ok {
+			out = append(out, Violation{Where: "compose file", Option: key, Reason: unknownSectionReason})
+			continue
+		}
+		switch key {
+		case "volumes":
+			out = append(out, checkSection(m, "volumes", "volume", func(name, key string, fields map[string]json.RawMessage, add func(string, string)) {
+				checkVolumeField(m.Project, name, key, fields, add)
+			})...)
+		case "networks":
+			out = append(out, checkSection(m, "networks", "network", func(name, key string, fields map[string]json.RawMessage, add func(string, string)) {
+				checkNetworkField(m.Project, name, key, fields, p, add)
+			})...)
+		case "secrets", "configs":
+			section := key
+			out = append(out, checkSection(m, section, strings.TrimSuffix(section, "s"), func(name, key string, fields map[string]json.RawMessage, add func(string, string)) {
+				checkFileField(m.Project, section, name, key, fields, add)
+			})...)
+		}
+	}
+	return out
+}
+
+// checkSection decodes one top-level section's entries and walks each entry's
+// keys in sorted order.
+func checkSection(m Model, section, noun string, check func(name, key string, fields map[string]json.RawMessage, add func(string, string))) []Violation {
+	entries := sectionEntries(m, section)
+	var out []Violation
+	for _, name := range sortedKeys(entries) {
+		where := fmt.Sprintf("%s %q", noun, name)
+		add := func(option, reason string) {
+			out = append(out, Violation{Where: where, Option: option, Reason: reason})
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(entries[name], &fields); err != nil {
+			add(section, unexpectedShape)
+			continue
+		}
+		for _, key := range sortedKeys(fields) {
+			check(name, key, fields, add)
+		}
+	}
+	return out
+}
+
+func checkVolumeField(project, name, key string, fields map[string]json.RawMessage, add func(string, string)) {
+	switch key {
+	case "labels":
+	case "name":
+		if !isExternal(fields) && !hasDefaultName(project, name, fields[key]) {
+			add("name", "the volume's name must be the default one.")
+		}
+	case "driver":
+		var driver string
+		if err := json.Unmarshal(fields[key], &driver); err != nil {
+			add("driver", unexpectedShape)
+			return
+		}
+		if driver != "local" {
+			add("driver", "only the local driver is allowed.")
+		}
+	case "driver_opts":
+		add("driver_opts", "driver options can turn a named volume into a host path.")
+	case "external":
+		add("external", "an external volume is not managed by this stack.")
+	default:
+		add(key, unknownKeyReason)
+	}
+}
+
+func checkNetworkField(project, name, key string, fields map[string]json.RawMessage, p Policy, add func(string, string)) {
+	switch key {
+	case "labels", "internal", "attachable", "enable_ipv4", "enable_ipv6":
+	case "name":
+		if isExternal(fields) {
+			return // external networks are checked on the external key
+		}
+		if !hasDefaultName(project, name, fields[key]) {
+			add("name", "the network's name must be the default one.")
+		}
+	case "driver":
+		var driver string
+		if err := json.Unmarshal(fields[key], &driver); err != nil {
+			add("driver", unexpectedShape)
+			return
+		}
+		if driver != "bridge" {
+			add("driver", "only the bridge driver is allowed.")
+		}
+	case "driver_opts":
+		add("driver_opts", "network driver options are not allowed.")
+	case "external":
+		if !isExternal(fields) {
+			return
+		}
+		var externalName string
+		if raw, ok := fields["name"]; ok {
+			if err := json.Unmarshal(raw, &externalName); err != nil {
+				add("external", unexpectedShape)
+				return
+			}
+		} else {
+			externalName = name
+		}
+		if externalName != p.Network {
+			add("external", "a stack may only join the server's shared network.")
+		}
+	case "ipam":
+		var ipam map[string]json.RawMessage
+		if err := json.Unmarshal(fields[key], &ipam); err != nil {
+			add("ipam", unexpectedShape)
+			return
+		}
+		for _, k := range sortedKeys(ipam) {
+			switch k {
+			case "config":
+				add("ipam.config", "a fixed subnet is not allowed; Docker chooses the network's addresses.")
+			case "driver":
+				add("ipam.driver", "an IPAM driver is not allowed.")
+			default:
+				add("ipam."+k, unknownKeyReason)
+			}
+		}
+	default:
+		add(key, unknownKeyReason)
+	}
+}
+
+func checkFileField(project, section, name, key string, fields map[string]json.RawMessage, add func(string, string)) {
+	noun := "secret"
+	alt := "environment"
+	if section == "configs" {
+		noun, alt = "config", "content"
+	}
+	switch key {
+	case "environment", "content", "labels":
+	case "name":
+		if !isExternal(fields) && !hasDefaultName(project, name, fields[key]) {
+			add("name", "the "+noun+"'s name must be the default one.")
+		}
+	case "file":
+		add("file", "a "+noun+" from a host file is not allowed. Define it with "+alt+" instead.")
+	case "external":
+		add("external", "an external "+noun+" is not allowed. Define it with "+alt+" instead.")
+	case "driver":
+		add("driver", "a "+noun+" driver is not allowed.")
+	case "driver_opts":
+		add("driver_opts", "driver options are not allowed.")
+	case "template_driver":
+		add("template_driver", "a template driver is not allowed.")
+	default:
+		add(key, unknownKeyReason)
+	}
+}
+
+// isExternal reports whether a top-level entry sets external: true. An
+// external entry's name is chosen by its Compose key, not by the default rule.
+func isExternal(fields map[string]json.RawMessage) bool {
+	raw, ok := fields["external"]
+	if !ok {
+		return false
+	}
+	var external bool
+	return json.Unmarshal(raw, &external) == nil && external
+}
+
+// hasDefaultName reports whether a top-level entry's name is the
+// <project>_<key> Compose gives it when name is unset.
+func hasDefaultName(project, key string, raw json.RawMessage) bool {
+	var name string
+	if err := json.Unmarshal(raw, &name); err != nil {
+		return false
+	}
+	return name == project+"_"+key
+}
 
 // allowedKeys are the service keys the spec allows as written.
 var allowedKeys = map[string]struct{}{
@@ -152,11 +362,10 @@ var refusedKeys = map[string]string{
 }
 
 // serviceCheck reads one conditional key and reports what it refuses.
-type serviceCheck func(m Model, raw json.RawMessage, add func(option, reason string))
+type serviceCheck func(m Model, raw json.RawMessage, p Policy, add func(option, reason string))
 
-// conditionalKeys are allowed only after a check. build, labels, label_file
-// and env_file are checked with paths and labels in a later task; for now
-// they pass.
+// conditionalKeys are allowed only after a check. labels is allowed as
+// written; the routing-label rule reads the merged map separately.
 var conditionalKeys = map[string]serviceCheck{
 	"volumes":       checkVolumes,
 	"volumes_from":  checkVolumesFrom,
@@ -172,15 +381,15 @@ var conditionalKeys = map[string]serviceCheck{
 	"pre_stop":      checkHooks("pre_stop"),
 	"deploy":        checkDeploy,
 	"oom_score_adj": checkOOMScoreAdj,
-	"build":         allowServiceKey,
+	"build":         checkBuild,
 	"labels":        allowServiceKey,
-	"label_file":    allowServiceKey,
-	"env_file":      allowServiceKey,
+	"label_file":    checkLabelFiles,
+	"env_file":      checkEnvFiles,
 }
 
-func allowServiceKey(Model, json.RawMessage, func(string, string)) {}
+func allowServiceKey(Model, json.RawMessage, Policy, func(string, string)) {}
 
-func checkVolumes(_ Model, raw json.RawMessage, add func(string, string)) {
+func checkVolumes(_ Model, raw json.RawMessage, _ Policy, add func(string, string)) {
 	var vols []struct {
 		Type string `json:"type"`
 	}
@@ -201,7 +410,7 @@ func checkVolumes(_ Model, raw json.RawMessage, add func(string, string)) {
 	}
 }
 
-func checkVolumesFrom(_ Model, raw json.RawMessage, add func(string, string)) {
+func checkVolumesFrom(_ Model, raw json.RawMessage, _ Policy, add func(string, string)) {
 	var refs []string
 	if err := json.Unmarshal(raw, &refs); err != nil {
 		add("volumes_from", unexpectedShape)
@@ -214,7 +423,7 @@ func checkVolumesFrom(_ Model, raw json.RawMessage, add func(string, string)) {
 	}
 }
 
-func checkNetworkMode(_ Model, raw json.RawMessage, add func(string, string)) {
+func checkNetworkMode(_ Model, raw json.RawMessage, _ Policy, add func(string, string)) {
 	var mode string
 	if err := json.Unmarshal(raw, &mode); err != nil {
 		add("network_mode", unexpectedShape)
@@ -225,7 +434,7 @@ func checkNetworkMode(_ Model, raw json.RawMessage, add func(string, string)) {
 	}
 }
 
-func checkPID(_ Model, raw json.RawMessage, add func(string, string)) {
+func checkPID(_ Model, raw json.RawMessage, _ Policy, add func(string, string)) {
 	var mode string
 	if err := json.Unmarshal(raw, &mode); err != nil {
 		add("pid", unexpectedShape)
@@ -236,7 +445,7 @@ func checkPID(_ Model, raw json.RawMessage, add func(string, string)) {
 	}
 }
 
-func checkIPC(_ Model, raw json.RawMessage, add func(string, string)) {
+func checkIPC(_ Model, raw json.RawMessage, _ Policy, add func(string, string)) {
 	var mode string
 	if err := json.Unmarshal(raw, &mode); err != nil {
 		add("ipc", unexpectedShape)
@@ -251,7 +460,7 @@ func checkIPC(_ Model, raw json.RawMessage, add func(string, string)) {
 	}
 }
 
-func checkCgroup(_ Model, raw json.RawMessage, add func(string, string)) {
+func checkCgroup(_ Model, raw json.RawMessage, _ Policy, add func(string, string)) {
 	var mode string
 	if err := json.Unmarshal(raw, &mode); err != nil {
 		add("cgroup", unexpectedShape)
@@ -262,7 +471,7 @@ func checkCgroup(_ Model, raw json.RawMessage, add func(string, string)) {
 	}
 }
 
-func checkSecurityOpt(_ Model, raw json.RawMessage, add func(string, string)) {
+func checkSecurityOpt(_ Model, raw json.RawMessage, _ Policy, add func(string, string)) {
 	var opts []string
 	if err := json.Unmarshal(raw, &opts); err != nil {
 		add("security_opt", unexpectedShape)
@@ -276,7 +485,7 @@ func checkSecurityOpt(_ Model, raw json.RawMessage, add func(string, string)) {
 	}
 }
 
-func checkNetworks(_ Model, raw json.RawMessage, add func(string, string)) {
+func checkNetworks(_ Model, raw json.RawMessage, _ Policy, add func(string, string)) {
 	var nets map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &nets); err != nil {
 		add("networks", unexpectedShape)
@@ -307,10 +516,206 @@ func checkNetworks(_ Model, raw json.RawMessage, add func(string, string)) {
 	}
 }
 
+// checkEnvFiles keeps every env_file path inside the checkout.
+func checkEnvFiles(_ Model, raw json.RawMessage, p Policy, add func(string, string)) {
+	var files []struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(raw, &files); err != nil {
+		add("env_file", unexpectedShape)
+		return
+	}
+	for _, f := range files {
+		if !inside(p.WorkDir, f.Path) {
+			add("env_file", "env_file must stay inside the checkout.")
+		}
+	}
+}
+
+// checkLabelFiles keeps every label_file path inside the checkout. Compose
+// has already merged the labels it adds into Service.Labels.
+func checkLabelFiles(_ Model, raw json.RawMessage, p Policy, add func(string, string)) {
+	var files []string
+	if err := json.Unmarshal(raw, &files); err != nil {
+		add("label_file", unexpectedShape)
+		return
+	}
+	for _, f := range files {
+		if !inside(p.WorkDir, f) {
+			add("label_file", "label_file must stay inside the checkout.")
+		}
+	}
+}
+
+// checkBuild walks a service's build section against the spec's table.
+func checkBuild(m Model, raw json.RawMessage, p Policy, add func(string, string)) {
+	var build map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &build); err != nil {
+		add("build", unexpectedShape)
+		return
+	}
+	for _, key := range sortedKeys(build) {
+		switch key {
+		case "context":
+			checkBuildContext(p, build[key], "build.context", add)
+		case "additional_contexts":
+			var contexts map[string]json.RawMessage
+			if err := json.Unmarshal(build[key], &contexts); err != nil {
+				add("build.additional_contexts", unexpectedShape)
+				continue
+			}
+			for _, name := range sortedKeys(contexts) {
+				checkBuildContext(p, contexts[name], "build.additional_contexts."+name, add)
+			}
+		case "dockerfile":
+			checkDockerfile(build, p, add)
+		case "network":
+			var network string
+			if err := json.Unmarshal(build[key], &network); err != nil {
+				add("build.network", unexpectedShape)
+				continue
+			}
+			if network != "default" && network != "none" {
+				add("build.network", "the build network must be default or none.")
+			}
+		case "secrets":
+			checkBuildSecrets(m, build[key], add)
+		case "args", "dockerfile_inline", "extra_hosts", "labels", "no_cache",
+			"platforms", "pull", "shm_size", "target", "ulimits":
+		case "tags":
+			var tags []string
+			if err := json.Unmarshal(build[key], &tags); err != nil {
+				add("build.tags", unexpectedShape)
+				continue
+			}
+			for _, tag := range tags {
+				if strings.HasPrefix(tag, "outhaul/") {
+					add("build.tags", "a tag under outhaul/ is reserved for Outhaul's rollback images.")
+				}
+			}
+		case "privileged":
+			add("build.privileged", "a privileged build is not allowed.")
+		case "entitlements":
+			add("build.entitlements", "build entitlements are not allowed.")
+		case "ssh":
+			add("build.ssh", "SSH agent forwarding in a build is not allowed.")
+		case "cache_from":
+			add("build.cache_from", "pulling build cache from another image is not allowed.")
+		case "cache_to":
+			add("build.cache_to", "writing build cache to another image is not allowed.")
+		case "isolation":
+			add("build.isolation", "choosing an isolation mode is not allowed.")
+		default:
+			add("build."+key, unknownKeyReason)
+		}
+	}
+}
+
+// checkBuildContext allows a path inside the checkout, a Git or HTTP URL,
+// docker-image://, and a named target or service. A local path is absolute in
+// the model; oci-layout is refused.
+func checkBuildContext(p Policy, raw json.RawMessage, option string, add func(string, string)) {
+	var context string
+	if err := json.Unmarshal(raw, &context); err != nil {
+		add(option, unexpectedShape)
+		return
+	}
+	switch {
+	case strings.HasPrefix(context, "oci-layout://"):
+		add(option, "an oci-layout build context is not allowed.")
+	case filepath.IsAbs(context) && !inside(p.WorkDir, context):
+		add(option, "the build context must stay inside the checkout.")
+	}
+}
+
+// checkDockerfile keeps the Dockerfile inside the checkout. It is relative to
+// the build context, so a local context is joined before the check.
+func checkDockerfile(build map[string]json.RawMessage, p Policy, add func(string, string)) {
+	var dockerfile string
+	if err := json.Unmarshal(build["dockerfile"], &dockerfile); err != nil {
+		add("build.dockerfile", unexpectedShape)
+		return
+	}
+	if filepath.IsAbs(dockerfile) {
+		if !inside(p.WorkDir, dockerfile) {
+			add("build.dockerfile", "the Dockerfile must stay inside the checkout.")
+		}
+		return
+	}
+	var context string
+	if raw, ok := build["context"]; ok {
+		_ = json.Unmarshal(raw, &context)
+	}
+	if filepath.IsAbs(context) {
+		if !inside(p.WorkDir, context) {
+			return // the context is already refused
+		}
+		if !inside(p.WorkDir, filepath.Join(context, dockerfile)) {
+			add("build.dockerfile", "the Dockerfile must stay inside the checkout.")
+		}
+		return
+	}
+	clean := filepath.Clean(dockerfile)
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		add("build.dockerfile", "the Dockerfile must stay inside the checkout.")
+	}
+}
+
+// checkBuildSecrets allows only secrets defined with environment. A file
+// secret is a bind mount of that host path at build time.
+func checkBuildSecrets(m Model, raw json.RawMessage, add func(string, string)) {
+	var refs []struct {
+		Source string `json:"source"`
+	}
+	if err := json.Unmarshal(raw, &refs); err != nil {
+		add("build.secrets", unexpectedShape)
+		return
+	}
+	defs := sectionEntries(m, "secrets")
+	for _, ref := range refs {
+		definition := defs[ref.Source]
+		if len(definition) == 0 {
+			continue
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(definition, &fields); err != nil {
+			add("build.secrets", unexpectedShape)
+			continue
+		}
+		if _, ok := fields["environment"]; !ok {
+			add("build.secrets", "a build secret must be defined with environment.")
+		}
+	}
+}
+
+// checkRoutingLabels refuses traefik.* and outhaul.* labels in any case. The
+// merged map includes what a label_file adds.
+func checkRoutingLabels(s Service) []Violation {
+	if len(s.Labels) == 0 {
+		return nil
+	}
+	where := fmt.Sprintf("service %q", s.Name)
+	keys := make([]string, 0, len(s.Labels))
+	for k := range s.Labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var out []Violation
+	for _, k := range keys {
+		switch {
+		case strings.HasPrefix(strings.ToLower(k), "traefik."):
+			out = append(out, Violation{Where: where, Option: "labels." + k, Reason: "a traefik.* label would add a route Outhaul did not write. Outhaul writes the routing labels."})
+		case strings.HasPrefix(strings.ToLower(k), "outhaul."):
+			out = append(out, Violation{Where: where, Option: "labels." + k, Reason: "an outhaul.* label is reserved for Outhaul."})
+		}
+	}
+	return out
+}
+
 // checkRefs refuses a service's secrets or configs that come from a host file
 // or are external: both are the file the service would otherwise get.
 func checkRefs(section, noun string) serviceCheck {
-	return func(m Model, raw json.RawMessage, add func(string, string)) {
+	return func(m Model, raw json.RawMessage, _ Policy, add func(string, string)) {
 		var refs []struct {
 			Source string `json:"source"`
 		}
@@ -354,7 +759,7 @@ func sectionEntries(m Model, section string) map[string]json.RawMessage {
 // the rest of a hook with the service's own image and networking, so only
 // privileged is a choice the file made.
 func checkHooks(key string) serviceCheck {
-	return func(_ Model, raw json.RawMessage, add func(string, string)) {
+	return func(_ Model, raw json.RawMessage, _ Policy, add func(string, string)) {
 		var hooks []map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &hooks); err != nil {
 			add(key, unexpectedShape)
@@ -368,7 +773,7 @@ func checkHooks(key string) serviceCheck {
 	}
 }
 
-func checkDeploy(_ Model, raw json.RawMessage, add func(string, string)) {
+func checkDeploy(_ Model, raw json.RawMessage, _ Policy, add func(string, string)) {
 	var deploy struct {
 		Resources struct {
 			Reservations map[string]json.RawMessage `json:"reservations"`
@@ -386,7 +791,7 @@ func checkDeploy(_ Model, raw json.RawMessage, add func(string, string)) {
 	}
 }
 
-func checkOOMScoreAdj(_ Model, raw json.RawMessage, add func(string, string)) {
+func checkOOMScoreAdj(_ Model, raw json.RawMessage, _ Policy, add func(string, string)) {
 	var n int64
 	if err := json.Unmarshal(raw, &n); err != nil {
 		add("oom_score_adj", unexpectedShape)
@@ -404,4 +809,30 @@ func sortedKeys(m map[string]json.RawMessage) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// inside reports whether p is inside workDir. Both are compared as text after
+// filepath.Clean; workDir is also tried as EvalSymlinks resolves it, because
+// Compose may print the resolved path of a checkout reached through a symlink.
+// Symlinks inside the checkout are not followed.
+func inside(workDir, p string) bool {
+	if workDir == "" {
+		return false
+	}
+	if within(filepath.Clean(workDir), filepath.Clean(p)) {
+		return true
+	}
+	resolved, err := filepath.EvalSymlinks(workDir)
+	if err != nil {
+		return false
+	}
+	return within(filepath.Clean(resolved), filepath.Clean(p))
+}
+
+func within(dir, p string) bool {
+	rel, err := filepath.Rel(dir, p)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }

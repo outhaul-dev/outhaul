@@ -1,0 +1,7 @@
+name: policy
+x-common: &common
+  image: nginx:1.27
+  privileged: true
+services:
+  web:
+    <<: *common

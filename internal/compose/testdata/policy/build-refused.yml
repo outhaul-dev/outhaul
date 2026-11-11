@@ -1,0 +1,44 @@
+name: policy
+services:
+  outside:
+    image: example/outside:1
+    build:
+      context: ../outside
+  oci:
+    image: example/oci:1
+    build:
+      context: oci-layout://example/base:1
+  dockerfile:
+    image: example/dockerfile:1
+    build:
+      context: .
+      dockerfile: ../Dockerfile
+  nethost:
+    image: example/nethost:1
+    build:
+      context: .
+      network: host
+  netother:
+    image: example/netother:1
+    build:
+      context: .
+      network: example
+  secretfile:
+    image: example/secretfile:1
+    build:
+      context: .
+      secrets:
+        - filebad
+  tagouthaul:
+    image: example/tags:1
+    build:
+      context: .
+      tags:
+        - outhaul/tags:rollback
+  imageouthaul:
+    image: outhaul/image:latest
+    build:
+      context: .
+secrets:
+  filebad:
+    file: ./missing.txt

@@ -1,0 +1,14 @@
+name: policy
+services:
+  web:
+    image: example/web:1.2
+    env_file:
+      - ./app.env
+      - ../outside.env
+    label_file:
+      - ./labels.labels
+    build:
+      context: .
+      additional_contexts:
+        inside: ./data
+        outside: ../data

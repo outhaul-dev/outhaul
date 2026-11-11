@@ -1,0 +1,123 @@
+{
+  "name": "policy",
+  "networks": {
+    "default": {
+      "name": "policy_default",
+      "ipam": {}
+    }
+  },
+  "secrets": {
+    "filebad": {
+      "name": "policy_filebad",
+      "file": "/work/missing.txt"
+    }
+  },
+  "services": {
+    "dockerfile": {
+      "command": null,
+      "entrypoint": null,
+      "image": "example/dockerfile:1",
+      "networks": {
+        "default": null
+      },
+      "build": {
+        "context": "/work",
+        "dockerfile": "../Dockerfile"
+      }
+    },
+    "imageouthaul": {
+      "command": null,
+      "entrypoint": null,
+      "image": "outhaul/image:latest",
+      "networks": {
+        "default": null
+      },
+      "build": {
+        "context": "/work",
+        "dockerfile": "Dockerfile"
+      }
+    },
+    "nethost": {
+      "command": null,
+      "entrypoint": null,
+      "image": "example/nethost:1",
+      "networks": {
+        "default": null
+      },
+      "build": {
+        "context": "/work",
+        "dockerfile": "Dockerfile",
+        "network": "host"
+      }
+    },
+    "netother": {
+      "command": null,
+      "entrypoint": null,
+      "image": "example/netother:1",
+      "networks": {
+        "default": null
+      },
+      "build": {
+        "context": "/work",
+        "dockerfile": "Dockerfile",
+        "network": "example"
+      }
+    },
+    "oci": {
+      "command": null,
+      "entrypoint": null,
+      "image": "example/oci:1",
+      "networks": {
+        "default": null
+      },
+      "build": {
+        "context": "oci-layout://example/base:1",
+        "dockerfile": "Dockerfile"
+      }
+    },
+    "outside": {
+      "command": null,
+      "entrypoint": null,
+      "image": "example/outside:1",
+      "networks": {
+        "default": null
+      },
+      "build": {
+        "context": "/outside",
+        "dockerfile": "Dockerfile"
+      }
+    },
+    "secretfile": {
+      "command": null,
+      "entrypoint": null,
+      "image": "example/secretfile:1",
+      "networks": {
+        "default": null
+      },
+      "build": {
+        "context": "/work",
+        "dockerfile": "Dockerfile",
+        "secrets": [
+          {
+            "source": "filebad"
+          }
+        ]
+      }
+    },
+    "tagouthaul": {
+      "command": null,
+      "entrypoint": null,
+      "image": "example/tags:1",
+      "networks": {
+        "default": null
+      },
+      "build": {
+        "context": "/work",
+        "dockerfile": "Dockerfile",
+        "tags": [
+          "outhaul/tags:rollback"
+        ]
+      }
+    }
+  }
+}

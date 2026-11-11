@@ -1,0 +1,44 @@
+name: policy
+services:
+  web:
+    image: example/web:1.2
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      network: none
+      args:
+        A: one
+      labels:
+        team: example
+      no_cache: true
+      extra_hosts:
+        - "example.com:127.0.0.1"
+      platforms:
+        - linux/amd64
+      pull: true
+      shm_size: 64m
+      target: prod
+      ulimits:
+        nofile: 1024
+      tags:
+        - example/web:1.2
+      additional_contexts:
+        svc: service:db
+        image: docker-image://alpine:3.20
+        giturl: https://example.com/repo.git
+      secrets:
+        - token
+  inline:
+    image: example/inline:1
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM alpine
+      network: default
+  db:
+    image: example/db:1.0
+    build:
+      context: .
+secrets:
+  token:
+    environment: TOKEN

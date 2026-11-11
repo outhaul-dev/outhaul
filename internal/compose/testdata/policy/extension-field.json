@@ -1,0 +1,14 @@
+{
+  "name": "policy",
+  "X-EXTRA": {
+    "image": "example/web:1.0"
+  },
+  "x-more": {
+    "note": "example"
+  },
+  "services": {
+    "web": {
+      "image": "nginx:1.27"
+    }
+  }
+}
