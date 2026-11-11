@@ -267,6 +267,11 @@ func TestEveryRouterCarriesTheHeader(t *testing.T) {
 		if !strings.Contains(string(data), suffix) {
 			t.Errorf("tunnel %v: the admin rule does not end with the header term:\n%s", tunnel, data)
 		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.Contains(line, "rule:") && !strings.HasSuffix(strings.TrimSpace(line), `"`) {
+				t.Errorf("tunnel %v: the admin rule is not one YAML scalar: %s", tunnel, line)
+			}
+		}
 	}
 }
 

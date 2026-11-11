@@ -416,11 +416,12 @@ func adminDynamicConfig(pc ProxyConfig, entrypoint, tlsBlock string) string {
 	if port == "" {
 		port = "8080"
 	}
+	rule := "Host(`" + pc.AdminHost + "`)" + pc.Routing.headerTerm()
 	return fmt.Sprintf(`# Managed by Outhaul — routes the admin UI. Do not edit by hand.
 http:
   routers:
     outhaul-admin:
-      rule: "Host(`+"`%s`"+`)"%s
+      rule: "%s"
       entryPoints:
         - %s
       service: outhaul-admin%s
@@ -429,5 +430,5 @@ http:
       loadBalancer:
         servers:
           - url: "http://host.docker.internal:%s"
-`, pc.AdminHost, pc.Routing.headerTerm(), entrypoint, tlsBlock, port)
+`, rule, entrypoint, tlsBlock, port)
 }
