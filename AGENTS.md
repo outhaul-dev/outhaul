@@ -24,6 +24,7 @@ sh deploy/test/run.sh  # installer unit tests (CI: when deploy/** changes)
 shellcheck -s sh --severity=warning deploy/bootstrap.sh deploy/update.sh deploy/test/*.sh
 
 sh deploy/test/integration_gate.sh  # protected-route labels on a real Traefik (not in CI)
+sh deploy/test/integration_azure.sh  # the Azure Blob client against Azurite (not in CI)
 sh deploy/dev/run.sh   # the full stack in a container, against the host Docker daemon
 ```
 
