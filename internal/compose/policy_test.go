@@ -322,12 +322,14 @@ var policyCases = []policyCase{
 		want: []Violation{
 			{Where: `secret "filebad"`, Option: "file"},
 			{Where: `service "dockerfile"`, Option: "build.dockerfile"},
+			{Where: `service "imagedh"`, Option: "image"},
 			{Where: `service "imageouthaul"`, Option: "image"},
 			{Where: `service "nethost"`, Option: "build.network"},
 			{Where: `service "netother"`, Option: "build.network"},
 			{Where: `service "oci"`, Option: "build.context"},
 			{Where: `service "outside"`, Option: "build.context"},
 			{Where: `service "secretfile"`, Option: "build.secrets"},
+			{Where: `service "tagdh"`, Option: "build.tags"},
 			{Where: `service "tagouthaul"`, Option: "build.tags"},
 		},
 	},
@@ -509,6 +511,30 @@ func sameWhereOption(got, want []Violation) bool {
 		}
 	}
 	return true
+}
+
+func TestReservedImage(t *testing.T) {
+	cases := []struct {
+		ref  string
+		want bool
+	}{
+		{"outhaul/app:1", true},
+		{"outhaul/app", true},
+		{"docker.io/outhaul/app:1", true},
+		{"index.docker.io/outhaul/app:1", true},
+		{"registry-1.docker.io/outhaul/app:1", true},
+		{"outhaul", true},
+		{"example.com/outhaul/app:1", false},
+		{"example/outhaul:1", false},
+		{"myouthaul/app:1", false},
+		{"outhaul-dev/app:1", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := reservedImage(tc.ref); got != tc.want {
+			t.Errorf("reservedImage(%q) = %v, want %v", tc.ref, got, tc.want)
+		}
+	}
 }
 
 func TestInside(t *testing.T) {

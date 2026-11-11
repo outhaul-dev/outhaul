@@ -71,7 +71,7 @@ func checkService(m Model, s Service, p Policy) []Violation {
 		}
 		add(key, unknownKeyReason)
 	}
-	if _, builds := s.Raw["build"]; builds && strings.HasPrefix(s.Image, "outhaul/") {
+	if _, builds := s.Raw["build"]; builds && reservedImage(s.Image) {
 		add("image", "an image under outhaul/ is reserved for Outhaul's rollback images.")
 	}
 	return out
@@ -547,6 +547,22 @@ func checkLabelFiles(_ Model, raw json.RawMessage, p Policy, add func(string, st
 	}
 }
 
+// reservedImage reports whether ref names a repository under outhaul/, where
+// Outhaul keeps every app's rollback images. Docker resolves a reference with
+// a Docker Hub registry prefix to the same repository as the short name, so
+// the prefix is stripped first. A reference with no slash is compared as its
+// only component, which refuses a bare "outhaul" conservatively.
+func reservedImage(ref string) bool {
+	for _, prefix := range []string{"registry-1.docker.io/", "index.docker.io/", "docker.io/"} {
+		if rest, ok := strings.CutPrefix(ref, prefix); ok {
+			ref = rest
+			break
+		}
+	}
+	repository, _, _ := strings.Cut(ref, "/")
+	return repository == "outhaul"
+}
+
 // checkBuild walks a service's build section against the spec's table.
 func checkBuild(m Model, raw json.RawMessage, p Policy, add func(string, string)) {
 	var build map[string]json.RawMessage
@@ -589,7 +605,7 @@ func checkBuild(m Model, raw json.RawMessage, p Policy, add func(string, string)
 				continue
 			}
 			for _, tag := range tags {
-				if strings.HasPrefix(tag, "outhaul/") {
+				if reservedImage(tag) {
 					add("build.tags", "a tag under outhaul/ is reserved for Outhaul's rollback images.")
 				}
 			}

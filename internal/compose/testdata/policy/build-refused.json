@@ -25,6 +25,18 @@
         "dockerfile": "../Dockerfile"
       }
     },
+    "imagedh": {
+      "command": null,
+      "entrypoint": null,
+      "image": "docker.io/outhaul/image:latest",
+      "networks": {
+        "default": null
+      },
+      "build": {
+        "context": "/work",
+        "dockerfile": "Dockerfile"
+      }
+    },
     "imageouthaul": {
       "command": null,
       "entrypoint": null,
@@ -101,6 +113,21 @@
           {
             "source": "filebad"
           }
+        ]
+      }
+    },
+    "tagdh": {
+      "command": null,
+      "entrypoint": null,
+      "image": "example/tagdh:1",
+      "networks": {
+        "default": null
+      },
+      "build": {
+        "context": "/work",
+        "dockerfile": "Dockerfile",
+        "tags": [
+          "docker.io/outhaul/tags:rollback"
         ]
       }
     },

@@ -35,8 +35,18 @@ services:
       context: .
       tags:
         - outhaul/tags:rollback
+  tagdh:
+    image: example/tagdh:1
+    build:
+      context: .
+      tags:
+        - docker.io/outhaul/tags:rollback
   imageouthaul:
     image: outhaul/image:latest
+    build:
+      context: .
+  imagedh:
+    image: docker.io/outhaul/image:latest
     build:
       context: .
 secrets:
