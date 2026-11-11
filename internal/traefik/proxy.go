@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -45,8 +44,10 @@ type ProxyConfig struct {
 	ACME           bool // Let's Encrypt automation on (websecure + ACME resolver)
 	ACMEEmail      string
 	ACMEStaging    bool
-	HTTPSPort      string // host port for :443
-	ACMEStorageDir string // host dir bind-mounted for acme.json
+	DNSProvider    string   // lego DNS-01 provider code; "" uses the HTTP challenge
+	DNSEnv         []string // "NAME=value" variables passed to Traefik for the provider
+	HTTPSPort      string   // host port for :443
+	ACMEStorageDir string   // host dir bind-mounted for acme.json
 
 	// LocalCA serves HTTPS from Outhaul-minted certs instead of ACME: the
 	// websecure entrypoint and redirect are on, no ACME flags are emitted,
@@ -78,6 +79,17 @@ type ProxyConfig struct {
 	// host ports, and runs no ACME/redirect (Cloudflare terminates TLS at its
 	// edge). The admin route, if any, is published over plain HTTP.
 	TunnelMode bool
+
+	// Routing carries the server-wide routing settings routers are written
+	// from. proxySpec reads HTTPOff here; later settings (a wildcard, a
+	// required header) join it. ACME, LocalCA and TunnelMode stay ProxyConfig's
+	// own fields.
+	Routing Routing
+
+	// GateHost is the address host.docker.internal maps to; "" uses Docker's
+	// host-gateway. The admin port is closed to every other address with
+	// OUTHAUL_ADMIN_DIRECT=off, so Traefik must reach this one.
+	GateHost string
 }
 
 // adminRoutingEnabled reports whether the admin UI should be published
@@ -129,7 +141,21 @@ func EnsureProxy(ctx context.Context, dc docker.Client, pc ProxyConfig, logOut i
 
 	// (Re)create needed. Pull FIRST so a pull failure never leaves us with no proxy.
 	if err := dc.PullImage(ctx, pc.Image, logOut); err != nil {
-		return fmt.Errorf("pull traefik image: %w", err)
+		if pc.Routing.Constraint() == "" {
+			return fmt.Errorf("pull traefik image: %w", err)
+		}
+		// A header is required: the old Traefik has no constraint, so it must
+		// not keep serving. Use the local image when it is there; a change of
+		// flags alone never needs a pull. Otherwise stop the old one.
+		local, lerr := dc.ListImages(ctx, pc.Image)
+		if lerr != nil || len(local) == 0 {
+			if existing != nil && existing.Running() {
+				if stopErr := dc.StopContainer(ctx, existing.ID, proxyStopTimeout); stopErr != nil {
+					return fmt.Errorf("pull traefik image: %w; stopping the old Traefik, which has no constraint for the required header, failed: %v", err, stopErr)
+				}
+			}
+			return fmt.Errorf("pull traefik image: %w", err)
+		}
 	}
 	if existing != nil {
 		if existing.Running() {
@@ -166,7 +192,7 @@ func ProxyMapsGateHost(ctx context.Context, dc docker.Client, pc ProxyConfig) (m
 	pc.ProtectedRoutes = true
 	on := proxySpec(pc)
 	if have == on.Labels["outhaul.config-hash"] {
-		return slices.Contains(on.ExtraHosts, "host.docker.internal:host-gateway"), true
+		return mapsGateHost(on.ExtraHosts, pc.GateHost), true
 	}
 	pc.ProtectedRoutes = false
 	if have == proxySpec(pc).Labels["outhaul.config-hash"] {
@@ -175,16 +201,44 @@ func ProxyMapsGateHost(ctx context.Context, dc docker.Client, pc ProxyConfig) (m
 	return false, false
 }
 
+// mapsGateHost reports whether extra hosts maps host.docker.internal, either
+// to the host gateway or to the configured gateway address.
+func mapsGateHost(extraHosts []string, gateHost string) bool {
+	for _, h := range extraHosts {
+		if h == "host.docker.internal:host-gateway" {
+			return true
+		}
+		if gateHost != "" && h == "host.docker.internal:"+gateHost {
+			return true
+		}
+	}
+	return false
+}
+
+// ProxyFlags returns the flags and environment proxySpec gives the managed
+// Traefik container, for the real-Traefik scripts so they run the code Outhaul
+// runs rather than a copy of it.
+func ProxyFlags(pc ProxyConfig) (cmd, env []string) {
+	spec := proxySpec(pc)
+	return spec.Cmd, spec.Env
+}
+
 // proxySpec builds the desired Traefik container spec (deterministic), stamping a
 // config hash so drift can be detected on the next boot.
 func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 	cmd := []string{
 		"--providers.docker=true",
 		"--providers.docker.exposedbydefault=false",
-		"--entrypoints.web.address=:80",
+	}
+	if constraint := pc.Routing.Constraint(); constraint != "" {
+		cmd = append(cmd, "--providers.docker.constraints="+constraint)
+	}
+	httpOff := pc.Routing.HTTPOff && !pc.TunnelMode
+	if !httpOff {
+		cmd = append(cmd, "--entrypoints.web.address=:80")
 	}
 	var ports []docker.PortMapping
-	if !pc.TunnelMode {
+	if !pc.TunnelMode && !httpOff {
 		// In tunnel mode the only way in is the tunnel, so publish nothing.
 		ports = []docker.PortMapping{{HostPort: pc.HTTPPort, ContainerPort: "80", Proto: "tcp"}}
 	}
@@ -209,21 +263,42 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 		mounts = append(mounts, docker.Mount{Source: pc.DynamicDir, Target: "/etc/traefik/dynamic", ReadOnly: true})
 	}
 	if pc.adminRoutingEnabled() || pc.ProtectedRoutes {
-		extraHosts = append(extraHosts, "host.docker.internal:host-gateway")
+		host := "host.docker.internal:host-gateway"
+		if pc.GateHost != "" {
+			host = "host.docker.internal:" + pc.GateHost
+		}
+		extraHosts = append(extraHosts, host)
 	}
 
 	if (pc.ACME || pc.LocalCA) && !pc.TunnelMode {
-		cmd = append(cmd,
-			"--entrypoints.websecure.address=:443",
-			"--entrypoints.web.http.redirections.entrypoint.to=websecure",
-			"--entrypoints.web.http.redirections.entrypoint.scheme=https",
-		)
+		cmd = append(cmd, "--entrypoints.websecure.address=:443")
+		if pc.ACME && pc.Routing.Wildcard != "" {
+			cmd = append(cmd,
+				"--entrypoints.websecure.http.tls.certresolver=le",
+				"--entrypoints.websecure.http.tls.domains[0].main="+pc.Routing.Wildcard,
+			)
+		}
+		if !httpOff {
+			cmd = append(cmd,
+				"--entrypoints.web.http.redirections.entrypoint.to=websecure",
+				"--entrypoints.web.http.redirections.entrypoint.scheme=https",
+			)
+		}
 		ports = append(ports, docker.PortMapping{HostPort: pc.HTTPSPort, ContainerPort: "443", Proto: "tcp"})
 	}
 	if pc.ACME && !pc.TunnelMode {
+		if pc.DNSProvider != "" {
+			cmd = append(cmd,
+				"--certificatesresolvers.le.acme.dnschallenge=true",
+				"--certificatesresolvers.le.acme.dnschallenge.provider="+pc.DNSProvider,
+			)
+		} else {
+			cmd = append(cmd,
+				"--certificatesresolvers.le.acme.httpchallenge=true",
+				"--certificatesresolvers.le.acme.httpchallenge.entrypoint=web",
+			)
+		}
 		cmd = append(cmd,
-			"--certificatesresolvers.le.acme.httpchallenge=true",
-			"--certificatesresolvers.le.acme.httpchallenge.entrypoint=web",
 			"--certificatesresolvers.le.acme.email="+pc.ACMEEmail,
 			"--certificatesresolvers.le.acme.storage=/etc/traefik/acme/acme.json",
 		)
@@ -231,6 +306,9 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 			cmd = append(cmd, "--certificatesresolvers.le.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory")
 		}
 		mounts = append(mounts, docker.Mount{Source: pc.ACMEStorageDir, Target: "/etc/traefik/acme", ReadOnly: false})
+	}
+	if pc.ACME && !pc.TunnelMode {
+		env = append(env, pc.DNSEnv...)
 	}
 	if pc.LocalCA && !pc.TunnelMode {
 		mounts = append(mounts, docker.Mount{Source: pc.CertsDir, Target: localca.ContainerCertsDir, ReadOnly: true})
@@ -299,10 +377,6 @@ func writeAdminDynamicConfig(pc ProxyConfig) error {
 	if err := os.MkdirAll(pc.DynamicDir, 0o700); err != nil {
 		return err
 	}
-	port := pc.AdminPort
-	if port == "" {
-		port = "8080"
-	}
 	entrypoint, tlsBlock := "websecure", "\n      tls:\n        certResolver: le"
 	switch {
 	case pc.TunnelMode:
@@ -310,8 +384,12 @@ func writeAdminDynamicConfig(pc ProxyConfig) error {
 	case pc.LocalCA:
 		// Cert comes from the file-provider tls store, not a resolver.
 		entrypoint, tlsBlock = "websecure", "\n      tls: {}"
+	case WildcardCovers(pc.Routing.Wildcard, pc.AdminHost):
+		// The entrypoint's wildcard covers this host: it inherits the
+		// resolver and certificate, so it must name no tls setting.
+		tlsBlock = ""
 	}
-	return os.WriteFile(path, []byte(adminDynamicConfig(pc.AdminHost, port, entrypoint, tlsBlock)), 0o644)
+	return os.WriteFile(path, []byte(adminDynamicConfig(pc, entrypoint, tlsBlock)), 0o644)
 }
 
 // removeStaleLocalCertsConfig clears localca's file-provider cert list when
@@ -335,12 +413,17 @@ func removeStaleLocalCertsConfig(pc ProxyConfig) error {
 // sits on the plain-HTTP web entrypoint; under LocalCA it uses the
 // file-provider tls store (tls: {}); otherwise it uses websecure with an
 // on-demand Let's Encrypt cert.
-func adminDynamicConfig(host, port, entrypoint, tlsBlock string) string {
+func adminDynamicConfig(pc ProxyConfig, entrypoint, tlsBlock string) string {
+	port := pc.AdminPort
+	if port == "" {
+		port = "8080"
+	}
+	rule := "Host(`" + pc.AdminHost + "`)" + pc.Routing.headerTerm()
 	return fmt.Sprintf(`# Managed by Outhaul — routes the admin UI. Do not edit by hand.
 http:
   routers:
     outhaul-admin:
-      rule: "Host(`+"`%s`"+`)"
+      rule: "%s"
       entryPoints:
         - %s
       service: outhaul-admin%s
@@ -349,5 +432,5 @@ http:
       loadBalancer:
         servers:
           - url: "http://host.docker.internal:%s"
-`, host, entrypoint, tlsBlock, port)
+`, rule, entrypoint, tlsBlock, port)
 }

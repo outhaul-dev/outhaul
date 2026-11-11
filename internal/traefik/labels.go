@@ -13,15 +13,12 @@ import (
 
 // AppLabels builds the full Docker-provider label set for a single-container
 // app (nixpacks/dockerfile) from its domain rows: the ownership markers once,
-// plus one router per domain against the container's port. globalTLS is the
-// server-wide switch (ACME configured or local CA active); a row is served
-// over HTTPS only when globalTLS is true and the row wants TLS: its own TLS
-// flag is on, or it is protected (core.Domain.WantsTLS).
-// certResolver is "le" under ACME and empty under the local CA, where the
-// file provider supplies certs by SNI instead of a resolver. gateAddress is
-// the forward-auth address protected rows call (config.GateAddress). With no
-// domains the app is internal-only (traefik.enable=false).
-func AppLabels(app core.App, domains []core.Domain, port int, globalTLS bool, certResolver, gateAddress string) map[string]string {
+// plus one router per domain against the container's port. rt carries the
+// server-wide settings; a row is served over HTTPS only when rt.TLS is true
+// and the row wants TLS: its own TLS flag is on, or it is protected
+// (core.Domain.WantsTLS). With no domains the app is internal-only
+// (traefik.enable=false).
+func AppLabels(app core.App, domains []core.Domain, port int, rt Routing) map[string]string {
 	labels := map[string]string{
 		"traefik.enable":  "true",
 		"outhaul.managed": "true",
@@ -31,8 +28,11 @@ func AppLabels(app core.App, domains []core.Domain, port int, globalTLS bool, ce
 		labels["traefik.enable"] = "false"
 		return labels
 	}
+	if stamp := rt.Stamp(); stamp != "" {
+		labels[IngressLabel] = stamp
+	}
 	for _, d := range domains {
-		for k, v := range RouteLabels(RouterName(app.Name, d.ID), d.Host, port, d.Path, d.InternalPath, d.WantsTLS() && globalTLS, certResolver, d.Protected, gateAddress) {
+		for k, v := range RouteLabels(RouterName(app.Name, d.ID), d, port, rt) {
 			labels[k] = v
 		}
 	}
@@ -43,13 +43,11 @@ func AppLabels(app core.App, domains []core.Domain, port int, globalTLS bool, ce
 // host[/path]→port route. Router names must be unique across everything Traefik
 // sees; callers derive them via RouterName. A container carrying several routes
 // sets traefik.enable and the ownership labels once (see AppLabels / the compose
-// override). certResolver is "le" under ACME, which asks Traefik to obtain a
-// cert for the router; an empty resolver leaves the TLS router without one,
-// which is correct under the local CA, where the file provider serves a
-// pre-issued cert by SNI instead.
+// override). rt carries the server-wide settings; the row's own TLS flag and
+// protection decide whether it gets an HTTPS router under rt.TLS.
 //
 // Every router's middlewares start with identity. A protected route calls the
-// gate at gateAddress (forward auth) first, which answers with IdentityHeader
+// gate at rt.GateAddress (forward auth) first, which answers with IdentityHeader
 // for a signed-in visitor, then removes the header's other spellings
 // (identityAliases); an open route removes the header and its other
 // spellings, so an app that trusts the header can't be fooled on a route with
@@ -57,14 +55,14 @@ func AppLabels(app core.App, domains []core.Domain, port int, globalTLS bool, ce
 // provider: Traefik drops a router that references an undefined middleware,
 // and the request then falls through to an open router. They run before any
 // path rewrite, so the gate sees the URL the visitor asked for.
-func RouteLabels(router, host string, port int, urlPath, internalPath string, tlsEnabled bool, certResolver string, protected bool, gateAddress string) map[string]string {
-	rule := Rule(host, urlPath)
+func RouteLabels(router string, d core.Domain, port int, rt Routing) map[string]string {
+	rule := rt.Rule(d.Host, d.Path)
 	// Traefik ranks routers by the length of their rule unless one names a
 	// priority. The traversal term lengthens every rule, so each router names
 	// the length of its rule without it: the rank a container deployed before
 	// the term has, so that one and a redeployed one on the same host still
 	// order by path as they did.
-	priority := strconv.Itoa(len(addressRule(host, urlPath)))
+	priority := strconv.Itoa(len(addressRule(d.Host, d.Path)))
 	// The router names its service explicitly: a container with several
 	// domains defines several services, and Traefik's Docker provider drops
 	// any router it cannot link to exactly one.
@@ -75,22 +73,42 @@ func RouteLabels(router, host string, port int, urlPath, internalPath string, tl
 		"traefik.http.routers." + router + ".service":                   router,
 		"traefik.http.services." + router + ".loadbalancer.server.port": strconv.Itoa(port),
 	}
-	mws := identityMiddlewares(router, protected, gateAddress, labels)
-	mws = append(mws, rewriteMiddlewares(router, urlPath, internalPath, labels)...)
+	mws := identityMiddlewares(router, d.Protected, rt.GateAddress, labels)
+	mws = append(mws, rewriteMiddlewares(router, d.Path, d.InternalPath, labels)...)
 	labels["traefik.http.routers."+router+".middlewares"] = strings.Join(mws, ",")
-	if tlsEnabled {
+	if rt.HTTPOff && rt.TLS {
+		// No plain HTTP: every row is served over HTTPS whatever its own box
+		// says, with one router that keeps the row's base name so RowHasGate
+		// and the code matching a container's router to a row work unchanged.
+		labels["traefik.http.routers."+router+".entrypoints"] = "websecure"
+		addTLSLabels(labels, router, d.Host, rt)
+		return labels
+	}
+	if rt.routeWantsTLS(d) {
 		tls := router + "-tls"
 		labels["traefik.http.routers."+tls+".rule"] = rule
 		labels["traefik.http.routers."+tls+".priority"] = priority
 		labels["traefik.http.routers."+tls+".entrypoints"] = "websecure"
-		labels["traefik.http.routers."+tls+".tls"] = "true"
-		if certResolver != "" {
-			labels["traefik.http.routers."+tls+".tls.certresolver"] = certResolver
-		}
+		addTLSLabels(labels, tls, d.Host, rt)
 		labels["traefik.http.routers."+tls+".service"] = router
 		labels["traefik.http.routers."+tls+".middlewares"] = strings.Join(mws, ",")
 	}
 	return labels
+}
+
+// addTLSLabels writes a websecure router's TLS labels. A host the wildcard
+// covers gets none: it inherits the entrypoint's resolver and wildcard
+// certificate, so it never asks for its own. Every other host names its
+// resolver under Let's Encrypt, and the local CA leaves it to the file
+// provider.
+func addTLSLabels(labels map[string]string, router, host string, rt Routing) {
+	if rt.CertResolver != "" && WildcardCovers(rt.Wildcard, host) {
+		return
+	}
+	labels["traefik.http.routers."+router+".tls"] = "true"
+	if rt.CertResolver != "" {
+		labels["traefik.http.routers."+router+".tls.certresolver"] = rt.CertResolver
+	}
 }
 
 // IdentityHeader carries the signed-in visitor's identity to an app behind a
@@ -243,15 +261,6 @@ func addressRule(host, urlPath string) string {
 	return rule
 }
 
-// Rule is the router rule RouteLabels writes for a route on host, under
-// urlPath when it has one. It matches no path with a ".." segment in any
-// spelling: an app that decodes such a path before resolving it would serve
-// something outside the route, which may be a protected page, so the request
-// isn't routed at all.
-func Rule(host, urlPath string) string {
-	return addressRule(host, urlPath) + traversalTerm
-}
-
 // RuleAddress returns the host and path (or "") a router's rule names, when
 // it is a rule RouteLabels writes, or one an older Outhaul wrote without the
 // traversal term. Anything else has no address (ok is false). Two rules with
@@ -273,9 +282,35 @@ func RuleAddress(rule string) (host, urlPath string, ok bool) {
 		}
 	}
 	if rest != "" && rest != traversalTerm {
-		return "", "", false
+		withHeader, ok := strings.CutPrefix(rest, traversalTerm)
+		if !ok {
+			return "", "", false
+		}
+		if withHeader != "" {
+			if _, _, ok := parseHeaderTerm(withHeader); !ok {
+				return "", "", false
+			}
+		}
 	}
 	return host, urlPath, true
+}
+
+// parseHeaderTerm reads one " && Header(`name`, `value`)" term, with a
+// non-empty name and value and no backtick in either.
+func parseHeaderTerm(s string) (name, value string, ok bool) {
+	s, found := strings.CutPrefix(s, " && Header(`")
+	if !found {
+		return "", "", false
+	}
+	name, s, found = strings.Cut(s, "`, `")
+	if !found || name == "" || strings.Contains(name, "`") {
+		return "", "", false
+	}
+	value, s, found = strings.Cut(s, "`)")
+	if !found || value == "" || strings.Contains(value, "`") || s != "" {
+		return "", "", false
+	}
+	return name, value, true
 }
 
 // SameAddress reports whether rule (a router's rule label) names host and

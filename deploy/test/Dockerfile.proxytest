@@ -1,0 +1,25 @@
+# A privileged Debian with systemd and its own Docker daemon, running a real
+# Outhaul behind a stand-in CDN, for deploy/test/integration_proxy.sh.
+#
+# Outhaul needs its own daemon because its Traefik container's name is fixed,
+# so a second Outhaul cannot share a daemon with one that is already running.
+FROM golang:1.27 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o /outhaul . \
+    && CGO_ENABLED=0 go build -o /oidcstub ./deploy/test/oidcstub
+
+FROM debian:13
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        systemd systemd-sysv curl ca-certificates docker.io docker-cli nginx openssl python3 iproute2 git \
+    && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /usr/local/lib/docker/cli-plugins \
+    && curl -fsSL "https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64" \
+        -o /usr/local/lib/docker/cli-plugins/docker-compose \
+    && chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+COPY --from=build /outhaul /usr/local/bin/outhaul
+COPY --from=build /oidcstub /usr/local/bin/oidcstub
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

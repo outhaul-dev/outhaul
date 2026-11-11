@@ -338,6 +338,7 @@ func (s *Server) leftoverRoutes(ctx context.Context, app core.App, hosts map[str
 	if err != nil {
 		return nil, fmt.Errorf("list the containers: %w", err)
 	}
+	cs = s.served(cs)
 	running := map[string][]docker.Container{}
 	for _, c := range cs {
 		if name := c.Labels["outhaul.app"]; name != "" && name != app.Name && answers(c) {
@@ -1131,6 +1132,7 @@ func (s *Server) strayAccess(r *http.Request, rows []core.Domain, appName string
 	cs, err := s.runtime.ListContainers(ctx, map[string]string{"outhaul.managed": "true"})
 	var all []core.DomainListing
 	if err == nil {
+		cs = s.served(cs)
 		all, err = s.store.ListAllDomains(ctx)
 	}
 	if err != nil {

@@ -577,6 +577,51 @@ stub in place of Outhaul (not in CI). Its `--outhaul` mode uses a running
 Outhaul instead, but hasn't been run against one yet, and the whole flow with a
 real Outhaul and a real SSO provider hasn't been run end to end.
 
+### Behind a TLS-terminating proxy (opt-in)
+
+An install reached only through a CDN can turn on DNS-01 certificates and one
+wildcard (`OUTHAUL_ACME_DNS_PROVIDER`, `OUTHAUL_ACME_DNS_ENV`,
+`OUTHAUL_TLS_WILDCARD`), HTTPS only with no port 80 (`OUTHAUL_HTTP_PORT=off`),
+a required request header (`OUTHAUL_REQUIRE_HEADER_NAME`,
+`OUTHAUL_REQUIRE_HEADER_VALUE`), and an admin port only Traefik can reach
+(`OUTHAUL_ADMIN_DIRECT=off`). Each is independent; the user guide is
+`docs/BEHIND-A-PROXY.md`.
+
+**One value for the settings.** `traefik.Routing` carries the server-wide
+routing settings (`TLS`, `CertResolver`, `GateAddress`, `HTTPOff`, `Wildcard`,
+the required header) from `config` to every writer of a router: `AppLabels`,
+the Compose override, and the admin route. `traefik.RoutingFrom(cfg,
+tunnelOn)` builds it, and the deploy worker builds the same value per deploy,
+so a tunnel turns HTTPS routers off even when ACME is configured.
+
+**The rule's three parts.** A router's rule is its address (`Host`, then
+`PathPrefix` when the row has a path), the `!PathRegexp` traversal term, and
+the `Header` term when one is required. `priority` stays the length of the
+address alone. `traefik.RuleAddress` accepts an address, the address with the
+traversal term, and that followed by one header term; a container labelled
+under an earlier header value still has an address the pages can read. Code
+matching a container's router to a row compares addresses, never rule strings.
+
+**The stamp and the constraint.** When the header, `OUTHAUL_HTTP_PORT=off` or
+the wildcard is set, every routed container also carries
+`outhaul.ingress=<stamp>`, 12 hex characters of a hash of those settings.
+While a header is required, Traefik's Docker provider runs with
+`--providers.docker.constraints=Label(`outhaul.ingress`,`<stamp>`)`, so a
+container labelled under other settings has no routes at all. No label carries
+the stamp when none of the settings are set. At startup Outhaul redeploys the
+running apps whose containers are stale (`server.RedeployStale`), reusing the
+serving image where it can; Restart deploys instead of restarting a stale
+container. If the image pull fails while a header is required, `EnsureProxy`
+uses the local image or stops the old Traefik rather than leaving it serving
+without the check.
+
+**The admin listeners.** With `OUTHAUL_ADMIN_DIRECT=off`, Outhaul listens on
+loopback and on the host's address on its Docker network, and maps Traefik's
+`host.docker.internal` to that gateway instead of Docker's `host-gateway`.
+`server.served` filters the containers Traefik is ignoring out of the Access
+column, the Domains page and the "other app on this host" checks; the live
+state and mismatch checks still see every container.
+
 ---
 
 ## Package layout
@@ -625,8 +670,9 @@ outhaul/
 
     traefik/
         labels.go             # Labels(app) -> map[string]string   (PURE, table-driven tested); a protected row's gate, an open row's header strip
+        routing.go            # Routing: the server-wide settings, the rule's address/traversal/header terms, the wildcard, the stamp and constraint
         labels_test.go
-        proxy.go              # EnsureProxy(ctx, docker): create/adopt the Traefik container + network
+        proxy.go              # EnsureProxy(ctx, docker): create/adopt the Traefik container + network; its flags, ports, env and admin file-provider route
 
     builder/
         builder.go            # Builder interface: Build(ctx, BuildRequest) streaming logs -> image tag
@@ -701,6 +747,7 @@ outhaul/
         gate.go               # protected routes: /gate/check, Traefik's forward-auth call for every request to a protected row
         gate_signin.go        # protected routes: sign-in and sign-out on the public URL, one-time codes back to the app's host
         protection.go         # the "Require sign-in" switch: when it's available, the redeploy that applies it, the Access column
+        ingress.go            # startup redeploy of containers labelled under earlier routing settings; what Traefik actually serves
         handlers.go           # apps list/create, deploy trigger, deployment detail, domain rows
         catalog.go            # template gallery + one-click deploy-from-template
         databases.go          # managed-database pages: cross-project list, create, detail, lifecycle, settings

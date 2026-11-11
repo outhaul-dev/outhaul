@@ -58,6 +58,20 @@ func (r *real) ServerAPIVersion(ctx context.Context) string {
 	return ping.APIVersion
 }
 
+// NetworkGateway returns the first IPv4 gateway in the network's IPAM config.
+func (r *real) NetworkGateway(ctx context.Context, name string) (string, error) {
+	n, err := r.cli.NetworkInspect(ctx, name, network.InspectOptions{})
+	if err != nil {
+		return "", err
+	}
+	for _, cfg := range n.IPAM.Config {
+		if cfg.Gateway != "" && !strings.Contains(cfg.Gateway, ":") {
+			return cfg.Gateway, nil
+		}
+	}
+	return "", fmt.Errorf("network %q has no IPv4 gateway", name)
+}
+
 func (r *real) PullImage(ctx context.Context, ref string, out io.Writer) error {
 	rc, err := r.cli.ImagePull(ctx, ref, image.PullOptions{})
 	if err != nil {

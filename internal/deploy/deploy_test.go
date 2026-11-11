@@ -185,7 +185,7 @@ func TestPipelineHappyPath(t *testing.T) {
 	if c == nil || !c.Running() {
 		t.Fatalf("app container not running: %+v", c)
 	}
-	if c.Labels["traefik.http.routers.outhaul-web-d1.rule"] != traefik.Rule("web.test", "") {
+	if c.Labels["traefik.http.routers.outhaul-web-d1.rule"] != (traefik.Routing{}).Rule("web.test", "") {
 		t.Errorf("missing/incorrect traefik rule label: %v", c.Labels)
 	}
 	spec := lastCreatedNamed(t, h, "outhaul-app-web")
@@ -704,7 +704,7 @@ func TestNixpacksAppRoutesEveryDomainRow(t *testing.T) {
 	}
 }
 
-func TestEffectiveTLSHonoursTunnel(t *testing.T) {
+func TestRoutingHonoursTunnel(t *testing.T) {
 	ctx := context.Background()
 	box, err := secret.Load(filepath.Join(t.TempDir(), "key"))
 	if err != nil {
@@ -718,13 +718,13 @@ func TestEffectiveTLSHonoursTunnel(t *testing.T) {
 
 	w := &Worker{store: st, cfg: config.Config{ACMEEmail: "ops@example.com"}} // TLSEnabled() == true
 
-	if !w.effectiveTLS(ctx) {
+	if !w.routing(ctx).TLS {
 		t.Fatal("expected TLS on when ACME set and no tunnel")
 	}
 	if err := st.SetCloudflareToken(ctx, "tok"); err != nil {
 		t.Fatalf("SetCloudflareToken: %v", err)
 	}
-	if w.effectiveTLS(ctx) {
+	if w.routing(ctx).TLS {
 		t.Fatal("expected TLS off once the tunnel is enabled")
 	}
 }
@@ -761,5 +761,94 @@ func TestPipelineLabelsCarryTheGate(t *testing.T) {
 	}
 	if got := c.Labels["traefik.http.routers.outhaul-web-d2.middlewares"]; got != "outhaul-web-d2-noident" {
 		t.Errorf("open row middlewares = %q, want the identity strip", got)
+	}
+}
+
+// The build log's last line follows the server's routing settings: an
+// HTTPS-only install says https.
+func TestDoneLineIsHTTPSWhenHTTPOff(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  config.Config
+		want string
+	}{
+		{"HTTPS only", config.Config{LocalCA: true, HTTPOff: true}, "is live at https://"},
+		{"ordinary", config.Config{}, "is live at http://"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.worker.cfg.LocalCA = tc.cfg.LocalCA
+			h.worker.cfg.HTTPOff = tc.cfg.HTTPOff
+			ctx := context.Background()
+			app := h.app(t, "web")
+			dep := h.claimedDeployment(t, app.ID)
+			h.worker.runPipeline(ctx, dep)
+			if got := h.status(t, dep.ID); got.Status != core.StatusRunning {
+				t.Fatalf("status = %q (reason %q), want running", got.Status, got.Reason)
+			}
+			history, _, cancel := h.broker.Subscribe(dep.ID)
+			defer cancel()
+			if len(history) == 0 {
+				t.Fatal("no build log")
+			}
+			last := history[len(history)-1]
+			if !strings.Contains(last, tc.want) {
+				t.Errorf("last log line = %q, want it to contain %q", last, tc.want)
+			}
+		})
+	}
+}
+
+// While a request header is required, an image whose labels would give its
+// container a router Outhaul didn't write (and that lacks the header term) is
+// refused, whether it was just built or arrived with the deployment.
+func TestHeaderRequiredRefusesAnImageThatRoutesItself(t *testing.T) {
+	for _, reuse := range []bool{false, true} {
+		name := "built"
+		if reuse {
+			name = "reused"
+		}
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			h.worker.cfg.RequireHeaderName = "X-Azure-FDID"
+			h.worker.cfg.RequireHeaderValue = "abc-123"
+			ctx := context.Background()
+			app := h.app(t, "web")
+			dep := h.claimedDeployment(t, app.ID)
+			image := fmt.Sprintf("outhaul/%s:%d", app.Name, dep.ID)
+			if reuse {
+				image = "outhaul/web:reused"
+				dep.Image = image
+				dep.RollbackOf = 1
+			}
+			h.docker.ImageLabelsByRef = map[string]map[string]string{
+				image: {"traefik.http.routers.x.rule": "Host(`evil.example.com`)"},
+			}
+			h.worker.runPipeline(ctx, dep)
+			got := h.status(t, dep.ID)
+			if got.Status != core.StatusFailed || !strings.Contains(got.Reason, "traefik.http.routers.x.rule") {
+				t.Fatalf("status = %q (%q), want failed naming the label", got.Status, got.Reason)
+			}
+			for _, spec := range h.docker.Created {
+				if spec.Labels["traefik.enable"] == "true" {
+					t.Errorf("a routed container was created from the refused image: %s", spec.Name)
+				}
+			}
+		})
+	}
+}
+
+func TestNoHeaderAllowsAnImageWithTraefikLabels(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	app := h.app(t, "web")
+	dep := h.claimedDeployment(t, app.ID)
+	image := fmt.Sprintf("outhaul/%s:%d", app.Name, dep.ID)
+	h.docker.ImageLabelsByRef = map[string]map[string]string{
+		image: {"traefik.http.routers.x.rule": "Host(`own.example.com`)"},
+	}
+	h.worker.runPipeline(ctx, dep)
+	if got := h.status(t, dep.ID); got.Status != core.StatusRunning {
+		t.Fatalf("status = %q (%q), want running", got.Status, got.Reason)
 	}
 }

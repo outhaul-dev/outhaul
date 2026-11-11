@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -33,13 +34,20 @@ type Config struct {
 	CloudflaredImage string // image used for the managed cloudflared connector
 	Network          string // shared Docker network app containers + Traefik join
 
-	ACMEEmail       string        // Let's Encrypt account email; empty disables TLS
-	ACMEStaging     bool          // use the LE staging CA (avoid rate limits)
-	LocalCA         bool          // serve HTTPS from the built-in local CA (LAN installs; excludes ACME)
-	HTTPSPort       string        // host port for the websecure entrypoint
-	HealthTimeout   time.Duration // deploy health-check deadline
-	ImageKeep       int           // built images kept per app; 0 disables pruning
-	PruneBuildCache bool          // nightly prune of the daemon-wide build cache; off for a shared host
+	ACMEEmail          string        // Let's Encrypt account email; empty disables TLS
+	ACMEStaging        bool          // use the LE staging CA (avoid rate limits)
+	ACMEDNSProvider    string        // lego DNS-01 provider code; empty = HTTP-01
+	ACMEDNSEnv         []string      // "NAME=value" for each name in OUTHAUL_ACME_DNS_ENV, in order
+	TLSWildcard        string        // OUTHAUL_TLS_WILDCARD, lower-cased; empty = none
+	RequireHeaderName  string        // OUTHAUL_REQUIRE_HEADER_NAME; "" = no header required
+	RequireHeaderValue string        // OUTHAUL_REQUIRE_HEADER_VALUE, never printed
+	LocalCA            bool          // serve HTTPS from the built-in local CA (LAN installs; excludes ACME)
+	HTTPOff            bool          // publish no port 80: HTTPS only (OUTHAUL_HTTP_PORT=off)
+	HTTPSPort          string        // host port for the websecure entrypoint
+	HealthTimeout      time.Duration // deploy health-check deadline
+	ImageKeep          int           // built images kept per app; 0 disables pruning
+	PruneBuildCache    bool          // nightly prune of the daemon-wide build cache; off for a shared host
+	AdminDirect        bool          // the admin UI listens on every interface (default); false: loopback + the Docker gateway
 
 	PublicURL string // externally reachable base URL of the admin UI (for GitHub callbacks/webhooks); empty disables GitHub App setup
 	ServerIP  string // public IP used in generated sslip.io template domains; empty means auto-detect
@@ -65,13 +73,20 @@ func Load(getenv Getenv) Config {
 		CloudflaredImage: or(getenv("OUTHAUL_CLOUDFLARED_IMAGE"), DefaultCloudflaredImage),
 		Network:          or(getenv("OUTHAUL_NETWORK"), "outhaul"),
 
-		ACMEEmail:       firstField(getenv("OUTHAUL_ACME_EMAIL")),
-		ACMEStaging:     p.bool("OUTHAUL_ACME_STAGING"),
-		LocalCA:         p.bool("OUTHAUL_LOCAL_CA"),
-		HTTPSPort:       p.port("OUTHAUL_HTTPS_PORT", "443"),
-		HealthTimeout:   p.duration("OUTHAUL_HEALTH_TIMEOUT", 60*time.Second),
-		ImageKeep:       p.count("OUTHAUL_IMAGE_KEEP", 5),
-		PruneBuildCache: p.boolDefault("OUTHAUL_PRUNE_BUILD_CACHE", true),
+		ACMEEmail:          firstField(getenv("OUTHAUL_ACME_EMAIL")),
+		ACMEStaging:        p.bool("OUTHAUL_ACME_STAGING"),
+		ACMEDNSProvider:    p.dnsProvider("OUTHAUL_ACME_DNS_PROVIDER"),
+		ACMEDNSEnv:         p.dnsEnv("OUTHAUL_ACME_DNS_ENV"),
+		TLSWildcard:        p.wildcard("OUTHAUL_TLS_WILDCARD"),
+		RequireHeaderName:  p.headerName("OUTHAUL_REQUIRE_HEADER_NAME"),
+		RequireHeaderValue: p.headerValue("OUTHAUL_REQUIRE_HEADER_VALUE"),
+		LocalCA:            p.bool("OUTHAUL_LOCAL_CA"),
+		HTTPOff:            p.httpPort("OUTHAUL_HTTP_PORT"),
+		HTTPSPort:          p.port("OUTHAUL_HTTPS_PORT", "443"),
+		HealthTimeout:      p.duration("OUTHAUL_HEALTH_TIMEOUT", 60*time.Second),
+		ImageKeep:          p.count("OUTHAUL_IMAGE_KEEP", 5),
+		PruneBuildCache:    p.boolDefault("OUTHAUL_PRUNE_BUILD_CACHE", true),
+		AdminDirect:        p.boolDefault("OUTHAUL_ADMIN_DIRECT", true),
 
 		PublicURL: p.url("OUTHAUL_PUBLIC_URL"),
 		ServerIP:  p.ip("OUTHAUL_SERVER_IP"),
@@ -126,6 +141,9 @@ func (c Config) LocalCAEnabled() bool { return c.LocalCA }
 // the websecure entrypoint, redirects, and the per-domain TLS toggle.
 func (c Config) TLSEnabled() bool { return c.ACMEEnabled() || c.LocalCAEnabled() }
 
+// HeaderRequired reports whether every router must carry a request header.
+func (c Config) HeaderRequired() bool { return c.RequireHeaderName != "" }
+
 // CertResolver is the Traefik certresolver TLS routers should reference;
 // empty when certs come from the file provider (local CA) instead of ACME.
 func (c Config) CertResolver() string {
@@ -141,6 +159,37 @@ func (c Config) Validate() error {
 	errs := append([]error(nil), c.problems...)
 	if c.LocalCAEnabled() && c.ACMEEnabled() {
 		errs = append(errs, errors.New("OUTHAUL_LOCAL_CA and OUTHAUL_ACME_EMAIL are mutually exclusive: choose local-CA or Let's Encrypt HTTPS"))
+	}
+	if c.ACMEDNSProvider != "" && !c.ACMEEnabled() {
+		errs = append(errs, errors.New("OUTHAUL_ACME_DNS_PROVIDER needs OUTHAUL_ACME_EMAIL, where Let's Encrypt sends expiry notices"))
+	}
+	if len(c.ACMEDNSEnv) > 0 && c.ACMEDNSProvider == "" {
+		errs = append(errs, errors.New("OUTHAUL_ACME_DNS_ENV needs OUTHAUL_ACME_DNS_PROVIDER, the lego provider the named variables are for"))
+	}
+	if c.TLSWildcard != "" && c.ACMEDNSProvider == "" {
+		errs = append(errs, errors.New("OUTHAUL_TLS_WILDCARD needs OUTHAUL_ACME_DNS_PROVIDER: a wildcard certificate can only be validated by DNS-01"))
+	}
+	if c.RequireHeaderName != "" && c.RequireHeaderValue == "" {
+		errs = append(errs, errors.New("OUTHAUL_REQUIRE_HEADER_NAME needs OUTHAUL_REQUIRE_HEADER_VALUE"))
+	}
+	if c.RequireHeaderValue != "" && c.RequireHeaderName == "" {
+		errs = append(errs, errors.New("OUTHAUL_REQUIRE_HEADER_VALUE needs OUTHAUL_REQUIRE_HEADER_NAME"))
+	}
+	if !c.AdminDirect {
+		if !c.PublicURLSet() {
+			errs = append(errs, errors.New("OUTHAUL_ADMIN_DIRECT=off needs OUTHAUL_PUBLIC_URL, so the admin UI can be reached through Traefik"))
+		}
+		if host, _, err := net.SplitHostPort(c.ListenAddr); err == nil && host != "" {
+			errs = append(errs, errors.New("OUTHAUL_ADMIN_DIRECT=off needs OUTHAUL_LISTEN_ADDR to give a port but not a host, such as :8080"))
+		}
+	}
+	if c.HTTPOff {
+		switch {
+		case !c.TLSEnabled():
+			errs = append(errs, errors.New("OUTHAUL_HTTP_PORT=off needs HTTPS: set OUTHAUL_ACME_EMAIL or OUTHAUL_LOCAL_CA"))
+		case c.ACMEEnabled() && c.ACMEDNSProvider == "":
+			errs = append(errs, errors.New("OUTHAUL_HTTP_PORT=off with Let's Encrypt needs a DNS-01 challenge, because the HTTP challenge uses port 80: set OUTHAUL_ACME_DNS_PROVIDER"))
+		}
 	}
 	return errors.Join(errs...)
 }
@@ -273,6 +322,147 @@ func (p *parser) duration(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return d
+}
+
+var (
+	dnsProviderRe = regexp.MustCompile(`^[a-z0-9]+$`)
+	dnsEnvNameRe  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	headerNameRe  = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
+	headerValueRe = regexp.MustCompile(`^[A-Za-z0-9._~+/=:-]{1,256}$`)
+)
+
+// headerName reads OUTHAUL_REQUIRE_HEADER_NAME. A rejected name is reported
+// without its value; the name itself is not secret.
+func (p *parser) headerName(key string) string {
+	v := p.getenv(key)
+	if v == "" {
+		return ""
+	}
+	if !headerNameRe.MatchString(v) {
+		p.problems = append(p.problems, fmt.Errorf("%s: want a header name of letters, digits and -", key))
+		return ""
+	}
+	return v
+}
+
+// headerValue reads OUTHAUL_REQUIRE_HEADER_VALUE. Its characters are limited so
+// no rule writer or YAML emitter needs to escape it, and an error never
+// contains the value.
+func (p *parser) headerValue(key string) string {
+	v := p.getenv(key)
+	if v == "" {
+		return ""
+	}
+	if !headerValueRe.MatchString(v) {
+		p.problems = append(p.problems, fmt.Errorf("%s: want 1 to 256 of A-Z a-z 0-9 . _ ~ + / = : -", key))
+		return ""
+	}
+	return v
+}
+
+// dnsProvider reads OUTHAUL_ACME_DNS_PROVIDER: a lego DNS provider's code.
+func (p *parser) dnsProvider(key string) string {
+	v := p.getenv(key)
+	if v == "" {
+		return ""
+	}
+	if !dnsProviderRe.MatchString(v) {
+		p.reject(key, v, "a lego DNS provider code such as azuredns")
+		return ""
+	}
+	return v
+}
+
+// dnsEnv reads OUTHAUL_ACME_DNS_ENV: comma-separated names of environment
+// variables. It returns "NAME=value" pairs in the order given, so Traefik is
+// handed exactly those variables. Names are trimmed; an empty, invalid,
+// duplicated, or unset/empty name is reported by Validate, and a value never
+// appears in an error.
+func (p *parser) dnsEnv(key string) []string {
+	v := p.getenv(key)
+	if v == "" {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, raw := range strings.Split(v, ",") {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			p.problems = append(p.problems, fmt.Errorf("%s: an empty entry; want a comma-separated list of environment variable names", key))
+			continue
+		}
+		if !dnsEnvNameRe.MatchString(name) {
+			p.reject(key, name, "environment variable names such as AZURE_CLIENT_ID")
+			continue
+		}
+		if seen[name] {
+			p.problems = append(p.problems, fmt.Errorf("%s: %s is named twice", key, name))
+			continue
+		}
+		seen[name] = true
+		value := p.getenv(name)
+		if value == "" {
+			p.problems = append(p.problems, fmt.Errorf("%s: %s is not set or is empty", key, name))
+			continue
+		}
+		out = append(out, name+"="+value)
+	}
+	return out
+}
+
+// wildcard reads OUTHAUL_TLS_WILDCARD: "*." followed by a domain of at least
+// two labels, stored lower-cased. It is the one certificate every host exactly
+// one label under it is served with.
+func (p *parser) wildcard(key string) string {
+	raw := p.getenv(key)
+	if raw == "" {
+		return ""
+	}
+	v := strings.ToLower(raw)
+	if !validWildcard(v) {
+		p.reject(key, raw, "a wildcard such as *.shared.demo.example.com (at least two labels after *.)")
+		return ""
+	}
+	return v
+}
+
+// validWildcard reports whether v is "*." and a domain of at least two labels
+// of letters, digits and hyphens, none starting or ending with a hyphen.
+func validWildcard(v string) bool {
+	rest, ok := strings.CutPrefix(v, "*.")
+	if !ok {
+		return false
+	}
+	labels := strings.Split(rest, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	for _, l := range labels {
+		if l == "" || len(l) > 63 || l[0] == '-' || l[len(l)-1] == '-' {
+			return false
+		}
+		for i := 0; i < len(l); i++ {
+			c := l[i]
+			if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// httpPort reads OUTHAUL_HTTP_PORT: "80" keeps the plain-HTTP entrypoint,
+// "off" publishes no port 80. Empty keeps the default. Anything else is
+// reported by Validate.
+func (p *parser) httpPort(key string) bool {
+	switch strings.ToLower(p.getenv(key)) {
+	case "", "80":
+		return false
+	case "off":
+		return true
+	}
+	p.reject(key, p.getenv(key), "80 or off")
+	return false
 }
 
 // port parses a TCP port number.

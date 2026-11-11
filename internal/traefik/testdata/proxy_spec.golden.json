@@ -1,0 +1,366 @@
+{
+  "acme-admin-open": {
+    "cmd": [
+      "--providers.docker=true",
+      "--providers.docker.exposedbydefault=false",
+      "--entrypoints.web.address=:80",
+      "--providers.file.directory=/etc/traefik/dynamic",
+      "--providers.file.watch=true",
+      "--entrypoints.websecure.address=:443",
+      "--entrypoints.web.http.redirections.entrypoint.to=websecure",
+      "--entrypoints.web.http.redirections.entrypoint.scheme=https",
+      "--certificatesresolvers.le.acme.httpchallenge=true",
+      "--certificatesresolvers.le.acme.httpchallenge.entrypoint=web",
+      "--certificatesresolvers.le.acme.email=ops@example.com",
+      "--certificatesresolvers.le.acme.storage=/etc/traefik/acme/acme.json"
+    ],
+    "ports": [
+      {
+        "HostPort": "80",
+        "ContainerPort": "80",
+        "Proto": "tcp"
+      },
+      {
+        "HostPort": "443",
+        "ContainerPort": "443",
+        "Proto": "tcp"
+      }
+    ],
+    "env": [
+      "DOCKER_API_VERSION=1.44"
+    ],
+    "extra_hosts": [
+      "host.docker.internal:host-gateway"
+    ],
+    "config_hash": "ac67b0b4865a",
+    "admin_config": "# Managed by Outhaul — routes the admin UI. Do not edit by hand.\nhttp:\n  routers:\n    outhaul-admin:\n      rule: \"Host(`outhaul.example.com`)\"\n      entryPoints:\n        - websecure\n      service: outhaul-admin\n      tls:\n        certResolver: le\n  services:\n    outhaul-admin:\n      loadBalancer:\n        servers:\n          - url: \"http://host.docker.internal:8080\"\n"
+  },
+  "acme-admin-protected": {
+    "cmd": [
+      "--providers.docker=true",
+      "--providers.docker.exposedbydefault=false",
+      "--entrypoints.web.address=:80",
+      "--providers.file.directory=/etc/traefik/dynamic",
+      "--providers.file.watch=true",
+      "--entrypoints.websecure.address=:443",
+      "--entrypoints.web.http.redirections.entrypoint.to=websecure",
+      "--entrypoints.web.http.redirections.entrypoint.scheme=https",
+      "--certificatesresolvers.le.acme.httpchallenge=true",
+      "--certificatesresolvers.le.acme.httpchallenge.entrypoint=web",
+      "--certificatesresolvers.le.acme.email=ops@example.com",
+      "--certificatesresolvers.le.acme.storage=/etc/traefik/acme/acme.json"
+    ],
+    "ports": [
+      {
+        "HostPort": "80",
+        "ContainerPort": "80",
+        "Proto": "tcp"
+      },
+      {
+        "HostPort": "443",
+        "ContainerPort": "443",
+        "Proto": "tcp"
+      }
+    ],
+    "env": [
+      "DOCKER_API_VERSION=1.44"
+    ],
+    "extra_hosts": [
+      "host.docker.internal:host-gateway"
+    ],
+    "config_hash": "ac67b0b4865a",
+    "admin_config": "# Managed by Outhaul — routes the admin UI. Do not edit by hand.\nhttp:\n  routers:\n    outhaul-admin:\n      rule: \"Host(`outhaul.example.com`)\"\n      entryPoints:\n        - websecure\n      service: outhaul-admin\n      tls:\n        certResolver: le\n  services:\n    outhaul-admin:\n      loadBalancer:\n        servers:\n          - url: \"http://host.docker.internal:8080\"\n"
+  },
+  "acme-no-admin-open": {
+    "cmd": [
+      "--providers.docker=true",
+      "--providers.docker.exposedbydefault=false",
+      "--entrypoints.web.address=:80",
+      "--entrypoints.websecure.address=:443",
+      "--entrypoints.web.http.redirections.entrypoint.to=websecure",
+      "--entrypoints.web.http.redirections.entrypoint.scheme=https",
+      "--certificatesresolvers.le.acme.httpchallenge=true",
+      "--certificatesresolvers.le.acme.httpchallenge.entrypoint=web",
+      "--certificatesresolvers.le.acme.email=ops@example.com",
+      "--certificatesresolvers.le.acme.storage=/etc/traefik/acme/acme.json"
+    ],
+    "ports": [
+      {
+        "HostPort": "80",
+        "ContainerPort": "80",
+        "Proto": "tcp"
+      },
+      {
+        "HostPort": "443",
+        "ContainerPort": "443",
+        "Proto": "tcp"
+      }
+    ],
+    "env": [
+      "DOCKER_API_VERSION=1.44"
+    ],
+    "extra_hosts": null,
+    "config_hash": "0050c4cc5af6"
+  },
+  "acme-no-admin-protected": {
+    "cmd": [
+      "--providers.docker=true",
+      "--providers.docker.exposedbydefault=false",
+      "--entrypoints.web.address=:80",
+      "--entrypoints.websecure.address=:443",
+      "--entrypoints.web.http.redirections.entrypoint.to=websecure",
+      "--entrypoints.web.http.redirections.entrypoint.scheme=https",
+      "--certificatesresolvers.le.acme.httpchallenge=true",
+      "--certificatesresolvers.le.acme.httpchallenge.entrypoint=web",
+      "--certificatesresolvers.le.acme.email=ops@example.com",
+      "--certificatesresolvers.le.acme.storage=/etc/traefik/acme/acme.json"
+    ],
+    "ports": [
+      {
+        "HostPort": "80",
+        "ContainerPort": "80",
+        "Proto": "tcp"
+      },
+      {
+        "HostPort": "443",
+        "ContainerPort": "443",
+        "Proto": "tcp"
+      }
+    ],
+    "env": [
+      "DOCKER_API_VERSION=1.44"
+    ],
+    "extra_hosts": [
+      "host.docker.internal:host-gateway"
+    ],
+    "config_hash": "5587c8829a75"
+  },
+  "localca-admin-open": {
+    "cmd": [
+      "--providers.docker=true",
+      "--providers.docker.exposedbydefault=false",
+      "--entrypoints.web.address=:80",
+      "--providers.file.directory=/etc/traefik/dynamic",
+      "--providers.file.watch=true",
+      "--entrypoints.websecure.address=:443",
+      "--entrypoints.web.http.redirections.entrypoint.to=websecure",
+      "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+    ],
+    "ports": [
+      {
+        "HostPort": "80",
+        "ContainerPort": "80",
+        "Proto": "tcp"
+      },
+      {
+        "HostPort": "443",
+        "ContainerPort": "443",
+        "Proto": "tcp"
+      }
+    ],
+    "env": [
+      "DOCKER_API_VERSION=1.44"
+    ],
+    "extra_hosts": [
+      "host.docker.internal:host-gateway"
+    ],
+    "config_hash": "3138e054508e",
+    "admin_config": "# Managed by Outhaul — routes the admin UI. Do not edit by hand.\nhttp:\n  routers:\n    outhaul-admin:\n      rule: \"Host(`outhaul.example.com`)\"\n      entryPoints:\n        - websecure\n      service: outhaul-admin\n      tls: {}\n  services:\n    outhaul-admin:\n      loadBalancer:\n        servers:\n          - url: \"http://host.docker.internal:8080\"\n"
+  },
+  "localca-admin-protected": {
+    "cmd": [
+      "--providers.docker=true",
+      "--providers.docker.exposedbydefault=false",
+      "--entrypoints.web.address=:80",
+      "--providers.file.directory=/etc/traefik/dynamic",
+      "--providers.file.watch=true",
+      "--entrypoints.websecure.address=:443",
+      "--entrypoints.web.http.redirections.entrypoint.to=websecure",
+      "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+    ],
+    "ports": [
+      {
+        "HostPort": "80",
+        "ContainerPort": "80",
+        "Proto": "tcp"
+      },
+      {
+        "HostPort": "443",
+        "ContainerPort": "443",
+        "Proto": "tcp"
+      }
+    ],
+    "env": [
+      "DOCKER_API_VERSION=1.44"
+    ],
+    "extra_hosts": [
+      "host.docker.internal:host-gateway"
+    ],
+    "config_hash": "3138e054508e",
+    "admin_config": "# Managed by Outhaul — routes the admin UI. Do not edit by hand.\nhttp:\n  routers:\n    outhaul-admin:\n      rule: \"Host(`outhaul.example.com`)\"\n      entryPoints:\n        - websecure\n      service: outhaul-admin\n      tls: {}\n  services:\n    outhaul-admin:\n      loadBalancer:\n        servers:\n          - url: \"http://host.docker.internal:8080\"\n"
+  },
+  "localca-no-admin-open": {
+    "cmd": [
+      "--providers.docker=true",
+      "--providers.docker.exposedbydefault=false",
+      "--entrypoints.web.address=:80",
+      "--providers.file.directory=/etc/traefik/dynamic",
+      "--providers.file.watch=true",
+      "--entrypoints.websecure.address=:443",
+      "--entrypoints.web.http.redirections.entrypoint.to=websecure",
+      "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+    ],
+    "ports": [
+      {
+        "HostPort": "80",
+        "ContainerPort": "80",
+        "Proto": "tcp"
+      },
+      {
+        "HostPort": "443",
+        "ContainerPort": "443",
+        "Proto": "tcp"
+      }
+    ],
+    "env": [
+      "DOCKER_API_VERSION=1.44"
+    ],
+    "extra_hosts": null,
+    "config_hash": "c5d7e52cbe1a"
+  },
+  "localca-no-admin-protected": {
+    "cmd": [
+      "--providers.docker=true",
+      "--providers.docker.exposedbydefault=false",
+      "--entrypoints.web.address=:80",
+      "--providers.file.directory=/etc/traefik/dynamic",
+      "--providers.file.watch=true",
+      "--entrypoints.websecure.address=:443",
+      "--entrypoints.web.http.redirections.entrypoint.to=websecure",
+      "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+    ],
+    "ports": [
+      {
+        "HostPort": "80",
+        "ContainerPort": "80",
+        "Proto": "tcp"
+      },
+      {
+        "HostPort": "443",
+        "ContainerPort": "443",
+        "Proto": "tcp"
+      }
+    ],
+    "env": [
+      "DOCKER_API_VERSION=1.44"
+    ],
+    "extra_hosts": [
+      "host.docker.internal:host-gateway"
+    ],
+    "config_hash": "3138e054508e"
+  },
+  "plain-open": {
+    "cmd": [
+      "--providers.docker=true",
+      "--providers.docker.exposedbydefault=false",
+      "--entrypoints.web.address=:80"
+    ],
+    "ports": [
+      {
+        "HostPort": "80",
+        "ContainerPort": "80",
+        "Proto": "tcp"
+      }
+    ],
+    "env": [
+      "DOCKER_API_VERSION=1.44"
+    ],
+    "extra_hosts": null,
+    "config_hash": "3eba453e3f94"
+  },
+  "plain-protected": {
+    "cmd": [
+      "--providers.docker=true",
+      "--providers.docker.exposedbydefault=false",
+      "--entrypoints.web.address=:80"
+    ],
+    "ports": [
+      {
+        "HostPort": "80",
+        "ContainerPort": "80",
+        "Proto": "tcp"
+      }
+    ],
+    "env": [
+      "DOCKER_API_VERSION=1.44"
+    ],
+    "extra_hosts": [
+      "host.docker.internal:host-gateway"
+    ],
+    "config_hash": "f804dc7b83b6"
+  },
+  "tunnel-admin-open": {
+    "cmd": [
+      "--providers.docker=true",
+      "--providers.docker.exposedbydefault=false",
+      "--entrypoints.web.address=:80",
+      "--providers.file.directory=/etc/traefik/dynamic",
+      "--providers.file.watch=true"
+    ],
+    "ports": null,
+    "env": [
+      "DOCKER_API_VERSION=1.44"
+    ],
+    "extra_hosts": [
+      "host.docker.internal:host-gateway"
+    ],
+    "config_hash": "c2790fc366e4",
+    "admin_config": "# Managed by Outhaul — routes the admin UI. Do not edit by hand.\nhttp:\n  routers:\n    outhaul-admin:\n      rule: \"Host(`outhaul.example.com`)\"\n      entryPoints:\n        - web\n      service: outhaul-admin\n  services:\n    outhaul-admin:\n      loadBalancer:\n        servers:\n          - url: \"http://host.docker.internal:8080\"\n"
+  },
+  "tunnel-admin-protected": {
+    "cmd": [
+      "--providers.docker=true",
+      "--providers.docker.exposedbydefault=false",
+      "--entrypoints.web.address=:80",
+      "--providers.file.directory=/etc/traefik/dynamic",
+      "--providers.file.watch=true"
+    ],
+    "ports": null,
+    "env": [
+      "DOCKER_API_VERSION=1.44"
+    ],
+    "extra_hosts": [
+      "host.docker.internal:host-gateway"
+    ],
+    "config_hash": "c2790fc366e4",
+    "admin_config": "# Managed by Outhaul — routes the admin UI. Do not edit by hand.\nhttp:\n  routers:\n    outhaul-admin:\n      rule: \"Host(`outhaul.example.com`)\"\n      entryPoints:\n        - web\n      service: outhaul-admin\n  services:\n    outhaul-admin:\n      loadBalancer:\n        servers:\n          - url: \"http://host.docker.internal:8080\"\n"
+  },
+  "tunnel-no-admin-open": {
+    "cmd": [
+      "--providers.docker=true",
+      "--providers.docker.exposedbydefault=false",
+      "--entrypoints.web.address=:80"
+    ],
+    "ports": null,
+    "env": [
+      "DOCKER_API_VERSION=1.44"
+    ],
+    "extra_hosts": null,
+    "config_hash": "0c01a78358e8"
+  },
+  "tunnel-no-admin-protected": {
+    "cmd": [
+      "--providers.docker=true",
+      "--providers.docker.exposedbydefault=false",
+      "--entrypoints.web.address=:80"
+    ],
+    "ports": null,
+    "env": [
+      "DOCKER_API_VERSION=1.44"
+    ],
+    "extra_hosts": [
+      "host.docker.internal:host-gateway"
+    ],
+    "config_hash": "d9b7829b8d3f"
+  }
+}

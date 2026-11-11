@@ -84,6 +84,7 @@ type Manager struct {
 
 	proxy          ProxyControl               // reconciles Traefik before a preview that requires sign-in deploys; nil: none
 	protectedHTTPS func(context.Context) bool // whether protected rows are served over HTTPS; nil: no
+	httpsOnly      bool                       // the server publishes no plain HTTP; every preview link uses https
 }
 
 // defaultGateHostWait bounds how long a spawn waits for the proxy reconcile a
@@ -111,6 +112,10 @@ func (m *Manager) SetProxyControl(p ProxyControl) { m.proxy = p }
 // whatever their own TLS flag: on a TLS server, or through a tunnel, whose
 // edge terminates TLS. Preview links follow it. Call it before Run.
 func (m *Manager) SetProtectedHTTPS(f func(context.Context) bool) { m.protectedHTTPS = f }
+
+// SetHTTPSOnly makes every preview link use https, whatever the row's own TLS
+// flag says: the server publishes no plain HTTP. Call it before Run.
+func (m *Manager) SetHTTPSOnly(on bool) { m.httpsOnly = on }
 
 // Handle routes one pull_request event to the right lifecycle action for every
 // enabled app targeting the PR's base repo *through the source that delivered
@@ -356,7 +361,7 @@ const carryOnWhy = "deploying it anyway: its parent's protected row normally kee
 // https when the row's TLS flag is on, or when it is protected and protected
 // rows are served over HTTPS (SetProtectedHTTPS).
 func (m *Manager) linkScheme(ctx context.Context, d core.Domain) string {
-	if d.TLS || d.Protected && m.protectedHTTPS != nil && m.protectedHTTPS(ctx) {
+	if m.httpsOnly || d.TLS || d.Protected && m.protectedHTTPS != nil && m.protectedHTTPS(ctx) {
 		return "https://"
 	}
 	return "http://"

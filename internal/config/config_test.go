@@ -349,3 +349,409 @@ func TestPruneBuildCacheDefaultsOn(t *testing.T) {
 		t.Errorf("Validate: %v", err)
 	}
 }
+
+func TestHTTPPortSetting(t *testing.T) {
+	cases := []struct {
+		val     string
+		localCA bool
+		wantOff bool
+		wantErr bool
+	}{
+		{"", false, false, false},
+		{"80", false, false, false},
+		{"off", true, true, false},
+		{"OFF", true, true, false},
+		{"8080", false, false, true},
+		{"on", false, false, true},
+		{"no", false, false, true},
+	}
+	for _, tc := range cases {
+		cfg := Load(func(k string) string {
+			switch k {
+			case "OUTHAUL_HTTP_PORT":
+				return tc.val
+			case "OUTHAUL_LOCAL_CA":
+				if tc.localCA {
+					return "true"
+				}
+			}
+			return ""
+		})
+		if cfg.HTTPOff != tc.wantOff {
+			t.Errorf("OUTHAUL_HTTP_PORT=%q -> HTTPOff %v, want %v", tc.val, cfg.HTTPOff, tc.wantOff)
+		}
+		err := cfg.Validate()
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("OUTHAUL_HTTP_PORT=%q: Validate accepted it", tc.val)
+				continue
+			}
+			for _, want := range []string{"OUTHAUL_HTTP_PORT", "80 or off"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("OUTHAUL_HTTP_PORT=%q: error %q does not contain %q", tc.val, err, want)
+				}
+			}
+		} else if err != nil {
+			t.Errorf("OUTHAUL_HTTP_PORT=%q: Validate: %v", tc.val, err)
+		}
+	}
+}
+
+func TestHTTPOffNeedsHTTPS(t *testing.T) {
+	off := Load(func(k string) string {
+		if k == "OUTHAUL_HTTP_PORT" {
+			return "off"
+		}
+		return ""
+	})
+	err := off.Validate()
+	if err == nil {
+		t.Fatal("HTTP off without HTTPS: Validate accepted it")
+	}
+	for _, want := range []string{"OUTHAUL_HTTP_PORT", "HTTPS"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+
+	acme := Load(func(k string) string {
+		switch k {
+		case "OUTHAUL_HTTP_PORT":
+			return "off"
+		case "OUTHAUL_ACME_EMAIL":
+			return "ops@example.com"
+		}
+		return ""
+	})
+	err = acme.Validate()
+	if err == nil {
+		t.Fatal("HTTP off with the HTTP challenge: Validate accepted it")
+	}
+	for _, want := range []string{"OUTHAUL_HTTP_PORT", "port 80"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+}
+
+func TestDNSProviderSetting(t *testing.T) {
+	ok := Load(func(k string) string {
+		switch k {
+		case "OUTHAUL_ACME_DNS_PROVIDER":
+			return "azuredns"
+		case "OUTHAUL_ACME_EMAIL":
+			return "ops@example.com"
+		}
+		return ""
+	})
+	if ok.ACMEDNSProvider != "azuredns" {
+		t.Errorf("ACMEDNSProvider = %q, want azuredns", ok.ACMEDNSProvider)
+	}
+	if err := ok.Validate(); err != nil {
+		t.Errorf("Validate: %v", err)
+	}
+
+	noEmail := Load(func(k string) string {
+		if k == "OUTHAUL_ACME_DNS_PROVIDER" {
+			return "azuredns"
+		}
+		return ""
+	})
+	err := noEmail.Validate()
+	if err == nil {
+		t.Fatal("a DNS provider without an ACME email: Validate accepted it")
+	}
+	for _, want := range []string{"OUTHAUL_ACME_DNS_PROVIDER", "OUTHAUL_ACME_EMAIL"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+
+	for _, v := range []string{"Azure DNS", "azure_dns", "azure;rm"} {
+		cfg := Load(func(k string) string {
+			switch k {
+			case "OUTHAUL_ACME_DNS_PROVIDER":
+				return v
+			case "OUTHAUL_ACME_EMAIL":
+				return "ops@example.com"
+			}
+			return ""
+		})
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "OUTHAUL_ACME_DNS_PROVIDER") {
+			t.Errorf("OUTHAUL_ACME_DNS_PROVIDER=%q: error %v does not name the variable", v, err)
+		}
+	}
+}
+
+func TestDNSEnvSetting(t *testing.T) {
+	cases := []struct {
+		env     string
+		want    []string
+		wantErr []string
+	}{
+		{"A,B", []string{"A=1", "B=2"}, nil},
+		{" A , B ", []string{"A=1", "B=2"}, nil},
+	}
+	for _, tc := range cases {
+		cfg := Load(func(k string) string {
+			switch k {
+			case "OUTHAUL_ACME_DNS_PROVIDER":
+				return "azuredns"
+			case "OUTHAUL_ACME_EMAIL":
+				return "ops@example.com"
+			case "OUTHAUL_ACME_DNS_ENV":
+				return tc.env
+			case "A":
+				return "1"
+			case "B":
+				return "2"
+			case "EMPTY":
+				return ""
+			}
+			return ""
+		})
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("OUTHAUL_ACME_DNS_ENV=%q: Validate: %v", tc.env, err)
+		}
+		if strings.Join(cfg.ACMEDNSEnv, ",") != strings.Join(tc.want, ",") {
+			t.Errorf("OUTHAUL_ACME_DNS_ENV=%q -> %v, want %v", tc.env, cfg.ACMEDNSEnv, tc.want)
+		}
+	}
+
+	bad := []struct {
+		env  string
+		said []string
+	}{
+		{"A,", []string{"OUTHAUL_ACME_DNS_ENV", "empty"}},
+		{"A,,B", []string{"OUTHAUL_ACME_DNS_ENV", "empty"}},
+		{"A,A", []string{"OUTHAUL_ACME_DNS_ENV", "A"}},
+		{"A B", []string{"OUTHAUL_ACME_DNS_ENV", "A B"}},
+		{"1A", []string{"OUTHAUL_ACME_DNS_ENV", "1A"}},
+		{"A,MISSING", []string{"OUTHAUL_ACME_DNS_ENV", "MISSING"}},
+		{"A,EMPTY", []string{"OUTHAUL_ACME_DNS_ENV", "EMPTY"}},
+	}
+	for _, tc := range bad {
+		cfg := Load(func(k string) string {
+			switch k {
+			case "OUTHAUL_ACME_DNS_PROVIDER":
+				return "azuredns"
+			case "OUTHAUL_ACME_EMAIL":
+				return "ops@example.com"
+			case "OUTHAUL_ACME_DNS_ENV":
+				return tc.env
+			case "A":
+				return "1"
+			case "B":
+				return "2"
+			case "EMPTY":
+				return ""
+			}
+			return ""
+		})
+		err := cfg.Validate()
+		if err == nil {
+			t.Errorf("OUTHAUL_ACME_DNS_ENV=%q: Validate accepted it", tc.env)
+			continue
+		}
+		for _, want := range tc.said {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("OUTHAUL_ACME_DNS_ENV=%q: error %q does not contain %q", tc.env, err, want)
+			}
+		}
+		if strings.Contains(err.Error(), "=1") || strings.Contains(err.Error(), "=2") {
+			t.Errorf("OUTHAUL_ACME_DNS_ENV=%q: error leaks a value: %q", tc.env, err)
+		}
+	}
+
+	noProvider := Load(func(k string) string {
+		switch k {
+		case "OUTHAUL_ACME_DNS_ENV":
+			return "A"
+		case "A":
+			return "1"
+		}
+		return ""
+	})
+	err := noProvider.Validate()
+	if err == nil || !strings.Contains(err.Error(), "OUTHAUL_ACME_DNS_PROVIDER") {
+		t.Errorf("env without a provider: error %v does not name OUTHAUL_ACME_DNS_PROVIDER", err)
+	}
+}
+
+func TestTLSWildcardSetting(t *testing.T) {
+	valid := func(v string) Config {
+		return Load(func(k string) string {
+			switch k {
+			case "OUTHAUL_TLS_WILDCARD":
+				return v
+			case "OUTHAUL_ACME_DNS_PROVIDER":
+				return "azuredns"
+			case "OUTHAUL_ACME_EMAIL":
+				return "ops@example.com"
+			}
+			return ""
+		})
+	}
+	if got := valid("*.shared.demo.example.com").TLSWildcard; got != "*.shared.demo.example.com" {
+		t.Errorf("TLSWildcard = %q", got)
+	}
+	if got := valid("*.Shared.Demo.Example.com").TLSWildcard; got != "*.shared.demo.example.com" {
+		t.Errorf("TLSWildcard = %q, want it lower-cased", got)
+	}
+	for _, v := range []string{
+		"shared.demo.example.com", "*.com", "*.*.example.com", "*.exa mple.com", "*.example.com.",
+	} {
+		cfg := valid(v)
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "OUTHAUL_TLS_WILDCARD") {
+			t.Errorf("OUTHAUL_TLS_WILDCARD=%q: error %v does not name the variable", v, err)
+		}
+	}
+	noProvider := Load(func(k string) string {
+		if k == "OUTHAUL_TLS_WILDCARD" {
+			return "*.shared.demo.example.com"
+		}
+		return ""
+	})
+	err := noProvider.Validate()
+	if err == nil || !strings.Contains(err.Error(), "OUTHAUL_ACME_DNS_PROVIDER") {
+		t.Errorf("wildcard without a provider: error %v does not name OUTHAUL_ACME_DNS_PROVIDER", err)
+	}
+}
+
+func TestHTTPOffWithDNSChallenge(t *testing.T) {
+	cfg := Load(func(k string) string {
+		switch k {
+		case "OUTHAUL_HTTP_PORT":
+			return "off"
+		case "OUTHAUL_ACME_EMAIL":
+			return "ops@example.com"
+		case "OUTHAUL_ACME_DNS_PROVIDER":
+			return "azuredns"
+		}
+		return ""
+	})
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate: %v", err)
+	}
+}
+
+func TestRequireHeaderSetting(t *testing.T) {
+	load := func(env map[string]string) Config {
+		return Load(func(k string) string { return env[k] })
+	}
+	ok := load(map[string]string{
+		"OUTHAUL_REQUIRE_HEADER_NAME":  "X-Azure-FDID",
+		"OUTHAUL_REQUIRE_HEADER_VALUE": "8f7c1a2e-0000-4000-8000-000000000000",
+	})
+	if err := ok.Validate(); err != nil {
+		t.Errorf("Validate: %v", err)
+	}
+	if !ok.HeaderRequired() || ok.RequireHeaderName != "X-Azure-FDID" || ok.RequireHeaderValue != "8f7c1a2e-0000-4000-8000-000000000000" {
+		t.Errorf("header settings = %q, %q, required %v", ok.RequireHeaderName, ok.RequireHeaderValue, ok.HeaderRequired())
+	}
+	if load(nil).HeaderRequired() {
+		t.Error("no header set should not require one")
+	}
+
+	for env, want := range map[string]string{
+		"OUTHAUL_REQUIRE_HEADER_NAME=X-Azure-FDID": "OUTHAUL_REQUIRE_HEADER_VALUE",
+		"OUTHAUL_REQUIRE_HEADER_VALUE=abc-123":     "OUTHAUL_REQUIRE_HEADER_NAME",
+	} {
+		var e map[string]string
+		for _, kv := range []string{env} {
+			k, v, _ := strings.Cut(kv, "=")
+			e = map[string]string{k: v}
+		}
+		err := load(e).Validate()
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: error %v does not name %s", env, err, want)
+		}
+	}
+
+	for _, name := range []string{"X Azure", "X_Azure", "X:Azure"} {
+		err := load(map[string]string{
+			"OUTHAUL_REQUIRE_HEADER_NAME":  name,
+			"OUTHAUL_REQUIRE_HEADER_VALUE": "abc-123",
+		}).Validate()
+		if err == nil || !strings.Contains(err.Error(), "OUTHAUL_REQUIRE_HEADER_NAME") {
+			t.Errorf("name %q: error %v does not name OUTHAUL_REQUIRE_HEADER_NAME", name, err)
+		}
+	}
+	err := load(map[string]string{"OUTHAUL_REQUIRE_HEADER_VALUE": "abc-123"}).Validate()
+	if err == nil || !strings.Contains(err.Error(), "OUTHAUL_REQUIRE_HEADER_NAME") {
+		t.Errorf("empty name with a value: error %v does not name OUTHAUL_REQUIRE_HEADER_NAME", err)
+	}
+	for _, value := range []string{"a`b", `a"b`, "a b", "a$b", "a\nb", `a\b`, strings.Repeat("a", 257)} {
+		err := load(map[string]string{
+			"OUTHAUL_REQUIRE_HEADER_NAME":  "X-Azure-FDID",
+			"OUTHAUL_REQUIRE_HEADER_VALUE": value,
+		}).Validate()
+		if err == nil || !strings.Contains(err.Error(), "OUTHAUL_REQUIRE_HEADER_VALUE") {
+			t.Errorf("value %q: error %v does not name OUTHAUL_REQUIRE_HEADER_VALUE", value, err)
+		}
+		if err != nil && strings.Contains(err.Error(), value) && len(value) > 3 {
+			t.Errorf("value %q: error leaks the value: %q", value, err)
+		}
+	}
+	okValue := load(map[string]string{
+		"OUTHAUL_REQUIRE_HEADER_NAME":  "X-Azure-FDID",
+		"OUTHAUL_REQUIRE_HEADER_VALUE": "Ab0-._~+/=:",
+	})
+	if err := okValue.Validate(); err != nil {
+		t.Errorf("a valid value: %v", err)
+	}
+}
+
+func TestAdminDirectSetting(t *testing.T) {
+	load := func(env map[string]string) Config {
+		return Load(func(k string) string { return env[k] })
+	}
+	for _, v := range []string{"", "on", "true"} {
+		cfg := load(map[string]string{"OUTHAUL_ADMIN_DIRECT": v})
+		if !cfg.AdminDirect {
+			t.Errorf("OUTHAUL_ADMIN_DIRECT=%q -> AdminDirect false, want true", v)
+		}
+	}
+	for _, v := range []string{"off", "OFF", "false"} {
+		cfg := load(map[string]string{"OUTHAUL_ADMIN_DIRECT": v, "OUTHAUL_PUBLIC_URL": "https://outhaul.example.com", "OUTHAUL_ACME_EMAIL": "ops@example.com"})
+		if cfg.AdminDirect {
+			t.Errorf("OUTHAUL_ADMIN_DIRECT=%q -> AdminDirect true, want false", v)
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("OUTHAUL_ADMIN_DIRECT=%q with HTTPS and a public URL: %v", v, err)
+		}
+	}
+	cfg := load(map[string]string{"OUTHAUL_ADMIN_DIRECT": "proxy"})
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "OUTHAUL_ADMIN_DIRECT") {
+		t.Errorf("OUTHAUL_ADMIN_DIRECT=proxy: error %v does not name the variable", err)
+	}
+
+	noURL := load(map[string]string{"OUTHAUL_ADMIN_DIRECT": "off", "OUTHAUL_ACME_EMAIL": "ops@example.com"})
+	err := noURL.Validate()
+	if err == nil {
+		t.Fatal("admin direct off without a public URL: Validate accepted it")
+	}
+	for _, want := range []string{"OUTHAUL_ADMIN_DIRECT", "OUTHAUL_PUBLIC_URL"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+
+	withHost := load(map[string]string{
+		"OUTHAUL_ADMIN_DIRECT": "off", "OUTHAUL_ACME_EMAIL": "ops@example.com",
+		"OUTHAUL_PUBLIC_URL": "https://outhaul.example.com", "OUTHAUL_LISTEN_ADDR": "127.0.0.1:8080",
+	})
+	err = withHost.Validate()
+	if err == nil || !strings.Contains(err.Error(), "OUTHAUL_LISTEN_ADDR") {
+		t.Errorf("a listen host: error %v does not name OUTHAUL_LISTEN_ADDR", err)
+	}
+	portOnly := load(map[string]string{
+		"OUTHAUL_ADMIN_DIRECT": "off", "OUTHAUL_ACME_EMAIL": "ops@example.com",
+		"OUTHAUL_PUBLIC_URL": "https://outhaul.example.com", "OUTHAUL_LISTEN_ADDR": ":9090",
+	})
+	if err := portOnly.Validate(); err != nil {
+		t.Errorf("a port-only listen address: %v", err)
+	}
+}

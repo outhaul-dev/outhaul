@@ -157,6 +157,9 @@ until a provider is connected again.
 
 ## Testing so far
 
-SSO has been tested only against a test provider built into Outhaul's test suite, not
-yet against a real one. The Okta steps above are written from Okta's documentation.
-If your provider behaves differently from what's described here, open an issue.
+SSO has been tested against a test provider built into Outhaul's test suite, and
+end to end through `deploy/test/integration_proxy.sh`: a real Outhaul and Traefik, a
+stand-in CDN and a stand-in OIDC provider. It hasn't been run against a real
+provider, a real CDN, or a real browser yet. The Okta steps above are written from
+Okta's documentation. If your provider behaves differently from what's described
+here, open an issue.

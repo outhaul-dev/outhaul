@@ -108,7 +108,7 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 			return
 		}
 		if app.IsForkPreview() {
-			if err := w.refuseRoutingLabels(ctx, image); err != nil {
+			if err := w.refuseRoutingLabels(ctx, image, true); err != nil {
 				w.fail(dep, core.StatusBuilding, err.Error(), out)
 				return
 			}
@@ -121,6 +121,16 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 		// Env vars, domain, and routing are the app's CURRENT settings — only
 		// the image is rolled back (see the rollback spec).
 		logf(out, "Rolling back to image %s (built by deployment #%d); nothing to clone or build.", image, dep.RollbackOf)
+	}
+
+	// While a header is required, no image may bring its own router: it would
+	// lack the header term. This runs here so a deployment that arrived with
+	// an image is checked too, before anything is created.
+	if w.cfg.HeaderRequired() && !app.IsForkPreview() {
+		if err := w.refuseRoutingLabels(ctx, image, false); err != nil {
+			w.fail(dep, core.StatusBuilding, err.Error(), out)
+			return
+		}
 	}
 
 	// --- building -> deploying ---
@@ -173,7 +183,11 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 		}
 	}
 
-	logf(out, "Done. %s is live at http://%s", app.Name, app.Domain)
+	scheme := "http://"
+	if rt := w.routing(ctx); rt.TLS && rt.HTTPOff {
+		scheme = "https://"
+	}
+	logf(out, "Done. %s is live at %s%s", app.Name, scheme, app.Domain)
 }
 
 // deployBlueGreen runs the zero-downtime cutover used by stateless apps: start
@@ -312,7 +326,7 @@ func (w *Worker) deployStopFirst(ctx context.Context, dep core.Deployment, app c
 // an image's labels onto its containers and Traefik reads container labels, so
 // a fork preview's image (whose base image the fork author can choose) could
 // otherwise claim any host on the server, production included.
-func (w *Worker) refuseRoutingLabels(ctx context.Context, image string) error {
+func (w *Worker) refuseRoutingLabels(ctx context.Context, image string, fork bool) error {
 	labels, err := w.docker.ImageLabels(ctx, image)
 	if err != nil {
 		return fmt.Errorf("inspect built image: %w", err)
@@ -325,7 +339,10 @@ func (w *Worker) refuseRoutingLabels(ctx context.Context, image string) error {
 	}
 	if len(bad) > 0 {
 		sort.Strings(bad)
-		return fmt.Errorf("refusing a fork preview image that carries traefik labels: %s", strings.Join(bad, ", "))
+		if fork {
+			return fmt.Errorf("refusing a fork preview image that carries traefik labels: %s", strings.Join(bad, ", "))
+		}
+		return fmt.Errorf("refusing an image that carries traefik labels while a request header is required: %s", strings.Join(bad, ", "))
 	}
 	return nil
 }
@@ -521,7 +538,7 @@ func (w *Worker) createContainer(ctx context.Context, app core.App, image, name 
 		if err != nil {
 			return "", fmt.Errorf("load domains: %w", err)
 		}
-		labels = traefik.AppLabels(app, domains, AppPort, w.effectiveTLS(ctx), w.cfg.CertResolver(), w.cfg.GateAddress())
+		labels = traefik.AppLabels(app, domains, AppPort, w.routing(ctx))
 	} else {
 		labels = map[string]string{
 			"traefik.enable":  "false",

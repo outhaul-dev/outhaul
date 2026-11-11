@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/docker"
 	"github.com/outhaul-dev/outhaul/internal/localca"
@@ -646,5 +647,171 @@ func TestProxyMapsGateHost(t *testing.T) {
 	}
 	if mapped, known := ProxyMapsGateHost(ctx, dc, pc); !known || !mapped {
 		t.Errorf("admin route: ProxyMapsGateHost = %v, %v; want true, true", mapped, known)
+	}
+}
+
+func TestHTTPOffPublishesOnly443(t *testing.T) {
+	pc := localCAProxyConfig(t)
+	pc.Routing = Routing{TLS: true, HTTPOff: true}
+	spec := proxySpec(pc)
+	want := []docker.PortMapping{{HostPort: "443", ContainerPort: "443", Proto: "tcp"}}
+	if len(spec.Ports) != len(want) || spec.Ports[0] != want[0] {
+		t.Errorf("ports = %v, want %v", spec.Ports, want)
+	}
+	for _, flag := range spec.Cmd {
+		if strings.Contains(flag, "entrypoints.web.") {
+			t.Errorf("HTTP-off spec names the web entrypoint: %q", flag)
+		}
+		if strings.Contains(flag, "redirections") {
+			t.Errorf("HTTP-off spec carries a redirect: %q", flag)
+		}
+	}
+}
+
+func TestHTTPOffAdminRouteIsOnWebsecure(t *testing.T) {
+	pc := localCAProxyConfig(t)
+	pc.Routing = Routing{TLS: true, HTTPOff: true}
+	pc.AdminHost = "outhaul.example.com"
+	if err := writeAdminDynamicConfig(pc); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(pc.DynamicDir, adminDynamicFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "- websecure") {
+		t.Errorf("admin route should use websecure:\n%s", body)
+	}
+	if strings.Contains(string(body), "- web\n") {
+		t.Errorf("admin route names the web entrypoint with HTTP off:\n%s", body)
+	}
+}
+
+func TestProxyFlagsAreTheSpecs(t *testing.T) {
+	pc := tlsProxyConfig()
+	spec := proxySpec(pc)
+	cmd, env := ProxyFlags(pc)
+	if strings.Join(cmd, "\n") != strings.Join(spec.Cmd, "\n") {
+		t.Errorf("cmd = %v, want proxySpec's %v", cmd, spec.Cmd)
+	}
+	if strings.Join(env, "\n") != strings.Join(spec.Env, "\n") {
+		t.Errorf("env = %v, want proxySpec's %v", env, spec.Env)
+	}
+}
+
+// With a header required, a Traefik whose configuration differs is replaced
+// from the local image if the pull fails: a change of flags alone never needs
+// a pull.
+func TestHeaderRequiredUsesTheLocalImageWhenThePullFails(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+	f.Images = map[string]bool{testProxyConfig().Image: true}
+	if err := EnsureProxy(ctx, f, testProxyConfig(), nil); err != nil {
+		t.Fatalf("initial EnsureProxy: %v", err)
+	}
+	f.FailPull = func(string) error { return errors.New("registry down") }
+	pc := testProxyConfig()
+	pc.Routing = Routing{HeaderName: "X-Azure-FDID", HeaderValue: "abc-123"}
+	if err := EnsureProxy(ctx, f, pc, nil); err != nil {
+		t.Fatalf("EnsureProxy with a local image: %v", err)
+	}
+	c, _ := f.FindContainer(ctx, pc.ContainerName)
+	if c == nil || !c.Running() {
+		t.Fatalf("traefik is not running: %+v", c)
+	}
+	constraint := "--providers.docker.constraints=" + pc.Routing.Constraint()
+	found := false
+	for _, spec := range f.Created {
+		if spec.Name != pc.ContainerName {
+			continue
+		}
+		for _, flag := range spec.Cmd {
+			if flag == constraint {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("the new Traefik does not carry %q: %v", constraint, f.Created)
+	}
+}
+
+// If the image isn't on the server either, a Traefik that can't be replaced
+// must not go on serving containers without the header check.
+func TestHeaderRequiredStopsTraefikItCannotReplace(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+	if err := EnsureProxy(ctx, f, testProxyConfig(), nil); err != nil {
+		t.Fatalf("initial EnsureProxy: %v", err)
+	}
+	f.FailPull = func(string) error { return errors.New("registry down") }
+	pc := testProxyConfig()
+	pc.Routing = Routing{HeaderName: "X-Azure-FDID", HeaderValue: "abc-123"}
+	if err := EnsureProxy(ctx, f, pc, nil); err == nil {
+		t.Fatal("EnsureProxy should fail when it cannot pull the image")
+	}
+	c, _ := f.FindContainer(ctx, pc.ContainerName)
+	if c != nil && c.Running() {
+		t.Error("the old Traefik is still running without the constraint")
+	}
+}
+
+func TestGateHostMapping(t *testing.T) {
+	pc := adminProxyConfig(t)
+	pc.GateHost = "172.30.0.1"
+	spec := proxySpec(pc)
+	if len(spec.ExtraHosts) != 1 || spec.ExtraHosts[0] != "host.docker.internal:172.30.0.1" {
+		t.Errorf("extra hosts = %v, want host.docker.internal:172.30.0.1", spec.ExtraHosts)
+	}
+	withGateway := spec.Labels["outhaul.config-hash"]
+	pc.GateHost = ""
+	if proxySpec(pc).Labels["outhaul.config-hash"] == withGateway {
+		t.Error("changing GateHost should change the config hash")
+	}
+
+	none := adminProxyConfig(t)
+	none.GateHost = "172.30.0.1"
+	none.AdminHost = ""
+	none.ProtectedRoutes = false
+	if hosts := proxySpec(none).ExtraHosts; len(hosts) != 0 {
+		t.Errorf("no admin route and no protected route: extra hosts = %v, want none", hosts)
+	}
+}
+
+func TestProxyMapsGateHostWithAGateway(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+	pc := adminProxyConfig(t)
+	pc.GateHost = "172.30.0.1"
+	if err := EnsureProxy(ctx, f, pc, nil); err != nil {
+		t.Fatalf("EnsureProxy: %v", err)
+	}
+	mapped, known := ProxyMapsGateHost(ctx, f, pc)
+	if !mapped || !known {
+		t.Errorf("ProxyMapsGateHost = %v, %v; want true, true", mapped, known)
+	}
+}
+
+// stopFails is a Docker whose container stop fails.
+type stopFails struct{ *docker.Fake }
+
+func (stopFails) StopContainer(context.Context, string, time.Duration) error {
+	return errors.New("stop failed")
+}
+
+// If the old Traefik can't be stopped, the caller must hear about it: it is
+// still serving without the required header.
+func TestHeaderRequiredReportsAStopFailure(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+	if err := EnsureProxy(ctx, f, testProxyConfig(), nil); err != nil {
+		t.Fatalf("initial EnsureProxy: %v", err)
+	}
+	f.FailPull = func(string) error { return errors.New("registry down") }
+	pc := testProxyConfig()
+	pc.Routing = Routing{HeaderName: "X-Azure-FDID", HeaderValue: "abc-123"}
+	err := EnsureProxy(ctx, stopFails{f}, pc, nil)
+	if err == nil || !strings.Contains(err.Error(), "stop") {
+		t.Fatalf("EnsureProxy = %v, want an error naming the failed stop", err)
 	}
 }

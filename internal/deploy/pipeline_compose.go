@@ -67,7 +67,7 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 	// sits beside the user's compose file and layers domain exposure over it.
 	files := []string{app.ComposePath}
 	if len(domains) > 0 {
-		ov := compose.Override(app, domains, w.cfg.Network, w.effectiveTLS(ctx), w.cfg.CertResolver(), w.cfg.GateAddress())
+		ov := compose.Override(app, domains, w.cfg.Network, w.routing(ctx))
 		if err := os.WriteFile(filepath.Join(stackDir, compose.OverrideFile), ov, 0o644); err != nil {
 			w.fail(dep, core.StatusBuilding, "write override: "+err.Error(), out)
 			return
@@ -115,9 +115,13 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 		logf(out, "WARNING: could not retire superseded deployments: %v", err)
 	}
 	if len(domains) > 0 {
+		scheme := "http://"
+		if rt := w.routing(ctx); rt.TLS && rt.HTTPOff {
+			scheme = "https://"
+		}
 		hosts := make([]string, len(domains))
 		for i, d := range domains {
-			hosts[i] = "http://" + d.Host
+			hosts[i] = scheme + d.Host
 		}
 		logf(out, "Done. %s is live at %s", app.Name, strings.Join(hosts, ", "))
 	} else {

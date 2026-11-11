@@ -53,6 +53,7 @@ func (s *Server) handleDomainsList(w http.ResponseWriter, r *http.Request) {
 	if listErr != nil {
 		log.Printf("domains page: list the managed containers: %v", listErr)
 	}
+	all = s.served(all)
 	var running []docker.Container
 	for _, c := range all {
 		if answers(c) {
@@ -96,5 +97,6 @@ func (s *Server) handleDomainsList(w http.ResponseWriter, r *http.Request) {
 		"Active":         "domains",
 		"Domains":        rows,
 		"ProtectedHTTPS": s.protectedOverHTTPS(r.Context()),
+		"HTTPSOnly":      s.routing.HTTPOff,
 	})
 }

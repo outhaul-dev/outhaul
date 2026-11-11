@@ -15,6 +15,7 @@
 </div>
 {{with .Notice}}<div class="alert alert-warn" role="alert">{{.}}</div>{{end}}
 {{if .RestartDeploys}}<div class="alert alert-warn">Restart will deploy this app instead, so its domains' sign-in settings reach its containers. {{with .ProtectionWarning}}<strong>{{.}}</strong>{{end}}</div>{{end}}
+{{if .NotServed}}<div class="alert alert-warn">This app isn't being served. Its containers were deployed before the server's routing settings changed. Deploy it to bring it back.</div>{{end}}
 
 <nav class="tabs" id="app-tabs"{{with .OpenTab}} data-default="{{.}}"{{end}}>
   <a href="#overview" data-tab-link="overview">Overview</a>
@@ -28,9 +29,9 @@
 <section class="panel">
   <dl class="meta">
     {{if eq .App.Kind "compose"}}
-    <div><dt>Domains</dt><dd>{{if .Domains}}{{range .Domains}}<div><a href="http://{{.Host}}" target="_blank" rel="noreferrer" class="mono">{{.Host}}</a> <span class="muted mono">→ {{.Service}}:{{.Port}}</span></div>{{end}}{{else}}<span class="muted">— internal only</span>{{end}}</dd></div>
+    <div><dt>Domains</dt><dd>{{if .Domains}}{{range .Domains}}<div><a href="http{{if or $.HTTPSOnly .TLS (and .Protected $.ProtectedHTTPS)}}s{{end}}://{{.Host}}" target="_blank" rel="noreferrer" class="mono">{{.Host}}</a> <span class="muted mono">→ {{.Service}}:{{.Port}}</span></div>{{end}}{{else}}<span class="muted">— internal only</span>{{end}}</dd></div>
     {{else}}
-    <div><dt>Domain</dt><dd>{{if .App.Domain}}<a href="http://{{.App.Domain}}" target="_blank" rel="noreferrer" class="mono">{{.App.Domain}}</a>{{else}}<span class="muted">— internal only</span>{{end}}</dd></div>
+    <div><dt>Domain</dt><dd>{{if .App.Domain}}<a href="http{{if $.HTTPSOnly}}s{{end}}://{{.App.Domain}}" target="_blank" rel="noreferrer" class="mono">{{.App.Domain}}</a>{{else}}<span class="muted">— internal only</span>{{end}}</dd></div>
     {{end}}
     {{if .App.TemplateID}}
     <div><dt>Template</dt><dd class="mono">{{.App.TemplateID}}</dd></div>
@@ -224,11 +225,11 @@ git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.Ta
     <tbody>
       {{range .Domains}}
       <tr>
-        <td><a href="http{{if or .TLS (and .Protected $.ProtectedHTTPS)}}s{{end}}://{{.Host}}{{.Path}}" target="_blank" rel="noreferrer" class="mono">{{.Host}}{{.Path}}</a></td>
+        <td><a href="http{{if or $.HTTPSOnly .TLS (and .Protected $.ProtectedHTTPS)}}s{{end}}://{{.Host}}{{.Path}}" target="_blank" rel="noreferrer" class="mono">{{.Host}}{{.Path}}</a></td>
         {{if eq $.App.Kind "compose"}}<td class="mono">{{.Service}}</td>{{end}}
         <td class="mono">{{.Port}}</td>
         <td class="mono muted">{{if .Path}}{{.Path}}{{if .InternalPath}} &rarr; {{.InternalPath}}{{end}}{{else}}/{{end}}</td>
-        <td>{{if or .TLS (and .Protected $.ProtectedHTTPS)}}<span class="badge state-running">TLS</span>{{else}}<span class="muted">http</span>{{end}}</td>
+        <td>{{if or $.HTTPSOnly .TLS (and .Protected $.ProtectedHTTPS)}}<span class="badge state-running">TLS</span>{{else}}<span class="muted">http</span>{{end}}</td>
         <td>{{template "accesscell" (index $.AccessStates .ID)}}</td>
         <td>
           {{if $.CanChange}}

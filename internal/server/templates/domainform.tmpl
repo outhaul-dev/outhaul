@@ -63,17 +63,20 @@
       <div class="stack" data-step>
         {{if .LocalCA}}
         <label class="field-check">
-          <input type="checkbox" name="tls" id="domain-tls"{{if .TLSAvailable}} checked{{end}}{{if not .TLSAvailable}} disabled{{end}}>
+          <input type="checkbox" name="tls" id="domain-tls"{{if or .TLSAvailable .HTTPSOnly}} checked{{end}}{{if or (not .TLSAvailable) .HTTPSOnly}} disabled{{end}}>
           <span>Automate HTTPS (local CA) {{template "hint" "Certificate minted by this server's local CA — devices that trust the root (Settings → Download CA certificate) see it as valid."}}</span>
         </label>
         {{else}}
         <label class="field-check">
-          <input type="checkbox" name="tls" id="domain-tls"{{if .TLSAvailable}} checked{{end}}{{if not .TLSAvailable}} disabled{{end}}>
+          <input type="checkbox" name="tls" id="domain-tls"{{if or .TLSAvailable .HTTPSOnly}} checked{{end}}{{if or (not .TLSAvailable) .HTTPSOnly}} disabled{{end}}>
           <span>Automate HTTPS (Let's Encrypt) {{template "hint" "Obtain and renew a TLS certificate for this domain automatically. Requires DNS pointing here and port 443 reachable."}}</span>
         </label>
         {{end}}
         {{if not .TLSAvailable}}
         <p class="env-note">HTTPS automation needs an ACME email or OUTHAUL_LOCAL_CA in the server config. Set one to enable per-domain certificates.</p>
+        {{end}}
+        {{if .HTTPSOnly}}
+        <p class="env-note">This server serves HTTPS only. Every domain is served over HTTPS and this can't be changed here.</p>
         {{end}}
 
         <div class="protect">

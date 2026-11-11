@@ -54,7 +54,7 @@ func TestOverride(t *testing.T) {
 		{ID: 1, Host: "shop.example.com", Service: "web", Port: 3000, TLS: true},
 	}
 
-	got := string(Override(app, domains, "outhaul", false, "", "addr"))
+	got := string(Override(app, domains, "outhaul", traefik.Routing{TLS: false, CertResolver: "", GateAddress: "addr"}))
 
 	for _, want := range []string{
 		"services:\n  \"web\":\n",
@@ -62,7 +62,7 @@ func TestOverride(t *testing.T) {
 		"      default: {}\n",
 		`"traefik.enable": "true"`,
 		`"traefik.docker.network": "outhaul"`,
-		`"traefik.http.routers.outhaul-shop-d1.rule": ` + quoteYAML(traefik.Rule("shop.example.com", "")),
+		`"traefik.http.routers.outhaul-shop-d1.rule": ` + quoteYAML((traefik.Routing{}).Rule("shop.example.com", "")),
 		`"traefik.http.services.outhaul-shop-d1.loadbalancer.server.port": "3000"`,
 		"networks:\n  \"outhaul\":\n    external: true\n",
 	} {
@@ -74,7 +74,7 @@ func TestOverride(t *testing.T) {
 		t.Error("TLS labels must not appear when TLS is disabled")
 	}
 
-	tls := string(Override(app, domains, "outhaul", true, "le", "addr"))
+	tls := string(Override(app, domains, "outhaul", traefik.Routing{TLS: true, CertResolver: "le", GateAddress: "addr"}))
 	if !strings.Contains(tls, `"traefik.http.routers.outhaul-shop-d1-tls.tls.certresolver": "le"`) {
 		t.Errorf("TLS override missing certresolver labels; got:\n%s", tls)
 	}
@@ -85,7 +85,7 @@ func TestOverridePathAndTLS(t *testing.T) {
 	domains := []core.Domain{
 		{ID: 7, Host: "shop.example.com", Service: "api", Port: 8000, Path: "/api", InternalPath: "/", TLS: true},
 	}
-	got := string(Override(app, domains, "outhaul", true, "le", "addr"))
+	got := string(Override(app, domains, "outhaul", traefik.Routing{TLS: true, CertResolver: "le", GateAddress: "addr"}))
 	if !strings.Contains(got, "PathPrefix(`/api`)") {
 		t.Errorf("override missing path rule:\n%s", got)
 	}
@@ -108,12 +108,12 @@ func TestOverrideMultipleDomains(t *testing.T) {
 		{ID: 9, Host: "api.example.com", Service: "api", Port: 8080},
 	}
 
-	got := string(Override(app, domains, "outhaul", false, "", "addr"))
+	got := string(Override(app, domains, "outhaul", traefik.Routing{TLS: false, CertResolver: "", GateAddress: "addr"}))
 
 	for _, want := range []string{
-		`"traefik.http.routers.outhaul-shop-d7.rule": ` + quoteYAML(traefik.Rule("shop.example.com", "")),
-		`"traefik.http.routers.outhaul-shop-d8.rule": ` + quoteYAML(traefik.Rule("www.example.com", "")),
-		`"traefik.http.routers.outhaul-shop-d9.rule": ` + quoteYAML(traefik.Rule("api.example.com", "")),
+		`"traefik.http.routers.outhaul-shop-d7.rule": ` + quoteYAML((traefik.Routing{}).Rule("shop.example.com", "")),
+		`"traefik.http.routers.outhaul-shop-d8.rule": ` + quoteYAML((traefik.Routing{}).Rule("www.example.com", "")),
+		`"traefik.http.routers.outhaul-shop-d9.rule": ` + quoteYAML((traefik.Routing{}).Rule("api.example.com", "")),
 		`"traefik.http.services.outhaul-shop-d9.loadbalancer.server.port": "8080"`,
 	} {
 		if !strings.Contains(got, want) {
@@ -147,7 +147,7 @@ func TestComposeOverrideCarriesGate(t *testing.T) {
 		{ID: 1, Host: "wiki.example.com", Service: "web", Port: 3000, TLS: true, Protected: true},
 		{ID: 2, Host: "wiki.example.com", Service: "web", Port: 3000, Path: "/webhooks", TLS: true},
 	}
-	got := string(Override(app, domains, "outhaul", true, "le", "http://host.docker.internal:8080/gate/check"))
+	got := string(Override(app, domains, "outhaul", traefik.Routing{TLS: true, CertResolver: "le", GateAddress: "http://host.docker.internal:8080/gate/check"}))
 	for _, want := range []string{
 		`"traefik.http.middlewares.outhaul-wiki-d1-gate.forwardauth.address": "http://host.docker.internal:8080/gate/check"`,
 		`"traefik.http.middlewares.outhaul-wiki-d1-gate.forwardauth.authresponseheaders": "X-Outhaul-User"`,
@@ -185,11 +185,11 @@ func TestComposeOverrideRefusesTraversal(t *testing.T) {
 		{ID: 1, Host: "wiki.example.com", Service: "web", Port: 3000, TLS: true, Protected: true},
 		{ID: 2, Host: "wiki.example.com", Service: "web", Port: 3000, Path: "/webhooks", TLS: true},
 	}
-	got := string(Override(app, domains, "outhaul", true, "le", "addr"))
+	got := string(Override(app, domains, "outhaul", traefik.Routing{TLS: true, CertResolver: "le", GateAddress: "addr"}))
 	for _, want := range []string{
-		`"traefik.http.routers.outhaul-wiki-d1.rule": ` + quoteYAML(traefik.Rule("wiki.example.com", "")),
-		`"traefik.http.routers.outhaul-wiki-d1-tls.rule": ` + quoteYAML(traefik.Rule("wiki.example.com", "")),
-		`"traefik.http.routers.outhaul-wiki-d2.rule": ` + quoteYAML(traefik.Rule("wiki.example.com", "/webhooks")),
+		`"traefik.http.routers.outhaul-wiki-d1.rule": ` + quoteYAML((traefik.Routing{}).Rule("wiki.example.com", "")),
+		`"traefik.http.routers.outhaul-wiki-d1-tls.rule": ` + quoteYAML((traefik.Routing{}).Rule("wiki.example.com", "")),
+		`"traefik.http.routers.outhaul-wiki-d2.rule": ` + quoteYAML((traefik.Routing{}).Rule("wiki.example.com", "/webhooks")),
 		`"traefik.http.routers.outhaul-wiki-d1.priority": "24"`,
 		`"traefik.http.routers.outhaul-wiki-d1-tls.priority": "24"`,
 		`"traefik.http.routers.outhaul-wiki-d2.priority": "51"`,
@@ -206,7 +206,7 @@ func TestComposeOverrideRefusesTraversal(t *testing.T) {
 // override writes a literal $ (the rule's "$" anchor) as $$, which Compose
 // reads back as $.
 func TestOverrideEscapesDollar(t *testing.T) {
-	got := string(Override(core.App{Name: "wiki"}, []core.Domain{{ID: 1, Host: "wiki.example.com", Service: "web", Port: 3000}}, "outhaul", false, "", "addr"))
+	got := string(Override(core.App{Name: "wiki"}, []core.Domain{{ID: 1, Host: "wiki.example.com", Service: "web", Port: 3000}}, "outhaul", traefik.Routing{TLS: false, CertResolver: "", GateAddress: "addr"}))
 	if !strings.Contains(got, "%00|\\\\x00|$$)") {
 		t.Errorf("the rule's $ should be written $$:\n%s", got)
 	}
@@ -226,7 +226,7 @@ func TestComposeOverrideProtectedRowGetsHTTPSRouter(t *testing.T) {
 		{ID: 1, Host: "shop.example.com", Service: "web", Port: 3000, TLS: true},
 		{ID: 2, Host: "shop.example.com", Service: "web", Port: 3000, Path: "/admin", Protected: true},
 	}
-	got := string(Override(app, domains, "outhaul", true, "le", "addr"))
+	got := string(Override(app, domains, "outhaul", traefik.Routing{TLS: true, CertResolver: "le", GateAddress: "addr"}))
 	for _, want := range []string{
 		`"traefik.http.routers.outhaul-shop-d2-tls.middlewares": "outhaul-shop-d2-gate,outhaul-shop-d2-noalias"`,
 		`"traefik.http.routers.outhaul-shop-d2-tls.tls.certresolver": "le"`,
@@ -235,7 +235,46 @@ func TestComposeOverrideProtectedRowGetsHTTPSRouter(t *testing.T) {
 			t.Errorf("override missing %s; got:\n%s", want, got)
 		}
 	}
-	if off := string(Override(app, domains, "outhaul", false, "", "addr")); strings.Contains(off, "outhaul-shop-d2-tls") {
+	if off := string(Override(app, domains, "outhaul", traefik.Routing{TLS: false, CertResolver: "", GateAddress: "addr"})); strings.Contains(off, "outhaul-shop-d2-tls") {
 		t.Errorf("no HTTPS router expected without TLS on the server:\n%s", off)
+	}
+}
+
+func TestOverrideCarriesTheHeader(t *testing.T) {
+	app := core.App{Name: "shop"}
+	domains := []core.Domain{
+		{ID: 1, Host: "shop.example.com", Service: "web", Port: 3000, TLS: true, Protected: true},
+		{ID: 2, Host: "shop.example.com", Path: "/api", Service: "web", Port: 3000, TLS: true},
+	}
+	got := string(Override(app, domains, "outhaul", traefik.Routing{
+		TLS: true, CertResolver: "le", GateAddress: "addr",
+		HeaderName: "X-Azure-FDID", HeaderValue: "Ab0-._~+/=:",
+	}))
+	suffix := " && Header(`X-Azure-FDID`, `Ab0-._~+/=:`)"
+	rules := 0
+	for _, line := range strings.Split(got, "\n") {
+		if !strings.Contains(line, `.rule": `) {
+			continue
+		}
+		rules++
+		if !strings.HasSuffix(strings.TrimSpace(line), suffix+`"`) && !strings.Contains(line, suffix) {
+			t.Errorf("rule line does not end with the header term: %s", line)
+		}
+	}
+	if rules == 0 {
+		t.Fatal("the override carries no rules")
+	}
+	if !strings.Contains(got, "Ab0-._~+/=:") {
+		t.Error("the header value is not preserved in the override")
+	}
+}
+
+func TestOverrideCarriesTheIngressStamp(t *testing.T) {
+	rt := traefik.Routing{TLS: true, HeaderName: "X-Azure-FDID", HeaderValue: "abc-123"}
+	app := core.App{Name: "shop"}
+	domains := []core.Domain{{ID: 1, Host: "shop.example.com", Service: "web", Port: 3000, TLS: true}}
+	got := string(Override(app, domains, "outhaul", rt))
+	if !strings.Contains(got, `"`+traefik.IngressLabel+`": "`+rt.Stamp()+`"`) {
+		t.Errorf("the override does not carry %s=%s:\n%s", traefik.IngressLabel, rt.Stamp(), got)
 	}
 }

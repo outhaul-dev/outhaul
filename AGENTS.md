@@ -24,6 +24,8 @@ sh deploy/test/run.sh  # installer unit tests (CI: when deploy/** changes)
 shellcheck -s sh --severity=warning deploy/bootstrap.sh deploy/update.sh deploy/test/*.sh
 
 sh deploy/test/integration_gate.sh  # protected-route labels on a real Traefik (not in CI)
+sh deploy/test/integration_ingress.sh  # DNS-01, the wildcard and HTTPS-only ports on a real Traefik, Pebble and challtestsrv (not in CI)
+sh deploy/test/integration_proxy.sh  # a real Outhaul and Traefik behind a stand-in CDN and OIDC provider, end to end (not in CI)
 sh deploy/dev/run.sh   # the full stack in a container, against the host Docker daemon
 ```
 
@@ -41,6 +43,20 @@ carries `traefik.enable`, so a Traefik that exposes only labelled containers,
 like Outhaul's own, ignores them. `--outhaul HOST:PORT` uses a running
 Outhaul's gate instead of the stub; the script's header says how. That mode
 hasn't been run against a real Outhaul yet.
+
+`deploy/test/integration_ingress.sh` starts Pebble and
+`pebble-challtestsrv` and a Traefik built from `traefik.ProxyFlags`, and
+checks DNS-01, the wildcard and the HTTPS-only ports. It needs outbound DNS
+from its Traefik to challtestsrv; it starts only `outhaul-ingtest-*`
+containers, on loopback ports, and removes them when it ends.
+
+`deploy/test/integration_proxy.sh` builds a privileged Debian container with
+its own Docker daemon (`deploy/test/Dockerfile.proxytest`), runs a real Outhaul
+and Traefik inside it, and puts a stand-in CDN (nginx) and OIDC provider
+(`deploy/test/oidcstub`) in front. It starts only `outhaul-proxytest-*`
+containers and removes them when it ends. It has found real defects (an admin
+route the YAML parser rejected), so run it after changing how a router or the
+admin route is written.
 
 `go build .` leaves an `outhaul` binary in the repository root. Don't commit
 it.
@@ -182,6 +198,21 @@ fixed in five batches. All five are on `main`.
   addresses (`traefik.RuleAddress`), not rule strings. Only a system admin can
   bring two projects together on a protected host. See
   `docs/PROTECTED-ROUTES.md`.
+- **Behind a TLS-terminating proxy.** Every router is written from one
+  `traefik.Routing` value (`AppLabels`, `compose.Override`, the admin route),
+  never from separate positional settings. A rule is its address, the
+  traversal term, then the header term when one is required; `priority` is the
+  length of the address alone, and `traefik.RuleAddress` accepts the first two
+  or all three, so an old container's rule still names its row. With a request
+  header required, every routed container carries `outhaul.ingress=<stamp>`
+  and Traefik's Docker provider runs with a constraint on that stamp; nothing
+  else may create a route on a protected install. With `OUTHAUL_HTTP_PORT=off`
+  no label or file-provider router may name the `web` entrypoint. The header's
+  value is never logged, shown on a page or put in a flag other than Traefik's
+  constraint and rules. `OUTHAUL_ADMIN_DIRECT=off` listens on loopback and the
+  Docker gateway only. See `docs/BEHIND-A-PROXY.md`; the real-Traefik and
+  end-to-end checks are `deploy/test/integration_ingress.sh` and
+  `deploy/test/integration_proxy.sh`.
 
 ### Open: reliability and UX
 

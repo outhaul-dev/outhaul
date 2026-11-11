@@ -86,6 +86,7 @@ func (s *Server) handleAppsList(w http.ResponseWriter, r *http.Request) {
 	data := map[string]any{
 		"Title": "Apps", "Active": "apps", "Apps": rows,
 		"Projects": projects, "SelectedProject": selectedProject(projects),
+		"HTTPSOnly": s.routing.HTTPOff, "ProtectedHTTPS": s.protectedOverHTTPS(r.Context()),
 	}
 	for k, v := range s.gitSourceData(r) {
 		data[k] = v
@@ -647,6 +648,7 @@ func (s *Server) renderAppsWithError(w http.ResponseWriter, r *http.Request, msg
 	data := map[string]any{
 		"Title": "Apps", "Active": "apps", "Apps": rows,
 		"Projects": projects, "SelectedProject": selected,
+		"HTTPSOnly": s.routing.HTTPOff, "ProtectedHTTPS": s.protectedOverHTTPS(r.Context()),
 		"Error":      msg,
 		"Form":       submittedAppForm(r),
 		"OpenDialog": "app-dialog",
@@ -793,7 +795,7 @@ func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, status in
 			url := ""
 			if ds, _ := s.store.ListDomains(r.Context(), k.ID); len(ds) > 0 {
 				scheme := "http://"
-				if ds[0].TLS || ds[0].Protected && protectedHTTPS {
+				if s.routing.HTTPOff || ds[0].TLS || ds[0].Protected && protectedHTTPS {
 					scheme = "https://"
 				}
 				url = scheme + ds[0].Host
@@ -825,6 +827,7 @@ func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, status in
 		"ServerIP":      s.serverIP,
 		"TLSAvailable":  s.tlsEnabled,
 		"LocalCA":       s.caFile != "",
+		"HTTPSOnly":     s.routing.HTTPOff,
 
 		"PreviewsAvailable": app.Source == core.SourceGithub,
 		"PreviewConfig":     previewCfg,
@@ -957,11 +960,20 @@ func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, status in
 				openOnProtected[d.ID] = true
 			}
 		}
-		if csErr == nil && len(cs) > 0 && protectionMismatch(domains, app.Name, cs, protectedHosts) {
+		// A stale stamp counts the same way as a protection mismatch: Restart must
+		// never bring old rules back.
+		if csErr == nil && len(cs) > 0 && (protectionMismatch(domains, app.Name, cs, protectedHosts) || s.anyStale(cs)) {
 			data["RestartDeploys"] = true
 		}
 	}
-	states := accessStates(domains, app.Name, cs, csErr, deployments)
+	if csErr == nil {
+		for _, c := range cs {
+			if answers(c) && s.routing.Unserved(c.Labels) {
+				data["NotServed"] = true
+			}
+		}
+	}
+	states := accessStates(domains, app.Name, s.served(cs), csErr, deployments)
 	if csErr == nil {
 		s.strayAccess(r, domains, app.Name, states)
 	}
@@ -1029,6 +1041,11 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.AppID = id
+	// An HTTPS-only server has no plain-HTTP router, so every row is served
+	// over HTTPS whatever its own box says.
+	if s.routing.HTTPOff {
+		d.TLS = true
+	}
 	// From here the save and the deploy that applies it finish together, even
 	// if the browser goes: the reconcile can recreate the Traefik it came through.
 	ctx := context.WithoutCancel(r.Context())
@@ -1112,8 +1129,9 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 	d.AppID = id
 	// When HTTPS automation is unavailable the wizard disables the toggle, which
 	// would submit no value and silently clear a previously-enabled certificate.
-	// Preserve the stored intent so re-enabling ACME later restores HTTPS.
-	if !s.tlsEnabled {
+	// Preserve the stored intent so re-enabling ACME later restores HTTPS. An
+	// HTTPS-only server also renders the box disabled, so it submits nothing.
+	if !s.tlsEnabled || s.routing.HTTPOff {
 		d.TLS = existing.TLS
 	}
 	// See handleAddDomain.
@@ -1751,7 +1769,7 @@ func (s *Server) restartDeploysInstead(w http.ResponseWriter, r *http.Request) b
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return true
 	}
-	if !protectionMismatch(domains, app.Name, cs, protectedHosts) {
+	if !protectionMismatch(domains, app.Name, cs, protectedHosts) && !s.anyStale(cs) {
 		return false
 	}
 	dep, err := s.queueProtectionDeploy(r.Context(), app)

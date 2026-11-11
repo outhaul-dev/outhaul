@@ -22,6 +22,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/gitsource"
 	"github.com/outhaul-dev/outhaul/internal/logstream"
 	"github.com/outhaul-dev/outhaul/internal/store"
+	"github.com/outhaul-dev/outhaul/internal/traefik"
 )
 
 // pollInterval is a safety-net re-check even if no Notify arrives.
@@ -93,21 +94,17 @@ func NewWorker(st *store.Store, dc docker.Client, b Builders, cp compose.Runner,
 	}
 }
 
-// effectiveTLS reports whether apps should be labelled for HTTPS at deploy time.
-// A Cloudflare Tunnel terminates TLS at Cloudflare's edge and Traefik serves
-// plain HTTP behind it, so an enabled tunnel forces this false even when ACME is
-// configured. On a read error we fall back to the ACME setting (the common,
-// tunnel-off case).
-func (w *Worker) effectiveTLS(ctx context.Context) bool {
-	if !w.cfg.TLSEnabled() {
-		return false
-	}
+// routing builds the server-wide routing settings for a deploy. A Cloudflare
+// Tunnel terminates TLS at Cloudflare's edge and Traefik serves plain HTTP
+// behind it, so an enabled tunnel forces HTTPS routers off even when ACME is
+// configured. On a read error we assume no tunnel (the common case) and log.
+func (w *Worker) routing(ctx context.Context) traefik.Routing {
 	on, err := w.store.TunnelEnabled(ctx)
 	if err != nil {
 		log.Printf("deploy: could not read tunnel setting, assuming HTTPS on: %v", err)
-		return true
+		return traefik.RoutingFrom(w.cfg, false)
 	}
-	return !on
+	return traefik.RoutingFrom(w.cfg, on)
 }
 
 // SetPruner installs the after-deploy image-retention hook. Call before Run.
