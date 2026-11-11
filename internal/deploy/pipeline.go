@@ -173,7 +173,11 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 		}
 	}
 
-	logf(out, "Done. %s is live at http://%s", app.Name, app.Domain)
+	scheme := "http://"
+	if rt := w.routing(ctx); rt.TLS && rt.HTTPOff {
+		scheme = "https://"
+	}
+	logf(out, "Done. %s is live at %s%s", app.Name, scheme, app.Domain)
 }
 
 // deployBlueGreen runs the zero-downtime cutover used by stateless apps: start

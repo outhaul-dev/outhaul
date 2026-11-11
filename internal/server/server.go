@@ -29,6 +29,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/logstream"
 	"github.com/outhaul-dev/outhaul/internal/sso"
 	"github.com/outhaul-dev/outhaul/internal/store"
+	"github.com/outhaul-dev/outhaul/internal/traefik"
 	"github.com/outhaul-dev/outhaul/internal/update"
 	"github.com/outhaul-dev/outhaul/internal/webhook"
 )
@@ -100,8 +101,9 @@ type Server struct {
 	pages      map[string]*template.Template
 	setupToken string
 	publicURL  string
-	serverIP   string // for generated sslip.io template domains; may be empty
-	tlsEnabled bool   // ACME or local CA configured: HTTPS automation is available
+	serverIP   string          // for generated sslip.io template domains; may be empty
+	tlsEnabled bool            // ACME or local CA configured: HTTPS automation is available
+	routing    traefik.Routing // the server-wide routing settings the pages show
 
 	repos      *gitrepo.Manager // push-app bare repos; nil disables push-repo cleanup
 	sshControl SSHControl       // git-push SSH server; nil disables the port setting
@@ -211,6 +213,10 @@ func (s *Server) SetCertSync(cs CertSyncer) { s.certSync = cs }
 
 // SetLocalCAFile publishes the CA root certificate at GET /ca.pem.
 func (s *Server) SetLocalCAFile(path string) { s.caFile = path }
+
+// SetRouting installs the server-wide routing settings the pages show. Call
+// before Handler.
+func (s *Server) SetRouting(rt traefik.Routing) { s.routing = rt }
 
 // syncCerts refreshes local-CA certs after a domain change; best-effort — a
 // route reaches Traefik on the next deploy anyway, minting can lag a beat.

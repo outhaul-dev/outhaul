@@ -763,3 +763,38 @@ func TestPipelineLabelsCarryTheGate(t *testing.T) {
 		t.Errorf("open row middlewares = %q, want the identity strip", got)
 	}
 }
+
+// The build log's last line follows the server's routing settings: an
+// HTTPS-only install says https.
+func TestDoneLineIsHTTPSWhenHTTPOff(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  config.Config
+		want string
+	}{
+		{"HTTPS only", config.Config{LocalCA: true, HTTPOff: true}, "is live at https://"},
+		{"ordinary", config.Config{}, "is live at http://"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.worker.cfg.LocalCA = tc.cfg.LocalCA
+			h.worker.cfg.HTTPOff = tc.cfg.HTTPOff
+			ctx := context.Background()
+			app := h.app(t, "web")
+			dep := h.claimedDeployment(t, app.ID)
+			h.worker.runPipeline(ctx, dep)
+			if got := h.status(t, dep.ID); got.Status != core.StatusRunning {
+				t.Fatalf("status = %q (reason %q), want running", got.Status, got.Reason)
+			}
+			history, _, cancel := h.broker.Subscribe(dep.ID)
+			defer cancel()
+			if len(history) == 0 {
+				t.Fatal("no build log")
+			}
+			last := history[len(history)-1]
+			if !strings.Contains(last, tc.want) {
+				t.Errorf("last log line = %q, want it to contain %q", last, tc.want)
+			}
+		})
+	}
+}

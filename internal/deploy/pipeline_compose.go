@@ -115,9 +115,13 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 		logf(out, "WARNING: could not retire superseded deployments: %v", err)
 	}
 	if len(domains) > 0 {
+		scheme := "http://"
+		if rt := w.routing(ctx); rt.TLS && rt.HTTPOff {
+			scheme = "https://"
+		}
 		hosts := make([]string, len(domains))
 		for i, d := range domains {
-			hosts[i] = "http://" + d.Host
+			hosts[i] = scheme + d.Host
 		}
 		logf(out, "Done. %s is live at %s", app.Name, strings.Join(hosts, ", "))
 	} else {

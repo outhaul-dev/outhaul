@@ -19,3 +19,8 @@ HTTP challenge uses port 80.
 It can't be combined with a Cloudflare Tunnel: cloudflared reaches Traefik on
 port 80, which this mode doesn't have. `outhaul serve` refuses to start with
 both, and Settings refuses to enable a tunnel while it is set.
+
+Every page shows a domain row as HTTPS and links it over HTTPS, including
+preview links and the "is live at" line in a deploy log. A row's "Automate
+HTTPS" box is shown on and can't be changed, with a note saying the server
+serves HTTPS only.

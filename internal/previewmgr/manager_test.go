@@ -1344,3 +1344,16 @@ func TestDestroyByIDDestroysTheChildItHolds(t *testing.T) {
 		t.Errorf("containers for %s were not removed", child.Name)
 	}
 }
+
+func TestLinkSchemeHTTPSOnly(t *testing.T) {
+	m := &Manager{}
+	m.SetHTTPSOnly(true)
+	d := core.Domain{Host: "plain.example.com"}
+	if got := m.linkScheme(context.Background(), d); got != "https://" {
+		t.Errorf("linkScheme = %q, want https://", got)
+	}
+	m.SetHTTPSOnly(false)
+	if got := m.linkScheme(context.Background(), d); got != "http://" {
+		t.Errorf("linkScheme = %q, want http://", got)
+	}
+}

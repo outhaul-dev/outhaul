@@ -96,5 +96,6 @@ func (s *Server) handleDomainsList(w http.ResponseWriter, r *http.Request) {
 		"Active":         "domains",
 		"Domains":        rows,
 		"ProtectedHTTPS": s.protectedOverHTTPS(r.Context()),
+		"HTTPSOnly":      s.routing.HTTPOff,
 	})
 }

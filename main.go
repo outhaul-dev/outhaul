@@ -315,6 +315,8 @@ func serve() error {
 		return fmt.Errorf("build server: %w", err)
 	}
 	srv.SetRepos(repos)
+	srv.SetRouting(traefik.RoutingFrom(cfg, false))
+	previews.SetHTTPSOnly(cfg.HTTPOff)
 	if sshSrv != nil {
 		srv.SetSSHControl(sshSrv)
 	}

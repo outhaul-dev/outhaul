@@ -793,7 +793,7 @@ func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, status in
 			url := ""
 			if ds, _ := s.store.ListDomains(r.Context(), k.ID); len(ds) > 0 {
 				scheme := "http://"
-				if ds[0].TLS || ds[0].Protected && protectedHTTPS {
+				if s.routing.HTTPOff || ds[0].TLS || ds[0].Protected && protectedHTTPS {
 					scheme = "https://"
 				}
 				url = scheme + ds[0].Host
@@ -825,6 +825,7 @@ func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, status in
 		"ServerIP":      s.serverIP,
 		"TLSAvailable":  s.tlsEnabled,
 		"LocalCA":       s.caFile != "",
+		"HTTPSOnly":     s.routing.HTTPOff,
 
 		"PreviewsAvailable": app.Source == core.SourceGithub,
 		"PreviewConfig":     previewCfg,
@@ -1029,6 +1030,11 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	d.AppID = id
+	// An HTTPS-only server has no plain-HTTP router, so every row is served
+	// over HTTPS whatever its own box says.
+	if s.routing.HTTPOff {
+		d.TLS = true
+	}
 	// From here the save and the deploy that applies it finish together, even
 	// if the browser goes: the reconcile can recreate the Traefik it came through.
 	ctx := context.WithoutCancel(r.Context())
@@ -1112,8 +1118,9 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 	d.AppID = id
 	// When HTTPS automation is unavailable the wizard disables the toggle, which
 	// would submit no value and silently clear a previously-enabled certificate.
-	// Preserve the stored intent so re-enabling ACME later restores HTTPS.
-	if !s.tlsEnabled {
+	// Preserve the stored intent so re-enabling ACME later restores HTTPS. An
+	// HTTPS-only server also renders the box disabled, so it submits nothing.
+	if !s.tlsEnabled || s.routing.HTTPOff {
 		d.TLS = existing.TLS
 	}
 	// See handleAddDomain.
