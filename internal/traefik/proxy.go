@@ -45,8 +45,10 @@ type ProxyConfig struct {
 	ACME           bool // Let's Encrypt automation on (websecure + ACME resolver)
 	ACMEEmail      string
 	ACMEStaging    bool
-	HTTPSPort      string // host port for :443
-	ACMEStorageDir string // host dir bind-mounted for acme.json
+	DNSProvider    string   // lego DNS-01 provider code; "" uses the HTTP challenge
+	DNSEnv         []string // "NAME=value" variables passed to Traefik for the provider
+	HTTPSPort      string   // host port for :443
+	ACMEStorageDir string   // host dir bind-mounted for acme.json
 
 	// LocalCA serves HTTPS from Outhaul-minted certs instead of ACME: the
 	// websecure entrypoint and redirect are on, no ACME flags are emitted,
@@ -223,6 +225,12 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 
 	if (pc.ACME || pc.LocalCA) && !pc.TunnelMode {
 		cmd = append(cmd, "--entrypoints.websecure.address=:443")
+		if pc.ACME && pc.Routing.Wildcard != "" {
+			cmd = append(cmd,
+				"--entrypoints.websecure.http.tls.certresolver=le",
+				"--entrypoints.websecure.http.tls.domains[0].main="+pc.Routing.Wildcard,
+			)
+		}
 		if !httpOff {
 			cmd = append(cmd,
 				"--entrypoints.web.http.redirections.entrypoint.to=websecure",
@@ -232,9 +240,18 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 		ports = append(ports, docker.PortMapping{HostPort: pc.HTTPSPort, ContainerPort: "443", Proto: "tcp"})
 	}
 	if pc.ACME && !pc.TunnelMode {
+		if pc.DNSProvider != "" {
+			cmd = append(cmd,
+				"--certificatesresolvers.le.acme.dnschallenge=true",
+				"--certificatesresolvers.le.acme.dnschallenge.provider="+pc.DNSProvider,
+			)
+		} else {
+			cmd = append(cmd,
+				"--certificatesresolvers.le.acme.httpchallenge=true",
+				"--certificatesresolvers.le.acme.httpchallenge.entrypoint=web",
+			)
+		}
 		cmd = append(cmd,
-			"--certificatesresolvers.le.acme.httpchallenge=true",
-			"--certificatesresolvers.le.acme.httpchallenge.entrypoint=web",
 			"--certificatesresolvers.le.acme.email="+pc.ACMEEmail,
 			"--certificatesresolvers.le.acme.storage=/etc/traefik/acme/acme.json",
 		)
@@ -242,6 +259,9 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 			cmd = append(cmd, "--certificatesresolvers.le.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory")
 		}
 		mounts = append(mounts, docker.Mount{Source: pc.ACMEStorageDir, Target: "/etc/traefik/acme", ReadOnly: false})
+	}
+	if pc.ACME && !pc.TunnelMode {
+		env = append(env, pc.DNSEnv...)
 	}
 	if pc.LocalCA && !pc.TunnelMode {
 		mounts = append(mounts, docker.Mount{Source: pc.CertsDir, Target: localca.ContainerCertsDir, ReadOnly: true})
@@ -321,6 +341,10 @@ func writeAdminDynamicConfig(pc ProxyConfig) error {
 	case pc.LocalCA:
 		// Cert comes from the file-provider tls store, not a resolver.
 		entrypoint, tlsBlock = "websecure", "\n      tls: {}"
+	case WildcardCovers(pc.Routing.Wildcard, pc.AdminHost):
+		// The entrypoint's wildcard covers this host: it inherits the
+		// resolver and certificate, so it must name no tls setting.
+		tlsBlock = ""
 	}
 	return os.WriteFile(path, []byte(adminDynamicConfig(pc.AdminHost, port, entrypoint, tlsBlock)), 0o644)
 }

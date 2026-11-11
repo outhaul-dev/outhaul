@@ -78,10 +78,7 @@ func RouteLabels(router string, d core.Domain, port int, rt Routing) map[string]
 		// says, with one router that keeps the row's base name so RowHasGate
 		// and the code matching a container's router to a row work unchanged.
 		labels["traefik.http.routers."+router+".entrypoints"] = "websecure"
-		labels["traefik.http.routers."+router+".tls"] = "true"
-		if rt.CertResolver != "" {
-			labels["traefik.http.routers."+router+".tls.certresolver"] = rt.CertResolver
-		}
+		addTLSLabels(labels, router, d.Host, rt)
 		return labels
 	}
 	if rt.routeWantsTLS(d) {
@@ -89,14 +86,26 @@ func RouteLabels(router string, d core.Domain, port int, rt Routing) map[string]
 		labels["traefik.http.routers."+tls+".rule"] = rule
 		labels["traefik.http.routers."+tls+".priority"] = priority
 		labels["traefik.http.routers."+tls+".entrypoints"] = "websecure"
-		labels["traefik.http.routers."+tls+".tls"] = "true"
-		if rt.CertResolver != "" {
-			labels["traefik.http.routers."+tls+".tls.certresolver"] = rt.CertResolver
-		}
+		addTLSLabels(labels, tls, d.Host, rt)
 		labels["traefik.http.routers."+tls+".service"] = router
 		labels["traefik.http.routers."+tls+".middlewares"] = strings.Join(mws, ",")
 	}
 	return labels
+}
+
+// addTLSLabels writes a websecure router's TLS labels. A host the wildcard
+// covers gets none: it inherits the entrypoint's resolver and wildcard
+// certificate, so it never asks for its own. Every other host names its
+// resolver under Let's Encrypt, and the local CA leaves it to the file
+// provider.
+func addTLSLabels(labels map[string]string, router, host string, rt Routing) {
+	if rt.CertResolver != "" && WildcardCovers(rt.Wildcard, host) {
+		return
+	}
+	labels["traefik.http.routers."+router+".tls"] = "true"
+	if rt.CertResolver != "" {
+		labels["traefik.http.routers."+router+".tls.certresolver"] = rt.CertResolver
+	}
 }
 
 // IdentityHeader carries the signed-in visitor's identity to an app behind a

@@ -484,6 +484,8 @@ func (ic *infraController) proxyConfig(ctx context.Context, tunnelOn, protectedR
 	pc.ACME = ic.cfg.ACMEEnabled()
 	pc.ACMEEmail = ic.cfg.ACMEEmail
 	pc.ACMEStaging = ic.cfg.ACMEStaging
+	pc.DNSProvider = ic.cfg.ACMEDNSProvider
+	pc.DNSEnv = ic.cfg.ACMEDNSEnv
 	pc.HTTPSPort = ic.cfg.HTTPSPort
 	pc.ACMEStorageDir = ic.cfg.AcmeDir()
 	pc.LocalCA = ic.cfg.LocalCAEnabled()

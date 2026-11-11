@@ -433,3 +433,206 @@ func TestHTTPOffNeedsHTTPS(t *testing.T) {
 		}
 	}
 }
+
+func TestDNSProviderSetting(t *testing.T) {
+	ok := Load(func(k string) string {
+		switch k {
+		case "OUTHAUL_ACME_DNS_PROVIDER":
+			return "azuredns"
+		case "OUTHAUL_ACME_EMAIL":
+			return "ops@example.com"
+		}
+		return ""
+	})
+	if ok.ACMEDNSProvider != "azuredns" {
+		t.Errorf("ACMEDNSProvider = %q, want azuredns", ok.ACMEDNSProvider)
+	}
+	if err := ok.Validate(); err != nil {
+		t.Errorf("Validate: %v", err)
+	}
+
+	noEmail := Load(func(k string) string {
+		if k == "OUTHAUL_ACME_DNS_PROVIDER" {
+			return "azuredns"
+		}
+		return ""
+	})
+	err := noEmail.Validate()
+	if err == nil {
+		t.Fatal("a DNS provider without an ACME email: Validate accepted it")
+	}
+	for _, want := range []string{"OUTHAUL_ACME_DNS_PROVIDER", "OUTHAUL_ACME_EMAIL"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+
+	for _, v := range []string{"Azure DNS", "azure_dns", "azure;rm"} {
+		cfg := Load(func(k string) string {
+			switch k {
+			case "OUTHAUL_ACME_DNS_PROVIDER":
+				return v
+			case "OUTHAUL_ACME_EMAIL":
+				return "ops@example.com"
+			}
+			return ""
+		})
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "OUTHAUL_ACME_DNS_PROVIDER") {
+			t.Errorf("OUTHAUL_ACME_DNS_PROVIDER=%q: error %v does not name the variable", v, err)
+		}
+	}
+}
+
+func TestDNSEnvSetting(t *testing.T) {
+	cases := []struct {
+		env     string
+		want    []string
+		wantErr []string
+	}{
+		{"A,B", []string{"A=1", "B=2"}, nil},
+		{" A , B ", []string{"A=1", "B=2"}, nil},
+	}
+	for _, tc := range cases {
+		cfg := Load(func(k string) string {
+			switch k {
+			case "OUTHAUL_ACME_DNS_PROVIDER":
+				return "azuredns"
+			case "OUTHAUL_ACME_EMAIL":
+				return "ops@example.com"
+			case "OUTHAUL_ACME_DNS_ENV":
+				return tc.env
+			case "A":
+				return "1"
+			case "B":
+				return "2"
+			case "EMPTY":
+				return ""
+			}
+			return ""
+		})
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("OUTHAUL_ACME_DNS_ENV=%q: Validate: %v", tc.env, err)
+		}
+		if strings.Join(cfg.ACMEDNSEnv, ",") != strings.Join(tc.want, ",") {
+			t.Errorf("OUTHAUL_ACME_DNS_ENV=%q -> %v, want %v", tc.env, cfg.ACMEDNSEnv, tc.want)
+		}
+	}
+
+	bad := []struct {
+		env  string
+		said []string
+	}{
+		{"A,", []string{"OUTHAUL_ACME_DNS_ENV", "empty"}},
+		{"A,,B", []string{"OUTHAUL_ACME_DNS_ENV", "empty"}},
+		{"A,A", []string{"OUTHAUL_ACME_DNS_ENV", "A"}},
+		{"A B", []string{"OUTHAUL_ACME_DNS_ENV", "A B"}},
+		{"1A", []string{"OUTHAUL_ACME_DNS_ENV", "1A"}},
+		{"A,MISSING", []string{"OUTHAUL_ACME_DNS_ENV", "MISSING"}},
+		{"A,EMPTY", []string{"OUTHAUL_ACME_DNS_ENV", "EMPTY"}},
+	}
+	for _, tc := range bad {
+		cfg := Load(func(k string) string {
+			switch k {
+			case "OUTHAUL_ACME_DNS_PROVIDER":
+				return "azuredns"
+			case "OUTHAUL_ACME_EMAIL":
+				return "ops@example.com"
+			case "OUTHAUL_ACME_DNS_ENV":
+				return tc.env
+			case "A":
+				return "1"
+			case "B":
+				return "2"
+			case "EMPTY":
+				return ""
+			}
+			return ""
+		})
+		err := cfg.Validate()
+		if err == nil {
+			t.Errorf("OUTHAUL_ACME_DNS_ENV=%q: Validate accepted it", tc.env)
+			continue
+		}
+		for _, want := range tc.said {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("OUTHAUL_ACME_DNS_ENV=%q: error %q does not contain %q", tc.env, err, want)
+			}
+		}
+		if strings.Contains(err.Error(), "=1") || strings.Contains(err.Error(), "=2") {
+			t.Errorf("OUTHAUL_ACME_DNS_ENV=%q: error leaks a value: %q", tc.env, err)
+		}
+	}
+
+	noProvider := Load(func(k string) string {
+		switch k {
+		case "OUTHAUL_ACME_DNS_ENV":
+			return "A"
+		case "A":
+			return "1"
+		}
+		return ""
+	})
+	err := noProvider.Validate()
+	if err == nil || !strings.Contains(err.Error(), "OUTHAUL_ACME_DNS_PROVIDER") {
+		t.Errorf("env without a provider: error %v does not name OUTHAUL_ACME_DNS_PROVIDER", err)
+	}
+}
+
+func TestTLSWildcardSetting(t *testing.T) {
+	valid := func(v string) Config {
+		return Load(func(k string) string {
+			switch k {
+			case "OUTHAUL_TLS_WILDCARD":
+				return v
+			case "OUTHAUL_ACME_DNS_PROVIDER":
+				return "azuredns"
+			case "OUTHAUL_ACME_EMAIL":
+				return "ops@example.com"
+			}
+			return ""
+		})
+	}
+	if got := valid("*.shared.demo.example.com").TLSWildcard; got != "*.shared.demo.example.com" {
+		t.Errorf("TLSWildcard = %q", got)
+	}
+	if got := valid("*.Shared.Demo.Example.com").TLSWildcard; got != "*.shared.demo.example.com" {
+		t.Errorf("TLSWildcard = %q, want it lower-cased", got)
+	}
+	for _, v := range []string{
+		"shared.demo.example.com", "*.com", "*.*.example.com", "*.exa mple.com", "*.example.com.",
+	} {
+		cfg := valid(v)
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "OUTHAUL_TLS_WILDCARD") {
+			t.Errorf("OUTHAUL_TLS_WILDCARD=%q: error %v does not name the variable", v, err)
+		}
+	}
+	noProvider := Load(func(k string) string {
+		if k == "OUTHAUL_TLS_WILDCARD" {
+			return "*.shared.demo.example.com"
+		}
+		return ""
+	})
+	err := noProvider.Validate()
+	if err == nil || !strings.Contains(err.Error(), "OUTHAUL_ACME_DNS_PROVIDER") {
+		t.Errorf("wildcard without a provider: error %v does not name OUTHAUL_ACME_DNS_PROVIDER", err)
+	}
+}
+
+func TestHTTPOffWithDNSChallenge(t *testing.T) {
+	cfg := Load(func(k string) string {
+		switch k {
+		case "OUTHAUL_HTTP_PORT":
+			return "off"
+		case "OUTHAUL_ACME_EMAIL":
+			return "ops@example.com"
+		case "OUTHAUL_ACME_DNS_PROVIDER":
+			return "azuredns"
+		}
+		return ""
+	})
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate: %v", err)
+	}
+}
