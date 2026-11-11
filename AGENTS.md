@@ -207,6 +207,19 @@ fixed in five batches. All five are on `main`.
   request shares one remote address, and a per-user lockout lets an attacker
   lock out the only admin. The two-at-a-time limit on hashing caps the rate of
   guesses.
+- **Strict container policy is an allow-list.** A service key that isn't in
+  `internal/compose/policy.go` is refused, including a key a newer Compose
+  adds, so allowing a new key is a deliberate change with a test.
+- **Top-level `x-*` keys** are the one exception: they are allowed as extension
+  fields, and whatever an anchor puts into a service is checked in that
+  service.
+- **The Compose model is never logged.** It is `docker compose config` output
+  with its variables interpolated, so it can carry secrets.
+- **A refusal names the service and the option** (`service "web": ports: ...`)
+  and never quotes a value from the file, so the deploy log says what to
+  change.
+- **Database ports.** Under strict mode a database publishes no host port: the
+  form refuses one and provisioning omits it. See `docs/GUARD-RAILS.md`.
 - **Protected routes.** The gate is defined in each app's own labels, never in
   the file provider: Traefik drops a router that names a middleware the file
   provider doesn't define, and its requests fall to an open router. Every open

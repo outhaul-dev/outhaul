@@ -644,6 +644,61 @@ loopback and on the host's address on its Docker network, and maps Traefik's
 column, the Domains page and the "other app on this host" checks; the live
 state and mismatch checks still see every container.
 
+### Container guard rails (opt-in)
+
+With `OUTHAUL_CONTAINER_POLICY=strict`, a Compose deploy is refused before
+anything is built when its file asks for something that reaches the host or
+another app. Unset, none of the below runs, and an install that doesn't set it
+sees no extra `docker compose` call. The user guide is `docs/GUARD-RAILS.md`.
+
+**The model reader.** `compose.Runner.Config` asks for the stack's normalised
+configuration (`docker compose config --format json --no-env-resolution`), and
+`compose.ReadModel` parses it with `compose.ParseModel` into `compose.Model`:
+the project name, the services sorted by name (their image, restart policy and
+labels), and the raw JSON of every key. `--no-env-resolution` arrived in Docker
+Compose 2.35 and leaves an `env_file` reference's contents unexpanded; an older
+Compose is refused with a message naming the version. The model holds the file
+with its variables interpolated, so it lives in memory only and is never
+logged. It is read only when a setting needs it (`needsModel`), so the default
+install runs no extra command.
+
+**The allow-list.** `compose.Check` walks the model against a `compose.Policy`.
+Strict mode allows the top-level `name`, `services`, `volumes`, `networks`,
+`secrets` and `configs` sections and any top-level `x-*` extension key; a
+service key is allowed as written, allowed after a check (mounts, namespaces,
+references, hooks, builds), refused by name with a reason, or refused because it
+is not on the list at all. A top-level entry, service or option that fails
+yields a `compose.Violation` of Where (`service "web"`), Option (`privileged`)
+and Reason; no field quotes a value from the model. The deploy log prints every
+violation, and the deployment's reason is the first plus a count. The catalog
+test `TestEveryTemplatePassesTheStrictPolicy` runs every one-click template
+through the same check, so a template can't be offered and then refused.
+
+**Labels and images.** `Policy.RoutingLabels` refuses any service label that
+begins `traefik.` or `outhaul.`, in any case and including one a `label_file:`
+adds, because Docker copies a container's labels where Traefik reads them: a
+`traefik.*` label would add a route Outhaul did not write. An image's own
+labels reach its containers the same way, so a Compose stack pulls its images
+and checks each one (`checkComposeImages`), and a single-container or fork
+preview image is inspected after the build (`refuseRoutingLabels`).
+
+**Environment and databases.** Under strict mode the Compose runner gets
+`compose.RestrictedEnv`, so a file's `${NAME}` cannot read Outhaul's settings
+or secrets; the stack's own `.env`, written beside the Compose file, still
+supplies its variables. A managed database publishes no host port
+(`dbaas.Manager.SetPolicy`), the database forms refuse one, and startup names
+any row that still has one, since its mapping lasts until the container is next
+replaced.
+
+**Scope.** Strict mode covers Compose deploys, database ports and the
+single-container image check. It doesn't inspect a Nixpacks or Dockerfile
+build, and it doesn't apply to Outhaul's own Traefik and cloudflared
+containers. It is guard rails for trusted people, not containment: apps still
+share the Docker network. The earlier non-goal "Restricting Compose files or
+separating apps on the Docker network"
+(`2026-11-02-sso-roles-protected-routes-design.md`) no longer holds for its
+first half, and only while strict mode is set.
+
 ---
 
 ## Package layout
@@ -703,6 +758,8 @@ outhaul/
 
     compose/                  # docker compose stacks behind a Runner interface (fake for tests)
         compose.go            # Runner: Build/Up (files) + Stop/Restart/Down (label-based, -p only)
+        model.go              # Model: `docker compose config --format json` parsed for the checks
+        policy.go             # Check: the strict allow-list, with label and image refusals
         override.go           # Override: generated outhaul.override.yml publishing services on their domains
         fake.go               # in-memory fake for unit tests
 
