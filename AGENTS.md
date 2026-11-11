@@ -8,8 +8,8 @@ driving Docker, Traefik and Nixpacks. Read these first:
 - `README.md`: what it does, and how it is installed.
 - `ARCHITECTURE.md`: locked decisions (do not revisit them), package layout,
   the deployment state machine, and the testing seams.
-- `docs/`: local-CA HTTPS, manual deployment, SSO, protected routes, and past
-  design specs and plans (`docs/superpowers/`).
+- `docs/`: local-CA HTTPS, manual deployment, SSO, protected routes,
+  unattended installs, and past design specs and plans (`docs/superpowers/`).
 
 ## Build, run, test
 
@@ -57,7 +57,20 @@ it.
   `internal/docker/cancel_test.go` shows how to fake the Engine API with
   `httptest`.
 - **Installer tests.** Run them as files (`dash deploy/test/test_prompt.sh`),
-  and check `dash`, `bash --posix` and `busybox sh`.
+  and check `dash`, `bash --posix` and `busybox sh`. The unattended path has
+  its own files: `test_main.sh` (the flags and their refusals), `test_env.sh`
+  (`install.env` and the drop-ins), `test_ref.sh` (ref resolution, the stamp
+  and the marker), `test_nixpacks.sh` (the pin), `test_docker.sh` (Docker's
+  three states), `test_firewall.sh` (ufw), `test_health.sh` (the service's
+  ports, the header and the proxy checks), `test_swap.sh` (the careful swap
+  and its exit guard) and `test_noninteractive.sh` (the whole run in a temp
+  tree). `deploy/test/integration.sh` runs install, re-run, upgrade and
+  rollback in a systemd container; it is not in CI.
+- **The nixpacks pin.** `NIXPACKS_VERSION`, `NIXPACKS_SHA256_AMD64` and
+  `NIXPACKS_SHA256_ARM64` in `deploy/bootstrap.sh` are the pin. To move it,
+  change the three constants together — the version and both release assets'
+  published SHA-256 — and update `docs/MANUAL-DEPLOY.md` and
+  `docs/UNATTENDED-INSTALL.md`. `test_nixpacks.sh` asserts all three values.
 - **Migrations** are embedded SQL in `internal/store/migrations`, numbered and
   applied in order. Never edit one that has shipped; add a new one. To test a
   data migration, seed old-schema rows with `openMigratedBefore`
@@ -150,6 +163,18 @@ fixed in five batches. All five are on `main`.
 - **Configuration is strict.** `Load` keeps defaults, so commands that only
   need paths still work, but `Validate` refuses bad values. Yes/no settings
   are case-insensitive, so `True` means on.
+- **Unattended installs.** `--non-interactive` never prompts or reads stdin,
+  and changes nothing until every flag is checked. It never installs Docker
+  without `--install-docker`, and never installs, enables or changes ufw
+  without `--firewall ufw`. Its answers go to `/etc/outhaul/install.env` and
+  the two `10-install.conf` drop-ins; it never writes `/etc/outhaul.env`.
+- **The update request carries nothing.** In every mode, the request file in
+  `/var/lib/outhaul/update` has no URL, ref or command, and the updater reads
+  nothing from it. The target comes from the updater itself, and the mode from
+  root's env files.
+- **`OUTHAUL_UPDATES=off` is enforced twice.** The panel and the background
+  check stop, and the updater itself removes the request and changes nothing.
+  Either guard alone is enough, so an env file edited by hand still stops it.
 - **Roles.** Roles are guardrails for trusted people, not containment: a
   project member's code still runs on the same server. New routes go in
   `routes()` with an access level; a route without one fails at startup. The

@@ -496,6 +496,27 @@ shows in the process log and in the webhook response body (status 200), and
 use tag mode; a tag-mode app's previews still follow the PR head. The design
 is in `docs/superpowers/specs/2026-10-26-tag-deploys-design.md`.
 
+### Updating Outhaul (done)
+
+`OUTHAUL_UPDATES` decides what Settings → Updates, the background check and the
+root updater do. It has two values, `main` and `off`.
+
+- **`main`** (the default) is today's behaviour: the panel compares the
+  running commit with the newest commit on `main` and updates on a click,
+  `internal/update.Checker` asks GitHub every six hours, and `deploy/update.sh`
+  fetches and builds the newest `main` after Outhaul creates the request file.
+- **`off`** shows the running commit and version with no Update button, no
+  Check now and no last result. The update and check routes answer 404, the
+  navigation badge never appears, and no background check starts. The installer
+  disables `outhaul-update.path` to match, and the updater itself removes the
+  request and changes nothing; either guard alone is enough, and a value the
+  updater does not know is treated as `off`. A server that is off is upgraded
+  by re-running the installer with a newer `--ref`.
+
+The installer takes `--ref` (a tag, branch or full commit) and `--updates`, so
+an unattended run can pin both the version and the mode. `releases` is not
+built: `Config.Validate` refuses it until it is.
+
 ### Protected routes (done)
 
 A domain row can require sign-in (`domains.protected`, migration 0028), so an

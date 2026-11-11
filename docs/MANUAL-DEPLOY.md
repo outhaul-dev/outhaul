@@ -23,6 +23,8 @@ Target: a fresh **Debian** or **Ubuntu** server (x86_64 or arm64) with
 | `/usr/local/bin/outhaul` | The binary |
 | `/etc/systemd/system/outhaul.service` | Systemd unit (from [`deploy/outhaul.service`](../deploy/outhaul.service)) |
 | `/etc/outhaul.env` | `OUTHAUL_*` configuration overrides |
+| `/etc/outhaul/install.env` | Unattended answers, rewritten by each `--non-interactive` run (the installer writes it; optional here) |
+| `/etc/systemd/system/outhaul.service.d/10-install.conf` | `EnvironmentFile=` drop-in written by an unattended or `--env-file` run (the same file exists under `outhaul-update.service.d/`) |
 | `/var/lib/outhaul` | Data dir: SQLite DB, build work dirs (owned by the `outhaul` user) |
 | `/usr/local/lib/outhaul`, `/var/lib/outhaul/update` | The updater (optional), and the directory it shares with Outhaul: see "Updating from the UI" |
 | `/var/lib/outhaul-updater` | The updater's own directory (root's, group `outhaul`, mode 0710): the copy of the running version it rolls back to, and its log |
@@ -43,8 +45,31 @@ docker compose version   # must succeed; if not: apt-get install docker-compose-
 apt-get update && apt-get install -y git
 
 # nixpacks — optional but recommended: needed for auto-detected builds.
-# Dockerfile and compose apps deploy without it.
-curl -fsSL https://nixpacks.com/install.sh | bash
+# Dockerfile and compose apps deploy without it. This is the installer's pin:
+# one version, with the SHA-256 GitHub publishes for the release archive.
+NIXPACKS_VERSION=1.41.0
+case "$(uname -m)" in
+x86_64 | amd64)
+  target=x86_64-unknown-linux-musl
+  sum=0f55de7874507b9cf7502113120bd96f2ab6979f78d10eaf2eb2ade9207b3af6
+  ;;
+aarch64 | arm64)
+  target=aarch64-unknown-linux-musl
+  sum=912bd02dd2bb6f9c3a9ed965fe8a68b4aa318dc7a2546e2eca6f2806a894ba39
+  ;;
+*)
+  echo "unsupported architecture: $(uname -m)" >&2
+  exit 1
+  ;;
+esac
+NIXPACKS_TMP=$(mktemp -d)
+curl -fsSL "https://github.com/railwayapp/nixpacks/releases/download/v${NIXPACKS_VERSION}/nixpacks-v${NIXPACKS_VERSION}-${target}.tar.gz" \
+  -o "$NIXPACKS_TMP/nixpacks.tar.gz"
+echo "$sum  $NIXPACKS_TMP/nixpacks.tar.gz" | sha256sum -c -
+tar -C "$NIXPACKS_TMP" -xzf "$NIXPACKS_TMP/nixpacks.tar.gz"
+install -m 0755 "$NIXPACKS_TMP/nixpacks" /usr/local/bin/nixpacks
+rm -rf "$NIXPACKS_TMP"
+nixpacks --version   # nixpacks 1.41.0
 ```
 
 ## 2. Build the binary
@@ -169,7 +194,37 @@ chmod 0600 /etc/outhaul.env
 
 `OUTHAUL_SSH_ADDR` enables git-push-to-deploy on that port. Set it to `off` to
 turn the SSH listener off (the default `:2222` applies when the line is
-dropped); the bare repositories and the hook socket stay either way.
+dropped); the bare repositories and the hook socket stay either way, and a
+stored address in Settings is ignored while it is off.
+
+### Env files and the installer drop-in
+
+`/etc/outhaul.env` is the file the unit loads. The installer's unattended
+answers live in `/etc/outhaul/install.env` (`root:root`, mode 0600, rewritten by
+each `--non-interactive` run), and both the service and the updater load it
+through a drop-in rather than by editing the unit — every update replaces the
+unit file:
+
+```ini
+# /etc/systemd/system/outhaul.service.d/10-install.conf
+[Service]
+EnvironmentFile=/etc/outhaul/install.env
+EnvironmentFile=/etc/outhaul/extra.env
+```
+
+The updater gets the same lines in
+`/etc/systemd/system/outhaul-update.service.d/10-install.conf`, because it
+needs the service's listen address, data dir, image overrides and
+`OUTHAUL_UPDATES`. systemd loads the unit's own `/etc/outhaul.env` first, then
+the drop-in's files in the order written, and a later file wins. The paths have
+no `-` prefix, so a missing file stops the service instead of starting it with
+half its settings. Run `systemctl daemon-reload` after writing or changing one.
+
+An unattended run writes `install.env` and both drop-ins. A wizard run with
+`--env-file` writes the drop-ins only, without `install.env`. A run with neither
+flag leaves them alone, so a plain installer re-run does not drop a host's env
+files. See [UNATTENDED-INSTALL.md](UNATTENDED-INSTALL.md) for the exact order
+and validation.
 
 ## 5. Install and start the service
 
@@ -255,7 +310,13 @@ systemctl restart outhaul
 ```
 
 (Or just re-run the installer — it skips completed steps and upgrades the
-binary.) There are **no data-migration guarantees** between alpha versions.
+binary when the commit it targets differs.) There are **no data-migration
+guarantees** between alpha versions.
+
+**Never install an older commit over a database a newer one has opened.**
+Migrations only go forward, and the old binary does not detect a newer schema:
+it starts and may misbehave. Install the same commit or a newer one. To go
+back, restore a backup of the database and the matching binary together.
 
 ### Updating from the UI
 
