@@ -137,6 +137,16 @@ func serve() error {
 		return err
 	}
 
+	// A strict container policy hides Outhaul's own environment from Compose
+	// files: every `docker compose` call gets only a small keep-list, so a
+	// file's ${NAME} cannot read OUTHAUL_* settings or secrets. Off, the slice
+	// is nil and every run inherits the environment exactly as before. The
+	// stack's own .env still supplies the app's variables.
+	var composeEnv []string
+	if cfg.StrictContainerPolicy() {
+		composeEnv = compose.RestrictedEnv(os.Environ())
+	}
+
 	// Data directories.
 	if err := os.MkdirAll(cfg.WorkDir(), 0o755); err != nil {
 		return fmt.Errorf("create data dir %s: %w", cfg.DataDir, err)
@@ -220,7 +230,7 @@ func serve() error {
 	broker := logstream.New()
 	worker := deploy.NewWorker(st, dc,
 		deploy.Builders{Nixpacks: builder.NewNixpacks(), Dockerfile: builder.NewDocker()},
-		compose.NewDocker(), deploy.NewGit(), broker, sources, cfg)
+		newComposeRunner(composeEnv), deploy.NewGit(), broker, sources, cfg)
 
 	// Image pruner: after-deploy retention hook + daily sweep.
 	pruner := prune.New(st, dc, cfg.ImageKeep, cfg.WorkDir(), cfg.PruneBuildCache)
@@ -292,7 +302,7 @@ func serve() error {
 	}
 	previews := previewmgr.New(st, worker,
 		&previewDBProvisioner{st: st, dbm: dbm},
-		&previewDocker{st: st, runtime: dc, compose: compose.NewDocker()},
+		&previewDocker{st: st, runtime: dc, compose: newComposeRunner(composeEnv)},
 		ghClient, tokenSource, serverIP)
 	worker.SetDeployHook(previews.OnDeployFinished) // update a preview's PR comment + status on deploy completion
 	// A preview of a route that requires sign-in requires it too: the spawn
@@ -318,7 +328,7 @@ func serve() error {
 	go previews.Run(workerCtx)
 
 	setupToken := server.NewToken()
-	srv, err := server.New(st, worker, dc, compose.NewDocker(), dbm, backups, broker, ghClient,
+	srv, err := server.New(st, worker, dc, newComposeRunner(composeEnv), dbm, backups, broker, ghClient,
 		sources, previews,
 		cfg.PublicURL, serverIP, cfg.TLSEnabled(), setupToken)
 	if err != nil {
@@ -394,6 +404,15 @@ func newUpdates(cfg config.Config) (d *update.Dir, k *update.Checker, off bool) 
 	k = update.NewChecker(update.Current(),
 		&update.Comparer{Client: &http.Client{Timeout: 15 * time.Second}}, time.Now)
 	return d, k, false
+}
+
+// newComposeRunner returns the runner shared by the deploy worker, the preview
+// manager and the HTTP server. env is nil unless the strict container policy
+// is on, so a default install inherits the environment exactly as before.
+func newComposeRunner(env []string) *compose.Docker {
+	d := compose.NewDocker()
+	d.Env = env
+	return d
 }
 
 // infraController reconciles the managed Traefik proxy and cloudflared connector

@@ -8,11 +8,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/outhaul-dev/outhaul/internal/compose"
 	"github.com/outhaul-dev/outhaul/internal/config"
 	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/docker"
@@ -891,5 +893,28 @@ func TestNewUpdatesOff(t *testing.T) {
 	d, k, off = newUpdates(config.Config{Updates: "main", DataDir: t.TempDir()})
 	if off || d == nil || k == nil {
 		t.Fatalf("main: got (%v, %v, %v), want a Dir and a Checker", d, k, off)
+	}
+}
+
+// Every Compose runner shares one environment. With the strict container
+// policy off it is nil, so runs inherit exactly as before. With it on it is
+// the keep-list, and not even the setting that turned it on (an OUTHAUL_*
+// variable) reaches a Compose file's ${NAME}.
+func TestStrictPolicyReducesTheComposeEnvironment(t *testing.T) {
+	if r := newComposeRunner(nil); r.Env != nil {
+		t.Fatalf("runner Env without the strict policy = %q, want nil (inherit)", r.Env)
+	}
+
+	t.Setenv("OUTHAUL_CONTAINER_POLICY", "strict")
+	t.Setenv("PATH", "/usr/local/bin:/usr/bin")
+	r := newComposeRunner(compose.RestrictedEnv(os.Environ()))
+	if want := "PATH=" + os.Getenv("PATH"); !slices.Contains(r.Env, want) {
+		t.Errorf("runner Env = %q, want it to contain %q", r.Env, want)
+	}
+	for _, kv := range r.Env {
+		if strings.HasPrefix(kv, "OUTHAUL_") {
+			t.Errorf("runner Env = %q, want no OUTHAUL_* setting in it", r.Env)
+			break
+		}
 	}
 }

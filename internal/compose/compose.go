@@ -61,6 +61,11 @@ type Runner interface {
 type Docker struct {
 	// Bin is the docker executable; defaults to "docker" (looked up on PATH).
 	Bin string
+	// Env, when non-nil, is the whole environment `docker compose` runs with.
+	// nil inherits Outhaul's own, which is what a default install does. Under
+	// the strict container policy it is RestrictedEnv(os.Environ()), so a
+	// Compose file's ${NAME} cannot read Outhaul's settings or secrets.
+	Env []string
 }
 
 // NewDocker returns a Runner using the docker binary on PATH.
@@ -155,6 +160,9 @@ func (d *Docker) run(ctx context.Context, dir string, out io.Writer, args []stri
 	}
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
+	if d.Env != nil {
+		cmd.Env = withPWD(d.Env, dir)
+	}
 	cmd.Stdout = out
 	cmd.Stderr = out
 	if err := cmd.Run(); err != nil {
@@ -178,6 +186,9 @@ func (d *Docker) output(ctx context.Context, dir string, warn io.Writer, args []
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
+	if d.Env != nil {
+		cmd.Env = withPWD(d.Env, dir)
+	}
 	cmd.Stdout = &stdout
 	cmd.Stderr = io.MultiWriter(warn, &stderr)
 	if err := cmd.Run(); err != nil {
