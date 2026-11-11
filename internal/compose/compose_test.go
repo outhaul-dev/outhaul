@@ -54,6 +54,17 @@ func TestConfigArgs(t *testing.T) {
 	}
 }
 
+// Pull fetches only images the server does not already have, and skips a
+// service it builds, whose image has no registry tag to fetch.
+func TestPullArgs(t *testing.T) {
+	got := pullArgs([]string{"docker-compose.yml", "outhaul.override.yml"}, "outhaul-shop")
+	want := []string{"compose", "-p", "outhaul-shop", "-f", "docker-compose.yml", "-f", "outhaul.override.yml",
+		"pull", "--policy", "missing", "--ignore-buildable"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("pullArgs = %v, want %v", got, want)
+	}
+}
+
 // tempScript writes an executable shell script to a temp dir and returns its
 // path, so Docker can be pointed at a stub in place of the real CLI.
 func tempScript(t *testing.T, body string) string {

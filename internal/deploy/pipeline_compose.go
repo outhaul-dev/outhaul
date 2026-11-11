@@ -110,6 +110,22 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 		return
 	}
 
+	// Strict mode refuses a service image that routes itself: Docker copies its
+	// labels onto the container and Traefik reads them. Pull first, so every
+	// image `up` will use is on the server. The check runs at pull time; a
+	// service with pull_policy: always can change its tag before `up`.
+	// Task 10 adds the header case.
+	if w.cfg.StrictContainerPolicy() {
+		if err := w.compose.Pull(ctx, workDir, files, project, out); err != nil {
+			w.fail(dep, core.StatusBuilding, "pull failed: "+err.Error(), out)
+			return
+		}
+		if err := w.checkComposeImages(ctx, model); err != nil {
+			w.fail(dep, core.StatusBuilding, err.Error(), out)
+			return
+		}
+	}
+
 	// --- building -> deploying (the cancel window closes here) ---
 	ok, err := w.store.SetStatus(context.Background(), dep.ID, core.StatusBuilding, core.StatusDeploying, "")
 	if err != nil {
@@ -155,6 +171,25 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 	} else {
 		logf(out, "Done. Stack %s is up.", project)
 	}
+}
+
+// checkComposeImages refuses a stack whose service images carry traefik.*
+// labels. Docker copies an image's labels onto its containers and Traefik reads
+// them, so such an image could route itself. An image that is missing after the
+// pull fails the deploy naming the service, rather than surfacing late at `up`.
+// The message quotes no value from the model except the service's own image.
+func (w *Worker) checkComposeImages(ctx context.Context, model compose.Model) error {
+	for _, svc := range model.Services {
+		labels, err := w.docker.ImageLabels(ctx, svc.Image)
+		if err != nil {
+			return fmt.Errorf("service %q: image %s is not on the server after pull: %w", svc.Name, svc.Image, err)
+		}
+		if bad := routingLabelKeys(labels); len(bad) > 0 {
+			return fmt.Errorf("refusing service %q: image %s carries traefik labels (checked at pull time): %s",
+				svc.Name, svc.Image, strings.Join(bad, ", "))
+		}
+	}
+	return nil
 }
 
 // composeWorkDir obtains the work dir holding the stack's compose file:

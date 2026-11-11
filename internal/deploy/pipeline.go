@@ -107,8 +107,8 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 			w.fail(dep, core.StatusBuilding, "build failed: "+err.Error(), out)
 			return
 		}
-		if app.IsForkPreview() {
-			if err := w.refuseRoutingLabels(ctx, image, true); err != nil {
+		if why := w.routingLabelReason(app); why != "" {
+			if err := w.refuseRoutingLabels(ctx, image, why); err != nil {
 				w.fail(dep, core.StatusBuilding, err.Error(), out)
 				return
 			}
@@ -121,15 +121,11 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 		// Env vars, domain, and routing are the app's CURRENT settings — only
 		// the image is rolled back (see the rollback spec).
 		logf(out, "Rolling back to image %s (built by deployment #%d); nothing to clone or build.", image, dep.RollbackOf)
-	}
-
-	// While a header is required, no image may bring its own router: it would
-	// lack the header term. This runs here so a deployment that arrived with
-	// an image is checked too, before anything is created.
-	if w.cfg.HeaderRequired() && !app.IsForkPreview() {
-		if err := w.refuseRoutingLabels(ctx, image, false); err != nil {
-			w.fail(dep, core.StatusBuilding, err.Error(), out)
-			return
+		if why := w.routingLabelReason(app); why != "" {
+			if err := w.refuseRoutingLabels(ctx, image, why); err != nil {
+				w.fail(dep, core.StatusBuilding, err.Error(), out)
+				return
+			}
 		}
 	}
 
@@ -322,29 +318,49 @@ func (w *Worker) deployStopFirst(ctx context.Context, dep core.Deployment, app c
 	return true
 }
 
-// refuseRoutingLabels fails when image carries traefik.* labels. Docker copies
-// an image's labels onto its containers and Traefik reads container labels, so
-// a fork preview's image (whose base image the fork author can choose) could
-// otherwise claim any host on the server, production included.
-func (w *Worker) refuseRoutingLabels(ctx context.Context, image string, fork bool) error {
+// refuseRoutingLabels fails when image carries traefik.* labels, naming the
+// reason in why. Docker copies an image's labels onto its containers and
+// Traefik reads container labels, so such an image could otherwise claim any
+// host on the server, production included.
+func (w *Worker) refuseRoutingLabels(ctx context.Context, image, why string) error {
 	labels, err := w.docker.ImageLabels(ctx, image)
 	if err != nil {
-		return fmt.Errorf("inspect built image: %w", err)
+		return fmt.Errorf("inspect image %s: %w", image, err)
 	}
-	var bad []string
-	for k := range labels {
-		if strings.HasPrefix(strings.ToLower(k), "traefik.") {
-			bad = append(bad, k)
-		}
-	}
-	if len(bad) > 0 {
-		sort.Strings(bad)
-		if fork {
-			return fmt.Errorf("refusing a fork preview image that carries traefik labels: %s", strings.Join(bad, ", "))
-		}
-		return fmt.Errorf("refusing an image that carries traefik labels while a request header is required: %s", strings.Join(bad, ", "))
+	if bad := routingLabelKeys(labels); len(bad) > 0 {
+		return fmt.Errorf("refusing an image that carries traefik labels %s: %s", why, strings.Join(bad, ", "))
 	}
 	return nil
+}
+
+// routingLabelReason says why this deploy may not run an image that carries
+// traefik.* labels, or "" when it may. A fork preview's base image is the fork
+// author's choice; under strict, every image the server runs is checked.
+// Task 10 adds the header case.
+func (w *Worker) routingLabelReason(app core.App) string {
+	if app.IsForkPreview() {
+		return "in a fork preview"
+	}
+	if w.cfg.StrictContainerPolicy() {
+		return "under this server's strict container policy"
+	}
+	if w.cfg.HeaderRequired() {
+		return "while a request header is required"
+	}
+	return ""
+}
+
+// routingLabelKeys returns the traefik.* label keys in labels, sorted. Docker
+// and Traefik treat label keys case-insensitively, so the match does too.
+func routingLabelKeys(labels map[string]string) []string {
+	var keys []string
+	for k := range labels {
+		if strings.HasPrefix(strings.ToLower(k), "traefik.") {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // loadEnv loads an app's env vars with ${{project.KEY}} references resolved

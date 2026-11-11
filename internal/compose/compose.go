@@ -36,6 +36,11 @@ type Runner interface {
 	// Build runs `docker compose build` for the stack in dir.
 	Build(ctx context.Context, dir string, files []string, project string, out io.Writer) error
 
+	// Pull fetches the images `up` will use that the server does not already
+	// have (`pull --policy missing`). A service that only builds is skipped
+	// (`--ignore-buildable`): its image comes from `build`, not a registry.
+	Pull(ctx context.Context, dir string, files []string, project string, out io.Writer) error
+
 	// Up runs `docker compose up -d --wait`, blocking until every service is
 	// running (and healthy, where a healthcheck is defined) or waitTimeout
 	// elapses. A non-zero exit — build error, crash loop, health timeout — is
@@ -63,6 +68,10 @@ func NewDocker() *Docker { return &Docker{Bin: "docker"} }
 
 func (d *Docker) Build(ctx context.Context, dir string, files []string, project string, out io.Writer) error {
 	return d.run(ctx, dir, out, buildArgs(files, project))
+}
+
+func (d *Docker) Pull(ctx context.Context, dir string, files []string, project string, out io.Writer) error {
+	return d.run(ctx, dir, out, pullArgs(files, project))
 }
 
 // Config returns the stack's normalised configuration as JSON. Compose has
@@ -100,12 +109,16 @@ func (d *Docker) Down(ctx context.Context, project string, out io.Writer) error 
 	return d.run(ctx, "", out, []string{"compose", "-p", project, "down", "--remove-orphans", "--rmi", "local"})
 }
 
-// buildArgs and upArgs are split out so the exact command lines are testable.
-// files are paths relative to the work dir; the first one's directory becomes
-// the compose project directory (where compose reads .env), matching where
-// the pipeline writes it.
+// buildArgs, pullArgs and upArgs are split out so the exact command lines are
+// testable. files are paths relative to the work dir; the first one's
+// directory becomes the compose project directory (where compose reads .env),
+// matching where the pipeline writes it.
 func buildArgs(files []string, project string) []string {
 	return append(fileArgs(files, project), "build")
+}
+
+func pullArgs(files []string, project string) []string {
+	return append(fileArgs(files, project), "pull", "--policy", "missing", "--ignore-buildable")
 }
 
 // configArgs asks compose for the merged stack as JSON. --no-env-resolution
@@ -189,7 +202,7 @@ func (d *Docker) binary() (string, error) {
 func lastVerb(args []string) string {
 	for i := len(args) - 1; i >= 0; i-- {
 		switch args[i] {
-		case "build", "up", "config", "stop", "restart", "down":
+		case "build", "up", "config", "stop", "restart", "down", "pull":
 			return args[i]
 		}
 	}

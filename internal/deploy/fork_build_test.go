@@ -40,13 +40,31 @@ func TestForkPreviewImageWithTraefikLabelsIsRefused(t *testing.T) {
 	h.worker.runPipeline(context.Background(), dep)
 
 	got := h.status(t, dep.ID)
-	if got.Status != core.StatusFailed || !strings.Contains(got.Reason, "traefik") {
+	if got.Status != core.StatusFailed || !strings.Contains(got.Reason, "traefik labels") {
 		t.Fatalf("status = %q (%q), want failed naming the traefik labels", got.Status, got.Reason)
 	}
 	for _, spec := range h.docker.Created {
 		if spec.Name == "outhaul-app-"+app.Name || strings.HasPrefix(spec.Name, "outhaul-deploy-") {
 			t.Errorf("a container was created from the refused image: %s", spec.Name)
 		}
+	}
+}
+
+// The neutral image-label message still has to say why the image was
+// inspected, or a fork author sees only "an image".
+func TestForkPreviewMessageStillNamesTheFork(t *testing.T) {
+	h := newHarness(t)
+	app := forkPreview(t, h)
+	dep := h.claimedDeployment(t, app.ID)
+	h.docker.ImageLabelsByRef = map[string]map[string]string{
+		fmt.Sprintf("outhaul/%s:%d", app.Name, dep.ID): {"traefik.enable": "true"},
+	}
+
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed || !strings.Contains(got.Reason, "in a fork preview") {
+		t.Fatalf("status = %q (%q), want failed naming the fork", got.Status, got.Reason)
 	}
 }
 
