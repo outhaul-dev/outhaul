@@ -1125,10 +1125,89 @@ recovery_help() {
 	printf 'then check: journalctl -u outhaul -n 50 --no-pager\n'
 }
 
-# Task 7 replaces these stubs with the real writers. They exist here so the
-# swap tests run, and so both paths call the same names.
-write_install_env() { :; }
-write_dropins() { :; }
+# Prints the body of install.env: this run's answers, under a comment saying
+# the next run rewrites them. Anything else belongs in /etc/outhaul.env or an
+# --env-file, which this run never touches.
+install_env_content() {
+	printf '# Outhaul unattended install answers — written by --non-interactive.\n'
+	printf '# Each --non-interactive run rewrites this file.\n'
+	printf '# Put anything else in /etc/outhaul.env or an --env-file.\n'
+	if [ -n "${PUBLIC_URL:-}" ]; then printf 'OUTHAUL_PUBLIC_URL=%s\n' "$PUBLIC_URL"; fi
+	if [ -n "${ACME_EMAIL:-}" ]; then printf 'OUTHAUL_ACME_EMAIL=%s\n' "$ACME_EMAIL"; fi
+	if [ "${MODE:-}" = c ] && [ "${LOCAL_CA:-0}" = 1 ]; then
+		printf 'OUTHAUL_LOCAL_CA=true\n'
+	fi
+	if [ "${MODE:-}" = p ]; then
+		printf 'OUTHAUL_HTTP_PORT=off\n'
+		printf 'OUTHAUL_ADMIN_DIRECT=off\n'
+	fi
+	printf 'OUTHAUL_SSH_ADDR=%s\n' "${SSH_ADDR:-}"
+	if [ -n "${UPDATES:-}" ]; then printf 'OUTHAUL_UPDATES=%s\n' "$UPDATES"; fi
+}
+
+# Writes content to path with mode, unless it already holds exactly that.
+# Returns 0 when it wrote and 1 when the file already matched. A failure to
+# create, write or rename is fatal: install_or_upgrade runs under an `if`,
+# which would swallow a returned 1.
+write_if_changed() { # path content mode
+	_wic_path=$1 _wic_content=$2 _wic_mode=$3
+	_wic_dir=$(dirname "$_wic_path")
+	mkdir -p "$_wic_dir" || die "could not create $_wic_dir"
+	_wic_tmp=$(mktemp "$_wic_dir/.outhaul.XXXXXX") || die "could not write in $_wic_dir"
+	printf '%s\n' "$_wic_content" >"$_wic_tmp" || {
+		rm -f "$_wic_tmp"
+		die "could not write $_wic_tmp"
+	}
+	chmod "$_wic_mode" "$_wic_tmp" || {
+		rm -f "$_wic_tmp"
+		die "could not set the mode of $_wic_tmp"
+	}
+	if cmp -s "$_wic_tmp" "$_wic_path"; then
+		rm -f "$_wic_tmp"
+		return 1
+	fi
+	mv -fT "$_wic_tmp" "$_wic_path" || {
+		rm -f "$_wic_tmp"
+		die "could not replace $_wic_path"
+	}
+}
+
+# Writes install.env in a non-interactive run, and only when its content
+# changed. The wizard never writes it. Always returns 0: a caller under
+# `set -e` must not abort just because the file was already right.
+write_install_env() {
+	[ "$NONINTERACTIVE" = 1 ] || return 0
+	if write_if_changed "$INSTALL_ENV" "$(install_env_content)" 0600; then
+		ENV_CHANGED=1
+	fi
+	return 0
+}
+
+# Writes the drop-in that loads this run's env files, for the service and the
+# updater. A wizard re-run with no --env-file leaves both alone, so an earlier
+# unattended run's env files keep applying. Paths are written bare: systemd
+# takes a space in a bare path and ignores a quoted one.
+write_dropins() {
+	if [ "$NONINTERACTIVE" != 1 ] && [ -z "$ENV_FILES" ]; then return 0; fi
+	_dropin='[Service]
+'
+	if [ "$NONINTERACTIVE" = 1 ]; then
+		_dropin="${_dropin}EnvironmentFile=$INSTALL_ENV
+"
+	fi
+	while IFS= read -r _f; do
+		[ -n "$_f" ] || continue
+		_dropin="${_dropin}EnvironmentFile=$_f
+"
+	done <<EOF
+$ENV_FILES
+EOF
+	# Drop the last newline: write_if_changed adds one.
+	_dropin=${_dropin%?}
+	if write_if_changed "$SERVICE_DROPIN" "$_dropin" 0644; then DROPIN_CHANGED=1; fi
+	if write_if_changed "$UPDATE_DROPIN" "$_dropin" 0644; then DROPIN_CHANGED=1; fi
+	return 0
+}
 
 # The careful swap. A first install pulls the images, installs and starts. An
 # upgrade pulls first, stops Outhaul, keeps the running version, installs,
@@ -1460,40 +1539,332 @@ TARGET=''
 TARGET_VERSION=''
 TARGET_REF=''
 BUILD=0
-REF=''
+REF=${OUTHAUL_REF:-}
 ARG_ERRORS=''
 
-# Collects a flag error: main prints them and exits 2 once parsing is done, so
-# one run can name every bad flag rather than only the first.
+# The unattended interface: parse_args fills these, check_args validates them,
+# apply_answers turns them into the variables the wizard's answers fill.
+INGRESS=''
+PUBLIC_URL=''
+ACME_EMAIL=''
+GIT_SSH=''
+NIXPACKS=''
+FIREWALL=''
+UPDATES=''
+SETUP_URL_FILE=''
+ENV_FILES=''
+
+# Collects a flag error: check_args prints them and exits 2 once parsing is
+# done, so one run can name every bad flag rather than only the first.
 arg_error() { ARG_ERRORS="${ARG_ERRORS}error: $1
 "; }
 
+# Sets ARG_VALUE from a flag's next argument and returns 0, or records
+# "<flag> needs a value" and returns 1.
+take_value() { # flag [value]
+	if [ "$#" -ge 2 ]; then
+		ARG_VALUE=$2
+		return 0
+	fi
+	arg_error "$1 needs a value"
+	return 1
+}
+
+# Prints its argument in lower case.
+lower() { printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# True for a decimal port number from 1 to 65535.
+is_port() { # value
+	case "$1" in '' | *[!0-9]*) return 1 ;; esac
+	_port=$1
+	while [ "${_port#0}" != "$_port" ]; do _port=${_port#0}; done
+	[ -n "$_port" ] && [ "${#_port}" -le 5 ] && [ "$_port" -ge 1 ] && [ "$_port" -le 65535 ]
+}
+
+usage() {
+	printf 'usage: bootstrap.sh [options]\n\n'
+	printf 'With no options the installer asks every question.\n\n'
+	printf '  --verbose              mirror the install log to stderr\n'
+	printf '  --from-checkout DIR    install from a local checkout, not a clone\n'
+	printf '  --ref REF              a tag, a branch or a full commit (default: OUTHAUL_REF, then HEAD)\n'
+	printf '  --non-interactive      ask nothing; take every answer from a flag\n'
+	printf '  --ingress MODE         letsencrypt, tunnel, local, local-ca or proxy\n'
+	printf '  --public-url URL       the public URL (letsencrypt and proxy)\n'
+	printf '  --acme-email ADDRESS   the ACME account email (letsencrypt and proxy)\n'
+	printf '  --git-ssh off|PORT     the git-push port (default 2222)\n'
+	printf '  --nixpacks on|off      install the pinned nixpacks (default on)\n'
+	printf '  --firewall leave|ufw   configure ufw (default leave)\n'
+	printf '  --updates main|off     write OUTHAUL_UPDATES (default: no line)\n'
+	printf '  --install-docker       install Docker when it is absent\n'
+	printf '  --setup-url-file PATH  write the one-time setup URL here\n'
+	printf '  --env-file PATH        an env file for the service and the updater (repeatable)\n'
+	printf '  -h, --help             this help\n'
+}
+
 parse_args() {
+	ARG_ERRORS=''
 	while [ "$#" -gt 0 ]; do
 		case "$1" in
 		--verbose) VERBOSE=1 ;;
+		--non-interactive) NONINTERACTIVE=1 ;;
+		--install-docker) INSTALL_DOCKER=1 ;;
 		--from-checkout)
-			FROM_CHECKOUT=1
-			CHECKOUT_DIR=${2:-.}
-			shift
+			if take_value "$@"; then
+				FROM_CHECKOUT=1
+				CHECKOUT_DIR=$ARG_VALUE
+				shift
+			fi
+			;;
+		--ingress)
+			if take_value "$@"; then
+				INGRESS=$ARG_VALUE
+				shift
+			fi
+			;;
+		--public-url)
+			if take_value "$@"; then
+				PUBLIC_URL=$ARG_VALUE
+				shift
+			fi
+			;;
+		--acme-email)
+			if take_value "$@"; then
+				ACME_EMAIL=$ARG_VALUE
+				shift
+			fi
+			;;
+		--git-ssh)
+			if take_value "$@"; then
+				GIT_SSH=$ARG_VALUE
+				shift
+			fi
+			;;
+		--nixpacks)
+			if take_value "$@"; then
+				NIXPACKS=$ARG_VALUE
+				shift
+			fi
+			;;
+		--firewall)
+			if take_value "$@"; then
+				FIREWALL=$ARG_VALUE
+				shift
+			fi
+			;;
+		--updates)
+			if take_value "$@"; then
+				UPDATES=$ARG_VALUE
+				shift
+			fi
+			;;
+		--setup-url-file)
+			if take_value "$@"; then
+				SETUP_URL_FILE=$ARG_VALUE
+				shift
+			fi
+			;;
+		--env-file)
+			# ENV_FILES is newline-separated, so a newline in a path
+			# cannot be written down: refuse it here.
+			if take_value "$@"; then
+				case "$ARG_VALUE" in
+				*'
+'*) arg_error "--env-file path contains a newline" ;;
+				*) ENV_FILES="${ENV_FILES}${ARG_VALUE}
+" ;;
+				esac
+				shift
+			fi
 			;;
 		--ref)
 			# An empty value is still a value: resolve_ref '' means HEAD.
-			if [ "$#" -ge 2 ]; then
-				REF=$2
+			if take_value "$@"; then
+				REF=$ARG_VALUE
 				shift
-			else
-				arg_error "--ref needs a value"
 			fi
 			;;
 		-h | --help)
-			printf 'usage: bootstrap.sh [--verbose] [--from-checkout DIR] [--ref REF]\n'
+			usage
 			exit 0
 			;;
-		*) die "unknown option: $1" ;;
+		*) arg_error "unknown option: $1" ;;
 		esac
 		shift
 	done
+}
+
+# Prints why a path cannot be an --env-file, or nothing when it can. A path
+# with a double quote or % cannot go into EnvironmentFile= at all; a newline
+# never reaches here, because parse_args refuses one.
+env_file_problem() { # path
+	_ef=$1
+	case "$_ef" in
+	*'"'*)
+		printf 'contains a double quote\n'
+		return 0
+		;;
+	*%*)
+		printf 'contains %%\n'
+		return 0
+		;;
+	esac
+	case "$_ef" in
+	/*) ;;
+	*)
+		printf 'is not an absolute path\n'
+		return 0
+		;;
+	esac
+	if [ ! -f "$_ef" ]; then
+		printf 'is not a regular file\n'
+		return 0
+	fi
+	_info=$(stat -c '%u %a' "$_ef" 2>/dev/null) || _info=''
+	_uid=${_info%% *}
+	_mode=${_info#* }
+	if [ "$_uid" != 0 ]; then
+		printf 'is not owned by root\n'
+		return 0
+	fi
+	case "$_mode" in
+	'' | *[!0-7]*)
+		printf 'has a mode this check cannot read\n'
+		return 0
+		;;
+	esac
+	if [ "$((0$_mode & 022))" -ne 0 ]; then
+		printf 'is writable by group or others\n'
+		return 0
+	fi
+	return 1
+}
+
+# True when one of the --env-file paths holds a non-empty
+# OUTHAUL_ACME_DNS_PROVIDER line.
+env_files_have_provider() {
+	while IFS= read -r _f; do
+		[ -n "$_f" ] || continue
+		if grep -q '^OUTHAUL_ACME_DNS_PROVIDER=.' "$_f" 2>/dev/null; then return 0; fi
+	done <<EOF
+$ENV_FILES
+EOF
+	return 1
+}
+
+# Validates the flags before anything changes. Every problem is recorded and
+# printed together; exit 2 then leaves the host untouched.
+check_args() {
+	if [ "$NONINTERACTIVE" = 0 ]; then
+		[ -n "$INGRESS" ] && arg_error "--ingress needs --non-interactive"
+		[ -n "$PUBLIC_URL" ] && arg_error "--public-url needs --non-interactive"
+		[ -n "$ACME_EMAIL" ] && arg_error "--acme-email needs --non-interactive"
+		[ -n "$GIT_SSH" ] && arg_error "--git-ssh needs --non-interactive"
+		[ -n "$NIXPACKS" ] && arg_error "--nixpacks needs --non-interactive"
+		[ -n "$FIREWALL" ] && arg_error "--firewall needs --non-interactive"
+		[ -n "$UPDATES" ] && arg_error "--updates needs --non-interactive"
+		[ "$INSTALL_DOCKER" = 1 ] && arg_error "--install-docker needs --non-interactive"
+		[ -n "$SETUP_URL_FILE" ] && arg_error "--setup-url-file needs --non-interactive"
+	fi
+
+	INGRESS=$(lower "$INGRESS")
+	GIT_SSH=$(lower "$GIT_SSH")
+	NIXPACKS=$(lower "$NIXPACKS")
+	FIREWALL=$(lower "$FIREWALL")
+	UPDATES=$(lower "$UPDATES")
+
+	if [ "$NONINTERACTIVE" = 1 ]; then
+		case "$INGRESS" in
+		'') arg_error "--non-interactive needs --ingress (letsencrypt, tunnel, local, local-ca or proxy)" ;;
+		letsencrypt | tunnel | local | local-ca | proxy) ;;
+		*) arg_error "--ingress must be letsencrypt, tunnel, local, local-ca or proxy" ;;
+		esac
+		case "$INGRESS" in
+		letsencrypt | proxy)
+			[ -n "$PUBLIC_URL" ] || arg_error "--ingress $INGRESS needs --public-url"
+			[ -n "$ACME_EMAIL" ] || arg_error "--ingress $INGRESS needs --acme-email"
+			;;
+		esac
+		case "$INGRESS" in
+		tunnel | local | local-ca)
+			[ -n "$ACME_EMAIL" ] && arg_error "--acme-email is not used with --ingress $INGRESS"
+			;;
+		esac
+	fi
+
+	if [ -n "$GIT_SSH" ] && [ "$GIT_SSH" != off ] && ! is_port "$GIT_SSH"; then
+		arg_error "--git-ssh must be off or a port from 1 to 65535"
+	fi
+	case "$NIXPACKS" in '' | on | off) ;; *) arg_error "--nixpacks must be on or off" ;; esac
+	case "$FIREWALL" in '' | leave | ufw) ;; *) arg_error "--firewall must be leave or ufw" ;; esac
+	case "$UPDATES" in '' | main | off) ;; *) arg_error "--updates must be main or off" ;; esac
+
+	if [ "$FROM_CHECKOUT" = 1 ] && [ -n "$REF" ]; then
+		arg_error "--ref cannot be used with --from-checkout"
+	fi
+
+	while IFS= read -r _f; do
+		[ -n "$_f" ] || continue
+		if _why=$(env_file_problem "$_f"); then
+			arg_error "--env-file $_f $_why"
+		fi
+	done <<EOF
+$ENV_FILES
+EOF
+
+	if [ "$INGRESS" = proxy ] && ! env_files_have_provider; then
+		arg_error "--ingress proxy needs an OUTHAUL_ACME_DNS_PROVIDER= line in an --env-file"
+	fi
+
+	if [ -n "$ARG_ERRORS" ]; then
+		printf '%s' "$ARG_ERRORS" >&2
+		exit 2
+	fi
+	return 0
+}
+
+# Turns the flags into the variables the wizard's answers fill.
+apply_answers() {
+	case "$(lower "$INGRESS")" in
+	letsencrypt) MODE=a LOCAL_CA=0 ;;
+	tunnel) MODE=b LOCAL_CA=0 ;;
+	local) MODE=c LOCAL_CA=0 ;;
+	local-ca) MODE=c LOCAL_CA=1 ;;
+	proxy) MODE=p LOCAL_CA=0 ;;
+	esac
+	PUBLIC_URL=$(normalize_public_url "$PUBLIC_URL")
+	# The wizard leaves another installed version alone; --nixpacks on asks
+	# for the pin, so it replaces one.
+	if [ "$(lower "$NIXPACKS")" = off ]; then
+		WANT_NIXPACKS=0
+		NIXPACKS_REPLACE=0
+	else
+		WANT_NIXPACKS=1
+		if [ "$(lower "$NIXPACKS")" = on ]; then NIXPACKS_REPLACE=1; fi
+	fi
+	case "$(lower "$FIREWALL")" in
+	ufw) WANT_FW=1 ;;
+	*) WANT_FW=0 ;;
+	esac
+	case "$(lower "$GIT_SSH")" in
+	'')
+		GITPORT=2222
+		SSH_ADDR=$(git_ssh_from_port "$GITPORT")
+		;;
+	off)
+		# Never empty: an empty OUTHAUL_SSH_ADDR falls back to :2222 and
+		# silently re-enables the listener.
+		GITPORT=''
+		SSH_ADDR=off
+		;;
+	*)
+		GITPORT=$GIT_SSH
+		# check_args accepts a leading zero; ufw and the port list should
+		# see the same number the service binds.
+		while [ "${GITPORT#0}" != "$GITPORT" ]; do GITPORT=${GITPORT#0}; done
+		SSH_ADDR=$(git_ssh_from_port "$GITPORT")
+		;;
+	esac
+	UPDATES=$(lower "$UPDATES")
 }
 
 cleanup() {
@@ -1538,32 +1909,35 @@ choose_ingress() {
 
 main() {
 	REF=${OUTHAUL_REF:-}
-	ARG_ERRORS=''
 	parse_args "$@"
-	if [ "$FROM_CHECKOUT" = 1 ] && [ -n "$REF" ]; then
-		arg_error "--ref cannot be used with --from-checkout"
-	fi
-	if [ -n "$ARG_ERRORS" ]; then
-		printf '%s' "$ARG_ERRORS" >&2
-		exit 2
-	fi
+	check_args
 	: >"$LOGFILE" 2>/dev/null || LOGFILE=/dev/null
 	if [ "$VERBOSE" = 1 ]; then LOGFILE=/dev/stderr; fi
 	trap cleanup EXIT INT TERM
 	open_prompt_fd "$0"
+	if [ "$NONINTERACTIVE" = 1 ]; then
+		# No prompts, and apt must not ask either.
+		DEBIAN_FRONTEND=noninteractive
+		export DEBIAN_FRONTEND
+		exec 3<>/dev/null
+	fi
 
 	init_ui
 	hero
 	preflight
 
-	choose_ingress
-	PUBLIC_URL=$(normalize_public_url "$PUBLIC_URL")
+	if [ "$NONINTERACTIVE" = 1 ]; then
+		apply_answers
+	else
+		choose_ingress
+		PUBLIC_URL=$(normalize_public_url "$PUBLIC_URL")
 
-	GITPORT=$(normalize_git_port "$(ask_value "  Git-push-to-deploy port ('none' to disable):" 2222)")
-	SSH_ADDR=$(git_ssh_from_port "$GITPORT")
+		GITPORT=$(normalize_git_port "$(ask_value "  Git-push-to-deploy port ('none' to disable):" 2222)")
+		SSH_ADDR=$(git_ssh_from_port "$GITPORT")
 
-	if ask_yes_no "  Install Nixpacks (needed for auto-detected builds)?" y; then WANT_NIXPACKS=1; else WANT_NIXPACKS=0; fi
-	if ask_yes_no "  Configure the firewall (ufw) now?" y; then WANT_FW=1; else WANT_FW=0; fi
+		if ask_yes_no "  Install Nixpacks (needed for auto-detected builds)?" y; then WANT_NIXPACKS=1; else WANT_NIXPACKS=0; fi
+		if ask_yes_no "  Configure the firewall (ufw) now?" y; then WANT_FW=1; else WANT_FW=0; fi
+	fi
 
 	ensure_docker
 	ensure_git
@@ -1604,13 +1978,17 @@ main() {
 
 	migrate_slipway
 	ensure_service_user
+	# The wizard writes /etc/outhaul.env once; a non-interactive run never
+	# touches it, because install.env and the drop-ins carry its answers.
 	ENV_FILE_CHANGED=0
-	if [ ! -f "$ENV_FILE" ]; then
-		write_env_file "$ENV_FILE" "$MODE" "$PUBLIC_URL" "$ACME_EMAIL" "$SSH_ADDR" "${LOCAL_CA:-0}"
-		step_ok "wrote $ENV_FILE"
-		ENV_FILE_CHANGED=1
-	else
-		note "$ENV_FILE exists — left unchanged"
+	if [ "$NONINTERACTIVE" = 0 ]; then
+		if [ ! -f "$ENV_FILE" ]; then
+			write_env_file "$ENV_FILE" "$MODE" "$PUBLIC_URL" "$ACME_EMAIL" "$SSH_ADDR" "${LOCAL_CA:-0}"
+			ENV_FILE_CHANGED=1
+			step_ok "wrote $ENV_FILE"
+		else
+			note "$ENV_FILE exists — left unchanged"
+		fi
 	fi
 
 	ADMIN_PORT=$(admin_port "${OUTHAUL_LISTEN_ADDR:-:8080}")
