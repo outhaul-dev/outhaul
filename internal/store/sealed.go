@@ -10,7 +10,7 @@ var sealedQueries = []string{
 	`SELECT 1 FROM app_env LIMIT 1`,
 	`SELECT 1 FROM project_env LIMIT 1`,
 	`SELECT 1 FROM databases LIMIT 1`,
-	`SELECT 1 FROM destinations LIMIT 1`,
+	`SELECT 1 FROM destinations WHERE secret_key <> '' LIMIT 1`,
 	`SELECT 1 FROM github_app_sources LIMIT 1`,
 	`SELECT 1 FROM settings WHERE key = '` + cloudflareTokenKey + `' LIMIT 1`,
 	`SELECT 1 FROM settings WHERE key = '` + ssoSecretKey + `' LIMIT 1`,

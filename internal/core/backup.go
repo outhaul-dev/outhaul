@@ -21,17 +21,26 @@ const (
 	RunKindRestore = "restore"
 )
 
-// Destination is an S3-compatible bucket backups upload to (AWS, MinIO, R2,
-// B2, Wasabi, …). Addressed path-style; SecretKey is stored encrypted.
+// Destination kinds: which client and credentials a destination uses.
+const (
+	DestinationS3    = "s3"    // an S3-compatible endpoint with an access key and secret
+	DestinationAzure = "azure" // Azure Blob Storage, authenticated by the host's managed identity
+)
+
+// Destination is a bucket backups upload to: an S3-compatible one (AWS, MinIO,
+// R2, B2, Wasabi, …) or an Azure Blob container. S3 destinations are addressed
+// path-style and store SecretKey encrypted; the Azure one comes from the
+// environment and has no secret.
 type Destination struct {
 	ID        int64
 	Name      string // unique, human-friendly
-	Endpoint  string // e.g. https://s3.eu-west-2.amazonaws.com or http://minio:9000
+	Endpoint  string // e.g. https://s3.eu-west-2.amazonaws.com, http://minio:9000, or https://<account>.blob.core.windows.net
 	Region    string // SigV4 region; "auto" or "us-east-1" for most compatibles
 	Bucket    string
 	AccessKey string
 	SecretKey string
 	CreatedAt time.Time
+	Kind      string // DestinationS3 | DestinationAzure; "" is treated as s3 when read
 }
 
 // Backup is a schedule attaching one target to one destination: "dump this

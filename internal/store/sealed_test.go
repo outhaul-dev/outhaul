@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
@@ -10,6 +11,23 @@ import (
 // HasSealedValues guards secret.key regeneration: a new key would make every
 // value sealed with the old one unreadable, so each kind of sealed value must
 // count.
+func TestHasSealedValuesIgnoresAnUnsealedDestination(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "test.db"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.Exec(`INSERT INTO destinations
+		(name, endpoint, region, bucket, access_key, secret_key, created_at, kind)
+		VALUES ('Azure Blob', 'https://examplebackups.blob.core.windows.net', '', 'outhaul', '', '', '2026-01-01T00:00:00Z', 'azure')`); err != nil {
+		t.Fatal(err)
+	}
+	has, err := s.HasSealedValues(context.Background())
+	if err != nil || has {
+		t.Fatalf("HasSealedValues = %v, %v; want false, nil", has, err)
+	}
+}
+
 func TestHasSealedValues(t *testing.T) {
 	ctx := context.Background()
 	seeds := map[string]func(t *testing.T, s *Store){
