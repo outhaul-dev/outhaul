@@ -1,0 +1,134 @@
+{
+  "name": "policy",
+  "networks": {
+    "default": {
+      "name": "policy_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "db": {
+      "command": null,
+      "entrypoint": null,
+      "environment": {
+        "POSTGRES_PASSWORD": "example"
+      },
+      "image": "postgres:16",
+      "networks": {
+        "default": null
+      }
+    },
+    "web": {
+      "develop": {
+        "watch": [
+          {
+            "path": "/work",
+            "action": "rebuild",
+            "exec": {
+              "command": null
+            }
+          }
+        ]
+      },
+      "restart": "unless-stopped",
+      "scale": 1,
+      "attach": true,
+      "links": [
+        "db"
+      ],
+      "blkio_config": {
+        "weight": 300
+      },
+      "cap_drop": [
+        "NET_RAW"
+      ],
+      "cpu_period": 100000,
+      "cpu_quota": 50000,
+      "cpus": 0.5,
+      "cpuset": "0",
+      "cpu_shares": 512,
+      "command": [
+        "nginx",
+        "-g",
+        "daemon off;"
+      ],
+      "dns": [
+        "1.1.1.1"
+      ],
+      "dns_opt": [
+        "use-vc"
+      ],
+      "dns_search": [
+        "example.com"
+      ],
+      "domainname": "example.com",
+      "entrypoint": [
+        "/entrypoint.sh"
+      ],
+      "environment": {
+        "APP_ENV": "production"
+      },
+      "extra_hosts": [
+        "api.example.com=192.0.2.10"
+      ],
+      "group_add": [
+        "audio"
+      ],
+      "hostname": "web",
+      "image": "nginx:1.27",
+      "init": true,
+      "logging": {
+        "driver": "json-file"
+      },
+      "mem_limit": "536870912",
+      "mem_reservation": "268435456",
+      "memswap_limit": "1073741824",
+      "mem_swappiness": "10",
+      "networks": {
+        "default": null
+      },
+      "pids_limit": 100,
+      "platform": "linux/amd64",
+      "pull_policy": "missing",
+      "read_only": true,
+      "shm_size": "67108864",
+      "stop_grace_period": "10s",
+      "stop_signal": "SIGTERM",
+      "storage_opt": {
+        "size": "10G"
+      },
+      "sysctls": {
+        "net.core.somaxconn": "1024"
+      },
+      "tmpfs": [
+        "/run"
+      ],
+      "ulimits": {
+        "nofile": {
+          "soft": 100,
+          "hard": 200
+        }
+      },
+      "user": "1000:1000",
+      "working_dir": "/app",
+      "depends_on": {
+        "db": {
+          "condition": "service_started",
+          "required": true
+        }
+      },
+      "expose": [
+        "3000"
+      ],
+      "healthcheck": {
+        "test": [
+          "CMD",
+          "true"
+        ],
+        "interval": "10s"
+      },
+      "stdin_open": true,
+      "tty": true
+    }
+  }
+}

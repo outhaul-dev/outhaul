@@ -1,0 +1,65 @@
+{
+  "name": "policy",
+  "networks": {
+    "default": {
+      "name": "policy_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "aliased": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "networks": {
+        "default": {
+          "aliases": [
+            "web.example.com"
+          ]
+        }
+      }
+    },
+    "ipv4": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "networks": {
+        "default": {
+          "ipv4_address": "192.0.2.10"
+        }
+      }
+    },
+    "ipv6": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "networks": {
+        "default": {
+          "ipv6_address": "2001:db8::10"
+        }
+      }
+    },
+    "mac": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "networks": {
+        "default": {
+          "mac_address": "02:42:ac:11:00:02"
+        }
+      }
+    },
+    "other": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "networks": {
+        "default": {
+          "link_local_ips": [
+            "169.254.169.254"
+          ]
+        }
+      }
+    }
+  }
+}

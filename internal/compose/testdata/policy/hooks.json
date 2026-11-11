@@ -1,0 +1,54 @@
+{
+  "name": "policy",
+  "networks": {
+    "default": {
+      "name": "policy_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "web": {
+      "post_start": [
+        {
+          "command": [
+            "echo",
+            "started"
+          ],
+          "user": "root",
+          "working_dir": "/app",
+          "environment": {
+            "APP_ENV": "production"
+          }
+        },
+        {
+          "command": [
+            "echo",
+            "privileged"
+          ],
+          "privileged": true
+        }
+      ],
+      "pre_stop": [
+        {
+          "command": [
+            "echo",
+            "stopping"
+          ]
+        },
+        {
+          "command": [
+            "echo",
+            "privileged"
+          ],
+          "privileged": true
+        }
+      ],
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "networks": {
+        "default": null
+      }
+    }
+  }
+}

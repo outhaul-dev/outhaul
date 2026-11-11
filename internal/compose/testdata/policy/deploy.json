@@ -1,0 +1,62 @@
+{
+  "name": "policy",
+  "networks": {
+    "default": {
+      "name": "policy_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "allowed": {
+      "deploy": {
+        "resources": {
+          "limits": {
+            "cpus": 0.5,
+            "memory": "268435456"
+          }
+        },
+        "restart_policy": {
+          "condition": "on-failure"
+        },
+        "placement": {}
+      },
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "networks": {
+        "default": null
+      }
+    },
+    "refused": {
+      "deploy": {
+        "resources": {
+          "reservations": {
+            "devices": [
+              {
+                "capabilities": [
+                  "gpu"
+                ],
+                "count": -1
+              }
+            ],
+            "generic_resources": [
+              {
+                "discrete_resource_spec": {
+                  "kind": "gpu",
+                  "value": 1
+                }
+              }
+            ]
+          }
+        },
+        "placement": {}
+      },
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "networks": {
+        "default": null
+      }
+    }
+  }
+}

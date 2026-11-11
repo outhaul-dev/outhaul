@@ -1,0 +1,44 @@
+{
+  "configs": {
+    "extbad": {
+      "name": "extbad",
+      "external": true
+    },
+    "filebad": {
+      "name": "policy_filebad",
+      "file": "/work/missing.txt"
+    },
+    "good": {
+      "name": "policy_good",
+      "content": "example"
+    }
+  },
+  "name": "policy",
+  "networks": {
+    "default": {
+      "name": "policy_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "web": {
+      "command": null,
+      "configs": [
+        {
+          "source": "good"
+        },
+        {
+          "source": "filebad"
+        },
+        {
+          "source": "extbad"
+        }
+      ],
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "networks": {
+        "default": null
+      }
+    }
+  }
+}

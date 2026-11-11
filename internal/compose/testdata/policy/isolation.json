@@ -1,0 +1,20 @@
+{
+  "name": "policy",
+  "networks": {
+    "default": {
+      "name": "policy_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "web": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "isolation": "default",
+      "networks": {
+        "default": null
+      }
+    }
+  }
+}

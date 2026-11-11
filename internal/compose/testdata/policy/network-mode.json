@@ -1,0 +1,50 @@
+{
+  "name": "policy",
+  "networks": {
+    "default": {
+      "name": "policy_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "container": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "network_mode": "container:db"
+    },
+    "db": {
+      "command": null,
+      "entrypoint": null,
+      "image": "postgres:16",
+      "networks": {
+        "default": null
+      }
+    },
+    "host": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "network_mode": "host"
+    },
+    "none": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "network_mode": "none"
+    },
+    "service": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "network_mode": "service:db",
+      "depends_on": {
+        "db": {
+          "condition": "service_started",
+          "restart": true,
+          "required": true
+        }
+      }
+    }
+  }
+}

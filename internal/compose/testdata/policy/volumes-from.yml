@@ -1,0 +1,12 @@
+name: policy
+services:
+  db:
+    image: postgres:16
+  web:
+    image: nginx:1.27
+    volumes_from:
+      - db
+  other:
+    image: nginx:1.27
+    volumes_from:
+      - container:db

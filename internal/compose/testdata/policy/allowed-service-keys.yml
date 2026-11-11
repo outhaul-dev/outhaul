@@ -1,0 +1,76 @@
+name: policy
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: example
+  web:
+    image: nginx:1.27
+    attach: true
+    blkio_config:
+      weight: 300
+    cap_drop:
+      - NET_RAW
+    command: ["nginx", "-g", "daemon off;"]
+    cpu_period: 100000
+    cpu_quota: 50000
+    cpu_shares: 512
+    cpus: 0.5
+    cpuset: "0"
+    depends_on:
+      - db
+    develop:
+      watch:
+        - path: .
+          action: rebuild
+    dns:
+      - 1.1.1.1
+    dns_opt:
+      - use-vc
+    dns_search:
+      - example.com
+    domainname: example.com
+    entrypoint: ["/entrypoint.sh"]
+    environment:
+      APP_ENV: production
+    expose:
+      - "3000"
+    extra_hosts:
+      - "api.example.com:192.0.2.10"
+    group_add:
+      - audio
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 10s
+    hostname: web
+    init: true
+    links:
+      - db
+    logging:
+      driver: json-file
+    mem_limit: 512m
+    mem_reservation: 256m
+    mem_swappiness: 10
+    memswap_limit: 1g
+    pids_limit: 100
+    platform: linux/amd64
+    pull_policy: missing
+    read_only: true
+    restart: unless-stopped
+    scale: 1
+    shm_size: 64m
+    stdin_open: true
+    stop_grace_period: 10s
+    stop_signal: SIGTERM
+    storage_opt:
+      size: 10G
+    sysctls:
+      net.core.somaxconn: 1024
+    tmpfs: /run
+    tty: true
+    ulimits:
+      nofile:
+        soft: 100
+        hard: 200
+    user: "1000:1000"
+    working_dir: /app

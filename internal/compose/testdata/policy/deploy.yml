@@ -1,0 +1,22 @@
+name: policy
+services:
+  allowed:
+    image: nginx:1.27
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+      restart_policy:
+        condition: on-failure
+  refused:
+    image: nginx:1.27
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+          generic_resources:
+            - discrete_resource_spec:
+                kind: gpu
+                value: 1
