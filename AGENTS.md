@@ -146,6 +146,11 @@ fixed in five batches. All five are on `main`.
   in-flight requests.
 - **Build logs are in memory only.** The broker keeps the 50 most recently
   finished deployments' logs, and the last 10,000 lines of each log.
+- **Streams.** Every SSE log stream sends `: ping` every 20 seconds. A
+  reconnect clears the page and replays from the start, so no line appears
+  twice and no event ids are needed. The pages retry a broken stream for five
+  minutes, then ask for a reload. Build logs stay in memory only. See
+  `docs/STREAMS.md`.
 - **Configuration is strict.** `Load` keeps defaults, so commands that only
   need paths still work, but `Validate` refuses bad values. Yes/no settings
   are case-insensitive, so `True` means on.
