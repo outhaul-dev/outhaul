@@ -295,6 +295,7 @@ func (s *Server) handleCreateDestination(w http.ResponseWriter, r *http.Request)
 		Bucket:    strings.TrimSpace(r.FormValue("bucket")),
 		AccessKey: strings.TrimSpace(r.FormValue("access_key")),
 		SecretKey: r.FormValue("secret_key"),
+		Kind:      core.DestinationS3,
 	}
 	if !appNameRe.MatchString(d.Name) {
 		s.renderSettings(w, r, http.StatusBadRequest, "Destination name must be lowercase letters, digits and hyphens (2–40 chars).")
@@ -340,6 +341,16 @@ func (s *Server) handleDeleteDestination(w http.ResponseWriter, r *http.Request)
 	id, ok := parseID(r.PathValue("id"))
 	if !ok {
 		http.NotFound(w, r)
+		return
+	}
+	d, err := s.store.GetDestination(r.Context(), id)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if d.Kind == core.DestinationAzure && s.azureDestinationSet {
+		s.renderSettings(w, r, http.StatusConflict,
+			"This destination comes from OUTHAUL_BACKUP_AZURE_ACCOUNT and OUTHAUL_BACKUP_AZURE_CONTAINER. Unset them to remove it.")
 		return
 	}
 	if err := s.store.DeleteDestination(r.Context(), id); err != nil {

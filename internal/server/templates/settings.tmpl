@@ -132,12 +132,20 @@
       {{range .Destinations}}
       <tr>
         <td class="mono">{{.Name}}</td>
+        {{if eq .Kind "azure"}}
+        <td class="mono muted">{{.AzureAccount}}</td>
+        <td class="mono muted">{{.Bucket}}</td>
+        <td class="mono muted">managed identity</td>
+        {{else}}
         <td class="mono muted truncate">{{.Endpoint}}</td>
         <td class="mono muted">{{.Bucket}}</td>
         <td class="mono muted">{{if .Region}}{{.Region}}{{else}}—{{end}}</td>
+        {{end}}
         <td class="row-actions">
           <form method="post" action="/settings/destinations/{{.ID}}/test" class="inline"><button type="submit" class="btn btn-quiet">Test</button></form>
+          {{if or (ne .Kind "azure") (not $.AzureDestinationSet)}}
           <form method="post" action="/settings/destinations/{{.ID}}/delete" class="inline"><button type="submit" class="linkbtn">remove</button></form>
+          {{end}}
         </td>
       </tr>
       {{end}}

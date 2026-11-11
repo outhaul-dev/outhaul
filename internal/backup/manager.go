@@ -40,8 +40,8 @@ type Manager struct {
 	docker  docker.Client
 	workDir string // scratch space for staged archives
 
-	// dial opens a blobstore for a destination; a test seam defaulting to
-	// blobstore.Open.
+	// dial opens a blobstore for a destination; a test seam defaulting to an
+	// opener that shares one managed-identity token source.
 	dial func(core.Destination) (blobstore.Client, error)
 
 	mu       sync.Mutex
@@ -60,14 +60,19 @@ type Manager struct {
 	runDone chan struct{}
 }
 
-// NewManager wires a Manager. workDir is config.WorkDir().
-func NewManager(st *store.Store, dc docker.Client, workDir string) *Manager {
+// NewManager wires a Manager. workDir is config.WorkDir(); dial opens a
+// destination's blobstore, and nil uses the process-wide opener.
+func NewManager(st *store.Store, dc docker.Client, workDir string,
+	dial func(core.Destination) (blobstore.Client, error)) *Manager {
+	if dial == nil {
+		dial = blobstore.NewOpener("").Open
+	}
 	base, cancel := context.WithCancel(context.Background())
 	return &Manager{
 		store:    st,
 		docker:   dc,
 		workDir:  workDir,
-		dial:     blobstore.Open,
+		dial:     dial,
 		inFlight: map[int64]bool{},
 		timeout:  runTimeout,
 		base:     base,

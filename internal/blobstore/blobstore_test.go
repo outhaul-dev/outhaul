@@ -158,7 +158,7 @@ func newTestClient(t *testing.T) (Client, *fakeS3) {
 	f := &fakeS3{t: t, objects: map[string][]byte{}}
 	ts := httptest.NewServer(f.handler())
 	t.Cleanup(ts.Close)
-	c, err := Open(core.Destination{
+	c, err := OpenS3(core.Destination{
 		Name: "test", Endpoint: ts.URL, Bucket: "testbucket",
 		AccessKey: "AKID", SecretKey: "SECRET",
 	})
@@ -240,8 +240,8 @@ func TestOpenRejectsBadEndpoints(t *testing.T) {
 		{Endpoint: "https://host", Bucket: ""},
 	}
 	for _, d := range bad {
-		if _, err := Open(d); err == nil {
-			t.Errorf("Open(%+v) accepted, want error", d)
+		if _, err := OpenS3(d); err == nil {
+			t.Errorf("OpenS3(%+v) accepted, want error", d)
 		}
 	}
 }
@@ -251,7 +251,7 @@ func TestErrorsCarryS3Body(t *testing.T) {
 		http.Error(w, "<Error><Code>AccessDenied</Code></Error>", http.StatusForbidden)
 	}))
 	defer ts.Close()
-	c, err := Open(core.Destination{Endpoint: ts.URL, Bucket: "b", AccessKey: "a", SecretKey: "s"})
+	c, err := OpenS3(core.Destination{Endpoint: ts.URL, Bucket: "b", AccessKey: "a", SecretKey: "s"})
 	if err != nil {
 		t.Fatal(err)
 	}

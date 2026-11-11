@@ -52,7 +52,52 @@ func (s *Store) CreateDestination(ctx context.Context, d core.Destination) (core
 	return d, nil
 }
 
-const destinationCols = `id, name, endpoint, region, bucket, access_key, secret_key, created_at, kind`
+const (
+	destinationCols      = `id, name, endpoint, region, bucket, access_key, secret_key, created_at, kind`
+	azureDestinationName = "Azure Blob"
+)
+
+// SyncAzureDestination keeps the single kind=azure row in step with the
+// environment. Empty account and container remove it unless a backup schedule
+// uses it; a kept row has its endpoint and bucket cleared.
+func (s *Store) SyncAzureDestination(ctx context.Context, account, container string) error {
+	var id int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id FROM destinations WHERE kind = ?`, core.DestinationAzure).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		if account == "" && container == "" {
+			return nil
+		}
+		_, err := s.db.ExecContext(ctx,
+			`INSERT INTO destinations (name, endpoint, region, bucket, access_key, secret_key, created_at, kind)
+			 VALUES (?, ?, '', ?, '', '', ?, ?)`,
+			azureDestinationName, azureEndpoint(account), container, fmtTime(time.Now().UTC()), core.DestinationAzure)
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	if account == "" && container == "" {
+		if err := s.DeleteDestination(ctx, id); err != nil {
+			if !errors.Is(err, ErrDestinationInUse) {
+				return err
+			}
+			_, err = s.db.ExecContext(ctx,
+				`UPDATE destinations SET endpoint = '', bucket = '' WHERE id = ?`, id)
+			return err
+		}
+		return nil
+	}
+	_, err = s.db.ExecContext(ctx,
+		`UPDATE destinations SET name = ?, endpoint = ?, region = '', bucket = ?, access_key = '', secret_key = '', kind = ?
+		 WHERE id = ?`,
+		azureDestinationName, azureEndpoint(account), container, core.DestinationAzure, id)
+	return err
+}
+
+func azureEndpoint(account string) string {
+	return "https://" + account + ".blob.core.windows.net"
+}
 
 func (s *Store) GetDestination(ctx context.Context, id int64) (core.Destination, error) {
 	row := s.db.QueryRowContext(ctx,

@@ -1,6 +1,9 @@
 package core
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Backup targets: what a backup snapshots.
 const (
@@ -41,6 +44,23 @@ type Destination struct {
 	SecretKey string
 	CreatedAt time.Time
 	Kind      string // DestinationS3 | DestinationAzure; "" is treated as s3 when read
+}
+
+// AzureAccount is the storage account in an Azure endpoint, or "" when the
+// endpoint is empty or is not the Azure form.
+func (d Destination) AzureAccount() string {
+	e := strings.TrimSuffix(d.Endpoint, "/")
+	for _, scheme := range []string{"https://", "http://"} {
+		if strings.HasPrefix(e, scheme) {
+			e = strings.TrimPrefix(e, scheme)
+			break
+		}
+	}
+	const suffix = ".blob.core.windows.net"
+	if !strings.HasSuffix(e, suffix) {
+		return ""
+	}
+	return strings.TrimSuffix(e, suffix)
 }
 
 // Backup is a schedule attaching one target to one destination: "dump this

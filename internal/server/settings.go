@@ -42,6 +42,7 @@ func (s *Server) renderSettingsWith(w http.ResponseWriter, r *http.Request, stat
 		return
 	}
 	data["Destinations"] = dests
+	data["AzureDestinationSet"] = s.azureDestinationSet
 	data["SSHAddr"] = s.sshAddr()
 	if name := r.URL.Query().Get("tested"); name != "" {
 		data["Notice"] = "Destination " + name + " is reachable and writable."

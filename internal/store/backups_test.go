@@ -127,6 +127,68 @@ func TestEmptyDestinationSecretNeedsNoBox(t *testing.T) {
 	}
 }
 
+func TestSyncAzureDestination(t *testing.T) {
+	s := openWithBox(t)
+	ctx := context.Background()
+
+	if err := s.SyncAzureDestination(ctx, "examplebackups", "outhaul"); err != nil {
+		t.Fatal(err)
+	}
+	dests, err := s.ListDestinations(ctx)
+	if err != nil || len(dests) != 1 {
+		t.Fatalf("destinations = %v (err %v), want one", dests, err)
+	}
+	d := dests[0]
+	if d.Name != "Azure Blob" || d.Kind != core.DestinationAzure ||
+		d.Endpoint != "https://examplebackups.blob.core.windows.net" || d.Bucket != "outhaul" ||
+		d.Region != "" || d.AccessKey != "" || d.SecretKey != "" {
+		t.Fatalf("azure row = %+v", d)
+	}
+	if has, err := s.HasSealedValues(ctx); err != nil || has {
+		t.Fatalf("HasSealedValues = %v, %v; want false", has, err)
+	}
+	id := d.ID
+
+	if err := s.SyncAzureDestination(ctx, "examplebackups", "other"); err != nil {
+		t.Fatal(err)
+	}
+	dests, _ = s.ListDestinations(ctx)
+	if len(dests) != 1 || dests[0].ID != id || dests[0].Bucket != "other" {
+		t.Fatalf("after container change: %+v", dests)
+	}
+
+	if err := s.SyncAzureDestination(ctx, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if dests, _ = s.ListDestinations(ctx); len(dests) != 0 {
+		t.Fatalf("unset left %+v, want none", dests)
+	}
+
+	if err := s.SyncAzureDestination(ctx, "examplebackups", "outhaul"); err != nil {
+		t.Fatal(err)
+	}
+	dests, _ = s.ListDestinations(ctx)
+	keptID := dests[0].ID
+	db := mustDatabase(t, s, "shop")
+	mustBackup(t, s, core.BackupTargetDatabase, db.ID, dests[0].ID)
+	if err := s.SyncAzureDestination(ctx, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	dests, _ = s.ListDestinations(ctx)
+	if len(dests) != 1 || dests[0].ID != keptID || dests[0].Endpoint != "" || dests[0].Bucket != "" {
+		t.Fatalf("kept row = %+v", dests)
+	}
+
+	if err := s.SyncAzureDestination(ctx, "examplebackups", "outhaul"); err != nil {
+		t.Fatal(err)
+	}
+	dests, _ = s.ListDestinations(ctx)
+	if len(dests) != 1 || dests[0].ID != keptID ||
+		dests[0].Endpoint != "https://examplebackups.blob.core.windows.net" || dests[0].Bucket != "outhaul" {
+		t.Fatalf("restored row = %+v", dests)
+	}
+}
+
 func TestDeleteDestinationGuard(t *testing.T) {
 	s := openWithBox(t)
 	ctx := context.Background()

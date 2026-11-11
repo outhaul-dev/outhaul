@@ -117,8 +117,7 @@ func newHarness(t *testing.T) *harness {
 
 	fake := docker.NewFake()
 	blob := &fakeBlob{objects: map[string][]byte{}}
-	m := NewManager(st, fake, dir)
-	m.dial = func(core.Destination) (blobstore.Client, error) { return blob, nil }
+	m := NewManager(st, fake, dir, func(core.Destination) (blobstore.Client, error) { return blob, nil })
 	m.runDone = make(chan struct{}, 8)
 	return &harness{m: m, store: st, docker: fake, blob: blob}
 }

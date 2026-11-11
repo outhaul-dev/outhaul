@@ -103,6 +103,8 @@ type Server struct {
 	serverIP   string // for generated sslip.io template domains; may be empty
 	tlsEnabled bool   // ACME or local CA configured: HTTPS automation is available
 
+	azureDestinationSet bool // OUTHAUL_BACKUP_AZURE_* set: the Azure row belongs to the environment
+
 	repos      *gitrepo.Manager // push-app bare repos; nil disables push-repo cleanup
 	sshControl SSHControl       // git-push SSH server; nil disables the port setting
 	tunnel     TunnelControl    // Cloudflare Tunnel management; nil disables the tunnel card
@@ -207,6 +209,9 @@ func (s *Server) streamContext(r *http.Request) (context.Context, context.Cancel
 
 // SetCertSync installs the hook that refreshes local-CA certs after domain
 // changes. Call before Handler.
+// SetAzureDestinationSet records whether the environment owns the Azure row.
+func (s *Server) SetAzureDestinationSet(on bool) { s.azureDestinationSet = on }
+
 func (s *Server) SetCertSync(cs CertSyncer) { s.certSync = cs }
 
 // SetLocalCAFile publishes the CA root certificate at GET /ca.pem.

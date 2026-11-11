@@ -189,6 +189,11 @@ No config files — defaults with `OUTHAUL_*` environment overrides:
 | `OUTHAUL_PRUNE_BUILD_CACHE` | `yes`            | Nightly prune of build cache unused for 7 days; it is daemon-wide, so set `no` on a host shared with other builds |
 | `OUTHAUL_PUBLIC_URL`    | (empty)              | Public base URL of the admin UI; enables GitHub App + webhook URLs, SSO and protected routes |
 | `OUTHAUL_SERVER_IP`     | (auto-detected)      | Public IP embedded in generated `sslip.io` template domains |
+| `OUTHAUL_BACKUP_AZURE_ACCOUNT` | (empty)      | Storage account for the Azure Blob backup destination; set with `OUTHAUL_BACKUP_AZURE_CONTAINER` — see docs/STATE-BACKUP.md |
+| `OUTHAUL_BACKUP_AZURE_CONTAINER` | (empty)    | Private container for that destination; the host's managed identity needs "Storage Blob Data Contributor" on it |
+
+`AZURE_CLIENT_ID` is not an `OUTHAUL_*` setting: when the VM has more than one
+managed identity, set it to the one Outhaul should use.
 
 Apps are expected to listen on `$PORT` (Outhaul sets it and points Traefik at it).
 

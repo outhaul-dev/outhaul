@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/backup"
+	"github.com/outhaul-dev/outhaul/internal/blobstore"
 	"github.com/outhaul-dev/outhaul/internal/builder"
 	"github.com/outhaul-dev/outhaul/internal/catalog"
 	"github.com/outhaul-dev/outhaul/internal/compose"
@@ -150,6 +151,9 @@ func serve() error {
 	}
 	defer st.Close()
 	reserveAdminHost(context.Background(), st, cfg.AdminHost(), log.Printf)
+	if err := st.SyncAzureDestination(context.Background(), cfg.BackupAzureAccount, cfg.BackupAzureContainer); err != nil {
+		return fmt.Errorf("sync the Azure backup destination: %w", err)
+	}
 
 	if n, err := st.RecoverActive(context.Background(), "interrupted by restart"); err != nil {
 		return fmt.Errorf("crash recovery: %w", err)
@@ -234,7 +238,8 @@ func serve() error {
 
 	// Backup scheduler (dumps + volume tarballs to S3-compatible storage).
 	// Runs a dead process left "running" are failed before any can start.
-	backups := backup.NewManager(st, dc, cfg.WorkDir())
+	opener := blobstore.NewOpener(cfg.AzureClientID)
+	backups := backup.NewManager(st, dc, cfg.WorkDir(), opener.Open)
 	if n, err := backups.RecoverInterrupted(context.Background()); err != nil {
 		stopWorker()
 		return fmt.Errorf("crash recovery: %w", err)
@@ -315,6 +320,7 @@ func serve() error {
 	}
 	srv.SetTunnelControl(infra)
 	srv.SetProxyControl(infra)
+	srv.SetAzureDestinationSet(cfg.BackupAzureAccount != "" && cfg.BackupAzureContainer != "")
 	srv.SetHTTPSPort(cfg.HTTPSPort)
 	srv.SetBuild(update.Current())
 	srv.SetUpdates(updates, checker)
