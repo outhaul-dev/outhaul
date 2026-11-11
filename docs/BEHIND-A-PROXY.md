@@ -1,9 +1,64 @@
 # Serving behind a TLS-terminating proxy
 
 This page is for an install whose visitors reach it only through a CDN or other
-TLS-terminating proxy on port 443. The proxy terminates the visitor's TLS and
-connects to the host on 443 only. Each part is a setting of its own, off unless
-set, so an ordinary install needs none of them.
+TLS-terminating proxy on port 443. The first one is Azure Front Door, but
+nothing here is specific to it. Each part is a setting of its own, off unless
+set, so an ordinary install needs none of them, and an install can use only the
+ones it needs.
+
+## The request path, and why each setting exists
+
+The CDN terminates the visitor's TLS and connects to the host on 443 only. It
+keeps the visitor's Host header, sends it as SNI, and refuses a certificate
+that isn't publicly trusted or doesn't cover that name. Port 80 is closed.
+
+The CDN shares its source addresses with every other customer of the same CDN,
+so the network rule in front of the host admits all of them. Only a header the
+CDN sets (`X-Azure-FDID`, the ID of our profile) shows a request came through
+ours.
+
+Each host has one wildcard, `*.<host>.<zone>`, and only names one label under it
+are routed to the host. The admin port (8080) can't be reached from outside, so
+the admin UI, sign-in and webhooks go through the CDN like any app. Other
+machines on the host's own network can still reach that port, and it must not
+answer them.
+
+So the settings cover: certificates by DNS-01 with one wildcard
+(`OUTHAUL_ACME_DNS_PROVIDER`, `OUTHAUL_ACME_DNS_ENV`, `OUTHAUL_TLS_WILDCARD`);
+no port 80 (`OUTHAUL_HTTP_PORT`); a required request header on every route
+(`OUTHAUL_REQUIRE_HEADER_NAME`, `OUTHAUL_REQUIRE_HEADER_VALUE`); and an admin
+port only Traefik can reach (`OUTHAUL_ADMIN_DIRECT`).
+
+## Settings
+
+| Variable | Values | Default | Needs |
+|---|---|---|---|
+| `OUTHAUL_ACME_DNS_PROVIDER` | a lego DNS provider's code, such as `azuredns` | unset: HTTP-01, as today | `OUTHAUL_ACME_EMAIL` |
+| `OUTHAUL_ACME_DNS_ENV` | names of environment variables, comma-separated | unset | `OUTHAUL_ACME_DNS_PROVIDER`, and every named variable set and not empty |
+| `OUTHAUL_TLS_WILDCARD` | `*.` and a domain, such as `*.shared.demo.example.com` | unset | `OUTHAUL_ACME_DNS_PROVIDER` |
+| `OUTHAUL_HTTP_PORT` | `80` or `off` | `80` | `off` needs HTTPS (Let's Encrypt or the local CA). With Let's Encrypt it also needs `OUTHAUL_ACME_DNS_PROVIDER`. It can't be combined with a Cloudflare tunnel |
+| `OUTHAUL_REQUIRE_HEADER_NAME` | a header name: letters, digits and `-` | unset | `OUTHAUL_REQUIRE_HEADER_VALUE` |
+| `OUTHAUL_REQUIRE_HEADER_VALUE` | letters, digits and `-._~+/=:`, at most 256 characters | unset | `OUTHAUL_REQUIRE_HEADER_NAME` |
+| `OUTHAUL_ADMIN_DIRECT` | `on` or `off` | `on` | `off` needs `OUTHAUL_PUBLIC_URL`, and HTTPS or a tunnel to publish it. `OUTHAUL_LISTEN_ADDR` may then give a port but not a host |
+
+The first deployment sets these. systemd doesn't expand variables in an
+environment file, so each value is written out:
+
+```
+OUTHAUL_PUBLIC_URL=https://outhaul.shared.demo.example.com
+OUTHAUL_ACME_EMAIL=ops@example.com
+OUTHAUL_ACME_DNS_PROVIDER=azuredns
+OUTHAUL_ACME_DNS_ENV=AZURE_CLIENT_ID,AZURE_SUBSCRIPTION_ID,AZURE_RESOURCE_GROUP,AZURE_ZONE_NAME
+OUTHAUL_TLS_WILDCARD=*.shared.demo.example.com
+OUTHAUL_HTTP_PORT=off
+OUTHAUL_REQUIRE_HEADER_NAME=X-Azure-FDID
+OUTHAUL_REQUIRE_HEADER_VALUE=<the profile's GUID>
+OUTHAUL_ADMIN_DIRECT=off
+```
+
+Outhaul passes Traefik exactly the variables named, and adds none. In
+particular it never sets `AZURE_AUTH_METHOD`: with it unset, lego's `azuredns`
+uses Azure's default credential chain, which honours `AZURE_CLIENT_ID`.
 
 ## Certificates
 
@@ -43,26 +98,8 @@ it when the wildcard is turned on over the same `acme.json`; it is not
 re-issued from the wildcard until the stored certificate is no longer used.
 `deploy/test/integration_ingress.sh` reports what a run sees.
 
-## The required header
-
-`OUTHAUL_REQUIRE_HEADER_NAME` and `OUTHAUL_REQUIRE_HEADER_VALUE` put a header
-term in every router's rule: the admin route's too. Traefik answers 404 for a
-request that lacks the header or carries another value; the name matches in any
-case. Both settings or neither.
-
-The value is limited to letters, digits and `-._~+/=:`, at most 256 characters,
-so no rule writer or YAML emitter has to escape it. It is never shown in the UI
-or written to a log line; an error names the variable, not the value. The name
-appears on no page either.
-
-This header is only as good as the network rule in front of the host. Anyone
-who can reach the host directly can send it. It is not a secret: a container's
-labels in Docker show it.
-
-With port 80 open as well, its redirect to HTTPS answers before any rule is
-read, so the header is not checked there; it is checked on 443.
-
 ## HTTPS only
+
 `OUTHAUL_HTTP_PORT=off` publishes no port 80. Traefik has no `web` entrypoint
 and every router is on `websecure`; there is no plain-HTTP router and no
 redirect from 80. Every domain row is served over HTTPS, whatever its own
@@ -81,17 +118,24 @@ preview links and the "is live at" line in a deploy log. A row's "Automate
 HTTPS" box is shown on and can't be changed, with a note saying the server
 serves HTTPS only.
 
-## Images and Compose files with their own Traefik labels
+## The required header
 
-Docker copies an image's labels onto its containers, and Traefik reads container
-labels. While a request header is required, an image that carries any
-`traefik.*` label is refused for every single-container app, not only for fork
-previews: its router would be Outhaul's not to write, and it would lack the
-header term. The deploy fails and names the labels.
+`OUTHAUL_REQUIRE_HEADER_NAME` and `OUTHAUL_REQUIRE_HEADER_VALUE` put a header
+term in every router's rule: the admin route's too. Traefik answers 404 for a
+request that lacks the header or carries another value; the name matches in any
+case. Both settings or neither.
 
-A Compose file can write `traefik.*` labels on its own services. On a service
-Outhaul doesn't route, Traefik's constraint ignores them. On a service Outhaul
-does route, they sit beside Outhaul's own labels and are not checked yet.
+The value is limited to letters, digits and `-._~+/=:`, at most 256 characters,
+so no rule writer or YAML emitter has to escape it. It is never shown in the UI
+or written to a log line; an error names the variable, not the value. The name
+appears on no page either.
+
+This header is only as good as the network rule in front of the host. Anyone
+who can reach the host directly can send it. It is not a secret: a container's
+labels in Docker show it.
+
+With port 80 open as well, its redirect to HTTPS answers before any rule is
+read, so the header is not checked there; it is checked on 443.
 
 ## When a setting changes
 
@@ -154,3 +198,58 @@ address, as they can today; they get the same sign-in page as anyone. And when
 a header is required with `OUTHAUL_ADMIN_DIRECT=on`, Outhaul logs a warning at
 startup that the admin port isn't covered by the header. It doesn't refuse to
 start: a firewall may be doing that job.
+
+## Images and Compose files with their own Traefik labels
+
+Docker copies an image's labels onto its containers, and Traefik reads container
+labels. While a request header is required, an image that carries any
+`traefik.*` label is refused for every single-container app, not only for fork
+previews: its router would be Outhaul's not to write, and it would lack the
+header term. The deploy fails and names the labels.
+
+A Compose file can write `traefik.*` labels on its own services. On a service
+Outhaul doesn't route, Traefik's constraint ignores them. On a service Outhaul
+does route, they sit beside Outhaul's own labels and are not checked yet.
+
+## Checking a real host
+
+These need the staging host and its CDN.
+
+1. `docker port outhaul-traefik` shows only 443.
+2. `acme.json` holds one certificate, for the wildcard, and Traefik's log shows
+   no HTTP challenge.
+3. `https://outhaul.<host>.<zone>/` loads through the CDN, and password and Okta
+   sign-in work.
+4. An app deployed to `<name>.<host>.<zone>` is served through the CDN with the
+   wildcard certificate.
+5. From another machine in the network, `curl -k --resolve
+   <app>.<host>.<zone>:443:<host IP> https://<app>.<host>.<zone>/` returns 404,
+   and so does the same with a made-up `X-Azure-FDID`.
+6. A protected app's sign-in works through the CDN.
+7. `ss -ltn` on the host shows port 8080 on loopback and one Docker bridge
+   address only. From another machine in the network, a connection to the
+   host's port 8080 is refused.
+
+## Testing so far
+
+Three scripts check this without a real CDN, and none is run by CI:
+
+- `deploy/test/integration_ingress.sh` starts Pebble and
+  `pebble-challtestsrv` and a Traefik built from `traefik.ProxyFlags`. It checks
+  that the wildcard is issued once, that hosts under it cause no further order,
+  that a host outside it gets its own certificate, that an HTTPS-only Traefik
+  publishes only 443, that requests carry the right certificate, and that the
+  header and the constraint behave as described.
+- `deploy/test/integration_gate.sh` (with `GATETEST_HEADER` and
+  `GATETEST_HTTP_OFF`) checks protected and open rows on a real Traefik with the
+  header term and with no port 80.
+- `deploy/test/integration_proxy.sh` runs a real Outhaul and Traefik behind a
+  stand-in CDN and a stand-in OIDC provider. It checks first-boot setup,
+  password and SSO sign-in, a protected app (the redirect, the code, the
+  `__Host-` cookies, `X-Outhaul-User` reaching the app, an open path under it),
+  a signed webhook delivery, requests straight to Traefik with the wrong or no
+  header, the admin port's two listen addresses, and a restart with another
+  header value (old value refused at once, apps redeployed at startup).
+
+None of them can show a real CDN, a real DNS provider, a real identity
+provider, or a real browser. Those are what "Checking a real host" is for.

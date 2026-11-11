@@ -193,6 +193,21 @@ fixed in five batches. All five are on `main`.
   addresses (`traefik.RuleAddress`), not rule strings. Only a system admin can
   bring two projects together on a protected host. See
   `docs/PROTECTED-ROUTES.md`.
+- **Behind a TLS-terminating proxy.** Every router is written from one
+  `traefik.Routing` value (`AppLabels`, `compose.Override`, the admin route),
+  never from separate positional settings. A rule is its address, the
+  traversal term, then the header term when one is required; `priority` is the
+  length of the address alone, and `traefik.RuleAddress` accepts the first two
+  or all three, so an old container's rule still names its row. With a request
+  header required, every routed container carries `outhaul.ingress=<stamp>`
+  and Traefik's Docker provider runs with a constraint on that stamp; nothing
+  else may create a route on a protected install. With `OUTHAUL_HTTP_PORT=off`
+  no label or file-provider router may name the `web` entrypoint. The header's
+  value is never logged, shown on a page or put in a flag other than Traefik's
+  constraint and rules. `OUTHAUL_ADMIN_DIRECT=off` listens on loopback and the
+  Docker gateway only. See `docs/BEHIND-A-PROXY.md`; the real-Traefik and
+  end-to-end checks are `deploy/test/integration_ingress.sh` and
+  `deploy/test/integration_proxy.sh`.
 
 ### Open: reliability and UX
 

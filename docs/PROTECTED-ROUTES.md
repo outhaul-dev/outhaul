@@ -42,7 +42,8 @@ The switch needs both of these:
   Let's Encrypt, or `OUTHAUL_LOCAL_CA`, see [LOCAL-CA.md](LOCAL-CA.md)), or a
   Cloudflare tunnel, whose edge serves HTTPS. On a server with HTTPS, a domain that
   requires sign-in is always served over HTTPS, even with its "Automate HTTPS" box
-  off.
+  off. An HTTPS-only server (`OUTHAUL_HTTP_PORT=off`) works the same way: every
+  row is served over HTTPS. See [BEHIND-A-PROXY.md](BEHIND-A-PROXY.md).
 
 If either is missing, the switch is greyed out and the dialog says why.
 
@@ -53,7 +54,9 @@ For visitors to get through, two more things must hold:
 - Traefik can reach Outhaul's admin port (8080 unless `OUTHAUL_LISTEN_ADDR` says
   otherwise) on the host, as it does to publish the admin UI. Traefik asks Outhaul
   about every request to a protected route there. The installer's firewall rules
-  allow this.
+  allow this. With `OUTHAUL_ADMIN_DIRECT=off`, Traefik reaches it at the host's
+  address on Outhaul's Docker network instead; see
+  [BEHIND-A-PROXY.md](BEHIND-A-PROXY.md).
 
 ## Requiring sign-in on a domain
 
@@ -332,6 +335,11 @@ Browsers ignore these headers, so the app's own `Cache-Control` still decides wh
 browser keeps. A CDN rule that overrides the origin's caching headers, such as "Cache
 Everything", would serve a stored page to anyone without sign-in, so don't apply one
 to a protected address.
+
+Those two headers are a convention, not a standard every CDN honours. Behind one
+that ignores them, keep caching off for the routes to this host. Otherwise a
+protected page could be served from the CDN's store to someone who never signed
+in.
 
 ## When Outhaul is down or restarting
 
