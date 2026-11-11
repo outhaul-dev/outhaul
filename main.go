@@ -96,7 +96,7 @@ func runGitHook(args []string) int {
 // runVersion implements `outhaul version`: the build stamp as key=value lines,
 // which the updater parses.
 func runVersion(w io.Writer, b update.Build) int {
-	fmt.Fprintf(w, "commit=%s\nrepo=%s\nlocal=%t\n", b.Commit, b.Repo, b.Local)
+	fmt.Fprintf(w, "commit=%s\nrepo=%s\nlocal=%t\nversion=%s\n", b.Commit, b.Repo, b.Local, b.Version)
 	return 0
 }
 

@@ -641,29 +641,119 @@ remove_build_swap() {
 	SWAP_ADDED=0
 }
 
-# Clones the repo (or uses --from-checkout dir). Prints the source dir via SRC_DIR.
-fetch_source() {
+# Clones the repo (or uses --from-checkout dir) and checks out target, a full
+# commit. Prints the source dir via SRC_DIR. With no argument it resolves the
+# remote's HEAD first: the updater calls it that way.
+fetch_source() { # [target]
 	if [ "${FROM_CHECKOUT:-0}" = 1 ]; then
 		SRC_DIR=$(cd "$CHECKOUT_DIR" && pwd)
 		[ -f "$SRC_DIR/go.mod" ] || die "--from-checkout: no go.mod in $SRC_DIR"
 		step_ok "using local checkout $SRC_DIR"
 		return
 	fi
+	_target=${1:-}
+	if [ -z "$_target" ]; then
+		resolve_ref '' "$OUTHAUL_REPO"
+		_target=$TARGET
+	fi
 	SRC_DIR=$(mktemp -d)
-	spinner_start "cloning outhaul"
+	_log=${LOGFILE:-/dev/null}
+	# The tests call this before main has opened the install log; a log that
+	# cannot be opened is no reason to fail the fetch.
+	(: >>"$_log") 2>/dev/null || _log=/dev/null
+	spinner_start "fetching outhaul $(short "$_target")"
 	set +e
-	git clone --depth 1 "$OUTHAUL_REPO" "$SRC_DIR" >>"${LOGFILE:-/dev/null}" 2>&1
+	{
+		git init -q "$SRC_DIR" &&
+			git -C "$SRC_DIR" fetch --depth 1 "$OUTHAUL_REPO" "$_target" &&
+			git -C "$SRC_DIR" checkout --detach FETCH_HEAD
+	} >>"$_log" 2>&1
 	rc=$?
 	set -e
 	spinner_stop "$rc"
-	[ "$rc" -eq 0 ] || die "could not clone $OUTHAUL_REPO — see ${LOGFILE:-the install log}"
+	[ "$rc" -eq 0 ] || die "could not fetch $(short "$_target") from $OUTHAUL_REPO — see ${LOGFILE:-the install log}"
+	_fetched=$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || true)
+	[ "$_fetched" = "$_target" ] || die "fetched $_fetched, not $_target"
+}
+
+# Resolves ref (a tag, a branch, a full commit, or nothing for the remote's
+# HEAD) to TARGET, a full commit. A tag's name becomes TARGET_VERSION; a
+# branch or a commit leaves it empty. TARGET_REF is the ref as it was given.
+resolve_ref() { # ref repo
+	_ref=$1 _repo=$2
+	TARGET_VERSION=''
+	if [ -z "$_ref" ]; then
+		TARGET_REF=HEAD
+		TARGET=$(git ls-remote "$_repo" HEAD 2>/dev/null | awk 'NR == 1 { print $1 }')
+		[ -n "$TARGET" ] || die "could not resolve HEAD of $_repo"
+		return 0
+	fi
+	TARGET_REF=$_ref
+	case "$_ref" in
+	*[!0-9a-fA-F]*) ;;
+	*)
+		if [ "${#_ref}" -eq 40 ]; then
+			TARGET=$(printf '%s\n' "$_ref" | tr 'A-F' 'a-f')
+			return 0
+		fi
+		if [ "${#_ref}" -ge 7 ]; then
+			die "a shortened commit cannot be fetched; give the full 40 characters"
+		fi
+		;;
+	esac
+	_refs=$(git ls-remote "$_repo" 2>/dev/null) || die "could not read the refs of $_repo"
+	# ^{} is an annotated tag's peeled commit: fetch that, not the tag object.
+	TARGET=$(printf '%s\n' "$_refs" | awk -v r="refs/tags/$_ref^{}" '$2 == r { print $1; exit }')
+	if [ -z "$TARGET" ]; then
+		TARGET=$(printf '%s\n' "$_refs" | awk -v r="refs/tags/$_ref" '$2 == r { print $1; exit }')
+	fi
+	if [ -n "$TARGET" ]; then
+		TARGET_VERSION=$_ref
+		return 0
+	fi
+	TARGET=$(printf '%s\n' "$_refs" | awk -v r="refs/heads/$_ref" '$2 == r { print $1; exit }')
+	[ -n "$TARGET" ] || die "no tag or branch named $_ref in $_repo; give a full 40-character commit"
+}
+
+# A field of the running binary's `outhaul version`; empty when it has none.
+build_field() { # name
+	"$BIN" version 2>/dev/null | sed -n "s/^$1=//p"
+}
+
+short() { # commit
+	if [ -n "$1" ]; then printf '%.7s\n' "$1"; else printf 'an unknown build\n'; fi
+}
+
+# Records what this run installed, so a later run can tell that the same
+# commit is already there. Written beside the marker and renamed in: a reader
+# never sees a half-written file.
+write_marker() { # commit ref version
+	_dir=$(dirname "$MARKER")
+	mkdir -p "$_dir" || return 1
+	{
+		printf 'commit=%s\nref=%s\nversion=%s\ninstalled=%s\n' \
+			"$1" "$2" "$3" "$(date +%s)"
+	} >"$MARKER.new" || return 1
+	mv -fT "$MARKER.new" "$MARKER"
+}
+
+read_marker_commit() { sed -n 's/^commit=//p' "$MARKER" 2>/dev/null; }
+
+# True when the running build is not the target, or the last run did not
+# record the target: then there is something to build.
+needs_build() { # installed target marker
+	[ -z "$1" ] && return 0
+	[ "$1" != "$2" ] && return 0
+	[ "$3" != "$2" ] && return 0
+	return 1
 }
 
 # Pure: the -ldflags value that stamps the build for the in-app updater.
-build_ldflags() { # commit repo local(0|1)
+build_ldflags() { # commit repo local(0|1) version
 	pkg=github.com/outhaul-dev/outhaul/internal/update
 	out="-X $pkg.commit=$1 -X $pkg.repo=$2"
 	[ "$3" = 1 ] && out="$out -X $pkg.local=true"
+	[ -n "${4:-}" ] && out="$out -X $pkg.version=$4"
 	printf '%s\n' "$out"
 }
 
@@ -677,7 +767,7 @@ build_binary() {
 	c=$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null)
 	l=0
 	if [ "${FROM_CHECKOUT:-0}" = 1 ] && [ -n "$(git -C "$SRC_DIR" status --porcelain 2>/dev/null)" ]; then l=1; fi
-	(cd "$SRC_DIR" && GOFLAGS=-buildvcs=false go build -ldflags "$(build_ldflags "$c" "${OUTHAUL_REPO:-}" "$l")" -o outhaul .) >>"${LOGFILE:-/dev/null}" 2>&1
+	(cd "$SRC_DIR" && GOFLAGS=-buildvcs=false go build -ldflags "$(build_ldflags "$c" "${OUTHAUL_REPO:-}" "$l" "${TARGET_VERSION:-}")" -o outhaul .) >>"${LOGFILE:-/dev/null}" 2>&1
 	rc=$?
 	set -e
 	spinner_stop "$rc"
@@ -1085,6 +1175,23 @@ LOGFILE=/var/log/outhaul-install.log
 VERBOSE=0
 FROM_CHECKOUT=0
 CHECKOUT_DIR=.
+BIN=/usr/local/bin/outhaul
+MARKER=/var/lib/outhaul-updater/installed
+
+# What this run installs (see resolve_ref, fetch_source and needs_build), and
+# the last run's record (see write_marker). TARGET_VERSION is a tag's name, or
+# empty for a branch, a full commit, or --from-checkout.
+TARGET=''
+TARGET_VERSION=''
+TARGET_REF=''
+BUILD=0
+REF=''
+ARG_ERRORS=''
+
+# Collects a flag error: main prints them and exits 2 once parsing is done, so
+# one run can name every bad flag rather than only the first.
+arg_error() { ARG_ERRORS="${ARG_ERRORS}error: $1
+"; }
 
 parse_args() {
 	while [ "$#" -gt 0 ]; do
@@ -1095,8 +1202,16 @@ parse_args() {
 			CHECKOUT_DIR=${2:-.}
 			shift
 			;;
+		--ref)
+			if [ "$#" -ge 2 ] && [ -n "$2" ]; then
+				REF=$2
+				shift
+			else
+				arg_error "--ref needs a value"
+			fi
+			;;
 		-h | --help)
-			printf 'usage: bootstrap.sh [--verbose] [--from-checkout DIR]\n'
+			printf 'usage: bootstrap.sh [--verbose] [--from-checkout DIR] [--ref REF]\n'
 			exit 0
 			;;
 		*) die "unknown option: $1" ;;
@@ -1146,7 +1261,16 @@ choose_ingress() {
 }
 
 main() {
+	REF=${OUTHAUL_REF:-}
+	ARG_ERRORS=''
 	parse_args "$@"
+	if [ "$FROM_CHECKOUT" = 1 ] && [ -n "$REF" ]; then
+		arg_error "--ref cannot be used with --from-checkout"
+	fi
+	if [ -n "$ARG_ERRORS" ]; then
+		printf '%s' "$ARG_ERRORS" >&2
+		exit 2
+	fi
 	: >"$LOGFILE" 2>/dev/null || LOGFILE=/dev/null
 	if [ "$VERBOSE" = 1 ]; then LOGFILE=/dev/stderr; fi
 	trap cleanup EXIT INT TERM
@@ -1169,24 +1293,57 @@ main() {
 	ensure_git
 	if [ "$WANT_NIXPACKS" = 1 ]; then ensure_nixpacks; fi
 
-	fetch_source
-	GO_VER=$(go_version_from_gomod "$SRC_DIR/go.mod")
-	maybe_add_swap "${MEM_KB:-0}" "${SWAP_KB:-0}"
-	install_go_toolchain "$GO_VER"
-	build_binary
-	remove_build_swap
+	# What to install: the checkout's HEAD, or the ref (the remote's HEAD when
+	# no ref was asked for). --from-checkout always builds.
+	if [ "$FROM_CHECKOUT" = 1 ]; then
+		fetch_source
+		TARGET=$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || true)
+		TARGET_VERSION=''
+		TARGET_REF=''
+		BUILD=1
+	else
+		resolve_ref "$REF" "$OUTHAUL_REPO"
+		I=$(build_field commit)
+		M=$(read_marker_commit) || true
+		if needs_build "$I" "$TARGET" "$M"; then BUILD=1; else BUILD=0; fi
+	fi
+
+	if [ "$BUILD" = 1 ]; then
+		if [ "$FROM_CHECKOUT" != 1 ]; then
+			fetch_source "$TARGET"
+		fi
+		# Under `curl … | sh` $0 is not a file, and the check is skipped.
+		if [ -f "$0" ] && [ -f "$SRC_DIR/deploy/bootstrap.sh" ] &&
+			! cmp -s "$0" "$SRC_DIR/deploy/bootstrap.sh"; then
+			note "this installer differs from the one in $TARGET; the fetched tree's copy is what future runs install"
+		fi
+		GO_VER=$(go_version_from_gomod "$SRC_DIR/go.mod")
+		maybe_add_swap "${MEM_KB:-0}" "${SWAP_KB:-0}"
+		install_go_toolchain "$GO_VER"
+		build_binary
+		remove_build_swap
+	else
+		note "commit $(short "$TARGET") is already installed; not rebuilding"
+	fi
 
 	migrate_slipway
 	ensure_service_user
-	install_binary
+	if [ "$BUILD" = 1 ]; then
+		install_binary
+	fi
 	if [ ! -f /etc/outhaul.env ]; then
 		write_env_file /etc/outhaul.env "$MODE" "$PUBLIC_URL" "$ACME_EMAIL" "$SSH_ADDR" "${LOCAL_CA:-0}"
 		step_ok "wrote /etc/outhaul.env"
 	else
 		note "/etc/outhaul.env exists — left unchanged"
 	fi
-	install_service
-	setup_updater "$SRC_DIR"
+	if [ "$BUILD" = 1 ]; then
+		install_service
+		setup_updater "$SRC_DIR"
+	elif ! systemctl is-active --quiet outhaul; then
+		# Nothing to install, but the recorded build is not running.
+		systemctl enable --now outhaul || die "could not start outhaul"
+	fi
 
 	if [ -n "${GOROOT_TMP:-}" ]; then
 		if ask_yes_no "  Remove the downloaded Go toolchain (~150 MB)?" y; then
@@ -1226,6 +1383,11 @@ main() {
 
 	HURL=$(admin_health_url "${OUTHAUL_LISTEN_ADDR:-:8080}")
 	if wait_healthy "$HURL"; then HEALTHY=0; else HEALTHY=1; fi
+	if [ "$HEALTHY" = 0 ]; then
+		# A later run reads this to tell that the same commit is installed.
+		write_marker "$TARGET" "$TARGET_REF" "$TARGET_VERSION" ||
+			note "could not record the installed version in $MARKER; the next run rebuilds"
+	fi
 	# Let's Encrypt mode serves the admin UI through Traefik, with the
 	# firewall in between: check the way a browser reaches it too.
 	PUBLIC=''

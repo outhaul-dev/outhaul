@@ -41,5 +41,17 @@ case $(cat "$rec") in
 *"update.local=true"*) assert_eq "clean checkout is not local" "no local" "$(cat "$rec")" ;;
 *) assert_eq "clean checkout is not local" ok ok ;;
 esac
+
+# A tag's name is stamped into the build as version.
+# shellcheck disable=SC2034 # read by build_binary
+TARGET_VERSION=v1
+# shellcheck disable=SC2034 # read by build_binary
+FROM_CHECKOUT=0
+git() { echo abc; }
+LOGFILE=/dev/null build_binary >/dev/null
+case $(cat "$rec") in
+*"-ldflags $base -X $pkg.version=v1"*) assert_eq "build_binary stamps the version" ok ok ;;
+*) assert_eq "build_binary stamps the version" "*-ldflags $base -X $pkg.version=v1" "$(cat "$rec")" ;;
+esac
 rm -rf "$tmp"
 [ "${TESTS_FAIL:-0}" -eq 0 ]

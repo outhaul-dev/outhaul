@@ -218,10 +218,21 @@ func TestSetupURLs(t *testing.T) {
 
 func TestRunVersionPrintsTheBuild(t *testing.T) {
 	var buf strings.Builder
+	if code := runVersion(&buf, update.Build{Commit: "abc", Repo: "https://github.com/o/r.git", Version: "v1.2.3"}); code != 0 {
+		t.Fatalf("exit %d, want 0", code)
+	}
+	want := "commit=abc\nrepo=https://github.com/o/r.git\nlocal=false\nversion=v1.2.3\n"
+	if buf.String() != want {
+		t.Errorf("output = %q, want %q", buf.String(), want)
+	}
+
+	// A build with no version (a branch or a full commit was installed) still
+	// prints the line, empty: the updater parses key=value lines.
+	buf.Reset()
 	if code := runVersion(&buf, update.Build{Commit: "abc", Repo: "https://github.com/o/r.git"}); code != 0 {
 		t.Fatalf("exit %d, want 0", code)
 	}
-	want := "commit=abc\nrepo=https://github.com/o/r.git\nlocal=false\n"
+	want = "commit=abc\nrepo=https://github.com/o/r.git\nlocal=false\nversion=\n"
 	if buf.String() != want {
 		t.Errorf("output = %q, want %q", buf.String(), want)
 	}
