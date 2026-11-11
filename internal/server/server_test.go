@@ -79,9 +79,10 @@ func (f *fakeDatabases) Remove(_ context.Context, d core.Database) error {
 
 // fakeBackups records backup-manager calls from the handlers.
 type fakeBackups struct {
-	ran     []int64 // backup IDs passed to RunNow
-	tested  []string
-	testErr error // returned by TestDestination when set
+	ran       []int64 // backup IDs passed to RunNow
+	stateRuns int     // RunStateNow calls
+	tested    []string
+	testErr   error // returned by TestDestination when set
 
 	restored   []string           // "<backupID> <key>" per RestoreNow call
 	objects    []blobstore.Object // returned by ListRestoreObjects
@@ -90,6 +91,7 @@ type fakeBackups struct {
 }
 
 func (f *fakeBackups) RunNow(b core.Backup) { f.ran = append(f.ran, b.ID) }
+func (f *fakeBackups) RunStateNow()         { f.stateRuns++ }
 func (f *fakeBackups) RestoreNow(b core.Backup, objectKey string) {
 	f.restored = append(f.restored, fmt.Sprintf("%d %s", b.ID, objectKey))
 }

@@ -166,6 +166,29 @@
   <p class="muted env-note">The secret key is stored encrypted at rest. Addressing is path-style, which every S3-compatible service accepts; Test writes and deletes a small probe object.</p>
 </section>
 
+{{with .StateBackup}}
+<section class="panel">
+  <h2 class="panel-title">State backup</h2>
+  <p class="muted env-note">A copy of Outhaul's own database, without sign-in sessions, on the schedule below.</p>
+  <table class="table">
+    <tbody>
+      <tr><th>Schedule</th><td class="mono">{{.Schedule}}</td></tr>
+      <tr><th>Destination</th><td class="mono">{{.Destination}}</td></tr>
+      <tr><th>Keep</th><td class="mono">{{.Keep}}</td></tr>
+      <tr><th>Prefix</th><td class="mono">{{if .Prefix}}{{.Prefix}}{{else}}—{{end}}</td></tr>
+    </tbody>
+  </table>
+  {{with $.StateBackupLast}}
+  <p class="muted env-note">
+    Last run {{fmtTime .At}}:
+    {{if .OK}}<span class="badge">ok</span> <span class="mono">{{.Key}}</span> ({{fmtSize .SizeBytes}})
+    {{else}}<span class="badge">failed</span> {{.Reason}}{{end}}
+  </p>
+  {{end}}
+  <form method="post" action="/settings/state-backup/run" class="inline"><button type="submit" class="btn btn-quiet">Run now</button></form>
+</section>
+{{end}}
+
 <section class="panel">
   <h2 class="panel-title">Git-push SSH port</h2>
   <p class="muted env-note">The address the git-push server listens on. Current: <span class="mono">{{if .SSHAddr}}{{.SSHAddr}}{{else}}not running{{end}}</span>. Remember to open this port on your firewall.</p>

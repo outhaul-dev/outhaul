@@ -63,6 +63,7 @@ one-time setup URL. Developers with a local checkout can run
 - **Managed databases** — one click provisions PostgreSQL, MySQL, or Redis with generated credentials and persistent storage, reachable over the internal network (and optionally on a published host port).
 - **Template gallery** — deploy Uptime Kuma, Grafana, Umami, n8n, Vaultwarden, PocketBase, Ghost, WordPress, or MinIO in one click, with generated credentials and zero-DNS `sslip.io` domains — fully editable afterward like any compose app.
 - **Scheduled backups & restore** — ship database dumps and compose volumes to any S3-compatible bucket (AWS, MinIO, R2, B2, …) on cron schedules, with retention and run history; restore any archive from the same page.
+- **State backups** — a scheduled copy of Outhaul's own database (apps, domains, accounts, settings) to an S3-compatible bucket or Azure Blob, without sign-in sessions; see [docs/STATE-BACKUP.md](docs/STATE-BACKUP.md).
 
 ### See what's happening
 - **Live runtime logs** — tail container logs in the browser, per service for compose stacks.

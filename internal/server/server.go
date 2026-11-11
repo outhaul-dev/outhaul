@@ -64,6 +64,7 @@ type Backups interface {
 	ListRestoreObjects(ctx context.Context, b core.Backup) ([]blobstore.Object, error)
 	RestoreDir(ctx context.Context, b core.Backup) (string, error)
 	TestDestination(ctx context.Context, d core.Destination) error
+	RunStateNow()
 }
 
 // Runtime is the slice of the Docker client the server needs for app lifecycle.
@@ -103,7 +104,8 @@ type Server struct {
 	serverIP   string // for generated sslip.io template domains; may be empty
 	tlsEnabled bool   // ACME or local CA configured: HTTPS automation is available
 
-	azureDestinationSet bool // OUTHAUL_BACKUP_AZURE_* set: the Azure row belongs to the environment
+	azureDestinationSet bool              // OUTHAUL_BACKUP_AZURE_* set: the Azure row belongs to the environment
+	stateBackup         *StateBackupPanel // nil or no schedule: no State backup panel
 
 	repos      *gitrepo.Manager // push-app bare repos; nil disables push-repo cleanup
 	sshControl SSHControl       // git-push SSH server; nil disables the port setting
@@ -211,6 +213,17 @@ func (s *Server) streamContext(r *http.Request) (context.Context, context.Cancel
 // changes. Call before Handler.
 // SetAzureDestinationSet records whether the environment owns the Azure row.
 func (s *Server) SetAzureDestinationSet(on bool) { s.azureDestinationSet = on }
+
+// StateBackupPanel is what Settings shows for the state-backup schedule.
+type StateBackupPanel struct {
+	Schedule    string
+	Destination string // the configured name, or "Azure Blob"
+	Keep        int
+	Prefix      string
+}
+
+// SetStateBackup installs the panel data; an empty schedule hides it.
+func (s *Server) SetStateBackup(p StateBackupPanel) { s.stateBackup = &p }
 
 func (s *Server) SetCertSync(cs CertSyncer) { s.certSync = cs }
 

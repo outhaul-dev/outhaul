@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/blobstore"
 	"github.com/outhaul-dev/outhaul/internal/core"
@@ -91,6 +92,82 @@ func TestAzureDestinationTestUsesTheManager(t *testing.T) {
 	}
 	if len(e.backups.tested) != 1 || e.backups.tested[0] != "Azure Blob" {
 		t.Errorf("tested = %v, want the Azure row", e.backups.tested)
+	}
+}
+
+func TestStateBackupPanel(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	ctx := context.Background()
+
+	if page := body(t, e.get(t, "/settings")); strings.Contains(page, "State backup") {
+		t.Fatal("the panel is shown before any setting")
+	}
+	e.srv.SetStateBackup(StateBackupPanel{Schedule: ""})
+	if page := body(t, e.get(t, "/settings")); strings.Contains(page, "State backup") {
+		t.Fatal("the panel is shown with no schedule")
+	}
+
+	e.srv.SetStateBackup(StateBackupPanel{
+		Schedule: "15 2 * * *", Destination: "minio", Keep: 30, Prefix: "prod",
+	})
+	page := body(t, e.get(t, "/settings"))
+	for _, want := range []string{"State backup", "15 2 * * *", "minio", "30", "prod", "Run now"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("panel missing %q", want)
+		}
+	}
+
+	if err := e.store.SetStateBackupRun(ctx, core.StateBackupRun{
+		At: time.Now(), OK: true, Key: "prod/_outhaul-state/x.db.gz", SizeBytes: 1234,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	page = body(t, e.get(t, "/settings"))
+	if !strings.Contains(page, "prod/_outhaul-state/x.db.gz") || !strings.Contains(page, "1.2 KiB") {
+		t.Error("panel missing the last successful outcome")
+	}
+
+	if err := e.store.SetStateBackupRun(ctx, core.StateBackupRun{
+		At: time.Now(), OK: false, Reason: `destination "nope" does not exist`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if page := body(t, e.get(t, "/settings")); !strings.Contains(page, `destination &#34;nope&#34; does not exist`) &&
+		!strings.Contains(page, `destination "nope" does not exist`) {
+		t.Error("panel missing the last failure reason")
+	}
+}
+
+func TestRunStateBackupNow(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	e.srv.SetStateBackup(StateBackupPanel{Schedule: "15 2 * * *", Destination: "minio", Keep: 30})
+
+	resp := e.postForm(t, "/settings/state-backup/run", url.Values{})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303", resp.StatusCode)
+	}
+	if e.backups.stateRuns != 1 {
+		t.Errorf("state runs = %d, want 1", e.backups.stateRuns)
+	}
+}
+
+func TestRunStateBackupNeedsSystemAdmin(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	e.srv.SetStateBackup(StateBackupPanel{Schedule: "15 2 * * *", Destination: "minio", Keep: 30})
+	p, err := e.store.CreateProject(context.Background(), core.Project{Name: "shop"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := e.signInAs(t, "viewer", core.RoleProjectViewer, p.ID)
+	resp := e.postAs(t, token, "/settings/state-backup/run", url.Values{})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if e.backups.stateRuns != 0 {
+		t.Errorf("state runs = %d, want none", e.backups.stateRuns)
 	}
 }
 

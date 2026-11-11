@@ -285,6 +285,16 @@ func (s *Server) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, returnPath, http.StatusSeeOther)
 }
 
+// handleRunStateBackup starts a copy of Outhaul's own state now.
+func (s *Server) handleRunStateBackup(w http.ResponseWriter, r *http.Request) {
+	if s.updateInProgress() {
+		http.Error(w, updateHeldCopy, http.StatusConflict)
+		return
+	}
+	s.backups.RunStateNow()
+	http.Redirect(w, r, "/settings", http.StatusSeeOther)
+}
+
 // --- destinations (settings page) ---
 
 func (s *Server) handleCreateDestination(w http.ResponseWriter, r *http.Request) {

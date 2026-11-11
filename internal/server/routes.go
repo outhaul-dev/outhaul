@@ -141,6 +141,7 @@ func (s *Server) routes() []route {
 		{"POST /settings/destinations", levelSystemAdmin, nil, s.handleCreateDestination},
 		{"POST /settings/destinations/{id}/test", levelSystemAdmin, nil, s.handleTestDestination},
 		{"POST /settings/destinations/{id}/delete", levelSystemAdmin, nil, s.handleDeleteDestination},
+		{"POST /settings/state-backup/run", levelSystemAdmin, nil, s.handleRunStateBackup},
 		{"POST /settings/ssh", levelSystemAdmin, nil, s.handleSetSSHAddr},
 		{"POST /settings/tunnel/enable", levelSystemAdmin, nil, s.handleEnableTunnel},
 		{"POST /settings/tunnel/disable", levelSystemAdmin, nil, s.handleDisableTunnel},

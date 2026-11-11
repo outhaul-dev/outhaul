@@ -110,3 +110,20 @@ The copy runs through the same scheduler as database and volume backups, so an
 update in progress holds it back, and stopping Outhaul cancels it. The outcome
 is logged (`WARNING` on failure) and kept as the last state-backup outcome shown
 on Settings.
+
+### The State backup panel
+
+Settings shows a **State backup** panel only when `OUTHAUL_STATE_BACKUP_SCHEDULE`
+is set. It lists:
+
+- the schedule, in server-local time;
+- the destination — the configured name, or **Azure Blob** when the schedule
+  uses the environment's row;
+- how many copies are kept;
+- the key prefix, or a dash when there is none;
+- the last run: its time and, on success, the object key and size; on failure,
+  the reason.
+
+**Run now** starts a copy immediately. It is a system-admin action, it does
+nothing while an update is in progress, and it is skipped if a state copy is
+already running.

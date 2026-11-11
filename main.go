@@ -344,6 +344,16 @@ func serve() error {
 	srv.SetTunnelControl(infra)
 	srv.SetProxyControl(infra)
 	srv.SetAzureDestinationSet(cfg.BackupAzureAccount != "" && cfg.BackupAzureContainer != "")
+	stateDestination := cfg.StateBackupDestination
+	if stateDestination == "" {
+		stateDestination = "Azure Blob"
+	}
+	srv.SetStateBackup(server.StateBackupPanel{
+		Schedule:    cfg.StateBackupSchedule,
+		Destination: stateDestination,
+		Keep:        cfg.StateBackupKeep,
+		Prefix:      cfg.StateBackupPrefix,
+	})
 	srv.SetHTTPSPort(cfg.HTTPSPort)
 	srv.SetBuild(update.Current())
 	srv.SetUpdates(updates, checker)
