@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -44,6 +45,10 @@ type Config struct {
 	PublicURL string // externally reachable base URL of the admin UI (for GitHub callbacks/webhooks); empty disables GitHub App setup
 	ServerIP  string // public IP used in generated sslip.io template domains; empty means auto-detect
 
+	BackupAzureAccount   string // OUTHAUL_BACKUP_AZURE_ACCOUNT; the storage account for the Azure destination
+	BackupAzureContainer string // OUTHAUL_BACKUP_AZURE_CONTAINER; its private container
+	AzureClientID        string // AZURE_CLIENT_ID; the managed identity, when the VM has more than one
+
 	problems []error // malformed OUTHAUL_* values; reported by Validate
 }
 
@@ -75,6 +80,10 @@ func Load(getenv Getenv) Config {
 
 		PublicURL: p.url("OUTHAUL_PUBLIC_URL"),
 		ServerIP:  p.ip("OUTHAUL_SERVER_IP"),
+
+		BackupAzureAccount:   getenv("OUTHAUL_BACKUP_AZURE_ACCOUNT"),
+		BackupAzureContainer: getenv("OUTHAUL_BACKUP_AZURE_CONTAINER"),
+		AzureClientID:        getenv("AZURE_CLIENT_ID"),
 	}
 	c.problems = p.problems
 	return c
@@ -137,10 +146,34 @@ func (c Config) CertResolver() string {
 
 // Validate rejects malformed values and impossible combinations before any
 // infrastructure moves.
+// Azure destination shapes, checked before startup so a typo names its
+// variable instead of failing the first backup.
+var (
+	azureAccountRe   = regexp.MustCompile(`^[a-z0-9]{3,24}$`)
+	azureContainerRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$`)
+	azureClientIDRe  = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+)
+
 func (c Config) Validate() error {
 	errs := append([]error(nil), c.problems...)
 	if c.LocalCAEnabled() && c.ACMEEnabled() {
 		errs = append(errs, errors.New("OUTHAUL_LOCAL_CA and OUTHAUL_ACME_EMAIL are mutually exclusive: choose local-CA or Let's Encrypt HTTPS"))
+	}
+	switch {
+	case c.BackupAzureAccount == "" && c.BackupAzureContainer != "":
+		errs = append(errs, errors.New("OUTHAUL_BACKUP_AZURE_ACCOUNT is required when OUTHAUL_BACKUP_AZURE_CONTAINER is set"))
+	case c.BackupAzureAccount != "" && c.BackupAzureContainer == "":
+		errs = append(errs, errors.New("OUTHAUL_BACKUP_AZURE_CONTAINER is required when OUTHAUL_BACKUP_AZURE_ACCOUNT is set"))
+	case c.BackupAzureAccount != "":
+		if !azureAccountRe.MatchString(c.BackupAzureAccount) {
+			errs = append(errs, fmt.Errorf("OUTHAUL_BACKUP_AZURE_ACCOUNT=%q: want 3 to 24 lowercase letters and digits", c.BackupAzureAccount))
+		}
+		if !azureContainerRe.MatchString(c.BackupAzureContainer) || strings.Contains(c.BackupAzureContainer, "--") {
+			errs = append(errs, fmt.Errorf("OUTHAUL_BACKUP_AZURE_CONTAINER=%q: want 3 to 63 lowercase letters, digits and single hyphens, starting and ending with a letter or digit", c.BackupAzureContainer))
+		}
+		if c.AzureClientID != "" && !azureClientIDRe.MatchString(c.AzureClientID) {
+			errs = append(errs, fmt.Errorf("AZURE_CLIENT_ID=%q: want a GUID such as 8f7c1a2e-0000-4000-8000-000000000000", c.AzureClientID))
+		}
 	}
 	return errors.Join(errs...)
 }
