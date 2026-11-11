@@ -127,3 +127,71 @@ is set. It lists:
 **Run now** starts a copy immediately. It is a system-admin action, it does
 nothing while an update is in progress, and it is skipped if a state copy is
 already running.
+
+## Restoring onto a rebuilt host
+
+```
+outhaul restore-state --from <file> [--key-file PATH]
+```
+
+`--from` is the downloaded `.db.gz` or a plain SQLite file; the first bytes say
+which. The command fills an **empty** install only. It refuses to touch one
+with an account, and it refuses while another process has the database open,
+so stop Outhaul first. There is no `--force`.
+
+### The key
+
+`--key-file` names a file holding the 32 raw bytes of `secret.key`. Without
+it, the `secret.key` already in the data directory is used. The binary parses
+no encodings; to keep the key as text, encode and decode it around the copy:
+
+```sh
+base64 -w0 /root/secret.key > /root/secret.key.b64
+base64 -d /root/secret.key.b64 > /root/secret.key
+chmod 600 /root/secret.key
+```
+
+The supplied file is left where it is. The key is proved against every sealed
+value in the staged copy before anything is replaced.
+
+### What it refuses
+
+Each refusal leaves the host's database and key as they were, and exits
+non-zero.
+
+| Case | The message says |
+| --- | --- |
+| No data directory | install Outhaul first |
+| Outhaul is running | stop Outhaul first |
+| The install has an account | this fills an empty install only; move the old database and key away yourself |
+| Not a backup | not an Outhaul state copy, with what was wrong |
+| From a newer Outhaul | install that version or newer, then restore |
+| No key, the wrong key, or a key that is not 32 bytes | pass the original with `--key-file`. The key the fresh install made for itself can't work |
+
+### What it does
+
+1. Checks the data directory, and that no other process has the database open.
+2. Unpacks the copy to `outhaul.db.restoring`, mode 0600, replacing one left
+   by an earlier attempt — including its `-wal` and `-shm`. Checks it, and
+   refuses a newer schema.
+3. Opens it with the key. Migrations run on the staged file, so a copy from an
+   older Outhaul is brought forward here; a migration failure leaves the host
+   untouched.
+4. Opens every sealed value with the key.
+5. Removes the session rows again, for a file the state backup didn't make,
+   and writes the first-start marker. Closes the file and refuses if a `-wal`
+   survives that close.
+6. Checks the database is still idle, then swaps **key first**: a differing
+   `secret.key` moves to `secret.key.before-restore-<stamp>`, and the supplied
+   key is written. Then `outhaul.db`, and any `-wal` or `-shm`, move to
+   `*.before-restore-<stamp>`, and the staged file becomes `outhaul.db`.
+   Nothing is deleted; an existing `.before-restore-<stamp>` gains a `-2`,
+   `-3`, … suffix instead of being overwritten.
+7. Prints the stamp, the account, app and database counts, how many sealed
+   values opened, which migrations ran, what moved aside, and what the first
+   start will do.
+
+The running-server check is a guard against a forgotten `systemctl stop`, not
+a lock: nothing holds off a start in the instant between the last check and the
+rename. A `-wal` left beside a database that is renamed away would be replayed
+into the new file, which is why the sidecars move with it.

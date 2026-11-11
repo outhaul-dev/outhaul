@@ -45,12 +45,21 @@ func LoadExisting(path string) (*Box, error) {
 	return newBox(path, raw)
 }
 
-func newBox(path string, raw []byte) (*Box, error) {
+// NewBox builds a Box from exactly 32 raw key bytes.
+func NewBox(raw []byte) (*Box, error) {
 	if len(raw) != 32 {
-		return nil, fmt.Errorf("secret key at %s is %d bytes, want 32", path, len(raw))
+		return nil, fmt.Errorf("secret key is %d bytes, want 32", len(raw))
 	}
 	b := &Box{}
 	copy(b.key[:], raw)
+	return b, nil
+}
+
+func newBox(path string, raw []byte) (*Box, error) {
+	b, err := NewBox(raw)
+	if err != nil {
+		return nil, fmt.Errorf("secret key at %s: %w", path, err)
+	}
 	return b, nil
 }
 

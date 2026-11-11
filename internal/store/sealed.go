@@ -77,7 +77,7 @@ func (s *Store) CheckSealed(ctx context.Context) (int, error) {
 			}
 			if s.box == nil {
 				rows.Close()
-				return n, fmt.Errorf("%s.%s holds a sealed value: pass the original with --key-file", c.table, c.column)
+				return n, fmt.Errorf("%s.%s holds a sealed value; --key-file is required", c.table, c.column)
 			}
 			if _, err := s.box.Open(v); err != nil {
 				rows.Close()
