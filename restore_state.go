@@ -11,11 +11,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/backup"
+	"github.com/outhaul-dev/outhaul/internal/blobstore"
 	"github.com/outhaul-dev/outhaul/internal/config"
 	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/secret"
@@ -28,25 +30,30 @@ import (
 const keyHelp = "pass the original with --key-file. The key the fresh install made for itself can't work."
 
 type restoreOptions struct {
-	From    string // a path (Task 11); later "latest" or a stamp (Task 12)
+	From    string // a file path, "latest", or a stamp
 	KeyFile string
+	List    bool
 }
 
 func parseRestoreOptions(args []string) (restoreOptions, error) {
 	fs := flag.NewFlagSet("restore-state", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	from := fs.String("from", "", "the copy to restore: a file path")
+	from := fs.String("from", "", "the copy to restore: a file path, latest, or a stamp")
 	keyFile := fs.String("key-file", "", "the 32 raw bytes of secret.key")
+	list := fs.Bool("list", false, "print the stamps in the Azure container")
 	if err := fs.Parse(args); err != nil {
 		return restoreOptions{}, err
 	}
 	if fs.NArg() != 0 {
 		return restoreOptions{}, errors.New("restore-state takes no positional arguments")
 	}
-	if *from == "" {
+	if *list && *from != "" {
+		return restoreOptions{}, errors.New("--list and --from cannot be used together")
+	}
+	if !*list && *from == "" {
 		return restoreOptions{}, errors.New("--from is required")
 	}
-	return restoreOptions{From: *from, KeyFile: *keyFile}, nil
+	return restoreOptions{From: *from, KeyFile: *keyFile, List: *list}, nil
 }
 
 // runRestoreState is the command entry point. A usage error is 2, every other
@@ -72,6 +79,21 @@ func runRestoreState(args []string, getenv config.Getenv, stdout, stderr io.Writ
 // restoreState puts a copy back on an empty install. Every refusal leaves the
 // host's database and key as they were.
 func restoreState(ctx context.Context, cfg config.Config, opts restoreOptions, out io.Writer) error {
+	if opts.List {
+		blob, err := openStateBlob(cfg)
+		if err != nil {
+			return err
+		}
+		stamps, err := listStateCopies(ctx, blob, stateDir(cfg))
+		if err != nil {
+			return err
+		}
+		for _, s := range stamps {
+			fmt.Fprintln(out, s)
+		}
+		return nil
+	}
+
 	info, err := os.Stat(cfg.DataDir)
 	if errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("install Outhaul first: %s does not exist", cfg.DataDir)
@@ -118,7 +140,12 @@ func restoreState(ctx context.Context, cfg config.Config, opts restoreOptions, o
 		}
 	}()
 
-	if err := stageCopy(opts.From, staged); err != nil {
+	src, stamp, err := openSource(ctx, cfg, opts)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	if err := writeStaged(src, staged); err != nil {
 		return err
 	}
 	before, err := store.CheckStateCopy(staged)
@@ -148,7 +175,6 @@ func restoreState(ctx context.Context, cfg config.Config, opts restoreOptions, o
 		st.Close()
 		return err
 	}
-	stamp := restoreStamp(opts.From, time.Now())
 	if err := st.SetRestoreMarker(ctx, core.RestoreMarker{
 		RestoredAt: time.Now().UTC(), From: stamp, Pending: true,
 	}); err != nil {
@@ -188,26 +214,90 @@ func restoreState(ctx context.Context, cfg config.Config, opts restoreOptions, o
 	return nil
 }
 
-// stageCopy opens src as gzip or a plain SQLite file, by its first bytes, and
-// writes the staged database mode 0600.
-func stageCopy(src, dst string) error {
-	f, err := os.Open(src)
-	if err != nil {
-		return fmt.Errorf("open %s: %w", src, err)
+// openStateBlob is the Azure client for the configured account and container.
+// Tests replace it with one pointed at a fake.
+var openStateBlob = func(cfg config.Config) (blobstore.Client, error) {
+	if cfg.BackupAzureAccount == "" || cfg.BackupAzureContainer == "" {
+		return nil, errors.New("restore-state needs OUTHAUL_BACKUP_AZURE_ACCOUNT and OUTHAUL_BACKUP_AZURE_CONTAINER for latest, a stamp or --list; pass a file instead")
 	}
-	defer f.Close()
-	br := bufio.NewReader(f)
+	return blobstore.NewAzureClient(
+		"https://"+cfg.BackupAzureAccount+".blob.core.windows.net",
+		cfg.BackupAzureContainer,
+		blobstore.NewTokenSource(cfg.AzureClientID))
+}
+
+// stateDir is the object directory state copies live under, with the prefix.
+func stateDir(cfg config.Config) string {
+	return backup.JoinKey(cfg.StateBackupPrefix, backup.StateDir)
+}
+
+// listStateCopies returns the stamps of the copies directly under dir,
+// ascending.
+func listStateCopies(ctx context.Context, blob blobstore.Client, dir string) ([]string, error) {
+	objects, err := blob.List(ctx, dir+"/")
+	if err != nil {
+		return nil, err
+	}
+	var stamps []string
+	for _, o := range objects {
+		rest := strings.TrimPrefix(o.Key, dir+"/")
+		if strings.Contains(rest, "/") || !strings.HasSuffix(rest, ".db.gz") {
+			continue
+		}
+		stamps = append(stamps, strings.TrimSuffix(rest, ".db.gz"))
+	}
+	sort.Strings(stamps)
+	return stamps, nil
+}
+
+// openSource opens a file, the latest Azure copy, or the copy with a given
+// stamp, and returns its reader and stamp.
+func openSource(ctx context.Context, cfg config.Config, opts restoreOptions) (io.ReadCloser, string, error) {
+	if opts.From != "latest" && !isStateStamp(opts.From) {
+		f, err := os.Open(opts.From)
+		if err != nil {
+			return nil, "", fmt.Errorf("open %s: %w", opts.From, err)
+		}
+		return f, restoreStamp(opts.From, time.Now()), nil
+	}
+	blob, err := openStateBlob(cfg)
+	if err != nil {
+		return nil, "", err
+	}
+	dir := stateDir(cfg)
+	stamp := opts.From
+	if stamp == "latest" {
+		stamps, err := listStateCopies(ctx, blob, dir)
+		if err != nil {
+			return nil, "", err
+		}
+		if len(stamps) == 0 {
+			return nil, "", errors.New("no state copies in " + dir)
+		}
+		stamp = stamps[len(stamps)-1]
+	}
+	rc, err := blob.Get(ctx, backup.JoinKey(dir, stamp+".db.gz"))
+	if err != nil {
+		return nil, "", err
+	}
+	return rc, stamp, nil
+}
+
+// writeStaged detects gzip or a plain SQLite file by its first bytes and
+// writes the staged database mode 0600.
+func writeStaged(src io.Reader, dst string) error {
+	br := bufio.NewReader(src)
 	head, _ := br.Peek(16)
 	var r io.Reader = br
 	if bytes.HasPrefix(head, []byte{0x1f, 0x8b}) {
 		gz, err := gzip.NewReader(br)
 		if err != nil {
-			return fmt.Errorf("%w: %s is not a gzip file: %v", store.ErrNotStateCopy, src, err)
+			return fmt.Errorf("%w: the source is not a gzip file: %v", store.ErrNotStateCopy, err)
 		}
 		defer gz.Close()
 		r = gz
 	} else if !bytes.HasPrefix(head, []byte("SQLite format 3\x00")) {
-		return fmt.Errorf("%w: %s is not gzip or a SQLite database", store.ErrNotStateCopy, src)
+		return fmt.Errorf("%w: the source is not gzip or a SQLite database", store.ErrNotStateCopy)
 	}
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -218,6 +308,12 @@ func stageCopy(src, dst string) error {
 		return fmt.Errorf("write the staged copy: %w", err)
 	}
 	return out.Close()
+}
+
+// isStateStamp reports whether s is exactly an archive stamp.
+func isStateStamp(s string) bool {
+	_, err := time.Parse("20060102T150405Z", s)
+	return err == nil
 }
 
 // restoreKey reads the key from --key-file, or the install's own key. A

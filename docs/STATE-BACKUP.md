@@ -131,13 +131,34 @@ already running.
 ## Restoring onto a rebuilt host
 
 ```
-outhaul restore-state --from <file> [--key-file PATH]
+outhaul restore-state --from <file | latest | STAMP> [--key-file PATH]
+outhaul restore-state --list
 ```
 
-`--from` is the downloaded `.db.gz` or a plain SQLite file; the first bytes say
-which. The command fills an **empty** install only. It refuses to touch one
-with an account, and it refuses while another process has the database open,
-so stop Outhaul first. There is no `--force`.
+`--from` is a downloaded `.db.gz`, a plain SQLite file, `latest`, or a stamp
+such as `20261111T021500Z`; the first bytes of a file say whether it is gzip or
+SQLite. `latest` and a stamp are read from the Azure container the environment
+names, under `OUTHAUL_STATE_BACKUP_PREFIX`. `--list` prints the stamps there,
+one per line, oldest first. Without the Azure pair these say to pass a file.
+Anything else is a path; a file actually named `latest` is `./latest`.
+
+The command fills an **empty** install only. It refuses to touch one with an
+account, and it refuses while another process has the database open, so stop
+Outhaul first. There is no `--force`.
+
+Run it with the service's environment, so it sees the same Azure pair, prefix
+and schedule as `outhaul serve`:
+
+```sh
+systemd-run --wait --pipe --collect \
+  -p EnvironmentFile=/etc/outhaul.env \
+  -p EnvironmentFile=/etc/outhaul/azure.env \
+  /usr/local/bin/outhaul restore-state --from latest \
+  --key-file /root/secret.key
+```
+
+Once the unattended installer lands, that list also needs
+`/etc/outhaul/install.env` and any `--env-file` the installer used.
 
 ### The key
 

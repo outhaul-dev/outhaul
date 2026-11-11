@@ -6,13 +6,16 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/outhaul-dev/outhaul/internal/blobstore"
 	"github.com/outhaul-dev/outhaul/internal/config"
 	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/secret"
@@ -75,24 +78,76 @@ func newRestoreSource(t *testing.T, sealed bool) *restoreSource {
 	return &restoreSource{dbPath: dbPath, dbFile: dbFile, keyPath: keyPath, key: raw}
 }
 
-func restoreGetenv(dir string) config.Getenv {
-	return func(k string) string {
-		if k == "OUTHAUL_DATA_DIR" {
-			return dir
-		}
-		return ""
-	}
+func runRestoreArgs(t *testing.T, env map[string]string, args ...string) (stdout, stderr string, code int) {
+	t.Helper()
+	var out, errb bytes.Buffer
+	code = runRestoreState(args, func(k string) string { return env[k] }, &out, &errb)
+	return out.String(), errb.String(), code
 }
 
 func runRestore(t *testing.T, dir, from, keyFile string) (stdout, stderr string, code int) {
 	t.Helper()
-	var out, errb bytes.Buffer
 	args := []string{"--from", from}
 	if keyFile != "" {
 		args = append(args, "--key-file", keyFile)
 	}
-	code = runRestoreState(args, restoreGetenv(dir), &out, &errb)
-	return out.String(), errb.String(), code
+	return runRestoreArgs(t, map[string]string{"OUTHAUL_DATA_DIR": dir}, args...)
+}
+
+// azureEnv is a configuration that names the Azure destination and a prefix.
+func azureEnv(dir string) map[string]string {
+	return map[string]string{
+		"OUTHAUL_DATA_DIR":               dir,
+		"OUTHAUL_BACKUP_AZURE_ACCOUNT":   "examplebackups",
+		"OUTHAUL_BACKUP_AZURE_CONTAINER": "outhaul",
+		"OUTHAUL_STATE_BACKUP_SCHEDULE":  "15 2 * * *",
+		"OUTHAUL_STATE_BACKUP_PREFIX":    "p",
+	}
+}
+
+// stateBlob is an in-memory blobstore.Client for the Azure paths.
+type stateBlob struct {
+	objects map[string][]byte
+}
+
+func (b *stateBlob) Put(_ context.Context, key string, r io.Reader, _ int64) error {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	b.objects[key] = data
+	return nil
+}
+
+func (b *stateBlob) Get(_ context.Context, key string) (io.ReadCloser, error) {
+	data, ok := b.objects[key]
+	if !ok {
+		return nil, errors.New("404 Not Found")
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+func (b *stateBlob) List(_ context.Context, prefix string) ([]blobstore.Object, error) {
+	var out []blobstore.Object
+	for k, v := range b.objects {
+		if strings.HasPrefix(k, prefix) {
+			out = append(out, blobstore.Object{Key: k, Size: int64(len(v))})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out, nil
+}
+
+func (b *stateBlob) Delete(_ context.Context, key string) error {
+	delete(b.objects, key)
+	return nil
+}
+
+func useStateBlob(t *testing.T, b blobstore.Client) {
+	t.Helper()
+	old := openStateBlob
+	openStateBlob = func(config.Config) (blobstore.Client, error) { return b, nil }
+	t.Cleanup(func() { openStateBlob = old })
 }
 
 func copyForTest(t *testing.T, src, dst string) {
@@ -182,6 +237,100 @@ func TestParseRestoreOptions(t *testing.T) {
 	}
 	if _, err := parseRestoreOptions([]string{"--from", "x", "extra"}); err == nil {
 		t.Error("a positional argument accepted, want an error")
+	}
+	opts, err = parseRestoreOptions([]string{"--list"})
+	if err != nil || !opts.List || opts.From != "" {
+		t.Fatalf("--list options = %+v, %v", opts, err)
+	}
+	if _, err := parseRestoreOptions([]string{"--list", "--from", "x"}); err == nil {
+		t.Error("--list with --from accepted, want an error")
+	}
+}
+
+func TestRestoreStateList(t *testing.T) {
+	src := newRestoreSource(t, true)
+	gz, err := os.ReadFile(gzipForTest(t, src.dbPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &stateBlob{objects: map[string][]byte{
+		"p/_outhaul-state/20261110T021500Z.db.gz": gz,
+		"p/_outhaul-state/20261111T021500Z.db.gz": gz,
+		"p/other/x.gz": {},
+	}}
+	useStateBlob(t, fake)
+	out, errOut, code := runRestoreArgs(t, azureEnv(t.TempDir()), "--list")
+	if code != 0 {
+		t.Fatalf("--list = %d: %s", code, errOut)
+	}
+	if want := "20261110T021500Z\n20261111T021500Z\n"; out != want {
+		t.Errorf("--list = %q, want %q", out, want)
+	}
+}
+
+func TestRestoreStateLatest(t *testing.T) {
+	src := newRestoreSource(t, true)
+	gz, err := os.ReadFile(gzipForTest(t, src.dbPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	useStateBlob(t, &stateBlob{objects: map[string][]byte{
+		"p/_outhaul-state/20261110T021500Z.db.gz": gz,
+		"p/_outhaul-state/20261111T021500Z.db.gz": gz,
+	}})
+	dir := t.TempDir()
+	_, errOut, code := runRestoreArgs(t, azureEnv(dir), "--from", "latest", "--key-file", src.keyPath)
+	if code != 0 {
+		t.Fatalf("restore latest = %d: %s", code, errOut)
+	}
+	st := openTarget(t, dir, src.keyPath)
+	m, ok, err := st.RestoreMarker(context.Background())
+	if err != nil || !ok || m.From != "20261111T021500Z" {
+		t.Fatalf("marker = %+v, ok %v, err %v", m, ok, err)
+	}
+}
+
+func TestRestoreStateStamp(t *testing.T) {
+	src := newRestoreSource(t, true)
+	gz, err := os.ReadFile(gzipForTest(t, src.dbPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	useStateBlob(t, &stateBlob{objects: map[string][]byte{
+		"p/_outhaul-state/20261110T021500Z.db.gz": gz,
+		"p/_outhaul-state/20261111T021500Z.db.gz": gz,
+	}})
+	dir := t.TempDir()
+	_, errOut, code := runRestoreArgs(t, azureEnv(dir), "--from", "20261110T021500Z", "--key-file", src.keyPath)
+	if code != 0 {
+		t.Fatalf("restore stamp = %d: %s", code, errOut)
+	}
+	st := openTarget(t, dir, src.keyPath)
+	m, ok, err := st.RestoreMarker(context.Background())
+	if err != nil || !ok || m.From != "20261110T021500Z" {
+		t.Fatalf("marker = %+v, ok %v, err %v", m, ok, err)
+	}
+}
+
+func TestRestoreStateNeedsTheAzurePair(t *testing.T) {
+	for _, args := range [][]string{{"--list"}, {"--from", "latest"}} {
+		_, errOut, code := runRestoreArgs(t, map[string]string{"OUTHAUL_DATA_DIR": t.TempDir()}, args...)
+		if code != 1 {
+			t.Fatalf("%v = %d, want 1", args, code)
+		}
+		for _, want := range []string{"OUTHAUL_BACKUP_AZURE_ACCOUNT", "OUTHAUL_BACKUP_AZURE_CONTAINER", "pass a file"} {
+			if !strings.Contains(errOut, want) {
+				t.Errorf("%v error = %q, want %q", args, errOut, want)
+			}
+		}
+	}
+}
+
+func TestRestoreStateNoCopies(t *testing.T) {
+	useStateBlob(t, &stateBlob{objects: map[string][]byte{}})
+	_, errOut, code := runRestoreArgs(t, azureEnv(t.TempDir()), "--from", "latest")
+	if code != 1 || !strings.Contains(errOut, "no state copies") {
+		t.Fatalf("empty container = %d, %q", code, errOut)
 	}
 }
 
