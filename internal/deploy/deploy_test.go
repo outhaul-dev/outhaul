@@ -829,6 +829,9 @@ func TestHeaderRequiredRefusesAnImageThatRoutesItself(t *testing.T) {
 			if got.Status != core.StatusFailed || !strings.Contains(got.Reason, "traefik.http.routers.x.rule") {
 				t.Fatalf("status = %q (%q), want failed naming the label", got.Status, got.Reason)
 			}
+			if !strings.Contains(got.Reason, "while a request header is required") {
+				t.Errorf("reason = %q, want the reason the image was inspected", got.Reason)
+			}
 			for _, spec := range h.docker.Created {
 				if spec.Labels["traefik.enable"] == "true" {
 					t.Errorf("a routed container was created from the refused image: %s", spec.Name)

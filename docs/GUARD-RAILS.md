@@ -66,15 +66,18 @@ the file, so keep shared fragments at the top level.
 
 ## Labels
 
-Strict mode refuses a service label whose key starts with `traefik.` or
-`outhaul.`, in any case, including one a `label_file:` adds. Outhaul writes the
-routing labels from the app's Domains page. A `traefik.*` label would add a
-route Outhaul did not write, and could take a host or path that belongs to
-another app; an `outhaul.*` label is reserved for Outhaul. Remove the label and
-use the app's page.
+Outhaul refuses a service label whose key starts with `traefik.` or `outhaul.`,
+in any case, including one a `label_file:` adds. The rule is on under the strict
+container policy, and while a request header is required
+(`OUTHAUL_REQUIRE_HEADER_NAME`): a router written by the file would sit beside
+Outhaul's own, without the header. Outhaul writes the routing labels from the
+app's Domains page. A `traefik.*` label would add a route Outhaul did not write,
+and could take a host or path that belongs to another app; an `outhaul.*` label
+is reserved for Outhaul. Remove the label and use the app's page.
 
 An image carries labels too, and Docker copies them onto every container made
-from it, where Traefik reads them. So strict mode checks images as well:
+from it, where Traefik reads them. So Outhaul checks images as well, in both
+cases:
 
 - For a Compose stack, every service's image is checked after the pull, and a
   stack with an image that carries `traefik.*` labels is not started. The
@@ -82,8 +85,8 @@ from it, where Traefik reads them. So strict mode checks images as well:
   can get a different image after the check, by a re-pull or a rebuild, so
   leave it unset if you rely on this check.
 - For a Nixpacks or Dockerfile app, the image Outhaul built is checked before
-  it is deployed. A fork preview's image is checked this way even without
-  strict mode, because the fork's author chose it.
+  it is deployed. A fork preview's image is checked this way even when neither
+  setting is on, because the fork's author chose it.
 
 ## Where strict mode applies
 
@@ -136,6 +139,9 @@ need it.
   (`OUTHAUL_CONTAINER_POLICY=strict`)": the deploy log lists every refused item
   as `service "name": option: reason`, and the deployment's reason is the first
   one plus a count of the rest. Change what the log names.
+- "This server refuses a Compose file that adds its own routing while a request
+  header is required": the deploy log lists every refused label; remove the
+  `traefik.*` or `outhaul.*` label, and use the app's Domains page.
 - "reading a Compose file needs Docker Compose 2.35 or newer": update Docker
   Compose on the server.
 - "This server's container policy doesn't allow published ports. Leave the

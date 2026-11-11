@@ -77,13 +77,17 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 		}
 		policy := compose.Policy{
 			Strict:        w.cfg.StrictContainerPolicy(),
-			RoutingLabels: w.cfg.StrictContainerPolicy(),
+			RoutingLabels: w.cfg.StrictContainerPolicy() || w.cfg.HeaderRequired(),
 			WorkDir:       workDir,
 			Network:       w.cfg.Network,
 		}
 		if vs := compose.Check(model, policy); len(vs) > 0 {
 			reason, lines := policyViolationReason(vs)
-			logf(out, "This server's container policy refuses this Compose file (OUTHAUL_CONTAINER_POLICY=strict):")
+			if w.cfg.StrictContainerPolicy() {
+				logf(out, "This server's container policy refuses this Compose file (OUTHAUL_CONTAINER_POLICY=strict):")
+			} else {
+				logf(out, "This server refuses a Compose file that adds its own routing while a request header is required:")
+			}
 			for _, line := range lines {
 				logf(out, "%s", line)
 			}
@@ -110,12 +114,12 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 		return
 	}
 
-	// Strict mode refuses a service image that routes itself: Docker copies its
-	// labels onto the container and Traefik reads them. Pull first, so every
-	// image `up` will use is on the server. The check runs at pull time; a
-	// service with pull_policy: always can change its tag before `up`.
-	// Task 10 adds the header case.
-	if w.cfg.StrictContainerPolicy() {
+	// Strict mode, or a required request header, refuses a service image that
+	// routes itself: Docker copies its labels onto the container and Traefik
+	// reads them. Pull first, so every image `up` will use is on the server.
+	// The check runs at pull time; a service with pull_policy: always can
+	// change its tag before `up`.
+	if w.cfg.StrictContainerPolicy() || w.cfg.HeaderRequired() {
 		if err := w.compose.Pull(ctx, workDir, files, project, out); err != nil {
 			w.fail(dep, core.StatusBuilding, "pull failed: "+err.Error(), out)
 			return

@@ -207,9 +207,11 @@ labels. While a request header is required, an image that carries any
 previews: its router would be Outhaul's not to write, and it would lack the
 header term. The deploy fails and names the labels.
 
-A Compose file can write `traefik.*` labels on its own services. On a service
-Outhaul doesn't route, Traefik's constraint ignores them. On a service Outhaul
-does route, they sit beside Outhaul's own labels and are not checked yet.
+A Compose file can write `traefik.*` labels on its own services. While a request
+header is required, such a file is refused before it is built, as is any service
+image whose own labels carry `traefik.*` after the pull: either would add a route
+without the header. On a service Outhaul doesn't route, Traefik's constraint
+ignores the labels, but the file is refused anyway.
 
 ## Checking a real host
 

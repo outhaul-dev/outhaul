@@ -335,8 +335,8 @@ func (w *Worker) refuseRoutingLabels(ctx context.Context, image, why string) err
 
 // routingLabelReason says why this deploy may not run an image that carries
 // traefik.* labels, or "" when it may. A fork preview's base image is the fork
-// author's choice; under strict, every image the server runs is checked.
-// Task 10 adds the header case.
+// author's choice; under strict, every image the server runs is checked; while
+// a request header is required, no image may add a route without the header.
 func (w *Worker) routingLabelReason(app core.App) string {
 	if app.IsForkPreview() {
 		return "in a fork preview"

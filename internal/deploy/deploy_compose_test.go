@@ -325,6 +325,52 @@ func TestComposePipelineWithoutPolicyNeverReadsModel(t *testing.T) {
 	}
 }
 
+// While a request header is required, a Compose file may not add routing of
+// its own: its router would lack the header term. The check runs before the
+// build, even though the policy is not strict.
+func TestComposePipelineChecksLabelsWhenAHeaderIsRequired(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.RequireHeaderName = "X-Azure-FDID"
+	h.worker.cfg.RequireHeaderValue = "abc-123"
+	h.compose.ConfigJSON = []byte(`{
+		"name": "outhaul-shop",
+		"services": {
+			"web": {
+				"image": "nginx:1",
+				"labels": {"traefik.http.routers.evil.rule": "Host(evil.example.com)"}
+			}
+		}
+	}`)
+	app := h.composeApp(t, "shop", "docker-compose.yml", "")
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed {
+		t.Fatalf("status = %q (%q), want failed", got.Status, got.Reason)
+	}
+	for _, want := range []string{`service "web"`, "labels.traefik.http.routers.evil.rule", "traefik.*"} {
+		if !strings.Contains(got.Reason, want) {
+			t.Errorf("reason = %q, want it to mention %q", got.Reason, want)
+		}
+	}
+	if n := len(h.compose.CallsFor("build")); n != 0 {
+		t.Errorf("build calls = %d, want 0", n)
+	}
+	if n := len(h.compose.CallsFor("up")); n != 0 {
+		t.Errorf("up calls = %d, want 0", n)
+	}
+	log := h.logOf(dep)
+	want := "This server refuses a Compose file that adds its own routing while a request header is required:"
+	if !strings.Contains(log, want) {
+		t.Errorf("log missing %q; got:\n%s", want, log)
+	}
+	if strings.Contains(log, "OUTHAUL_CONTAINER_POLICY=strict") {
+		t.Errorf("the log names strict mode, which is off; got:\n%s", log)
+	}
+}
+
 func TestComposePipelineRefusesAHostPathBeforeBuilding(t *testing.T) {
 	h := newHarness(t)
 	h.worker.cfg.ContainerPolicy = "strict"
@@ -455,6 +501,44 @@ func TestComposePolicyPullsAndRefusesATraefikImage(t *testing.T) {
 		t.Fatalf("status = %q (%q), want failed", got.Status, got.Reason)
 	}
 	for _, want := range []string{`service "web"`, "nginx:1", "traefik labels", "traefik.http.routers.evil.rule"} {
+		if !strings.Contains(got.Reason, want) {
+			t.Errorf("reason = %q, want it to mention %q", got.Reason, want)
+		}
+	}
+	if pulls := h.compose.CallsFor("pull"); len(pulls) != 1 {
+		t.Errorf("pull calls = %d, want 1", len(pulls))
+	}
+	if n := len(h.compose.CallsFor("up")); n != 0 {
+		t.Errorf("up calls = %d, want 0", n)
+	}
+}
+
+// While a request header is required, a Compose service's image is pulled and
+// checked as well: Docker copies its labels onto the container, and the router
+// they add would lack the header term.
+func TestHeaderRequiredRefusesAComposeImageWithTraefikLabels(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.RequireHeaderName = "X-Azure-FDID"
+	h.worker.cfg.RequireHeaderValue = "abc-123"
+	h.compose.ConfigJSON = []byte(`{
+		"name": "outhaul-shop",
+		"services": {
+			"web": {"image": "nginx:1"}
+		}
+	}`)
+	h.docker.ImageLabelsByRef = map[string]map[string]string{
+		"nginx:1": {"traefik.http.routers.evil.rule": "Host(`shop.example.com`)"},
+	}
+	app := h.composeApp(t, "shop", "docker-compose.yml", "")
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed {
+		t.Fatalf("status = %q (%q), want failed", got.Status, got.Reason)
+	}
+	for _, want := range []string{`service "web"`, "nginx:1", "traefik labels", "checked at pull time"} {
 		if !strings.Contains(got.Reason, want) {
 			t.Errorf("reason = %q, want it to mention %q", got.Reason, want)
 		}
