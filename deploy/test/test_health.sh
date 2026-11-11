@@ -85,6 +85,17 @@ assert_ok "proxy: loopback and bridge only, no 80" proxy_effective 8080
 have_ss() { return 1; }
 assert_ok "proxy: no ss warns and passes" proxy_effective 8080
 
+# A failed proxy check acts only on what this run installed or started: an
+# upgrade it performed is rolled back, a first install's new service is
+# stopped, a no-build run stops a service it started from stopped, and a
+# service it found serving is left up.
+assert_eq "proxy failure: an upgrade rolls back" rollback "$(proxy_failure_action 1 1 1 0)"
+assert_eq "proxy failure: a first install stops" stop "$(proxy_failure_action 1 0 1 0)"
+assert_eq "proxy failure: a no-build run that started a stopped service stops" stop "$(proxy_failure_action 0 1 1 0)"
+assert_eq "proxy failure: a no-build run leaves a serving service" none "$(proxy_failure_action 0 1 1 1)"
+assert_eq "proxy failure: a no-build run that changed nothing leaves it" none "$(proxy_failure_action 0 1 0 1)"
+assert_eq "proxy failure: no build and no binary stops" stop "$(proxy_failure_action 0 0 0 0)"
+
 # The header is optional.
 curl() { printf '%s\n' "$*" > "$args"; return 0; }
 assert_ok "public check without a header" wait_public_healthy o.example.com 443 '' '' >/dev/null

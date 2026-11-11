@@ -1558,6 +1558,22 @@ proxy_effective() { # admin_port
 	return 0
 }
 
+# What a failed proxy check must do to the service: roll back an upgrade this
+# run performed; stop a service this run started, which is now serving with the
+# switches not in effect (a first install, or a no-build run that started a
+# stopped service); or leave a service this run found running alone.
+proxy_failure_action() { # build had_binary started_service service_was_active
+	if [ "$1" = 1 ] && [ "$2" = 1 ]; then
+		printf 'rollback\n'
+	elif [ "$2" = 0 ]; then
+		printf 'stop\n'
+	elif [ "$1" = 0 ] && [ "$3" = 1 ] && [ "$4" = 0 ]; then
+		printf 'stop\n'
+	else
+		printf 'none\n'
+	fi
+}
+
 # Final boxed summary + confetti. Args passed as positional data. public is
 # the check through Traefik (Let's Encrypt and proxy modes): 0 ok, 1 failed,
 # '' not run. ADMIN_PORT and BRIDGE come from main.
@@ -1657,6 +1673,7 @@ MARKER=/var/lib/outhaul-updater/installed
 
 # What the swap did, for the exit guard and the completion screen.
 STARTED_SERVICE=0
+SERVICE_WAS_ACTIVE=0
 SNAPSHOT_OK=0
 ROLLED_BACK=0
 HEALTHY=0
@@ -2161,7 +2178,9 @@ main() {
 		write_dropins
 		# A drop-in is a unit-file change: systemd reads it on daemon-reload, not on restart.
 		if [ "$DROPIN_CHANGED" = 1 ]; then systemctl daemon-reload; fi
-		if ! systemctl is-active --quiet outhaul; then
+		SERVICE_WAS_ACTIVE=0
+		if systemctl is-active --quiet outhaul; then SERVICE_WAS_ACTIVE=1; fi
+		if [ "$SERVICE_WAS_ACTIVE" = 0 ]; then
 			# Nothing to install, but the recorded build is not running.
 			systemctl enable --now outhaul
 			STARTED_SERVICE=1
@@ -2216,16 +2235,14 @@ main() {
 			# open. Do not leave that version running.
 			if [ "$MODE" = p ] && ! proxy_effective "$ADMIN_PORT"; then
 				step_fail "the proxy's switches did not take effect"
-				if [ "$BUILD" = 1 ] && [ "$HAD_BINARY" = 1 ]; then
-					rollback_install "${PREV_COMMIT:-}" || true
-				else
-					# A first install has no previous version; stop the
-					# service it just started, and leave the binary and
-					# journal for diagnosis.
-					systemctl stop outhaul || true
-				fi
+				# Roll back an upgrade this run performed, or stop a service
+				# this run started from stopped; a no-build run that changed
+				# nothing reports the failure without touching the service.
+				case "$(proxy_failure_action "$BUILD" "$HAD_BINARY" "$STARTED_SERVICE" "${SERVICE_WAS_ACTIVE:-0}")" in
+				rollback) rollback_install "${PREV_COMMIT:-}" || true ;;
+				stop) systemctl stop outhaul || true ;;
+				esac
 				if [ "$NONINTERACTIVE" = 1 ]; then
-					journalctl -u outhaul -n 20 --no-pager
 					die "the proxy's switches did not take effect"
 				fi
 				HEALTHY=1
