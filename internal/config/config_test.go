@@ -285,6 +285,7 @@ func TestValidateRejectsMalformedValues(t *testing.T) {
 		{"OUTHAUL_HTTPS_PORT", "70000"},
 		{"OUTHAUL_LISTEN_ADDR", "8080"},
 		{"OUTHAUL_SSH_ADDR", "2222"},
+		{"OUTHAUL_LISTEN_ADDR", "off"},
 		{"OUTHAUL_PUBLIC_URL", "paas.example.com"},
 		{"OUTHAUL_PUBLIC_URL", "ftp://paas.example.com"},
 		{"OUTHAUL_SERVER_IP", "my-server"},
@@ -303,6 +304,63 @@ func TestValidateRejectsMalformedValues(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), tc.key) {
 			t.Errorf("%s=%q: error %q does not name the variable", tc.key, tc.val, err)
+		}
+	}
+}
+
+func TestSSHAddrOff(t *testing.T) {
+	for _, v := range []string{"off", "OFF", "Off"} {
+		c := Load(func(k string) string {
+			if k == "OUTHAUL_SSH_ADDR" {
+				return v
+			}
+			return ""
+		})
+		if !c.SSHOff() {
+			t.Errorf("OUTHAUL_SSH_ADDR=%q: SSHOff() = false", v)
+		}
+		if err := c.Validate(); err != nil {
+			t.Errorf("OUTHAUL_SSH_ADDR=%q: Validate: %v", v, err)
+		}
+	}
+	c := Load(func(k string) string {
+		if k == "OUTHAUL_SSH_ADDR" {
+			return ":2200"
+		}
+		return ""
+	})
+	if c.SSHOff() {
+		t.Error(":2200 read as off")
+	}
+}
+
+func TestUpdatesSetting(t *testing.T) {
+	for _, tc := range []struct {
+		in, want string
+		off      bool
+	}{
+		{"", "main", false}, {"main", "main", false}, {"MAIN", "main", false},
+		{"off", "off", true}, {"OFF", "off", true}, {" off ", "off", true},
+	} {
+		c := Load(func(k string) string {
+			if k == "OUTHAUL_UPDATES" {
+				return tc.in
+			}
+			return ""
+		})
+		if c.Updates != tc.want || c.UpdatesOff() != tc.off {
+			t.Errorf("OUTHAUL_UPDATES=%q -> %q/%v, want %q/%v", tc.in, c.Updates, c.UpdatesOff(), tc.want, tc.off)
+		}
+	}
+	for _, v := range []string{"weekly", "releases"} {
+		c := Load(func(k string) string {
+			if k == "OUTHAUL_UPDATES" {
+				return v
+			}
+			return ""
+		})
+		if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "want main or off") {
+			t.Errorf("OUTHAUL_UPDATES=%q: Validate = %v, want 'want main or off'", v, err)
 		}
 	}
 }

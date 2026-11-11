@@ -113,9 +113,12 @@ run every step by hand? See [docs/MANUAL-DEPLOY.md](docs/MANUAL-DEPLOY.md).
 The installer needs root once (systemd required; V1 targets Debian and
 Ubuntu, prompting before continuing on anything else). Each step is skipped
 when already done, so it is safe to re-run — and a re-run upgrades the binary
-and restarts the service. It:
+when the commit it targets differs, then restarts the service. It:
 
-- installs **Docker** (via get.docker.com), **git**, and **nixpacks** if missing;
+- installs **Docker** (via get.docker.com) when absent and allowed —
+  `--install-docker` in an unattended run — **git**, and the pinned
+  **nixpacks** when missing. A working Docker is used as it is, and the Docker
+  install script never runs over an installed one;
 - creates an `outhaul` **system user** (no login shell, home `/var/lib/outhaul`)
   in the `docker` group;
 - walks you through ingress — Let's Encrypt, Cloudflare Tunnel, or local-only —
@@ -142,6 +145,31 @@ With Let's Encrypt (or the local CA and a public URL), it is under your public
 URL. Otherwise it is on `localhost:8080`: reach it over an SSH tunnel,
 `ssh -L 8080:127.0.0.1:8080 you@server`.
 
+### Unattended
+
+For cloud-init, an image build, or a configuration-management run, pass
+`--non-interactive` and every answer as a flag. From a checkout of the commit
+you want to install:
+
+```sh
+sh deploy/bootstrap.sh --non-interactive --from-checkout . \
+  --ingress letsencrypt --public-url https://paas.example.com \
+  --acme-email ops@example.com --git-ssh off --updates off
+```
+
+`--from-checkout` builds the tree you have. To install a commit you have not
+checked out, use `--ref <full 40-character commit>` instead, which fetches it
+from `OUTHAUL_REPO`; the two cannot be combined.
+
+It never prompts or reads stdin. It installs Docker only with
+`--install-docker`, and installs, enables or changes ufw only with
+`--firewall ufw`. Its answers go to `/etc/outhaul/install.env` and a systemd
+drop-in, and it never writes `/etc/outhaul.env`. It logs to
+`/var/log/outhaul-install.log` and exits 1 on a failed run. Bad flags exit 2
+before the log is opened, so nothing is logged for those. See
+[docs/UNATTENDED-INSTALL.md](docs/UNATTENDED-INSTALL.md) for the flags, the env
+files, re-runs and rollback.
+
 **Why a dedicated user and not root?** The process needs exactly the Docker
 socket, the `git`/`nixpacks`/`docker` CLIs, and its data dir. It never binds
 a privileged port itself — Traefik's *container* publishes 80/443, and the
@@ -163,6 +191,11 @@ once.
 An update that changes Traefik's image or configuration restarts Traefik, and
 every app is unreachable for a few seconds; the panel says so before you
 click Update.
+
+Set `OUTHAUL_UPDATES=off` (or pass `--updates off` to an unattended install)
+and the panel shows only the running version and no Update button. No check
+leaves the server, and the root updater changes nothing: upgrade by re-running
+the installer. The default, `main`, is as described above.
 
 Each update's log is in `/var/lib/outhaul-updater/log` on the server
 (`sudo cat` it), and `journalctl -u outhaul-update` has each update's result.
@@ -196,6 +229,8 @@ No config files — defaults with `OUTHAUL_*` environment overrides:
 | `OUTHAUL_PRUNE_BUILD_CACHE` | `yes`            | Nightly prune of build cache unused for 7 days; it is daemon-wide, so set `no` on a host shared with other builds |
 | `OUTHAUL_PUBLIC_URL`    | (empty)              | Public base URL of the admin UI; enables GitHub App + webhook URLs, SSO and protected routes |
 | `OUTHAUL_SERVER_IP`     | (auto-detected)      | Public IP embedded in generated `sslip.io` template domains |
+| `OUTHAUL_UPDATES`       | `main`               | `main` follows the newest commit on `main`; `off` stops the panel's update actions, the background check and the root updater (`releases` is not built) |
+| `OUTHAUL_SSH_ADDR`      | `:2222`              | git-push SSH listen address; `off` opens no listener (the repositories and hook socket stay) |
 
 Apps are expected to listen on `$PORT` (Outhaul sets it and points Traefik at it).
 

@@ -112,6 +112,7 @@ type Server struct {
 	build      update.Build     // the running binary's stamp; /healthz reports its commit
 	updates    *update.Dir      // shared with the root updater; nil hides the Updates panel
 	checker    *update.Checker  // the running build against main; set with updates
+	updatesOff bool             // OUTHAUL_UPDATES=off: the panel explains, the routes are absent
 	certSync   CertSyncer       // local-CA cert re-mint hook; nil disables cert re-sync
 	caFile     string           // path to the local CA root cert; "" disables /ca.pem and the settings card
 

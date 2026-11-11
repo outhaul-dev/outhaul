@@ -219,10 +219,21 @@ func TestSetupURLs(t *testing.T) {
 
 func TestRunVersionPrintsTheBuild(t *testing.T) {
 	var buf strings.Builder
+	if code := runVersion(&buf, update.Build{Commit: "abc", Repo: "https://github.com/o/r.git", Version: "v1.2.3"}); code != 0 {
+		t.Fatalf("exit %d, want 0", code)
+	}
+	want := "commit=abc\nrepo=https://github.com/o/r.git\nlocal=false\nversion=v1.2.3\n"
+	if buf.String() != want {
+		t.Errorf("output = %q, want %q", buf.String(), want)
+	}
+
+	// A build with no version (a branch or a full commit was installed) still
+	// prints the line, empty: the updater parses key=value lines.
+	buf.Reset()
 	if code := runVersion(&buf, update.Build{Commit: "abc", Repo: "https://github.com/o/r.git"}); code != 0 {
 		t.Fatalf("exit %d, want 0", code)
 	}
-	want := "commit=abc\nrepo=https://github.com/o/r.git\nlocal=false\n"
+	want = "commit=abc\nrepo=https://github.com/o/r.git\nlocal=false\nversion=\n"
 	if buf.String() != want {
 		t.Errorf("output = %q, want %q", buf.String(), want)
 	}
@@ -538,6 +549,26 @@ func TestEnableTunnelRefusedWithHTTPOff(t *testing.T) {
 	}
 }
 
+// OUTHAUL_SSH_ADDR=off turns the listener off even when the UI saved an
+// address earlier: off means off, not "use the stored setting".
+func TestSSHListenAddrOff(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "db"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SetSetting(context.Background(), "ssh_addr", ":2200"); err != nil {
+		t.Fatal(err)
+	}
+
+	if addr, on := sshListenAddr(st, config.Config{SSHAddr: "off"}); on || addr != "" {
+		t.Errorf("off: got (%q, %v), want (\"\", false)", addr, on)
+	}
+	if addr, on := sshListenAddr(st, config.Config{SSHAddr: ":2222"}); !on || addr != ":2200" {
+		t.Errorf("stored setting: got (%q, %v), want (\":2200\", true)", addr, on)
+	}
+}
+
 func TestHTTPOffRefusesAnEnabledTunnel(t *testing.T) {
 	cfg := config.Config{HTTPOff: true}
 	err := httpOffTunnelError(cfg, true)
@@ -849,5 +880,16 @@ func TestStartupRetriesWhenAdminDirectIsOff(t *testing.T) {
 	}
 	if f.calls.Load() < 2 {
 		t.Fatalf("EnsureNetwork calls = %d, want a retry while OUTHAUL_ADMIN_DIRECT=off", f.calls.Load())
+	}
+}
+
+func TestNewUpdatesOff(t *testing.T) {
+	d, k, off := newUpdates(config.Config{Updates: "off"})
+	if !off || d != nil || k != nil {
+		t.Fatalf("off: got (%v, %v, %v), want (nil, nil, true)", d, k, off)
+	}
+	d, k, off = newUpdates(config.Config{Updates: "main", DataDir: t.TempDir()})
+	if off || d == nil || k == nil {
+		t.Fatalf("main: got (%v, %v, %v), want a Dir and a Checker", d, k, off)
 	}
 }

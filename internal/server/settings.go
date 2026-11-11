@@ -54,7 +54,7 @@ func (s *Server) renderSettingsWith(w http.ResponseWriter, r *http.Request, stat
 		data["TunnelEnabled"] = on
 	}
 	data["LocalCA"] = s.caFile != ""
-	if s.updatesWired() {
+	if s.updatesPanelShown() {
 		data["Updates"] = s.updatesPanel(r.Context())
 	}
 	if _, ok := extra["SSO"]; !ok {

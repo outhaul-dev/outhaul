@@ -635,3 +635,33 @@ func TestUpdatesHiddenWithoutSetUpdates(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdatesPanelWhenOff(t *testing.T) {
+	e := newTestEnv(t)
+	e.srv.SetBuild(update.Build{Commit: testCommit, Repo: "https://github.com/o/r.git", Version: "v1.2.3"})
+	e.srv.SetUpdatesOff()
+	e.login(t)
+
+	page := body(t, e.get(t, "/settings"))
+	assertContains(t, page, `id="updates"`)
+	assertContains(t, page, "Updates are off")
+	assertContains(t, page, "v1.2.3")
+	assertLacks(t, page, `id="update-button"`, "Check now", `class="nav-dot"`)
+
+	for _, r := range []struct{ method, path string }{
+		{http.MethodPost, "/settings/update"},
+		{http.MethodPost, "/settings/update/check"},
+		{http.MethodGet, "/settings/update/progress"},
+	} {
+		var resp *http.Response
+		if r.method == http.MethodGet {
+			resp = e.get(t, r.path)
+		} else {
+			resp = e.postForm(t, r.path, url.Values{})
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("%s %s = %d, want 404", r.method, r.path, resp.StatusCode)
+		}
+	}
+}

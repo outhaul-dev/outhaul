@@ -47,7 +47,10 @@ assert_eq "no network yet: the name Outhaul gives it" "outhaul" "$(printf '' | b
 # apply_firewall lets the bridge reach the admin port, before ufw is enabled:
 # Traefik serves the admin UI from there, and ufw drops it otherwise.
 calls=$(mktemp)
-ufw() { printf '%s\n' "$*" >> "$calls"; }
+ufw() {
+	printf '%s\n' "$*" >> "$calls"
+	case "$*" in status) printf 'Status: active\n' ;; esac
+}
 LOGFILE=/dev/null apply_firewall "22 80 443" outhaul 8080 >/dev/null
 rule=$(grep -n '^allow in on outhaul to any port 8080 proto tcp$' "$calls" | cut -d: -f1)
 enable=$(grep -n '^--force enable$' "$calls" | cut -d: -f1)
@@ -57,6 +60,15 @@ else
 	_fail "bridge may reach the admin port, before enable (ufw calls: $(paste -sd'|' "$calls"))"
 fi
 rm -f "$calls"
+
+# An enable that leaves ufw inactive is a failure, not a success: the allow
+# lines and the enable are best-effort, so apply_firewall asks ufw itself.
+quiet() { ( "$@" ) >/dev/null 2>&1; }
+ufw() { case "$*" in status) printf 'Status: inactive\n' ;; esac; }
+NONINTERACTIVE=1
+assert_fail "ufw still inactive: an unattended run fails" quiet apply_firewall "22 80 443" outhaul 8080
+NONINTERACTIVE=0
+assert_ok "ufw still inactive: the wizard carries on" quiet apply_firewall "22 80 443" outhaul 8080
 unset -f ufw
 
 # Ports Docker publishes (Traefik's 80/443) bypass ufw, so they are not ones
@@ -66,5 +78,34 @@ LISTEN 0 4096 [::]:80 [::]:* users:(("docker-proxy",pid=820,fd=7))
 LISTEN 0 4096 *:8080 *:* users:(("outhaul",pid=700,fd=9))
 LISTEN 0 511 0.0.0.0:3000 0.0.0.0:* users:(("node",pid=900,fd=20))'
 assert_eq "docker-published ports excluded" "3000 8080" "$(printf '%s\n' "$ssp_out" | ss_listen_ports)"
+
+# Proxy mode publishes only 443: port 80 stays closed.
+T=$(mktemp -d)
+CALLS=$T/calls
+assert_eq "proxy opens 22 and 443" "22 443" "$(derive_firewall_ports p '')"
+assert_eq "proxy with a git port" "22 443 2222" "$(derive_firewall_ports p 2222)"
+
+# leave calls neither ufw nor apt-get.
+ufw() { echo "ufw $*" >> "$CALLS"; }
+# apt-get is not a valid function name in dash: a stub on PATH records it.
+mkdir -p "$T/bin"
+printf '#!/bin/sh\necho "apt-get $*" >> "%s"\n' "$CALLS" > "$T/bin/apt-get"
+chmod 0755 "$T/bin/apt-get"
+PATH=$T/bin:$PATH
+: > "$CALLS"
+WANT_FW=0 configure_firewall
+assert_eq "leave: no firewall calls" "" "$(cat "$CALLS")"
+
+# ufw that would block a port exits 1 before any call.
+# shellcheck disable=SC2034 # read by configure_firewall
+WANT_FW=1 NONINTERACTIVE=1 MODE=c GITPORT='' LOCAL_CA=0 PORTS="22" ADMIN_PORT=8080 BRIDGE=outhaul
+ufw_would_block() { echo 3000; }
+quiet() { ( "$@" ) >/dev/null 2>&1; }
+assert_fail "ufw would block: exits first" quiet configure_firewall
+assert_eq "ufw would block: no changes" "" \
+  "$(grep -E '^(ufw allow|ufw --force|apt-get)' "$CALLS" || true)"
+unset -f ufw_would_block
+
+rm -rf "$T"
 
 [ "${TESTS_FAIL:-0}" -eq 0 ]

@@ -59,7 +59,7 @@ assert_eq "marker" 1 "$(cat "$UPDATE_DIR/updater")"
 assert_eq "marker readable by outhaul" 644 "$(stat -c %a "$UPDATE_DIR/updater")"
 assert_eq "no temp files left" "updater|" "$(ls -A "$UPDATE_DIR")|$(ls -A "$WORK_DIR")"
 assert_eq "chown (of the update dir itself, not a link) and systemctl, in order" \
-	"chown -h outhaul:outhaul . in $UPDATE_DIR|systemctl daemon-reload|systemctl enable --now outhaul-update.path" \
+	"chown -h outhaul:outhaul . in $UPDATE_DIR|systemctl daemon-reload" \
 	"$(paste -sd'|' "$CALLS")"
 
 # A second run replaces the files by rename: a running update.sh is not
@@ -125,6 +125,27 @@ assert_contains "setup_updater: names the updater" "$out" "could not install the
 assert_contains "setup_updater: says what is unavailable" "$out" "re-run the installer"
 assert_eq "setup_updater: passes the source dir" "install_updater $SRC" "$(cat "$CALLS")"
 unset -f install_updater
+
+# The path unit follows the service's own OUTHAUL_UPDATES setting.
+: > "$CALLS"
+set_update_path on
+assert_eq "path unit on" "systemctl enable --now outhaul-update.path" "$(cat "$CALLS")"
+: > "$CALLS"
+set_update_path off
+assert_eq "path unit off" "systemctl disable --now outhaul-update.path" "$(cat "$CALLS")"
+
+# A no-build run has no tree: setup_updater only moves the path unit, from the
+# service's own OUTHAUL_UPDATES. Updates off disables it; main enables it.
+install_updater() { echo "install_updater $*" >> "$CALLS"; }
+set_update_path() { echo "set_update_path $*" >> "$CALLS"; }
+service_env() { printf '%s\n' "$UPDATES_VALUE"; }
+: > "$CALLS"
+UPDATES_VALUE=off setup_updater ''
+assert_eq "no-build run, updates off: the path unit is disabled" "set_update_path off" "$(cat "$CALLS")"
+: > "$CALLS"
+UPDATES_VALUE=main setup_updater ''
+assert_eq "no-build run, updates main: the path unit is enabled" "set_update_path on" "$(cat "$CALLS")"
+assert_eq "no-build run: nothing is installed from a tree" 0 "$(grep -c '^install_updater' "$CALLS" || true)"
 
 rm -rf "$ROOT"
 [ "${TESTS_FAIL:-0}" -eq 0 ]

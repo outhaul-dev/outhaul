@@ -97,7 +97,7 @@ func runGitHook(args []string) int {
 // runVersion implements `outhaul version`: the build stamp as key=value lines,
 // which the updater parses.
 func runVersion(w io.Writer, b update.Build) int {
-	fmt.Fprintf(w, "commit=%s\nrepo=%s\nlocal=%t\n", b.Commit, b.Repo, b.Local)
+	fmt.Fprintf(w, "commit=%s\nrepo=%s\nlocal=%t\nversion=%s\n", b.Commit, b.Repo, b.Local, b.Version)
 	return 0
 }
 
@@ -227,11 +227,12 @@ func serve() error {
 	worker.SetPruner(pruner)
 
 	// An update stops Outhaul, so while one is requested or running the worker
-	// and the backup scheduler start nothing new.
-	updates := update.NewDir(cfg.UpdateDir(), update.LogPath, time.Now)
-	worker.SetHold(updates.InProgress)
-	checker := update.NewChecker(update.Current(),
-		&update.Comparer{Client: &http.Client{Timeout: 15 * time.Second}}, time.Now)
+	// and the backup scheduler start nothing new. With updates off neither is
+	// held, and no check ever leaves the server.
+	updates, checker, updatesOff := newUpdates(cfg)
+	if !updatesOff {
+		worker.SetHold(updates.InProgress)
+	}
 
 	workerDone := make(chan struct{})
 	// worker.Run is launched below, after the preview manager is wired in as the
@@ -253,9 +254,11 @@ func serve() error {
 	} else if n > 0 {
 		log.Printf("recovered %d interrupted backup/restore run(s) as failed", n)
 	}
-	backups.SetHold(updates.InProgress)
+	if !updatesOff {
+		backups.SetHold(updates.InProgress)
+		go checker.Run(workerCtx)
+	}
 	go backups.Run(workerCtx)
-	go checker.Run(workerCtx)
 
 	// Daily disk-cleanup sweep (image retention, dangling images, build cache).
 	go pruner.Run(workerCtx)
@@ -345,7 +348,11 @@ func serve() error {
 	srv.SetProxyControl(infra)
 	srv.SetHTTPSPort(cfg.HTTPSPort)
 	srv.SetBuild(update.Current())
-	srv.SetUpdates(updates, checker)
+	if updatesOff {
+		srv.SetUpdatesOff()
+	} else {
+		srv.SetUpdates(updates, checker)
+	}
 	if certMgr != nil {
 		srv.SetCertSync(certMgr)
 		srv.SetLocalCAFile(localca.RootPath(cfg.CADir()))
@@ -373,6 +380,20 @@ func serve() error {
 	}
 
 	return shutdown(httpServer, stopWorker, workerDone, backups.Stop)
+}
+
+// newUpdates builds the Updates panel's directory, shared with the root
+// updater, and the check of the running build against main. With updates off
+// it builds neither and creates nothing: no checker means no request ever
+// leaves the server, and no update can be requested.
+func newUpdates(cfg config.Config) (d *update.Dir, k *update.Checker, off bool) {
+	if cfg.UpdatesOff() {
+		return nil, nil, true
+	}
+	d = update.NewDir(cfg.UpdateDir(), update.LogPath, time.Now)
+	k = update.NewChecker(update.Current(),
+		&update.Comparer{Client: &http.Client{Timeout: 15 * time.Second}}, time.Now)
+	return d, k, false
 }
 
 // infraController reconciles the managed Traefik proxy and cloudflared connector
@@ -852,9 +873,11 @@ func shutdown(httpServer *http.Server, stopWorker context.CancelFunc, workerDone
 	return nil
 }
 
-// startGitPush brings up the deploy bridge (unix socket) and the git-push SSH
-// server. Every failure is non-fatal and logged; it returns the SSH server (for
-// live port rebinds from the UI) or nil if git-push could not start.
+// startGitPush brings up the deploy bridge (unix socket) and, unless
+// OUTHAUL_SSH_ADDR=off, the git-push SSH server. Every failure is non-fatal and
+// logged; it returns the SSH server (for live port rebinds from the UI) or nil
+// if the SSH server is off or could not start. The hook socket and the bare
+// repositories are set up either way.
 func startGitPush(ctx context.Context, cfg config.Config, st *store.Store, worker *deploy.Worker, broker *logstream.Broker, serverIP string, repos *gitrepo.Manager, self string) *gitssh.Server {
 	if self == "" {
 		return nil
@@ -874,13 +897,17 @@ func startGitPush(ctx context.Context, cfg config.Config, st *store.Store, worke
 	go bridge.Serve(ctx, hookLn)
 
 	// SSH server (public-key auth against push_keys).
+	addr, on := sshListenAddr(st, cfg)
+	if !on {
+		log.Printf("git-push SSH server is off (OUTHAUL_SSH_ADDR=off)")
+		return nil
+	}
 	hostKey, err := gitssh.LoadOrCreateHostKey(cfg.SSHHostKeyPath())
 	if err != nil {
 		log.Printf("WARNING: git-push SSH server disabled (host key): %v", err)
 		return nil
 	}
 	sshSrv := gitssh.New(hostKey, st, repos)
-	addr := resolveSSHAddr(st, cfg)
 	if err := sshSrv.Listen(addr); err != nil {
 		log.Printf("WARNING: git-push SSH server disabled (bind %s): %v", addr, err)
 		return nil
@@ -894,13 +921,18 @@ func startGitPush(ctx context.Context, cfg config.Config, st *store.Store, worke
 	return sshSrv
 }
 
-// resolveSSHAddr returns the stored ssh_addr setting if set, else the configured
-// default (OUTHAUL_SSH_ADDR or :2222).
-func resolveSSHAddr(st *store.Store, cfg config.Config) string {
-	if v, ok, err := st.GetSetting(context.Background(), "ssh_addr"); err == nil && ok && v != "" {
-		return v
+// sshListenAddr returns the address the git-push SSH server should listen on
+// and whether it should listen at all. OUTHAUL_SSH_ADDR=off turns it off even
+// when the UI stored an address; otherwise the stored ssh_addr setting, when
+// set, beats the configured default (OUTHAUL_SSH_ADDR or :2222).
+func sshListenAddr(st *store.Store, cfg config.Config) (addr string, on bool) {
+	if cfg.SSHOff() {
+		return "", false
 	}
-	return cfg.SSHAddr
+	if v, ok, err := st.GetSetting(context.Background(), "ssh_addr"); err == nil && ok && v != "" {
+		return v, true
+	}
+	return cfg.SSHAddr, true
 }
 
 // printSetupHint prints the one-time setup URL on first boot. The first

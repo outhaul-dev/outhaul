@@ -5,10 +5,11 @@
 # Runs as root: it replaces /usr/local/bin/outhaul and restarts outhaul.service.
 # It keeps its own files, the rollback copy and its log, in the root-owned
 # /var/lib/outhaul-updater, and shows its status and log to the admin UI in
-# /var/lib/outhaul/update.
+# /var/lib/outhaul/update. OUTHAUL_UPDATES=off (or any value but main) makes it
+# remove the request and change nothing.
 
 [Unit]
-Description=Outhaul updater: update to the newest main
+Description=Outhaul updater: updates from main, or nothing when OUTHAUL_UPDATES=off
 Documentation=https://github.com/outhaul-dev/outhaul
 Wants=network-online.target
 After=network-online.target

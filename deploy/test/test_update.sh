@@ -160,7 +160,10 @@ unset -f install_go_toolchain fake_go
 
 T=$ROOT/snap
 BIN=$T/bin/outhaul UNIT_DIR=$T/units DATA_DIR=$T/data UPDATE_DIR=$T/data/update WORK_DIR=$T/work
-mkdir -p "$T/bin" "$UNIT_DIR" "$UPDATE_DIR" "$WORK_DIR"
+INSTALL_ENV=$T/etc/install.env
+SERVICE_DROPIN=$UNIT_DIR/outhaul.service.d/10-install.conf
+UPDATE_DROPIN=$UNIT_DIR/outhaul-update.service.d/10-install.conf
+mkdir -p "$T/bin" "$UNIT_DIR" "$UPDATE_DIR" "$WORK_DIR" "$(dirname "$INSTALL_ENV")"
 fake_outhaul "$BIN" "$OLD" file:///srv/o.git traefik:v1
 echo 'old unit' > "$UNIT_DIR/outhaul.service"
 echo 'old data' > "$DATA_DIR/outhaul.db"
@@ -168,11 +171,19 @@ echo 'old wal' > "$DATA_DIR/outhaul.db-wal"
 echo 'old shm' > "$DATA_DIR/outhaul.db-shm"
 # A mode the umask would change: only a copy that keeps modes keeps it.
 chmod 0664 "$DATA_DIR/outhaul.db"
+echo 'old install env' > "$INSTALL_ENV"
+mkdir -p "$(dirname "$SERVICE_DROPIN")" "$(dirname "$UPDATE_DROPIN")"
+echo 'old service dropin' > "$SERVICE_DROPIN"
+echo 'old update dropin' > "$UPDATE_DROPIN"
 mkdir -p "$WORK_DIR/previous" && echo stale > "$WORK_DIR/previous/outhaul.db-shm"
 assert_ok "snapshot" snapshot
-assert_eq "snapshot: binary, unit and database" "outhaul outhaul.db outhaul.db-shm outhaul.db-wal outhaul.service" \
+assert_eq "snapshot: binary, unit, database and env files" \
+	"install.env outhaul outhaul-update.service.d.10-install.conf outhaul.db outhaul.db-shm outhaul.db-wal outhaul.service outhaul.service.d.10-install.conf" \
 	"$(ls "$WORK_DIR/previous" | paste -sd' ' -)"
 assert_eq "snapshot: replaces the previous copies" "old shm" "$(cat "$WORK_DIR/previous/outhaul.db-shm")"
+assert_eq "snapshot: install.env" "old install env" "$(cat "$WORK_DIR/previous/install.env")"
+assert_eq "snapshot: service drop-in" "old service dropin" "$(cat "$WORK_DIR/previous/outhaul.service.d.10-install.conf")"
+assert_eq "snapshot: update drop-in" "old update dropin" "$(cat "$WORK_DIR/previous/outhaul-update.service.d.10-install.conf")"
 assert_eq "snapshot: only previous/ is left, in the updater's directory" "previous" "$(ls -A "$WORK_DIR")"
 assert_eq "snapshot: nothing in the update directory" "" "$(ls -A "$UPDATE_DIR")"
 echo 'new data' > "$DATA_DIR/outhaul.db"
@@ -180,6 +191,9 @@ echo 'new wal' > "$DATA_DIR/outhaul.db-wal"
 rm "$DATA_DIR/outhaul.db-shm"
 fake_outhaul "$BIN" "$NEW" file:///srv/o.git traefik:v2
 echo 'new unit' > "$UNIT_DIR/outhaul.service"
+echo 'new install env' > "$INSTALL_ENV"
+echo 'new service dropin' > "$SERVICE_DROPIN"
+echo 'new update dropin' > "$UPDATE_DROPIN"
 # The data dir belongs to outhaul. Nothing in it is opened for writing: the
 # database files are copied in the updater's directory and renamed into
 # place, so a link there is not followed.
@@ -193,10 +207,26 @@ assert_eq "restore: nothing copied into the data dir" "" "$(grep -F " $DATA_DIR/
 assert_eq "restore: a link there is not written through" "unchanged" "$(cat "$T/target")"
 assert_eq "restore: binary, unit and database" "commit=$OLD|old unit|old data|old wal|old shm" \
 	"$("$BIN" version | head -1)|$(cat "$UNIT_DIR/outhaul.service" "$DATA_DIR/outhaul.db" "$DATA_DIR/outhaul.db-wal" "$DATA_DIR/outhaul.db-shm" | paste -sd'|' -)"
+assert_eq "restore: install.env, service and update drop-ins" "old install env|old service dropin|old update dropin" \
+	"$(cat "$INSTALL_ENV" "$SERVICE_DROPIN" "$UPDATE_DROPIN" | paste -sd'|' -)"
 assert_eq "restore: the database keeps its mode" 664 "$(stat -c %a "$DATA_DIR/outhaul.db")"
 assert_eq "restore: no temp files left, and the link left alone" "outhaul.db outhaul.db-shm outhaul.db-wal outhaul.db.new update" \
 	"$(ls "$DATA_DIR" | paste -sd' ' -)"
 assert_eq "restore: no temp files left in the updater's directory" previous "$(ls -A "$WORK_DIR")"
+# A file the snapshot lacks is the new version's, as the WAL is: restore
+# removes it, because the old version expects what it had.
+rm -f "$INSTALL_ENV"
+assert_ok "snapshot without install.env" snapshot
+echo 'new install env' > "$INSTALL_ENV"
+assert_ok "restore without install.env" restore_snapshot
+assert_fail "restore removes install.env the snapshot lacks" [ -e "$INSTALL_ENV" ]
+rm -f "$SERVICE_DROPIN" "$UPDATE_DROPIN"
+assert_ok "snapshot without the drop-ins" snapshot
+echo 'new service dropin' > "$SERVICE_DROPIN"
+echo 'new update dropin' > "$UPDATE_DROPIN"
+assert_ok "restore without the drop-ins" restore_snapshot
+assert_fail "restore removes the service drop-in the snapshot lacks" [ -e "$SERVICE_DROPIN" ]
+assert_fail "restore removes the update drop-in the snapshot lacks" [ -e "$UPDATE_DROPIN" ]
 # Nor is a link to a directory, in place of a file, moved into. (GNU
 # mv replaces the link; busybox mv refuses.)
 mkdir "$T/elsewhere"
@@ -216,6 +246,9 @@ setup() {
 	T=$(mktemp -d "$ROOT/run.XXXXXX")
 	BIN=$T/bin/outhaul UNIT_DIR=$T/units DATA_DIR=$T/data UPDATE_DIR=$T/data/update CACHE_DIR=$T/cache
 	WORK_DIR=$T/work
+	INSTALL_ENV=$T/etc/install.env
+	SERVICE_DROPIN=$UNIT_DIR/outhaul.service.d/10-install.conf
+	UPDATE_DROPIN=$UNIT_DIR/outhaul-update.service.d/10-install.conf
 	mkdir -p "$T/bin" "$UNIT_DIR" "$UPDATE_DIR" "$WORK_DIR/previous"
 	chmod 0710 "$WORK_DIR"
 	fake_outhaul "$BIN" "$OLD" file:///srv/o.git traefik:v1
@@ -231,6 +264,7 @@ setup() {
 	HEALTHY="$OLD $NEW"  # commits that answer /healthz once started
 	BUILD=ok PULL=ok CF_RUNNING=0 NEW_UNIT=1
 	unset OUTHAUL_LISTEN_ADDR
+	unset OUTHAUL_UPDATES
 }
 
 # update_main exits, so it runs in a subshell, with errexit as under systemd.
@@ -640,6 +674,23 @@ set +e
 (set -e; update_main) 2>/dev/full
 set -e
 assert_eq "journal unwritable: a failed rollback still reports" failed "$(field state)"
+
+# Updates off: the request goes, nothing else changes.
+setup
+before=$(cat "$UPDATE_DIR/status")
+OUTHAUL_UPDATES=off run_update
+assert_eq "off: exit 0" 0 "$RC"
+assert_eq "off: request removed" no "$(exists "$UPDATE_DIR/request")"
+assert_eq "off: status unchanged" "$before" "$(cat "$UPDATE_DIR/status")"
+assert_eq "off: Outhaul never stopped" "" "$(systemctl_calls)"
+assert_contains "off: one journal line" "$(journal_lines)" "updates are off"
+
+# An unknown value is off.
+setup
+OUTHAUL_UPDATES=weekly run_update
+assert_eq "unknown value: exit 0" 0 "$RC"
+assert_eq "unknown value: request removed" no "$(exists "$UPDATE_DIR/request")"
+assert_eq "unknown value: Outhaul never stopped" "" "$(systemctl_calls)"
 
 # The real paths, and the data dir from /etc/outhaul.env.
 assert_eq "default paths" "/usr/local/bin/outhaul /etc/systemd/system /var/lib/outhaul /var/lib/outhaul/update /var/lib/outhaul-updater /var/cache/outhaul" \

@@ -455,7 +455,8 @@ A fourth app source, alongside public/SSH/GitHub: Outhaul hosts the repo
 itself. `internal/gitrepo` owns a bare repo per push app plus its
 `post-receive` hook; `internal/gitssh` embeds an SSH server (default
 `OUTHAUL_SSH_ADDR`, `:2222`, overridable live from Settings and persisted to
-the `ssh_addr` setting) that authenticates `git push` against registered
+the `ssh_addr` setting; `off` opens no listener, and the stored setting is
+ignored) that authenticates `git push` against registered
 **push keys** — SHA256-fingerprinted SSH public keys, each owned by an
 account and managed from its Account page — rather than per-app deploy keys,
 since the repo is local. A push, fetch or clone is allowed only if the key owner's role can
@@ -494,6 +495,27 @@ shows in the process log and in the webhook response body (status 200), and
 `git push` prints a `→ … so no deploy` line and exits 0. Template apps and preview children cannot
 use tag mode; a tag-mode app's previews still follow the PR head. The design
 is in `docs/superpowers/specs/2026-10-26-tag-deploys-design.md`.
+
+### Updating Outhaul (done)
+
+`OUTHAUL_UPDATES` decides what Settings → Updates, the background check and the
+root updater do. It has two values, `main` and `off`.
+
+- **`main`** (the default) is today's behaviour: the panel compares the
+  running commit with the newest commit on `main` and updates on a click,
+  `internal/update.Checker` asks GitHub every six hours, and `deploy/update.sh`
+  fetches and builds the newest `main` after Outhaul creates the request file.
+- **`off`** shows the running commit and version with no Update button, no
+  Check now and no last result. The update and check routes answer 404, the
+  navigation badge never appears, and no background check starts. The installer
+  disables `outhaul-update.path` to match, and the updater itself removes the
+  request and changes nothing; either guard alone is enough, and a value the
+  updater does not know is treated as `off`. A server that is off is upgraded
+  by re-running the installer with a newer `--ref`.
+
+The installer takes `--ref` (a tag, branch or full commit) and `--updates`, so
+an unattended run can pin both the version and the mode. `releases` is not
+built: `Config.Validate` refuses it until it is.
 
 ### Protected routes (done)
 

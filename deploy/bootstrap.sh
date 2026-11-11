@@ -6,6 +6,19 @@ set -eu
 
 OUTHAUL_REPO="${OUTHAUL_REPO:-https://github.com/outhaul-dev/outhaul.git}"
 
+# The unattended interface sets these; the defaults keep today's wizard path.
+NONINTERACTIVE=0
+INSTALL_DOCKER=0
+
+# nixpacks is pinned: one version, one archive per architecture, each with the
+# SHA-256 GitHub publishes for that asset. NIXPACKS_REPLACE=1 (--nixpacks on)
+# lets the unattended installer replace a different installed version.
+NIXPACKS_VERSION=1.41.0
+NIXPACKS_SHA256_AMD64=0f55de7874507b9cf7502113120bd96f2ab6979f78d10eaf2eb2ade9207b3af6
+NIXPACKS_SHA256_ARM64=912bd02dd2bb6f9c3a9ed965fe8a68b4aa318dc7a2546e2eca6f2806a894ba39
+NIXPACKS_PATH=/usr/local/bin/nixpacks
+NIXPACKS_REPLACE=${NIXPACKS_REPLACE:-0}
+
 # ------------------------------------------------------------------ helpers --
 
 # Prints the concrete Go version to download (e.g. 1.26.4). Prefers the
@@ -49,13 +62,15 @@ detect_color_level() {
 
 # Prints the space-separated, sorted, de-duplicated port set to open.
 # SSH (22) is ALWAYS included. Mode a adds 80/443, as does mode c with the
-# local CA (HTTPS redirect needs :80 too). A non-empty git port is added.
+# local CA (HTTPS redirect needs :80 too). Mode p publishes only 443: port 80
+# stays closed behind the proxy. A non-empty git port is added.
 derive_firewall_ports() { # mode gitport localca
 	mode=$1
 	gitport=${2:-}
 	localca=${3:-0}
 	set -- 22
 	[ "$mode" = a ] && set -- "$@" 80 443
+	[ "$mode" = p ] && set -- "$@" 443
 	[ "$mode" = c ] && [ "$localca" = 1 ] && set -- "$@" 80 443
 	[ -n "$gitport" ] && set -- "$@" "$gitport"
 	printf '%s\n' "$@" | sort -n -u | paste -sd' ' -
@@ -104,6 +119,10 @@ normalize_git_port() { # answer
 		printf '2222\n'
 	fi ;;
 	esac
+}
+
+git_ssh_from_port() { # port, empty for none
+	if [ -n "$1" ]; then printf ':%s\n' "$1"; else printf 'off\n'; fi
 }
 
 # outhaul serve refuses a public URL without a scheme; a bare host means
@@ -173,11 +192,18 @@ ask_value() { # prompt default
 
 # ------------------------------------------------------------------- ui --
 
-# Sets COLOR, UNICODE, WIDTH globals. Call once at startup.
+# Sets COLOR, UNICODE, WIDTH globals. Call once at startup. An unattended
+# run's stdout has no colour: cloud-init copies it to its own log and to the
+# serial console.
 init_ui() {
-	COLOR=$(detect_color_level)
-	case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in *[Uu][Tt][Ff]-8* | *[Uu][Tt][Ff]8*) UNICODE=1 ;; *) UNICODE=0 ;; esac
-	[ "$COLOR" = 0 ] && UNICODE=0
+	if [ "${NONINTERACTIVE:-0}" = 1 ]; then
+		COLOR=0
+		UNICODE=0
+	else
+		COLOR=$(detect_color_level)
+		case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in *[Uu][Tt][Ff]-8* | *[Uu][Tt][Ff]8*) UNICODE=1 ;; *) UNICODE=0 ;; esac
+		[ "$COLOR" = 0 ] && UNICODE=0
+	fi
 	WIDTH=$(tput cols 2>/dev/null || echo 80)
 	[ -n "$WIDTH" ] || WIDTH=80
 }
@@ -219,6 +245,7 @@ step_ok() {
 	printf '  %s ' "$m"
 	_c 0
 	printf '%s\n' "$1"
+	log_event "ok $1"
 }
 step_fail() {
 	[ "${UNICODE:-0}" = 1 ] && m='✖' || m='x'
@@ -226,22 +253,34 @@ step_fail() {
 	printf '  %s ' "$m"
 	_c 0
 	printf '%s\n' "$1"
+	log_event "fail $1"
 }
 note() {
 	_c 90
 	printf '    %s\n' "$1"
 	_c 0
+	log_event "note $1"
 }
 
 # Raw log mirror (Task 20 wires LOGFILE); safe if unset.
 log_line() { [ -n "${LOGFILE:-}" ] && printf '%s\n' "$*" >>"$LOGFILE" 2>/dev/null || true; }
+
+# The unattended log's step lines. The wizard's log holds only the commands'
+# raw output, and its step lines go to the terminal; a full disk must not stop
+# an install, so a failed append is ignored.
+log_event() {
+	[ "${NONINTERACTIVE:-0}" = 1 ] || return 0
+	[ -n "${LOGFILE:-}" ] || return 0
+	printf '%s\n' "$*" >>"$LOGFILE" 2>/dev/null || true
+	return 0
+}
 
 die() {
 	_c '1;31'
 	printf 'error: ' >&2
 	_c 0
 	printf '%s\n' "$1" >&2
-	log_line "ERROR: $1"
+	log_event "die $1"
 	exit 1
 }
 
@@ -362,6 +401,10 @@ preflight() {
 		step_ok "$distro detected"
 	else
 		step_fail "unsupported distro: ${distro:-unknown} (V1 targets Debian and Ubuntu)"
+		# An unattended run has no one to ask, and its answer is no.
+		if [ "${NONINTERACTIVE:-0}" = 1 ]; then
+			die "unsupported distro: ${distro:-unknown}"
+		fi
 		ask_yes_no "  Continue anyway?" n || die "aborted on unsupported distro"
 	fi
 	arch=$(uname -m)
@@ -372,8 +415,47 @@ preflight() {
 	note "memory: $((MEM_KB / 1024)) MB RAM, $((SWAP_KB / 1024)) MB swap"
 }
 
+have_docker() { command -v docker >/dev/null 2>&1; }
+have_docker_service() { systemctl cat docker.service >/dev/null 2>&1; }
+have_docker_socket() { [ -e /var/run/docker.sock ]; }
+
+# True when an installed Docker answers and has compose v2. The daemon may
+# still be starting (first boot, or just after the install), so wait 30s.
+docker_works() {
+	have_docker || return 1
+	_i=0
+	while [ "$_i" -lt 30 ]; do
+		if docker version --format '{{.Server.Version}}' >/dev/null 2>&1 &&
+			docker compose version >/dev/null 2>&1; then
+			return 0
+		fi
+		sleep 1
+		_i=$((_i + 1))
+	done
+	return 1
+}
+
+# Prints what is wrong with a Docker that is present but not working.
+docker_problem() {
+	if ! docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
+		printf '%s\n' "the Docker daemon is not answering"
+	else
+		printf '%s\n' "the docker compose v2 plugin is missing"
+	fi
+}
+
+# Three states: a working Docker is used as it is; an absent one is installed
+# only when allowed; one that is present but broken is started once and then
+# reported — get.docker.com never runs over it.
 ensure_docker() {
-	if command -v docker >/dev/null 2>&1; then step_ok "Docker present"; else
+	if docker_works; then
+		step_ok "Docker is working"
+		return
+	fi
+	if ! have_docker && ! have_docker_service && ! have_docker_socket; then
+		if [ "$NONINTERACTIVE" = 1 ] && [ "$INSTALL_DOCKER" != 1 ]; then
+			die "Docker is not installed; install it first or pass --install-docker"
+		fi
 		spinner_start "installing Docker (get.docker.com)"
 		# set +e so a failed install still reaches spinner_stop + die (see build_binary note).
 		set +e
@@ -383,9 +465,13 @@ ensure_docker() {
 		spinner_stop "$rc"
 		[ "$rc" -eq 0 ] || die "Docker install failed — see ${LOGFILE:-the install log}"
 	fi
+	# Present but not answering: start the daemon once. Never reinstall.
 	systemctl enable --now docker >/dev/null 2>&1 || true
-	docker compose version >/dev/null 2>&1 || die "docker compose v2 plugin missing (install docker-compose-plugin)"
-	step_ok "docker compose v2 available"
+	if docker_works; then
+		step_ok "Docker is working"
+		return
+	fi
+	die "$(docker_problem)"
 }
 
 ensure_git() {
@@ -402,20 +488,94 @@ ensure_git() {
 	[ "$rc" -eq 0 ] || die "git install failed — see ${LOGFILE:-the install log}"
 }
 
-# Optional — caller gates on ask_yes_no.
-ensure_nixpacks() {
-	if command -v nixpacks >/dev/null 2>&1; then
-		step_ok "nixpacks present"
-		return
-	fi
-	spinner_start "installing nixpacks"
+# Maps uname -m to the nixpacks release asset's target triple.
+nixpacks_target() { # uname_m
+	case "$1" in
+	x86_64 | amd64) echo x86_64-unknown-linux-musl ;;
+	aarch64 | arm64) echo aarch64-unknown-linux-musl ;;
+	*) return 1 ;;
+	esac
+}
+
+# Prints the pinned SHA-256 for the host's architecture.
+nixpacks_sha256() { # uname_m
+	case "$1" in
+	x86_64 | amd64) printf '%s\n' "$NIXPACKS_SHA256_AMD64" ;;
+	aarch64 | arm64) printf '%s\n' "$NIXPACKS_SHA256_ARM64" ;;
+	*) return 1 ;;
+	esac
+}
+
+# Prints the installed nixpacks version, or nothing when there is none.
+nixpacks_installed_version() {
+	command -v nixpacks >/dev/null 2>&1 || return 0
+	nixpacks --version 2>/dev/null | awk '{print $NF}'
+}
+
+# Downloads the pinned archive, verifies its checksum and installs the binary
+# by rename. A wrong checksum is fatal in every mode: the host asked for the
+# pin, and something other than it arrived.
+install_nixpacks_pin() {
+	arch=$(uname -m)
+	target=$(nixpacks_target "$arch") || die "unsupported architecture for nixpacks: $arch"
+	sum=$(nixpacks_sha256 "$arch") || die "unsupported architecture for nixpacks: $arch"
+	NIXPACKS_TMP=$(mktemp -d)
+	archive=$NIXPACKS_TMP/nixpacks.tar.gz
+	url="https://github.com/railwayapp/nixpacks/releases/download/v$NIXPACKS_VERSION/nixpacks-v$NIXPACKS_VERSION-$target.tar.gz"
+	spinner_start "downloading nixpacks $NIXPACKS_VERSION ($target)"
 	set +e
-	curl -fsSL https://nixpacks.com/install.sh | bash >>"${LOGFILE:-/dev/null}" 2>&1
+	curl -fsSL "$url" -o "$archive" >>"${LOGFILE:-/dev/null}" 2>&1
 	rc=$?
 	set -e
 	spinner_stop "$rc"
-	# Optional: a failure is not fatal — Dockerfile/compose apps still deploy.
-	[ "$rc" -eq 0 ] || note "nixpacks install failed — you can retry later; Dockerfile/compose apps work without it"
+	if [ "$rc" -ne 0 ]; then
+		rm -rf "$NIXPACKS_TMP"
+		NIXPACKS_TMP=''
+		if [ "$NONINTERACTIVE" = 1 ]; then
+			die "could not download nixpacks $NIXPACKS_VERSION from $url"
+		fi
+		note "could not download nixpacks $NIXPACKS_VERSION — you can retry later; Dockerfile/compose apps work without it"
+		return 0
+	fi
+	if ! echo "$sum  $archive" | sha256sum -c - >>"${LOGFILE:-/dev/null}" 2>&1; then
+		rm -rf "$NIXPACKS_TMP"
+		NIXPACKS_TMP=''
+		die "nixpacks checksum mismatch — refusing to install"
+	fi
+	step_ok "nixpacks $NIXPACKS_VERSION checksum verified"
+	if ! tar -C "$NIXPACKS_TMP" -xzf "$archive"; then
+		rm -rf "$NIXPACKS_TMP"
+		NIXPACKS_TMP=''
+		die "could not extract nixpacks $NIXPACKS_VERSION"
+	fi
+	if ! install_atomic "$NIXPACKS_TMP/nixpacks" "$NIXPACKS_PATH" 0755; then
+		rm -rf "$NIXPACKS_TMP"
+		NIXPACKS_TMP=''
+		die "could not install nixpacks to $NIXPACKS_PATH"
+	fi
+	rm -rf "$NIXPACKS_TMP"
+	NIXPACKS_TMP=''
+	step_ok "installed nixpacks $NIXPACKS_VERSION"
+}
+
+# Optional — caller gates on WANT_NIXPACKS. A version other than the pin is
+# left alone unless NIXPACKS_REPLACE=1: replacing a working build tool is the
+# operator's call, not the installer's.
+ensure_nixpacks() {
+	v=$(nixpacks_installed_version)
+	if [ -z "$v" ]; then
+		install_nixpacks_pin
+		return
+	fi
+	if [ "$v" = "$NIXPACKS_VERSION" ]; then
+		step_ok "nixpacks $NIXPACKS_VERSION present"
+		return
+	fi
+	if [ "$NIXPACKS_REPLACE" = 1 ]; then
+		install_nixpacks_pin
+		return
+	fi
+	note "nixpacks $v is installed; the installer pins $NIXPACKS_VERSION (re-run with --non-interactive --nixpacks on to replace it)"
 }
 
 # Pure: true only for a bare 64-char hex sha256 digest. Guards against a checksum
@@ -482,7 +642,13 @@ BUILD_SWAP=/var/lib/outhaul-build.swap
 maybe_add_swap() { # mem_kb swap_kb
 	need_swap "$1" "$2" || return 0
 	note "low memory — the Go build may be OOM-killed without extra swap"
-	ask_yes_no "  Create a temporary 2 GB swapfile for the build?" y || return 0
+	# An unattended run takes the safe answer: the build would otherwise run
+	# out of memory. The file is removed after the build either way.
+	if [ "${NONINTERACTIVE:-0}" = 1 ]; then
+		note "creating a temporary 2 GB swapfile for the build"
+	elif ! ask_yes_no "  Create a temporary 2 GB swapfile for the build?" y; then
+		return 0
+	fi
 	[ -e "$BUILD_SWAP" ] && return 0
 	spinner_start "creating build swapfile"
 	# Mark now so cleanup removes the file even if swapon fails partway through.
@@ -507,29 +673,122 @@ remove_build_swap() {
 	SWAP_ADDED=0
 }
 
-# Clones the repo (or uses --from-checkout dir). Prints the source dir via SRC_DIR.
-fetch_source() {
+# Clones the repo (or uses --from-checkout dir) and checks out target, a full
+# commit. Prints the source dir via SRC_DIR. With no argument it resolves the
+# remote's HEAD first: the updater calls it that way.
+fetch_source() { # [target]
 	if [ "${FROM_CHECKOUT:-0}" = 1 ]; then
 		SRC_DIR=$(cd "$CHECKOUT_DIR" && pwd)
 		[ -f "$SRC_DIR/go.mod" ] || die "--from-checkout: no go.mod in $SRC_DIR"
 		step_ok "using local checkout $SRC_DIR"
 		return
 	fi
+	_target=${1:-}
+	if [ -z "$_target" ]; then
+		resolve_ref '' "$OUTHAUL_REPO"
+		_target=$TARGET
+	fi
 	SRC_DIR=$(mktemp -d)
-	spinner_start "cloning outhaul"
+	_log=${LOGFILE:-/dev/null}
+	# The tests call this before main has opened the install log; a log that
+	# cannot be opened is no reason to fail the fetch.
+	(: >>"$_log") 2>/dev/null || _log=/dev/null
+	spinner_start "fetching outhaul $(short "$_target")"
 	set +e
-	git clone --depth 1 "$OUTHAUL_REPO" "$SRC_DIR" >>"${LOGFILE:-/dev/null}" 2>&1
+	{
+		git init -q "$SRC_DIR" &&
+			git -C "$SRC_DIR" fetch --depth 1 "$OUTHAUL_REPO" "$_target" &&
+			git -C "$SRC_DIR" checkout --detach FETCH_HEAD
+	} >>"$_log" 2>&1
 	rc=$?
 	set -e
 	spinner_stop "$rc"
-	[ "$rc" -eq 0 ] || die "could not clone $OUTHAUL_REPO — see ${LOGFILE:-the install log}"
+	[ "$rc" -eq 0 ] || die "could not fetch $(short "$_target") from $OUTHAUL_REPO — see ${LOGFILE:-the install log}"
+	_fetched=$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || true)
+	[ "$_fetched" = "$_target" ] || die "fetched $_fetched, not $_target"
+	# The docs promise the log names the commit a tag resolved to; the
+	# spinner's line never reaches the log when colour is off.
+	log_event "fetch outhaul $(short "$_fetched")"
+}
+
+# Resolves ref (a tag, a branch, a full commit, or nothing for the remote's
+# HEAD) to TARGET, a full commit. A tag's name becomes TARGET_VERSION; a
+# branch or a commit leaves it empty. TARGET_REF is the ref as it was given.
+resolve_ref() { # ref repo
+	_ref=$1 _repo=$2
+	TARGET_VERSION=''
+	if [ -z "$_ref" ]; then
+		TARGET_REF=HEAD
+		TARGET=$(git ls-remote "$_repo" HEAD 2>/dev/null | awk 'NR == 1 { print $1 }')
+		[ -n "$TARGET" ] || die "could not resolve HEAD of $_repo"
+		return 0
+	fi
+	TARGET_REF=$_ref
+	case "$_ref" in
+	*[!0-9a-fA-F]*) ;;
+	*)
+		if [ "${#_ref}" -eq 40 ]; then
+			TARGET=$(printf '%s\n' "$_ref" | tr 'A-F' 'a-f')
+			return 0
+		fi
+		if [ "${#_ref}" -ge 7 ]; then
+			die "a shortened commit cannot be fetched; give the full 40 characters"
+		fi
+		;;
+	esac
+	_refs=$(git ls-remote "$_repo" 2>/dev/null) || die "could not read the refs of $_repo"
+	# ^{} is an annotated tag's peeled commit: fetch that, not the tag object.
+	TARGET=$(printf '%s\n' "$_refs" | awk -v r="refs/tags/$_ref^{}" '$2 == r { print $1; exit }')
+	if [ -z "$TARGET" ]; then
+		TARGET=$(printf '%s\n' "$_refs" | awk -v r="refs/tags/$_ref" '$2 == r { print $1; exit }')
+	fi
+	if [ -n "$TARGET" ]; then
+		TARGET_VERSION=$_ref
+		return 0
+	fi
+	TARGET=$(printf '%s\n' "$_refs" | awk -v r="refs/heads/$_ref" '$2 == r { print $1; exit }')
+	[ -n "$TARGET" ] || die "no tag or branch named $_ref in $_repo; give a full 40-character commit"
+}
+
+# A field of the running binary's `outhaul version`; empty when it has none.
+build_field() { # name
+	"$BIN" version 2>/dev/null | sed -n "s/^$1=//p"
+}
+
+short() { # commit
+	if [ -n "$1" ]; then printf '%.7s\n' "$1"; else printf 'an unknown build\n'; fi
+}
+
+# Records what this run installed, so a later run can tell that the same
+# commit is already there. Written beside the marker and renamed in: a reader
+# never sees a half-written file.
+write_marker() { # commit ref version
+	_dir=$(dirname "$MARKER")
+	mkdir -p "$_dir" || return 1
+	{
+		printf 'commit=%s\nref=%s\nversion=%s\ninstalled=%s\n' \
+			"$1" "$2" "$3" "$(date +%s)"
+	} >"$MARKER.new" || return 1
+	mv -fT "$MARKER.new" "$MARKER"
+}
+
+read_marker_commit() { sed -n 's/^commit=//p' "$MARKER" 2>/dev/null; }
+
+# True when the running build is not the target, or the last run did not
+# record the target: then there is something to build.
+needs_build() { # installed target marker
+	[ -z "$1" ] && return 0
+	[ "$1" != "$2" ] && return 0
+	[ "$3" != "$2" ] && return 0
+	return 1
 }
 
 # Pure: the -ldflags value that stamps the build for the in-app updater.
-build_ldflags() { # commit repo local(0|1)
+build_ldflags() { # commit repo local(0|1) version
 	pkg=github.com/outhaul-dev/outhaul/internal/update
 	out="-X $pkg.commit=$1 -X $pkg.repo=$2"
 	[ "$3" = 1 ] && out="$out -X $pkg.local=true"
+	[ -n "${4:-}" ] && out="$out -X $pkg.version=$4"
 	printf '%s\n' "$out"
 }
 
@@ -543,7 +802,7 @@ build_binary() {
 	c=$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null)
 	l=0
 	if [ "${FROM_CHECKOUT:-0}" = 1 ] && [ -n "$(git -C "$SRC_DIR" status --porcelain 2>/dev/null)" ]; then l=1; fi
-	(cd "$SRC_DIR" && GOFLAGS=-buildvcs=false go build -ldflags "$(build_ldflags "$c" "${OUTHAUL_REPO:-}" "$l")" -o outhaul .) >>"${LOGFILE:-/dev/null}" 2>&1
+	(cd "$SRC_DIR" && GOFLAGS=-buildvcs=false go build -ldflags "$(build_ldflags "$c" "${OUTHAUL_REPO:-}" "$l" "${TARGET_VERSION:-}")" -o outhaul .) >>"${LOGFILE:-/dev/null}" 2>&1
 	rc=$?
 	set -e
 	spinner_stop "$rc"
@@ -581,7 +840,8 @@ port_in_use() { # port
 	else netstat -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]$1\$"; fi
 }
 
-# Warns (does not hard-fail) about DNS/port issues before choosing ACME.
+# Warns (does not hard-fail) about DNS/port issues before choosing ACME. An
+# unattended run continues on a mismatch, with the warning; the wizard asks.
 acme_preflight() { # domain
 	dom=$1
 	pub=$(host_public_ip)
@@ -591,8 +851,12 @@ acme_preflight() { # domain
 	if [ -n "$pub" ] && ! domain_ip_matches "$pub" "$ips"; then
 		step_fail "$dom does not point at this server"
 		note "create a DNS A record:  $dom  A  $pub"
-		ask_yes_no "  Continue with Let's Encrypt anyway?" n ||
-			die "fix DNS, then re-run the installer"
+		if [ "${NONINTERACTIVE:-0}" = 1 ]; then
+			note "continuing; Let's Encrypt may fail until the record is right"
+		else
+			ask_yes_no "  Continue with Let's Encrypt anyway?" n ||
+				die "fix DNS, then re-run the installer"
+		fi
 	else
 		step_ok "$dom points at this server"
 	fi
@@ -688,9 +952,68 @@ apply_firewall() { # ports (space separated, must include 22) bridge adminport
 	ufw allow in on "$bridge" to any port "$adminport" proto tcp >>"${LOGFILE:-/dev/null}" 2>&1 || true
 	# --force avoids the interactive "proceed?" prompt; SSH is already allowed above.
 	ufw --force enable >>"${LOGFILE:-/dev/null}" 2>&1 || true
+	# The allow lines and the enable are best-effort, so success cannot rest on
+	# their exit status: ask ufw. A run told to configure the firewall must not
+	# report it open when nothing is filtered.
+	if ! ufw_active; then
+		step_fail "ufw did not become active"
+		note "the ports are not filtered; check: ufw status, or open them by hand"
+		if [ "$NONINTERACTIVE" = 1 ]; then die "ufw did not become active"; fi
+		return 0
+	fi
 	step_ok "firewall: opened $ports (SSH preserved)"
 	note "admin port $adminport: allowed from Outhaul's Docker bridge ($bridge) only, so Traefik can serve it"
 	note "open more later with: ufw allow <port>"
+}
+
+# Opens the firewall, when asked to. In non-interactive mode a port that
+# enabling ufw would newly block is fatal before any ufw or apt-get call: the
+# run was told to configure the firewall, and silently cutting a service off
+# is not an answer. The wizard says which ports, and asks.
+configure_firewall() {
+	[ "${WANT_FW:-0}" = 1 ] || return 0
+	PORTS=$(derive_firewall_ports "${MODE:-c}" "${GITPORT:-}" "${LOCAL_CA:-0}")
+	if [ -n "${SSH_CONNECTION:-}" ]; then
+		assh=${SSH_CONNECTION##* }
+		case " $PORTS " in *" $assh "*) ;; *) if [ -n "$assh" ]; then PORTS="$PORTS $assh"; fi ;; esac
+	fi
+	if [ "$NONINTERACTIVE" = 1 ]; then
+		note "firewall will open: $PORTS"
+	else
+		printf '  Firewall will open (SSH always preserved): %s\n' "$PORTS"
+	fi
+	fw_default=y
+	if ! ufw_active; then
+		blocked=$(ufw_would_block "$(listening_ports)" "$PORTS" "$ADMIN_PORT")
+		if [ -n "$blocked" ]; then
+			step_fail "ufw is inactive; enabling it would also block ports listening now: $blocked"
+			note "containers with published ports are not affected; open others with: ufw allow <port>"
+			if [ "$NONINTERACTIVE" = 1 ]; then die "refusing to enable ufw while it would block: $blocked"; fi
+			fw_default=n
+		fi
+	fi
+	if [ "$NONINTERACTIVE" = 1 ]; then
+		apply_firewall "$PORTS" "$BRIDGE" "$ADMIN_PORT"
+	elif ask_yes_no "  Proceed?" "$fw_default"; then
+		apply_firewall "$PORTS" "$BRIDGE" "$ADMIN_PORT"
+	else
+		PORTS=''
+	fi
+}
+
+# The before-anything check: a non-interactive --firewall ufw run that would
+# cut off a listening port exits 1 before Docker, git or a build is touched.
+# configure_firewall checks again, on the new service's ports, after the
+# install.
+check_firewall_early() {
+	[ "$NONINTERACTIVE" = 1 ] && [ "${WANT_FW:-0}" = 1 ] || return 0
+	_ports=$(derive_firewall_ports "${MODE:-c}" "${GITPORT:-}" "${LOCAL_CA:-0}")
+	_admin=$(admin_port "$(service_env OUTHAUL_LISTEN_ADDR :8080)")
+	if ! ufw_active; then
+		_blocked=$(ufw_would_block "$(listening_ports)" "$_ports" "$_admin")
+		if [ -n "$_blocked" ]; then die "refusing to enable ufw while it would block: $_blocked"; fi
+	fi
+	return 0
 }
 
 # Carry legacy slipway state across the rename (mirrors old install.sh).
@@ -718,16 +1041,6 @@ install_binary() {
 	step_ok "installed /usr/local/bin/outhaul"
 }
 
-# Installs the systemd unit shipped in the repo and (re)starts the service.
-install_service() {
-	install -m 0644 "$SRC_DIR/deploy/outhaul.service" /etc/systemd/system/outhaul.service
-	systemctl daemon-reload
-	if systemctl is-active --quiet outhaul; then
-		systemctl restart outhaul
-	else systemctl enable --now outhaul; fi
-	step_ok "outhaul service started"
-}
-
 # Copies src to dest by a temp file and rename, so a process that has dest
 # open or is running it keeps the old file: a new inode, never a rewrite.
 install_atomic() { # src dest mode
@@ -735,6 +1048,461 @@ install_atomic() { # src dest mode
 	cp "$1" "$2.new" || return 1
 	chmod "$3" "$2.new" || return 1
 	mv -f "$2.new" "$2"
+}
+
+# Pulls the images the new build runs, so a slow download happens before
+# Outhaul stops rather than in the health window: Outhaul reconciles Traefik
+# before /healthz answers. cloudflared only where the tunnel runs.
+pull_images() { # binary
+	_images=$("$1" images) || die "the new build could not list its images"
+	_traefik=$(printf '%s\n' "$_images" | awk '$1 == "traefik" { print $2 }')
+	_cloudflared=$(printf '%s\n' "$_images" | awk '$1 == "cloudflared" { print $2 }')
+	[ -n "$_traefik" ] || die "the new build lists no Traefik image"
+	_was=$("$BIN" images 2>/dev/null | awk '$1 == "traefik" { print $2 }')
+	if [ -n "$_was" ] && [ "$_was" != "$_traefik" ]; then
+		note "Traefik's image changes from $_was to $_traefik."
+		note "This update restarts Traefik: every app is unreachable for a few seconds."
+	fi
+	spinner_start "pulling $_traefik"
+	docker pull "$_traefik" >>"$LOGFILE" 2>&1 || die "could not pull $_traefik"
+	spinner_stop 0
+	if [ -n "$_cloudflared" ] && docker container inspect outhaul-cloudflared >/dev/null 2>&1; then
+		spinner_start "pulling $_cloudflared"
+		docker pull "$_cloudflared" >>"$LOGFILE" 2>&1 || die "could not pull $_cloudflared"
+		spinner_stop 0
+	fi
+	step_ok "images pulled"
+}
+
+# Copies src over dest by way of a temp file and a rename: a new inode, so a
+# running program, or the shell reading this script, keeps the old file.
+# The temp file is dest.new, or tmp when given. cp -p keeps the owner and
+# mode, and -T replaces dest itself, whatever it is.
+replace_file() { # src dest [mode [tmp]]
+	_rf=${4:-$2.new}
+	rm -f "$_rf" || return 1
+	cp -p "$1" "$_rf" || return 1
+	if [ -n "${3:-}" ]; then chmod "$3" "$_rf" || return 1; fi
+	mv -fT "$_rf" "$2"
+}
+
+# Keeps the running version in WORK_DIR/previous: the binary,
+# outhaul.service, the database with its -wal and -shm files when present,
+# install.env and the two install drop-ins. Outhaul must be stopped. Built in
+# previous.new, so previous/ is always a whole copy. Every step is checked:
+# callers test its status.
+snapshot() {
+	_new=$WORK_DIR/previous.new
+	rm -rf "$_new" || return 1
+	mkdir -m 0700 "$_new" || return 1
+	cp -p "$BIN" "$_new/outhaul" || return 1
+	if [ -f "$UNIT_DIR/outhaul.service" ]; then
+		cp -p "$UNIT_DIR/outhaul.service" "$_new/outhaul.service" || return 1
+	fi
+	for _f in outhaul.db outhaul.db-wal outhaul.db-shm; do
+		if [ -f "$DATA_DIR/$_f" ]; then cp -p "$DATA_DIR/$_f" "$_new/$_f" || return 1; fi
+	done
+	if [ -f "$INSTALL_ENV" ]; then cp -p "$INSTALL_ENV" "$_new/install.env" || return 1; fi
+	if [ -f "$SERVICE_DROPIN" ]; then cp -p "$SERVICE_DROPIN" "$_new/outhaul.service.d.10-install.conf" || return 1; fi
+	if [ -f "$UPDATE_DROPIN" ]; then cp -p "$UPDATE_DROPIN" "$_new/outhaul-update.service.d.10-install.conf" || return 1; fi
+	rm -rf "$WORK_DIR/previous" || return 1
+	mv "$_new" "$WORK_DIR/previous"
+}
+
+# Puts back what snapshot kept. A -wal or -shm file the snapshot does not
+# have is the new version's, and SQLite would replay it onto the old
+# database: it is removed. So is an install.env or drop-in the snapshot
+# lacks: the old binary may refuse what the new flags wrote. The data dir
+# belongs to outhaul, so the database files are copied in WORK_DIR and
+# renamed into it (cp -p keeps them outhaul's). Every step is checked:
+# callers test its status.
+restore_snapshot() {
+	_p=$WORK_DIR/previous
+	[ -f "$_p/outhaul" ] || return 1
+	replace_file "$_p/outhaul" "$BIN" || return 1
+	if [ -f "$_p/outhaul.service" ]; then
+		replace_file "$_p/outhaul.service" "$UNIT_DIR/outhaul.service" || return 1
+	else
+		rm -f "$UNIT_DIR/outhaul.service" || return 1
+	fi
+	for _f in outhaul.db outhaul.db-wal outhaul.db-shm; do
+		if [ -f "$_p/$_f" ]; then
+			replace_file "$_p/$_f" "$DATA_DIR/$_f" '' "$WORK_DIR/.restore" || return 1
+		elif [ "$_f" != outhaul.db ]; then
+			rm -f "$DATA_DIR/$_f" || return 1
+		fi
+	done
+	if [ -f "$_p/install.env" ]; then
+		replace_file "$_p/install.env" "$INSTALL_ENV" || return 1
+	else
+		rm -f "$INSTALL_ENV" || return 1
+	fi
+	if [ -f "$_p/outhaul.service.d.10-install.conf" ]; then
+		replace_file "$_p/outhaul.service.d.10-install.conf" "$SERVICE_DROPIN" || return 1
+	else
+		rm -f "$SERVICE_DROPIN" || return 1
+	fi
+	if [ -f "$_p/outhaul-update.service.d.10-install.conf" ]; then
+		replace_file "$_p/outhaul-update.service.d.10-install.conf" "$UPDATE_DROPIN" || return 1
+	else
+		rm -f "$UPDATE_DROPIN" || return 1
+	fi
+}
+
+install_new() {
+	replace_file "$SRC_DIR/outhaul" "$BIN" 0755 || return 1
+	replace_file "$SRC_DIR/deploy/outhaul.service" "$UNIT_DIR/outhaul.service" 0644
+}
+
+# Keeps one of the env files a no-build run is about to rewrite, or records
+# that it was not there, so putting them back can tell the two apart.
+keep_env_file() { # path copy missing-list
+	if [ -f "$1" ]; then
+		cp -p "$1" "$2"
+	else
+		printf '%s\n' "${2##*/}" >>"$3"
+	fi
+}
+
+# Keeps the files a no-build run rewrites: install.env, the two install
+# drop-ins and /etc/outhaul.env. The service is not stopped, so this is not
+# snapshot: only these files are copied, never the binary or the database.
+# Every step is checked: callers test its status.
+save_env_files() { # directory
+	_dir=$1
+	rm -rf "$_dir" || return 1
+	mkdir "$_dir" || return 1
+	chmod 0700 "$_dir" || return 1
+	: >"$_dir/missing" || return 1
+	keep_env_file "$INSTALL_ENV" "$_dir/install.env" "$_dir/missing" || return 1
+	keep_env_file "$SERVICE_DROPIN" "$_dir/service.conf" "$_dir/missing" || return 1
+	keep_env_file "$UPDATE_DROPIN" "$_dir/update.conf" "$_dir/missing" || return 1
+	keep_env_file "$ENV_FILE" "$_dir/outhaul.env" "$_dir/missing" || return 1
+}
+
+# Puts one env file back from its copy, or removes it when it did not exist.
+put_env_file() { # path copy missing-list
+	if grep -qx "${2##*/}" "$3"; then
+		rm -f "$1"
+	else
+		replace_file "$2" "$1"
+	fi
+}
+
+# Puts back what save_env_files kept. Every step is checked: the caller says
+# whether all of it landed. systemd is not reloaded and the service is not
+# started here.
+restore_env_files() { # directory
+	_dir=$1
+	[ -f "$_dir/missing" ] || return 1
+	put_env_file "$INSTALL_ENV" "$_dir/install.env" "$_dir/missing" || return 1
+	put_env_file "$SERVICE_DROPIN" "$_dir/service.conf" "$_dir/missing" || return 1
+	put_env_file "$UPDATE_DROPIN" "$_dir/update.conf" "$_dir/missing" || return 1
+	put_env_file "$ENV_FILE" "$_dir/outhaul.env" "$_dir/missing" || return 1
+}
+
+# A no-build run writes the env files before it start or restarts the service.
+# When the service refuses them, the old ones are already gone: put them back,
+# reload systemd and start the old configuration. The journal tail comes first,
+# so its lines are the failed configuration's. Returns 0 when the old files are
+# in place, 1 when they are not; the caller fails the run either way.
+revert_env_files() { # directory
+	_dir=$1
+	print_journal_tail
+	printf '  .. putting back the env files from before this run\n'
+	systemctl stop outhaul
+	if restore_env_files "$_dir"; then
+		systemctl daemon-reload
+		systemctl start outhaul
+		step_fail "outhaul did not work with the new env files; the previous ones are back"
+		return 0
+	fi
+	note "could not put back every env file from $_dir"
+	step_fail "outhaul did not work with the new env files, and the previous ones did not come back either"
+	return 1
+}
+
+# Reads response headers on stdin: true when they carry X-Outhaul-Commit:
+# <commit>. An unstamped build (empty commit) sends no such header, so then
+# any 200 counts.
+answers_commit() { # commit
+	awk -v want="$1" '
+		{ sub(/\r$/, "") }
+		NR == 1 && want == "" && $2 == "200" { ok = 1 }
+		{
+			i = index($0, ":")
+			if (want == "" || i == 0 || tolower(substr($0, 1, i - 1)) != "x-outhaul-commit") next
+			v = substr($0, i + 1)
+			gsub(/^[ \t]+|[ \t]+$/, "", v)
+			if (v == want) ok = 1
+		}
+		END { exit !ok }'
+}
+
+# True once the Outhaul answering on the admin port reports commit: up to 60
+# one-second attempts.
+new_version_healthy() { # commit port
+	_i=0
+	while [ "$_i" -lt 60 ]; do
+		if curl -sS --max-time 2 -D - -o /dev/null "http://127.0.0.1:$2/healthz" 2>/dev/null | answers_commit "$1"; then
+			return 0
+		fi
+		sleep 1
+		_i=$((_i + 1))
+	done
+	return 1
+}
+
+# The commands to put the previous version back by hand.
+recovery_help() {
+	_p=$WORK_DIR/previous
+	printf 'To recover, run as root on the server:\n'
+	printf '  systemctl stop outhaul\n'
+	if [ "$SNAPSHOT_OK" = 1 ]; then
+		printf '  cp -p %s %s\n' "$_p/outhaul" "$BIN"
+		if [ -f "$_p/outhaul.service" ]; then
+			printf '  cp -p %s %s\n' "$_p/outhaul.service" "$UNIT_DIR/outhaul.service"
+		fi
+		for _f in outhaul.db outhaul.db-wal outhaul.db-shm; do
+			if [ -f "$_p/$_f" ]; then
+				# As restore_snapshot does it: copied here, renamed into the data dir.
+				printf '  cp -p %s %s && mv -fT %s %s\n' "$_p/$_f" "$WORK_DIR/.restore" "$WORK_DIR/.restore" "$DATA_DIR/$_f"
+			elif [ "$_f" != outhaul.db ]; then
+				printf '  rm -f %s\n' "$DATA_DIR/$_f"
+			fi
+		done
+		if [ -f "$_p/install.env" ]; then
+			printf '  cp -p %s %s\n' "$_p/install.env" "$INSTALL_ENV"
+		else
+			printf '  rm -f %s\n' "$INSTALL_ENV"
+		fi
+		if [ -f "$_p/outhaul.service.d.10-install.conf" ]; then
+			printf '  cp -p %s %s\n' "$_p/outhaul.service.d.10-install.conf" "$SERVICE_DROPIN"
+		else
+			printf '  rm -f %s\n' "$SERVICE_DROPIN"
+		fi
+		if [ -f "$_p/outhaul-update.service.d.10-install.conf" ]; then
+			printf '  cp -p %s %s\n' "$_p/outhaul-update.service.d.10-install.conf" "$UPDATE_DROPIN"
+		else
+			printf '  rm -f %s\n' "$UPDATE_DROPIN"
+		fi
+		printf '  systemctl daemon-reload\n'
+	fi
+	printf '  systemctl start outhaul\n'
+	printf 'then check: journalctl -u outhaul -n 50 --no-pager\n'
+}
+
+# Prints the body of install.env: this run's answers, under a comment saying
+# the next run rewrites them. Anything else belongs in /etc/outhaul.env or an
+# --env-file, which this run never touches.
+install_env_content() {
+	printf '# Outhaul unattended install answers — written by --non-interactive.\n'
+	printf '# Each --non-interactive run rewrites this file.\n'
+	printf '# Put anything else in /etc/outhaul.env or an --env-file.\n'
+	if [ -n "${PUBLIC_URL:-}" ]; then printf 'OUTHAUL_PUBLIC_URL=%s\n' "$PUBLIC_URL"; fi
+	if [ -n "${ACME_EMAIL:-}" ]; then printf 'OUTHAUL_ACME_EMAIL=%s\n' "$ACME_EMAIL"; fi
+	if [ "${MODE:-}" = c ] && [ "${LOCAL_CA:-0}" = 1 ]; then
+		printf 'OUTHAUL_LOCAL_CA=true\n'
+	fi
+	if [ "${MODE:-}" = p ]; then
+		printf 'OUTHAUL_HTTP_PORT=off\n'
+		printf 'OUTHAUL_ADMIN_DIRECT=off\n'
+	fi
+	printf 'OUTHAUL_SSH_ADDR=%s\n' "${SSH_ADDR:-}"
+	if [ -n "${UPDATES:-}" ]; then printf 'OUTHAUL_UPDATES=%s\n' "$UPDATES"; fi
+}
+
+# Writes content to path with mode, unless it already holds exactly that.
+# Returns 0 when it wrote and 1 when the file already matched. A failure to
+# create, write or rename is fatal: install_or_upgrade runs under an `if`,
+# which would swallow a returned 1.
+write_if_changed() { # path content mode
+	_wic_path=$1 _wic_content=$2 _wic_mode=$3
+	_wic_dir=$(dirname "$_wic_path")
+	mkdir -p "$_wic_dir" || die "could not create $_wic_dir"
+	_wic_tmp=$(mktemp "$_wic_dir/.outhaul.XXXXXX") || die "could not write in $_wic_dir"
+	printf '%s\n' "$_wic_content" >"$_wic_tmp" || {
+		rm -f "$_wic_tmp"
+		die "could not write $_wic_tmp"
+	}
+	chmod "$_wic_mode" "$_wic_tmp" || {
+		rm -f "$_wic_tmp"
+		die "could not set the mode of $_wic_tmp"
+	}
+	if cmp -s "$_wic_tmp" "$_wic_path"; then
+		rm -f "$_wic_tmp"
+		# Right content, wrong mode: an interrupted run can leave install.env
+		# 0644. Correct it rather than leave the secret readable.
+		if [ "$(stat -c '%a' "$_wic_path" 2>/dev/null)" != "${_wic_mode#0}" ]; then
+			chmod "$_wic_mode" "$_wic_path" || die "could not set the mode of $_wic_path"
+		fi
+		return 1
+	fi
+	mv -fT "$_wic_tmp" "$_wic_path" || {
+		rm -f "$_wic_tmp"
+		die "could not replace $_wic_path"
+	}
+}
+
+# Writes install.env in a non-interactive run, and only when its content
+# changed. The wizard never writes it. Always returns 0: a caller under
+# `set -e` must not abort just because the file was already right.
+write_install_env() {
+	[ "$NONINTERACTIVE" = 1 ] || return 0
+	if write_if_changed "$INSTALL_ENV" "$(install_env_content)" 0600; then
+		ENV_CHANGED=1
+	fi
+	return 0
+}
+
+# Writes the drop-in that loads this run's env files, for the service and the
+# updater. A wizard re-run with no --env-file leaves both alone, so an earlier
+# unattended run's env files keep applying. A wizard --env-file run cannot
+# leave them alone, so it keeps install.env first when it is already there:
+# that run's answers (OUTHAUL_SSH_ADDR=off, OUTHAUL_UPDATES=off, the proxy
+# switches) would be lost at the next restart otherwise. Paths are written
+# bare: systemd takes a space in a bare path and ignores a quoted one.
+write_dropins() {
+	if [ "$NONINTERACTIVE" != 1 ] && [ -z "$ENV_FILES" ]; then return 0; fi
+	_dropin='[Service]
+'
+	if [ "$NONINTERACTIVE" = 1 ]; then
+		_dropin="${_dropin}EnvironmentFile=$INSTALL_ENV
+"
+	elif [ -f "$INSTALL_ENV" ]; then
+		_dropin="${_dropin}EnvironmentFile=$INSTALL_ENV
+"
+		note "keeping $INSTALL_ENV from the earlier unattended run"
+	fi
+	while IFS= read -r _f; do
+		[ -n "$_f" ] || continue
+		_dropin="${_dropin}EnvironmentFile=$_f
+"
+	done <<EOF
+$ENV_FILES
+EOF
+	# A malformed ENV_FILES (a blank line, say) can reach here with no file
+	# to name. A body of only [Service] would drop install.env and so
+	# re-enable the :2222 listener, so leave both drop-ins alone.
+	case "$_dropin" in
+	*"EnvironmentFile="*) ;;
+	*) return 0 ;;
+	esac
+	# Drop the last newline: write_if_changed adds one.
+	_dropin=${_dropin%?}
+	if write_if_changed "$SERVICE_DROPIN" "$_dropin" 0644; then DROPIN_CHANGED=1; fi
+	if write_if_changed "$UPDATE_DROPIN" "$_dropin" 0644; then DROPIN_CHANGED=1; fi
+	return 0
+}
+
+# The careful swap. A first install pulls the images, installs and starts. An
+# upgrade pulls first, stops Outhaul, keeps the running version, installs,
+# starts and checks the commit, and puts the old files back when the new
+# version does not answer. It returns 1 on a failed first install or a
+# rolled-back upgrade, and never exits for a health failure: the wizard keeps
+# its completion screen and exit code.
+install_or_upgrade() { # src_dir target version
+	_src=$1 _target=$2 _version=$3
+	_from=$(build_field commit)
+	# Branch on the binary, not the stamp: a binary from before the stamp
+	# records no commit but is still running, and must go through the swap.
+	if [ ! -e "$BIN" ]; then
+		pull_images "$_src/outhaul" || return 1
+		install_new || die "could not install the new version"
+		write_install_env
+		write_dropins
+		systemctl daemon-reload || die "systemctl daemon-reload failed"
+		systemctl enable --now outhaul || die "could not start outhaul"
+		STARTED_SERVICE=1
+		# Read the port only now: the service has loaded its env files.
+		ADMIN_PORT=$(admin_port "$(service_env OUTHAUL_LISTEN_ADDR :8080)")
+		if ! new_version_healthy "$_target" "$ADMIN_PORT"; then
+			step_fail "the new version did not answer"
+			print_journal_tail
+			return 1
+		fi
+		return 0
+	fi
+	pull_images "$_src/outhaul" || return 1
+	printf '  .. stopping outhaul\n'
+	ROLLBACK_TO=$_from
+	STAGE=swap
+	SNAPSHOT_OK=0
+	systemctl stop outhaul || die "outhaul did not stop"
+	if snapshot; then
+		SNAPSHOT_OK=1
+	else
+		systemctl start outhaul || true
+		die "could not keep a copy of the running version"
+	fi
+	if ! install_new; then rollback_install "$_from" || true; return 1; fi
+	write_install_env
+	write_dropins
+	if ! systemctl daemon-reload; then rollback_install "$_from" || true; return 1; fi
+	if ! systemctl start outhaul; then rollback_install "$_from" || true; return 1; fi
+	STARTED_SERVICE=1
+	ADMIN_PORT=$(admin_port "$(service_env OUTHAUL_LISTEN_ADDR :8080)")
+	if ! new_version_healthy "$_target" "$ADMIN_PORT"; then
+		rollback_install "$_from" || true
+		return 1
+	fi
+	STAGE=''
+	return 0
+}
+
+# Puts the previous version back, starts it, and checks that it answers. It
+# also runs from the exit trap, so it checks every step itself and nothing
+# interrupts it. With SNAPSHOT_OK=0 there is no copy to trust: the binary
+# still in place is started instead of an older previous/.
+# The wizard can call it directly, so errexit and the signal traps it finds go
+# back as it found them; from the exit trap, errexit is already off. The reason
+# names what failed, for a caller whose failure was not the health check.
+rollback_install() { # from [reason]
+	_from=$1
+	_why=${2:-the new version did not answer}
+	ROLLBACK_DONE=1
+	_errexit=0
+	case $- in *e*) _errexit=1 ;; esac
+	set +e
+	trap '' INT TERM
+	# The journal's last lines are the failed new version's: read them before
+	# the old version is started over them. Once per run, so a die that
+	# already printed the tail does not print the restarted old version's.
+	print_journal_tail
+	printf '  .. rolling back to %s\n' "$(short "$_from")"
+	systemctl stop outhaul
+	_restored=1
+	if [ "$SNAPSHOT_OK" = 1 ] && ! restore_snapshot; then
+		_restored=0
+		note "could not put back every file from $WORK_DIR/previous"
+	fi
+	systemctl daemon-reload
+	systemctl start outhaul
+	# The old version's own port, now that it has loaded its env files.
+	_old_port=$(admin_port "$(service_env OUTHAUL_LISTEN_ADDR :8080)")
+	_rc=1
+	if [ "$_restored" = 1 ] && new_version_healthy "$_from" "$_old_port"; then
+		ROLLED_BACK=1
+		STAGE=''
+		step_fail "$_why; rolled back to $(short "$_from")"
+		_rc=0
+	else
+		STAGE=''
+		recovery_help
+		step_fail "$_why, and the old one did not come back either"
+	fi
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+	if [ "$_errexit" = 1 ]; then set -e; fi
+	return "$_rc"
+}
+
+# The exit guard: a signal or a die after Outhaul stopped puts the old
+# version back, unless the explicit rollback already ran.
+swap_guard() {
+	[ "${STAGE:-}" = swap ] || return 0
+	[ "${ROLLBACK_DONE:-0}" = 0 ] || return 0
+	rollback_install "${ROLLBACK_TO:-}" || true
 }
 
 # Runs a command inside dir, a directory the outhaul user owns, so that the
@@ -758,10 +1526,10 @@ in_real_dir() { # dir command...
 # overridable for tests, and the updater itself calls this from a new tree
 # after a healthy update.
 install_updater() { # src_dir
-	_lib=${LIB_DIR:-/usr/local/lib/outhaul}
-	_units=${UNIT_DIR:-/etc/systemd/system}
-	_upd=${UPDATE_DIR:-/var/lib/outhaul/update}
-	_work=${WORK_DIR:-/var/lib/outhaul-updater}
+	_lib=$LIB_DIR
+	_units=$UNIT_DIR
+	_upd=$UPDATE_DIR
+	_work=$WORK_DIR
 	mkdir -p "$_lib" "$_units" || return 1
 	install_atomic "$1/deploy/update.sh" "$_lib/update.sh" 0755 || return 1
 	install_atomic "$1/deploy/bootstrap.sh" "$_lib/bootstrap.sh" 0644 || return 1
@@ -781,7 +1549,6 @@ install_updater() { # src_dir
 	if [ ! -d "$_upd" ]; then mkdir -p "$_upd" || return 1; fi
 	in_real_dir "$_upd" set_up_update_dir "$_work" || return 1
 	systemctl daemon-reload || return 1
-	systemctl enable --now outhaul-update.path || return 1
 	step_ok "installed the updater"
 }
 
@@ -799,19 +1566,56 @@ set_up_update_dir() { # work_dir
 	return 1
 }
 
-# The installer's call: the updater is optional, so a failure must not stop
-# the firewall, ingress and setup steps that follow.
-setup_updater() { # src_dir
-	if ! install_updater "$1"; then
-		step_fail "could not install the updater"
-		note "updating from the UI stays unavailable; re-run the installer to try again"
+# Turns the update path unit on or off. A failure is not fatal: the service
+# is installed and serving, and the operator can set it later.
+set_update_path() { # on|off
+	if [ "$1" = off ]; then
+		systemctl disable --now outhaul-update.path >/dev/null 2>&1 || true
+	else
+		systemctl enable --now outhaul-update.path >/dev/null 2>&1 || true
 	fi
+}
+
+# The installer's call: the updater is optional, so a failure must not stop
+# the firewall, ingress and setup steps that follow. A no-build run has no
+# source tree: the marker says the updater's files already came from that
+# commit, so only the path unit is set, from the service's own setting.
+setup_updater() { # src_dir, empty on a no-build run
+	if [ -n "${1:-}" ]; then
+		if ! install_updater "$1"; then
+			step_fail "could not install the updater"
+			note "updating from the UI stays unavailable; re-run the installer to try again"
+			return
+		fi
+	fi
+	_upd=$(service_env OUTHAUL_UPDATES main | tr '[:upper:]' '[:lower:]')
+	if [ "$_upd" = off ]; then set_update_path off; else set_update_path on; fi
 }
 
 # The admin UI's port, from an OUTHAUL_LISTEN_ADDR-style ":8080".
 admin_port() { # listen_addr
 	addr=${1:-:8080}
 	printf '%s\n' "${addr##*:}"
+}
+
+# Prints a setting as the running service has it: from its own environment
+# (systemd loaded the env files, and root can read /proc), then the
+# installer's environment, then the default. The service's copy is what the
+# health checks and the firewall must use, because an --env-file may set a
+# port the installer's own environment does not carry. Never prints the whole
+# environment. PROC_ROOT is the test seam.
+service_env() { # name default
+	_pid=$(systemctl show -p MainPID --value outhaul 2>/dev/null || true)
+	if [ -n "$_pid" ] && [ "$_pid" != 0 ] && [ -r "${PROC_ROOT:-/proc}/$_pid/environ" ]; then
+		_v=$(tr '\0' '\n' <"${PROC_ROOT:-/proc}/$_pid/environ" | sed -n "s/^$1=//p" | head -n 1)
+		if [ -n "$_v" ]; then
+			printf '%s\n' "$_v"
+			return 0
+		fi
+	fi
+	eval "_v=\${$1-}"
+	[ -n "$_v" ] || _v=$2
+	printf '%s\n' "$_v"
 }
 
 # Local admin URL to probe.
@@ -826,6 +1630,28 @@ url_host() { # url
 	printf '%s\n' "${h%%:*}"
 }
 
+# Withholds any journal line carrying the one-time setup URL: both the
+# "open:" line and the "or, over an SSH tunnel" line hold the same token.
+redact_setup_url() {
+	sed 's#.*/setup?token=.*#<setup URL withheld>#'
+}
+
+# The service's last lines after a failed check, with the setup URL withheld.
+# In an unattended run they also go to the log, so the log says why it
+# failed without ever carrying the token. At most one tail per run: a rollback
+# prints the failed new version's lines, and the die that follows must not
+# print the restarted old version's.
+print_journal_tail() {
+	[ "${JOURNAL_TAIL_PRINTED:-0}" = 0 ] || return 0
+	JOURNAL_TAIL_PRINTED=1
+	_tail=$(journalctl -u outhaul -n 20 --no-pager 2>/dev/null | redact_setup_url) || _tail=''
+	if [ -n "$_tail" ]; then
+		printf '%s\n' "$_tail"
+		if [ "${NONINTERACTIVE:-0}" = 1 ]; then log_event "$_tail"; fi
+	fi
+	return 0
+}
+
 # Extracts the one-time setup URL from a stream of journald lines: the
 # newest "open: URL" hint, since a re-run restarts the service, which prints
 # a new token. With a public URL, that line holds the public one.
@@ -833,42 +1659,50 @@ extract_setup_url() {
 	grep -oE 'open: https?://[^ ]+/setup\?token=[A-Za-z0-9_-]+' | tail -1 | sed 's/^open: //'
 }
 
+# Writes the one-time setup URL beside its destination and renames it in:
+# root:root, mode 0600. A later restart makes it stale. The host asked for
+# the file, so a failure is fatal.
+write_setup_file() { # path url
+	_dir=$(dirname "$1")
+	_tmp=$(mktemp "$_dir/.outhaul-setup.XXXXXX") || die "could not write $1"
+	if printf '%s\n' "$2" >"$_tmp" && chmod 0600 "$_tmp" && mv -fT "$_tmp" "$1"; then
+		return 0
+	fi
+	rm -f "$_tmp"
+	die "could not write $1"
+}
+
 # The setup URL to open over an SSH tunnel to the admin port.
 local_setup_url() { # setup_url adminport
 	printf 'http://127.0.0.1:%s/setup?token=%s\n' "$2" "${1##*token=}"
-}
-
-# Polls the admin endpoint up to ~30s. Returns 0 when it answers with ANY
-# HTTP response (no -f: a pre-setup redirect/403 still means "reachable").
-wait_healthy() { # url
-	url=$1
-	i=0
-	spinner_start "waiting for outhaul to answer"
-	while [ "$i" -lt 30 ]; do
-		if curl -sS --max-time 2 -o /dev/null "$url" 2>/dev/null; then
-			spinner_stop 0
-			return 0
-		fi
-		sleep 1
-		i=$((i + 1))
-	done
-	spinner_stop 1
-	return 1
 }
 
 # Polls the admin UI's /healthz through Traefik, the way a browser reaches it
 # under the public URL, for up to ~60s: Traefik may still be starting. Only a
 # 200 counts (-f): a 404 is Traefik without the admin route, a 502/504 is
 # Traefik unable to reach the admin port. -k: the certificate may not be
-# issued yet.
-wait_public_healthy() { # host
+# issued yet. The HTTPS port is the service's own (an env file may change it),
+# and a required header goes to curl on stdin (-K -): its value must never be
+# an argument, where ps and the log would show it.
+wait_public_healthy() { # host [https_port [header_name header_value]]
 	host=$1
+	_port=${2:-443}
+	_args="-fsSk --max-time 2 --resolve $host:$_port:127.0.0.1 -o /dev/null https://$host:$_port/healthz"
 	i=0
 	spinner_start "checking the admin UI at https://$host"
 	while [ "$i" -lt 20 ]; do
-		if curl -fsSk --max-time 2 -o /dev/null --resolve "$host:443:127.0.0.1" "https://$host/healthz" 2>/dev/null; then
-			spinner_stop 0
-			return 0
+		if [ -n "${3:-}" ]; then
+			# shellcheck disable=SC2086 # intentional: _args is a word list
+			if printf 'header = "%s: %s"\n' "$3" "${4:-}" | curl $_args -K - 2>/dev/null; then
+				spinner_stop 0
+				return 0
+			fi
+		else
+			# shellcheck disable=SC2086 # intentional: _args is a word list
+			if curl $_args 2>/dev/null; then
+				spinner_stop 0
+				return 0
+			fi
 		fi
 		sleep 1
 		i=$((i + 1))
@@ -877,9 +1711,49 @@ wait_public_healthy() { # host
 	return 1
 }
 
+have_ss() { command -v ss >/dev/null 2>&1; }
+
+# True when the proxy's switches took effect: no wildcard-bound listener has
+# the admin port, and Traefik publishes no port 80. An Outhaul from before the
+# switches ignores them without a word, so the run would otherwise report
+# success with the admin port open and port 80 published.
+proxy_effective() { # admin_port
+	_port=$1
+	if have_ss; then
+		if ss -ltn 2>/dev/null |
+			awk -v p="$_port" '$1 == "LISTEN" && ($4 == "0.0.0.0:" p || $4 == "*:" p || $4 == "[::]:" p) { found = 1 } END { exit !found }'; then
+			step_fail "the admin port $_port is listening on a wildcard address"
+			return 1
+		fi
+	else
+		note "ss not found; skipping the admin-port check"
+	fi
+	if docker port outhaul-traefik 2>/dev/null | grep -q '^80/'; then
+		step_fail "Traefik still publishes port 80"
+		return 1
+	fi
+	return 0
+}
+
+# What a failed proxy check must do to the service: roll back an upgrade this
+# run performed; stop a service this run started, which is now serving with the
+# switches not in effect (a first install, or a no-build run that started a
+# stopped service); or leave a service this run found running alone.
+proxy_failure_action() { # build had_binary started_service service_was_active
+	if [ "$1" = 1 ] && [ "$2" = 1 ]; then
+		printf 'rollback\n'
+	elif [ "$2" = 0 ]; then
+		printf 'stop\n'
+	elif [ "$1" = 0 ] && [ "$3" = 1 ] && [ "$4" = 0 ]; then
+		printf 'stop\n'
+	else
+		printf 'none\n'
+	fi
+}
+
 # Final boxed summary + confetti. Args passed as positional data. public is
-# the check through Traefik (Let's Encrypt mode): 0 ok, 1 failed, '' not run.
-# ADMIN_PORT and BRIDGE come from main.
+# the check through Traefik (Let's Encrypt and proxy modes): 0 ok, 1 failed,
+# '' not run. ADMIN_PORT and BRIDGE come from main.
 completion_screen() { # mode url ports setup_url healthy(0/1) localca(0/1) public(0/1/'')
 	mode=$1
 	url=$2
@@ -895,25 +1769,31 @@ completion_screen() { # mode url ports setup_url healthy(0/1) localca(0/1) publi
 	_c '1;32'
 	printf '  Outhaul is installed\n'
 	_c 0
-	if [ "$healthy" != 0 ]; then
-		step_fail "admin UI did not answer yet (check: journalctl -u outhaul)"
-	elif [ "$public" = 0 ]; then
-		step_ok "Traefik serves the admin UI at $url (checked from this server)"
-	elif [ "$public" = 1 ]; then
+	# A failed public check sets HEALTHY too, so the marker is not written; the
+	# public message is the more useful one, so it comes first.
+	if [ "$public" = 1 ]; then
 		step_fail "admin UI not answering at $url yet"
 		note "Traefik may still be starting or getting a certificate (check: docker logs outhaul-traefik)"
 		note "with ufw on, Traefik also needs: ufw allow in on $bridge to any port $port proto tcp"
+	elif [ "$healthy" != 0 ]; then
+		step_fail "admin UI did not answer yet (check: journalctl -u outhaul)"
+	elif [ "$public" = 0 ]; then
+		step_ok "Traefik serves the admin UI at $url (checked from this server)"
 	else
 		step_ok "admin UI reachable"
 	fi
+	if [ "${ROLLED_BACK:-0}" = 1 ]; then
+		note "the new version did not answer; the previous version is running again"
+	fi
 	[ -n "$ports" ] && note "firewall: $ports open"
-	# The firewall never opens the admin port, and only Let's Encrypt mode
-	# routes the admin UI through Traefik — everyone else needs a tunnel.
-	if [ -n "$ports" ] && [ "$mode" != a ]; then
+	# The firewall never opens the admin port, and only Let's Encrypt and
+	# proxy modes route the admin UI through Traefik — everyone else needs a
+	# tunnel.
+	if [ -n "$ports" ] && [ "$mode" != a ] && [ "$mode" != p ]; then
 		note "admin UI (:$port) is firewalled — reach it over SSH: ssh -L $port:127.0.0.1:$port you@this-server, then open http://127.0.0.1:$port"
 	fi
 	case "$mode" in
-	a) note "HTTPS: Let's Encrypt configured for $url" ;;
+	a | p) note "HTTPS: Let's Encrypt configured for $url" ;;
 	b)
 		_c '1;33'
 		printf '  → Finish Cloudflare Tunnel: log in, then paste your connector token in Settings → Tunnel\n'
@@ -932,11 +1812,15 @@ completion_screen() { # mode url ports setup_url healthy(0/1) localca(0/1) publi
 		_c 0
 		# The public check runs on this server: DNS or a cloud firewall can
 		# still stand between a browser and Traefik.
-		if [ "$mode" = a ]; then
-			note "if it does not open: ssh -L $port:127.0.0.1:$port you@this-server, then open $(local_setup_url "$setup" "$port")"
-		fi
+		case "$mode" in
+		a | p) note "if it does not open: ssh -L $port:127.0.0.1:$port you@this-server, then open $(local_setup_url "$setup" "$port")" ;;
+		esac
 	else
-		note "find the setup URL with: journalctl -u outhaul | grep -i setup"
+		if [ "${NONINTERACTIVE:-0}" = 1 ] && [ -n "${SETUP_URL_FILE:-}" ] && [ -f "$SETUP_URL_FILE" ]; then
+			note "the one-time setup URL is in $SETUP_URL_FILE"
+		else
+			note "find the setup URL with: journalctl -u outhaul | grep -i setup"
+		fi
 	fi
 	# Confetti flourish (skipped in plain mode).
 	if [ "${COLOR:-0}" -ge 1 ] && [ "${UNICODE:-0}" = 1 ]; then
@@ -952,23 +1836,427 @@ VERBOSE=0
 FROM_CHECKOUT=0
 CHECKOUT_DIR=.
 
+# The updater's paths, shared by the installer and the updater. Plain
+# assignments, not ${VAR:-…}: a root environment must not redirect them, and
+# the tests override them after sourcing. OUTHAUL_DATA_DIR is the one setting
+# meant to move them.
+BIN=/usr/local/bin/outhaul
+UNIT_DIR=/etc/systemd/system
+LIB_DIR=/usr/local/lib/outhaul
+DATA_DIR=${OUTHAUL_DATA_DIR:-/var/lib/outhaul}
+UPDATE_DIR=$DATA_DIR/update
+WORK_DIR=/var/lib/outhaul-updater
+# shellcheck disable=SC2034 # the updater's cached_go_toolchain reads it
+CACHE_DIR=/var/cache/outhaul
+INSTALL_ENV=/etc/outhaul/install.env
+SERVICE_DROPIN=$UNIT_DIR/outhaul.service.d/10-install.conf
+UPDATE_DROPIN=$UNIT_DIR/outhaul-update.service.d/10-install.conf
+ENV_FILE=/etc/outhaul.env
+MARKER=/var/lib/outhaul-updater/installed
+
+# What the swap did, for the exit guard and the completion screen.
+STARTED_SERVICE=0
+SERVICE_WAS_ACTIVE=0
+SNAPSHOT_OK=0
+ROLLED_BACK=0
+HEALTHY=0
+ADMIN_PORT=''
+# Whether a binary was running before this run's install, and its commit
+# (empty for a build from before the stamp). A failed proxy check rolls back
+# only an upgrade this run performed.
+HAD_BINARY=0
+PREV_COMMIT=''
+STAGE=''
+ROLLBACK_TO=''
+ROLLBACK_DONE=0
+# Whether this run has printed the journal tail: at most once, so a rollback's
+# lines are the failed new version's and not the restarted old version's.
+JOURNAL_TAIL_PRINTED=0
+ENV_CHANGED=0
+DROPIN_CHANGED=0
+ENV_FILE_CHANGED=0
+
+# What this run installs (see resolve_ref, fetch_source and needs_build), and
+# the last run's record (see write_marker). TARGET_VERSION is a tag's name, or
+# empty for a branch, a full commit, or --from-checkout.
+TARGET=''
+TARGET_VERSION=''
+TARGET_REF=''
+BUILD=0
+REF=${OUTHAUL_REF:-}
+ARG_ERRORS=''
+
+# The unattended interface: parse_args fills these, check_args validates them,
+# apply_answers turns them into the variables the wizard's answers fill.
+INGRESS=''
+PUBLIC_URL=''
+ACME_EMAIL=''
+GIT_SSH=''
+NIXPACKS=''
+FIREWALL=''
+UPDATES=''
+SETUP_URL_FILE=''
+ENV_FILES=''
+
+# Collects a flag error: check_args prints them and exits 2 once parsing is
+# done, so one run can name every bad flag rather than only the first.
+arg_error() { ARG_ERRORS="${ARG_ERRORS}error: $1
+"; }
+
+# Sets ARG_VALUE from a flag's next argument and returns 0, or records
+# "<flag> needs a value" and returns 1.
+take_value() { # flag [value]
+	if [ "$#" -ge 2 ]; then
+		ARG_VALUE=$2
+		return 0
+	fi
+	arg_error "$1 needs a value"
+	return 1
+}
+
+# Prints its argument in lower case.
+lower() { printf '%s\n' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# True for a decimal port number from 1 to 65535.
+is_port() { # value
+	case "$1" in '' | *[!0-9]*) return 1 ;; esac
+	_port=$1
+	while [ "${_port#0}" != "$_port" ]; do _port=${_port#0}; done
+	[ -n "$_port" ] && [ "${#_port}" -le 5 ] && [ "$_port" -ge 1 ] && [ "$_port" -le 65535 ]
+}
+
+usage() {
+	printf 'usage: bootstrap.sh [options]\n\n'
+	printf 'With no options the installer asks every question.\n\n'
+	printf '  --verbose              mirror the install log to stderr\n'
+	printf '  --from-checkout DIR    install from a local checkout, not a clone\n'
+	printf '  --ref REF              a tag, a branch or a full commit (default: OUTHAUL_REF, then HEAD)\n'
+	printf '  --non-interactive      ask nothing; take every answer from a flag\n'
+	printf '  --ingress MODE         letsencrypt, tunnel, local, local-ca or proxy\n'
+	printf '  --public-url URL       the public URL (letsencrypt and proxy)\n'
+	printf '  --acme-email ADDRESS   the ACME account email (letsencrypt and proxy)\n'
+	printf '  --git-ssh off|PORT     the git-push port (default 2222)\n'
+	printf '  --nixpacks on|off      install the pinned nixpacks (default on)\n'
+	printf '  --firewall leave|ufw   configure ufw (default leave)\n'
+	printf '  --updates main|off     write OUTHAUL_UPDATES (default: no line)\n'
+	printf '  --install-docker       install Docker when it is absent\n'
+	printf '  --setup-url-file PATH  write the one-time setup URL here\n'
+	printf '  --env-file PATH        an env file for the service and the updater (repeatable)\n'
+	printf '  -h, --help             this help\n'
+}
+
 parse_args() {
+	ARG_ERRORS=''
 	while [ "$#" -gt 0 ]; do
 		case "$1" in
 		--verbose) VERBOSE=1 ;;
+		--non-interactive) NONINTERACTIVE=1 ;;
+		--install-docker) INSTALL_DOCKER=1 ;;
 		--from-checkout)
-			FROM_CHECKOUT=1
-			CHECKOUT_DIR=${2:-.}
-			shift
+			if take_value "$@"; then
+				FROM_CHECKOUT=1
+				CHECKOUT_DIR=$ARG_VALUE
+				shift
+			fi
+			;;
+		--ingress)
+			if take_value "$@"; then
+				INGRESS=$ARG_VALUE
+				shift
+			fi
+			;;
+		--public-url)
+			if take_value "$@"; then
+				PUBLIC_URL=$ARG_VALUE
+				shift
+			fi
+			;;
+		--acme-email)
+			if take_value "$@"; then
+				ACME_EMAIL=$ARG_VALUE
+				shift
+			fi
+			;;
+		--git-ssh)
+			if take_value "$@"; then
+				GIT_SSH=$ARG_VALUE
+				shift
+			fi
+			;;
+		--nixpacks)
+			if take_value "$@"; then
+				NIXPACKS=$ARG_VALUE
+				shift
+			fi
+			;;
+		--firewall)
+			if take_value "$@"; then
+				FIREWALL=$ARG_VALUE
+				shift
+			fi
+			;;
+		--updates)
+			if take_value "$@"; then
+				UPDATES=$ARG_VALUE
+				shift
+			fi
+			;;
+		--setup-url-file)
+			if take_value "$@"; then
+				SETUP_URL_FILE=$ARG_VALUE
+				shift
+			fi
+			;;
+		--env-file)
+			# ENV_FILES is newline-separated, so a newline in a path
+			# cannot be written down: refuse it here. An empty value
+			# would add a blank line, which makes ENV_FILES look
+			# non-empty and later writes a drop-in with no file, so
+			# refuse it too.
+			if take_value "$@"; then
+				if [ -z "$ARG_VALUE" ]; then
+					arg_error "--env-file needs a value"
+				else
+					case "$ARG_VALUE" in
+					*'
+'*) arg_error "--env-file path contains a newline" ;;
+					*) ENV_FILES="${ENV_FILES}${ARG_VALUE}
+" ;;
+					esac
+				fi
+				shift
+			fi
+			;;
+		--ref)
+			# An empty value is still a value: resolve_ref '' means HEAD.
+			if take_value "$@"; then
+				REF=$ARG_VALUE
+				shift
+			fi
 			;;
 		-h | --help)
-			printf 'usage: bootstrap.sh [--verbose] [--from-checkout DIR]\n'
+			usage
 			exit 0
 			;;
-		*) die "unknown option: $1" ;;
+		*) arg_error "unknown option: $1" ;;
 		esac
 		shift
 	done
+}
+
+# Prints why a path cannot be an --env-file, or nothing when it can. A path
+# with a double quote or % cannot go into EnvironmentFile= at all; a newline
+# never reaches here, because parse_args refuses one.
+env_file_problem() { # path
+	_ef=$1
+	case "$_ef" in
+	*'"'*)
+		printf 'contains a double quote\n'
+		return 0
+		;;
+	*%*)
+		printf 'contains %%\n'
+		return 0
+		;;
+	esac
+	case "$_ef" in
+	/*) ;;
+	*)
+		printf 'is not an absolute path\n'
+		return 0
+		;;
+	esac
+	if [ ! -f "$_ef" ]; then
+		printf 'is not a regular file\n'
+		return 0
+	fi
+	_info=$(stat -c '%u %a' "$_ef" 2>/dev/null) || _info=''
+	_uid=${_info%% *}
+	_mode=${_info#* }
+	if [ "$_uid" != 0 ]; then
+		printf 'is not owned by root\n'
+		return 0
+	fi
+	case "$_mode" in
+	'' | *[!0-7]*)
+		printf 'has a mode this check cannot read\n'
+		return 0
+		;;
+	esac
+	if [ "$((0$_mode & 022))" -ne 0 ]; then
+		printf 'is writable by group or others\n'
+		return 0
+	fi
+	return 1
+}
+
+# True when one of the --env-file paths holds a non-empty
+# OUTHAUL_ACME_DNS_PROVIDER line.
+env_files_have_provider() {
+	while IFS= read -r _f; do
+		[ -n "$_f" ] || continue
+		if grep -q '^OUTHAUL_ACME_DNS_PROVIDER=.' "$_f" 2>/dev/null; then return 0; fi
+	done <<EOF
+$ENV_FILES
+EOF
+	return 1
+}
+
+# Validates the flags before anything changes. Every problem is recorded and
+# printed together; exit 2 then leaves the host untouched.
+check_args() {
+	if [ "$NONINTERACTIVE" = 0 ]; then
+		[ -n "$INGRESS" ] && arg_error "--ingress needs --non-interactive"
+		[ -n "$PUBLIC_URL" ] && arg_error "--public-url needs --non-interactive"
+		[ -n "$ACME_EMAIL" ] && arg_error "--acme-email needs --non-interactive"
+		[ -n "$GIT_SSH" ] && arg_error "--git-ssh needs --non-interactive"
+		[ -n "$NIXPACKS" ] && arg_error "--nixpacks needs --non-interactive"
+		[ -n "$FIREWALL" ] && arg_error "--firewall needs --non-interactive"
+		[ -n "$UPDATES" ] && arg_error "--updates needs --non-interactive"
+		[ "$INSTALL_DOCKER" = 1 ] && arg_error "--install-docker needs --non-interactive"
+		[ -n "$SETUP_URL_FILE" ] && arg_error "--setup-url-file needs --non-interactive"
+	fi
+
+	INGRESS=$(lower "$INGRESS")
+	GIT_SSH=$(lower "$GIT_SSH")
+	NIXPACKS=$(lower "$NIXPACKS")
+	FIREWALL=$(lower "$FIREWALL")
+	UPDATES=$(lower "$UPDATES")
+
+	if [ "$NONINTERACTIVE" = 1 ]; then
+		case "$INGRESS" in
+		'') arg_error "--non-interactive needs --ingress (letsencrypt, tunnel, local, local-ca or proxy)" ;;
+		letsencrypt | tunnel | local | local-ca | proxy) ;;
+		*) arg_error "--ingress must be letsencrypt, tunnel, local, local-ca or proxy" ;;
+		esac
+		case "$INGRESS" in
+		letsencrypt | proxy)
+			[ -n "$PUBLIC_URL" ] || arg_error "--ingress $INGRESS needs --public-url"
+			[ -n "$ACME_EMAIL" ] || arg_error "--ingress $INGRESS needs --acme-email"
+			;;
+		esac
+		case "$INGRESS" in
+		tunnel | local | local-ca)
+			[ -n "$ACME_EMAIL" ] && arg_error "--acme-email is not used with --ingress $INGRESS"
+			;;
+		esac
+	fi
+
+	if [ -n "$GIT_SSH" ] && [ "$GIT_SSH" != off ] && ! is_port "$GIT_SSH"; then
+		arg_error "--git-ssh must be off or a port from 1 to 65535"
+	fi
+	case "$NIXPACKS" in '' | on | off) ;; *) arg_error "--nixpacks must be on or off" ;; esac
+	case "$FIREWALL" in '' | leave | ufw) ;; *) arg_error "--firewall must be leave or ufw" ;; esac
+	case "$UPDATES" in '' | main | off) ;; *) arg_error "--updates must be main or off" ;; esac
+
+	if [ "$FROM_CHECKOUT" = 1 ] && [ -n "$REF" ]; then
+		arg_error "--ref cannot be used with --from-checkout"
+	fi
+
+	while IFS= read -r _f; do
+		[ -n "$_f" ] || continue
+		if _why=$(env_file_problem "$_f"); then
+			arg_error "--env-file $_f $_why"
+		fi
+	done <<EOF
+$ENV_FILES
+EOF
+
+	if [ "$INGRESS" = proxy ] && ! env_files_have_provider; then
+		arg_error "--ingress proxy needs an OUTHAUL_ACME_DNS_PROVIDER= line in an --env-file"
+	fi
+
+	if [ -n "$ARG_ERRORS" ]; then
+		printf '%s' "$ARG_ERRORS" >&2
+		exit 2
+	fi
+	return 0
+}
+
+# Turns the flags into the variables the wizard's answers fill.
+apply_answers() {
+	case "$(lower "$INGRESS")" in
+	letsencrypt) MODE=a LOCAL_CA=0 ;;
+	tunnel) MODE=b LOCAL_CA=0 ;;
+	local) MODE=c LOCAL_CA=0 ;;
+	local-ca) MODE=c LOCAL_CA=1 ;;
+	proxy) MODE=p LOCAL_CA=0 ;;
+	esac
+	PUBLIC_URL=$(normalize_public_url "$PUBLIC_URL")
+	# The wizard leaves another installed version alone; --nixpacks on asks
+	# for the pin, so it replaces one.
+	if [ "$(lower "$NIXPACKS")" = off ]; then
+		WANT_NIXPACKS=0
+		NIXPACKS_REPLACE=0
+	else
+		WANT_NIXPACKS=1
+		if [ "$(lower "$NIXPACKS")" = on ]; then NIXPACKS_REPLACE=1; fi
+	fi
+	case "$(lower "$FIREWALL")" in
+	ufw) WANT_FW=1 ;;
+	*) WANT_FW=0 ;;
+	esac
+	case "$(lower "$GIT_SSH")" in
+	'')
+		GITPORT=2222
+		SSH_ADDR=$(git_ssh_from_port "$GITPORT")
+		;;
+	off)
+		# Never empty: an empty OUTHAUL_SSH_ADDR falls back to :2222 and
+		# silently re-enables the listener.
+		GITPORT=''
+		SSH_ADDR=off
+		;;
+	*)
+		GITPORT=$GIT_SSH
+		# check_args accepts a leading zero; ufw and the port list should
+		# see the same number the service binds.
+		while [ "${GITPORT#0}" != "$GITPORT" ]; do GITPORT=${GITPORT#0}; done
+		SSH_ADDR=$(git_ssh_from_port "$GITPORT")
+		;;
+	esac
+	UPDATES=$(lower "$UPDATES")
+}
+
+# Opens the install log. The wizard truncates it: its step lines go to the
+# terminal and its raw command output goes here. An unattended run appends,
+# mode 0600, with the UTC time and the arguments first (no flag takes a
+# secret). A log that cannot be written is no reason to fail the install:
+# the run continues without one. --verbose mirrors the log only in the
+# wizard; an unattended run's log stays the file.
+init_log() {
+	if [ "${NONINTERACTIVE:-0}" != 1 ]; then
+		: >"$LOGFILE" 2>/dev/null || LOGFILE=/dev/null
+		[ "${VERBOSE:-0}" = 1 ] && LOGFILE=/dev/stderr
+		return 0
+	fi
+	if [ "$LOGFILE" != /dev/null ]; then
+		{
+			mkdir -p "$(dirname "$LOGFILE")" &&
+				: >>"$LOGFILE" &&
+				chmod 0600 "$LOGFILE"
+		} 2>/dev/null || LOGFILE=/dev/null
+	fi
+	if [ "$LOGFILE" != /dev/null ]; then
+		printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" >>"$LOGFILE" 2>/dev/null || true
+	fi
+	return 0
+}
+
+# The exit trap: a signal or a die during the swap puts the old version back
+# first, then the log gets its result line and cleanup runs. The same code
+# exits, so an interrupted run logs FAILED, not OK.
+on_exit() {
+	_rc=$?
+	trap - EXIT
+	swap_guard || true
+	if [ "$_rc" -eq 0 ]; then
+		log_event "OK installed"
+	else
+		log_event "FAILED exit $_rc"
+	fi
+	cleanup || true
+	exit "$_rc"
 }
 
 cleanup() {
@@ -976,6 +2264,7 @@ cleanup() {
 	remove_build_swap || true
 	if [ "${FROM_CHECKOUT:-0}" != 1 ] && [ -n "${SRC_DIR:-}" ]; then rm -rf "$SRC_DIR"; fi
 	if [ -n "${GOROOT_TMP:-}" ]; then rm -rf "$GOROOT_TMP"; fi
+	if [ -n "${NIXPACKS_TMP:-}" ]; then rm -rf "$NIXPACKS_TMP"; fi
 }
 
 # Ingress-mode menu. Sets MODE (a/b/c), PUBLIC_URL, ACME_EMAIL, LOCAL_CA (0/1).
@@ -1011,50 +2300,167 @@ choose_ingress() {
 }
 
 main() {
+	REF=${OUTHAUL_REF:-}
 	parse_args "$@"
-	: >"$LOGFILE" 2>/dev/null || LOGFILE=/dev/null
-	if [ "$VERBOSE" = 1 ]; then LOGFILE=/dev/stderr; fi
-	trap cleanup EXIT INT TERM
+	check_args
+	init_log "$@"
+	trap on_exit EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
 	open_prompt_fd "$0"
+	if [ "$NONINTERACTIVE" = 1 ]; then
+		# No prompts, and apt must not ask either.
+		DEBIAN_FRONTEND=noninteractive
+		export DEBIAN_FRONTEND
+		exec 3<>/dev/null
+	fi
 
 	init_ui
 	hero
 	preflight
 
-	choose_ingress
-	PUBLIC_URL=$(normalize_public_url "$PUBLIC_URL")
+	if [ "$NONINTERACTIVE" = 1 ]; then
+		apply_answers
+		# Only Let's Encrypt needs the DNS check; proxy mode's DNS points at
+		# the proxy. The wizard checks inside choose_ingress.
+		if [ "$MODE" = a ]; then acme_preflight "$(url_host "$PUBLIC_URL")"; fi
+	else
+		choose_ingress
+		PUBLIC_URL=$(normalize_public_url "$PUBLIC_URL")
 
-	GITPORT=$(normalize_git_port "$(ask_value "  Git-push-to-deploy port ('none' to disable):" 2222)")
-	if [ -n "$GITPORT" ]; then SSH_ADDR=":$GITPORT"; else SSH_ADDR=''; fi
+		GITPORT=$(normalize_git_port "$(ask_value "  Git-push-to-deploy port ('none' to disable):" 2222)")
+		SSH_ADDR=$(git_ssh_from_port "$GITPORT")
 
-	if ask_yes_no "  Install Nixpacks (needed for auto-detected builds)?" y; then WANT_NIXPACKS=1; else WANT_NIXPACKS=0; fi
-	if ask_yes_no "  Configure the firewall (ufw) now?" y; then WANT_FW=1; else WANT_FW=0; fi
+		if ask_yes_no "  Install Nixpacks (needed for auto-detected builds)?" y; then WANT_NIXPACKS=1; else WANT_NIXPACKS=0; fi
+		if ask_yes_no "  Configure the firewall (ufw) now?" y; then WANT_FW=1; else WANT_FW=0; fi
+	fi
+
+	# Before anything is installed or swapped: a non-interactive --firewall
+	# ufw run that would cut off a listening port must change nothing.
+	check_firewall_early
 
 	ensure_docker
 	ensure_git
 	if [ "$WANT_NIXPACKS" = 1 ]; then ensure_nixpacks; fi
 
-	fetch_source
-	GO_VER=$(go_version_from_gomod "$SRC_DIR/go.mod")
-	maybe_add_swap "${MEM_KB:-0}" "${SWAP_KB:-0}"
-	install_go_toolchain "$GO_VER"
-	build_binary
-	remove_build_swap
+	# What to install: the checkout's HEAD, or the ref (the remote's HEAD when
+	# no ref was asked for). --from-checkout always builds.
+	if [ "$FROM_CHECKOUT" = 1 ]; then
+		fetch_source
+		TARGET=$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || true)
+		TARGET_VERSION=''
+		TARGET_REF=''
+		BUILD=1
+	else
+		resolve_ref "$REF" "$OUTHAUL_REPO"
+		I=$(build_field commit)
+		M=$(read_marker_commit) || true
+		if needs_build "$I" "$TARGET" "$M"; then BUILD=1; else BUILD=0; fi
+	fi
+
+	if [ "$BUILD" = 1 ]; then
+		if [ "$FROM_CHECKOUT" != 1 ]; then
+			fetch_source "$TARGET"
+		fi
+		# Under `curl … | sh` $0 is not a file, and the check is skipped.
+		if [ -f "$0" ] && [ -f "$SRC_DIR/deploy/bootstrap.sh" ] &&
+			! cmp -s "$0" "$SRC_DIR/deploy/bootstrap.sh"; then
+			note "this installer differs from the one in $TARGET; the fetched tree's copy is what future runs install"
+		fi
+		GO_VER=$(go_version_from_gomod "$SRC_DIR/go.mod")
+		maybe_add_swap "${MEM_KB:-0}" "${SWAP_KB:-0}"
+		install_go_toolchain "$GO_VER"
+		build_binary
+		remove_build_swap
+	else
+		note "commit $(short "$TARGET") is already installed; not rebuilding"
+	fi
 
 	migrate_slipway
 	ensure_service_user
-	install_binary
-	if [ ! -f /etc/outhaul.env ]; then
-		write_env_file /etc/outhaul.env "$MODE" "$PUBLIC_URL" "$ACME_EMAIL" "$SSH_ADDR" "${LOCAL_CA:-0}"
-		step_ok "wrote /etc/outhaul.env"
-	else
-		note "/etc/outhaul.env exists — left unchanged"
+	# The wizard writes /etc/outhaul.env once; a non-interactive run never
+	# touches it, because install.env and the drop-ins carry its answers.
+	ENV_FILE_CHANGED=0
+	if [ "$NONINTERACTIVE" = 0 ]; then
+		if [ ! -f "$ENV_FILE" ]; then
+			write_env_file "$ENV_FILE" "$MODE" "$PUBLIC_URL" "$ACME_EMAIL" "$SSH_ADDR" "${LOCAL_CA:-0}"
+			ENV_FILE_CHANGED=1
+			step_ok "wrote $ENV_FILE"
+		else
+			note "$ENV_FILE exists — left unchanged"
+		fi
 	fi
-	install_service
-	setup_updater "$SRC_DIR"
+
+	# Whether an upgrade this run performed can be rolled back, and the commit
+	# to roll back to (empty for a build from before the stamp).
+	HAD_BINARY=0
+	if [ -e "$BIN" ]; then HAD_BINARY=1; fi
+	PREV_COMMIT=$(build_field commit)
+
+	if [ "$BUILD" = 1 ]; then
+		if install_or_upgrade "$SRC_DIR" "$TARGET" "$TARGET_VERSION"; then
+			setup_updater "$SRC_DIR"
+		else
+			HEALTHY=1
+			# The wizard keeps its completion screen and exits 0, as its
+			# screen has always done. An unattended run fails, and the
+			# journal's last lines are already in its output and log.
+			if [ "$NONINTERACTIVE" = 1 ]; then die "outhaul did not answer"; fi
+		fi
+	else
+		# The service keeps running here, so the swap's snapshot is not the
+		# way back: keep only the env files this run rewrites, and put them
+		# back if the service refuses the new ones.
+		_env_previous=$WORK_DIR/env-previous
+		save_env_files "$_env_previous" || die "could not keep a copy of the env files"
+		write_install_env
+		write_dropins
+		# A drop-in is a unit-file change: systemd reads it on daemon-reload, not on restart.
+		if [ "$DROPIN_CHANGED" = 1 ]; then systemctl daemon-reload; fi
+		SERVICE_WAS_ACTIVE=0
+		if systemctl is-active --quiet outhaul; then SERVICE_WAS_ACTIVE=1; fi
+		_no_build_failed=0
+		_no_build_why=''
+		if [ "$SERVICE_WAS_ACTIVE" = 0 ]; then
+			# Nothing to install, but the recorded build is not running.
+			if systemctl enable --now outhaul; then
+				STARTED_SERVICE=1
+			else
+				_no_build_failed=1
+				_no_build_why="outhaul did not start"
+			fi
+		elif [ "$ENV_CHANGED" = 1 ] || [ "$DROPIN_CHANGED" = 1 ] || [ "$ENV_FILE_CHANGED" = 1 ]; then
+			if systemctl restart outhaul; then
+				# shellcheck disable=SC2034 # the setup-file step reads it
+				STARTED_SERVICE=1
+			else
+				_no_build_failed=1
+				_no_build_why="outhaul did not start"
+			fi
+		fi
+		if [ "$_no_build_failed" = 0 ]; then
+			ADMIN_PORT=$(admin_port "$(service_env OUTHAUL_LISTEN_ADDR :8080)")
+			if ! new_version_healthy "$TARGET" "$ADMIN_PORT"; then
+				_no_build_failed=1
+				_no_build_why="outhaul did not answer"
+			fi
+		fi
+		if [ "$_no_build_failed" = 1 ]; then
+			revert_env_files "$_env_previous" || true
+			if [ "$NONINTERACTIVE" = 1 ]; then die "$_no_build_why"; fi
+			HEALTHY=1
+		else
+			rm -rf "$_env_previous"
+			# No tree to install from, but the path unit follows the
+			# service's setting on every run.
+			setup_updater ''
+		fi
+	fi
 
 	if [ -n "${GOROOT_TMP:-}" ]; then
-		if ask_yes_no "  Remove the downloaded Go toolchain (~150 MB)?" y; then
+		# An unattended run removes it without asking: nothing else needs it,
+		# and it is ~150 MB.
+		if [ "$NONINTERACTIVE" = 1 ] || ask_yes_no "  Remove the downloaded Go toolchain (~150 MB)?" y; then
 			rm -rf "$GOROOT_TMP"
 			GOROOT_TMP=''
 			step_ok "removed Go toolchain"
@@ -1062,41 +2468,52 @@ main() {
 	fi
 
 	PORTS=''
-	ADMIN_PORT=$(admin_port "${OUTHAUL_LISTEN_ADDR:-:8080}")
+	# The service has loaded its env files by now: its own ports and required
+	# header are the ones the checks and the firewall must use.
+	ADMIN_PORT=$(admin_port "$(service_env OUTHAUL_LISTEN_ADDR :8080)")
+	HTTPS_PORT=$(service_env OUTHAUL_HTTPS_PORT 443)
+	HEADER_NAME=$(service_env OUTHAUL_REQUIRE_HEADER_NAME '')
+	HEADER_VALUE=$(service_env OUTHAUL_REQUIRE_HEADER_VALUE '')
 	BRIDGE=$(network_bridge outhaul)
-	if [ "$WANT_FW" = 1 ]; then
-		PORTS=$(derive_firewall_ports "$MODE" "$GITPORT" "${LOCAL_CA:-0}")
-		# Preserve the port of the admin's LIVE SSH session too, in case sshd
-		# listens somewhere other than 22 — otherwise enabling ufw locks them out.
-		if [ -n "${SSH_CONNECTION:-}" ]; then
-			assh=${SSH_CONNECTION##* }
-			case " $PORTS " in *" $assh "*) ;; *) [ -n "$assh" ] && PORTS="$PORTS $assh" ;; esac
-		fi
-		printf '  Firewall will open (SSH always preserved): %s\n' "$PORTS"
-		# On a host that already serves other things, enabling ufw would cut
-		# them off: say which ports, and default to leaving the firewall alone.
-		fw_default=y
-		if ! ufw_active; then
-			blocked=$(ufw_would_block "$(listening_ports)" "$PORTS" "$ADMIN_PORT")
-			if [ -n "$blocked" ]; then
-				step_fail "ufw is inactive; enabling it would also block ports listening now: $blocked"
-				note "containers with published ports are not affected; open others with: ufw allow <port>"
-				fw_default=n
+	configure_firewall
+
+	# Let's Encrypt and proxy modes serve the admin UI through Traefik, with
+	# the firewall in between: check the way a browser reaches it too.
+	PUBLIC=''
+	if { [ "$MODE" = a ] || [ "$MODE" = p ]; } && [ -n "$PUBLIC_URL" ] && [ "$HEALTHY" = 0 ]; then
+		if wait_public_healthy "$(url_host "$PUBLIC_URL")" "$HTTPS_PORT" "$HEADER_NAME" "$HEADER_VALUE"; then
+			PUBLIC=0
+			# proxy must prove it took effect: an older Outhaul ignores the
+			# switches and starts with port 80 published and the admin port
+			# open. Do not leave that version running.
+			if [ "$MODE" = p ] && ! proxy_effective "$ADMIN_PORT"; then
+				step_fail "the proxy's switches did not take effect"
+				# Roll back an upgrade this run performed, or stop a service
+				# this run started from stopped; a no-build run that changed
+				# nothing reports the failure without touching the service.
+				case "$(proxy_failure_action "$BUILD" "$HAD_BINARY" "$STARTED_SERVICE" "${SERVICE_WAS_ACTIVE:-0}")" in
+				rollback) rollback_install "${PREV_COMMIT:-}" "the proxy's switches did not take effect" || true ;;
+				stop) systemctl stop outhaul || true ;;
+				esac
+				if [ "$NONINTERACTIVE" = 1 ]; then
+					print_journal_tail
+					die "the proxy's switches did not take effect"
+				fi
+				HEALTHY=1
+			fi
+		else
+			PUBLIC=1
+			# The run's overall result is a failure too: no marker, and an
+			# unattended run fails, with the journal's last lines in its
+			# output and log (the token is withheld).
+			HEALTHY=1
+			if [ "$NONINTERACTIVE" = 1 ]; then
+				print_journal_tail
+				die "the admin UI did not answer at $PUBLIC_URL"
 			fi
 		fi
-		if ask_yes_no "  Proceed?" "$fw_default"; then
-			apply_firewall "$PORTS" "$BRIDGE" "$ADMIN_PORT"
-		else PORTS=''; fi
 	fi
 
-	HURL=$(admin_health_url "${OUTHAUL_LISTEN_ADDR:-:8080}")
-	if wait_healthy "$HURL"; then HEALTHY=0; else HEALTHY=1; fi
-	# Let's Encrypt mode serves the admin UI through Traefik, with the
-	# firewall in between: check the way a browser reaches it too.
-	PUBLIC=''
-	if [ "$MODE" = a ] && [ -n "$PUBLIC_URL" ] && [ "$HEALTHY" = 0 ]; then
-		if wait_public_healthy "$(url_host "$PUBLIC_URL")"; then PUBLIC=0; else PUBLIC=1; fi
-	fi
 	# Only the service's current run: a re-run restarted it with a new token,
 	# and an earlier run's hint is stale. -b is the fallback without systemd's
 	# invocation ID.
@@ -1107,7 +2524,28 @@ main() {
 		SETUP=$(journalctl -u outhaul -b --no-pager 2>/dev/null | extract_setup_url)
 	fi
 
-	completion_screen "$MODE" "$PUBLIC_URL" "$PORTS" "$SETUP" "$HEALTHY" "${LOCAL_CA:-0}" "$PUBLIC"
+	if [ -n "${SETUP_URL_FILE:-}" ]; then
+		if [ -n "$SETUP" ]; then
+			write_setup_file "$SETUP_URL_FILE" "$SETUP"
+		elif [ "$STARTED_SERVICE" = 1 ]; then
+			# This run's start printed no URL: setup is done, and the file
+			# (if a later restart made it stale) has no business staying.
+			rm -f "$SETUP_URL_FILE" 2>/dev/null || true
+		fi
+	fi
+
+	if [ "$HEALTHY" = 0 ] && [ "$ROLLED_BACK" = 0 ]; then
+		# A later run reads this to tell that the same commit is installed.
+		write_marker "$TARGET" "$TARGET_REF" "$TARGET_VERSION" ||
+			note "could not record the installed version in $MARKER; the next run rebuilds"
+	fi
+
+	# An unattended run's stdout goes to cloud-init's log and the serial
+	# console, so it never prints the setup URL; completion_screen points at
+	# the journal or the setup file instead.
+	_screen_setup=$SETUP
+	if [ "$NONINTERACTIVE" = 1 ]; then _screen_setup=''; fi
+	completion_screen "$MODE" "$PUBLIC_URL" "$PORTS" "$_screen_setup" "$HEALTHY" "${LOCAL_CA:-0}" "$PUBLIC"
 }
 
 # Run main only when executed, not when sourced by the test suite.
