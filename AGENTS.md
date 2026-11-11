@@ -23,6 +23,7 @@ go test -race -timeout 30m ./...  # run before calling a change done
 sh deploy/test/run.sh  # installer unit tests (CI: when deploy/** changes)
 shellcheck -s sh --severity=warning deploy/bootstrap.sh deploy/update.sh deploy/test/*.sh
 
+sh deploy/test/integration.sh  # install, re-run, upgrade and rollback in a systemd container (not in CI)
 sh deploy/test/integration_gate.sh  # protected-route labels on a real Traefik (not in CI)
 sh deploy/dev/run.sh   # the full stack in a container, against the host Docker daemon
 ```
@@ -195,8 +196,8 @@ listed here, because this repository is public. Ask the maintainer.
 - Reinstalling a GitHub App breaks its git source. `ListRepos` ignores
   pagination, so only the first 100 repositories appear.
 - Installer, tunnel and local-only modes: no admin route is published, so
-  the admin UI needs an SSH tunnel. `deploy/test/integration.sh` is out of
-  date and not run in CI.
+  the admin UI needs an SSH tunnel. `deploy/test/integration.sh` is not run
+  in CI.
 - The blobstore client's 15-minute timeout includes the upload itself, so a
   large backup on a slow uplink fails.
 - The build-log bound counts lines, not bytes, so output that redraws itself

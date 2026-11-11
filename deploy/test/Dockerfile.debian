@@ -1,8 +1,31 @@
 # Systemd-enabled Debian for installer integration testing.
+#
+# The script that uses this image (integration.sh) mounts the checkout
+# read-only at /src, so nothing from the repository is copied in here. The
+# container itself runs privileged with /sys/fs/cgroup mounted, and starts
+# systemd as PID 1, so systemctl and Docker CE behave as they do on a server.
 FROM debian:13
-RUN apt-get update && apt-get install -y systemd systemd-sysv curl ca-certificates && rm -rf /var/lib/apt/lists/*
-COPY . /src
-WORKDIR /src
+
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends ca-certificates curl \
+	&& install -m 0755 -d /etc/apt/keyrings \
+	&& curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+	&& chmod a+r /etc/apt/keyrings/docker.asc \
+	&& . /etc/os-release \
+	&& echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian ${VERSION_CODENAME} stable" \
+		> /etc/apt/sources.list.d/docker.list \
+	&& apt-get update \
+	&& apt-get install -y --no-install-recommends \
+		systemd systemd-sysv curl ca-certificates git iproute2 \
+		docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
+	&& rm -rf /var/lib/apt/lists/*
+
+# The container runs its own Docker daemon, but this image itself lives on the
+# host daemon's overlayfs, and overlay2 cannot stack on overlayfs. vfs works
+# everywhere and is fast enough for the one image the test pulls (Traefik).
+RUN mkdir -p /etc/docker \
+	&& printf '{"storage-driver":"vfs"}\n' > /etc/docker/daemon.json
+
 # The container is run with --privileged and /sbin/init so systemctl works.
 STOPSIGNAL SIGRTMIN+3
 CMD ["/sbin/init"]
