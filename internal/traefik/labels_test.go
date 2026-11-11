@@ -552,3 +552,59 @@ func TestRoutersKeepTheirPriority(t *testing.T) {
 		}
 	}
 }
+
+func TestHTTPOffRowHasOneRouterOnWebsecure(t *testing.T) {
+	rt := Routing{TLS: true, HTTPOff: true}
+	for name, d := range goldenRows {
+		labels := RouteLabels("r", d, 8080, rt)
+		if got := labels["traefik.http.routers.r.entrypoints"]; got != "websecure" {
+			t.Errorf("%s: routers.r.entrypoints = %q, want websecure", name, got)
+		}
+		if got := labels["traefik.http.routers.r.tls"]; got != "true" {
+			t.Errorf("%s: routers.r.tls = %q, want true", name, got)
+		}
+		for k := range labels {
+			if strings.HasPrefix(k, "traefik.http.routers.r-tls.") {
+				t.Errorf("%s: unexpected plain-HTTP twin label %q", name, k)
+			}
+		}
+	}
+	plain := core.Domain{Host: "plain.example.com"}
+	labels := RouteLabels("r", plain, 8080, rt)
+	if labels["traefik.http.routers.r.entrypoints"] != "websecure" {
+		t.Errorf("a row with TLS off is still served over HTTPS with HTTP off: %v", labels)
+	}
+}
+
+func TestHTTPOffNoLabelNamesWeb(t *testing.T) {
+	rt := Routing{TLS: true, HTTPOff: true}
+	for name, d := range goldenRows {
+		for k, v := range RouteLabels("r", d, 8080, rt) {
+			if v == "web" {
+				t.Errorf("%s: label %q names the web entrypoint", name, k)
+			}
+		}
+	}
+}
+
+func TestHTTPOffKeepsTheGate(t *testing.T) {
+	golden := loadRouteGolden(t)
+	rt := Routing{TLS: true, HTTPOff: true, GateAddress: goldenGate}
+	for _, name := range []string{"protected-host", "protected-path"} {
+		labels := RouteLabels("r", goldenRows[name], 8080, rt)
+		if !RowHasGate(labels, "r") {
+			t.Errorf("%s: RowHasGate = false", name)
+		}
+		want := golden["local-ca/"+name]["traefik.http.routers.r.middlewares"]
+		if got := labels["traefik.http.routers.r.middlewares"]; got != want {
+			t.Errorf("%s: middlewares = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestHTTPOffWithResolver(t *testing.T) {
+	labels := RouteLabels("r", goldenRows["open-host"], 8080, Routing{TLS: true, HTTPOff: true, CertResolver: "le"})
+	if got := labels["traefik.http.routers.r.tls.certresolver"]; got != "le" {
+		t.Errorf("certresolver = %q, want le", got)
+	}
+}

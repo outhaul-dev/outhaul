@@ -78,6 +78,12 @@ type ProxyConfig struct {
 	// host ports, and runs no ACME/redirect (Cloudflare terminates TLS at its
 	// edge). The admin route, if any, is published over plain HTTP.
 	TunnelMode bool
+
+	// Routing carries the server-wide routing settings routers are written
+	// from. proxySpec reads HTTPOff here; later settings (a wildcard, a
+	// required header) join it. ACME, LocalCA and TunnelMode stay ProxyConfig's
+	// own fields.
+	Routing Routing
 }
 
 // adminRoutingEnabled reports whether the admin UI should be published
@@ -181,10 +187,13 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 	cmd := []string{
 		"--providers.docker=true",
 		"--providers.docker.exposedbydefault=false",
-		"--entrypoints.web.address=:80",
+	}
+	httpOff := pc.Routing.HTTPOff && !pc.TunnelMode
+	if !httpOff {
+		cmd = append(cmd, "--entrypoints.web.address=:80")
 	}
 	var ports []docker.PortMapping
-	if !pc.TunnelMode {
+	if !pc.TunnelMode && !httpOff {
 		// In tunnel mode the only way in is the tunnel, so publish nothing.
 		ports = []docker.PortMapping{{HostPort: pc.HTTPPort, ContainerPort: "80", Proto: "tcp"}}
 	}
@@ -213,11 +222,13 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 	}
 
 	if (pc.ACME || pc.LocalCA) && !pc.TunnelMode {
-		cmd = append(cmd,
-			"--entrypoints.websecure.address=:443",
-			"--entrypoints.web.http.redirections.entrypoint.to=websecure",
-			"--entrypoints.web.http.redirections.entrypoint.scheme=https",
-		)
+		cmd = append(cmd, "--entrypoints.websecure.address=:443")
+		if !httpOff {
+			cmd = append(cmd,
+				"--entrypoints.web.http.redirections.entrypoint.to=websecure",
+				"--entrypoints.web.http.redirections.entrypoint.scheme=https",
+			)
+		}
 		ports = append(ports, docker.PortMapping{HostPort: pc.HTTPSPort, ContainerPort: "443", Proto: "tcp"})
 	}
 	if pc.ACME && !pc.TunnelMode {

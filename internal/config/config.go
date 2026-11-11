@@ -36,6 +36,7 @@ type Config struct {
 	ACMEEmail       string        // Let's Encrypt account email; empty disables TLS
 	ACMEStaging     bool          // use the LE staging CA (avoid rate limits)
 	LocalCA         bool          // serve HTTPS from the built-in local CA (LAN installs; excludes ACME)
+	HTTPOff         bool          // publish no port 80: HTTPS only (OUTHAUL_HTTP_PORT=off)
 	HTTPSPort       string        // host port for the websecure entrypoint
 	HealthTimeout   time.Duration // deploy health-check deadline
 	ImageKeep       int           // built images kept per app; 0 disables pruning
@@ -68,6 +69,7 @@ func Load(getenv Getenv) Config {
 		ACMEEmail:       firstField(getenv("OUTHAUL_ACME_EMAIL")),
 		ACMEStaging:     p.bool("OUTHAUL_ACME_STAGING"),
 		LocalCA:         p.bool("OUTHAUL_LOCAL_CA"),
+		HTTPOff:         p.httpPort("OUTHAUL_HTTP_PORT"),
 		HTTPSPort:       p.port("OUTHAUL_HTTPS_PORT", "443"),
 		HealthTimeout:   p.duration("OUTHAUL_HEALTH_TIMEOUT", 60*time.Second),
 		ImageKeep:       p.count("OUTHAUL_IMAGE_KEEP", 5),
@@ -141,6 +143,14 @@ func (c Config) Validate() error {
 	errs := append([]error(nil), c.problems...)
 	if c.LocalCAEnabled() && c.ACMEEnabled() {
 		errs = append(errs, errors.New("OUTHAUL_LOCAL_CA and OUTHAUL_ACME_EMAIL are mutually exclusive: choose local-CA or Let's Encrypt HTTPS"))
+	}
+	if c.HTTPOff {
+		switch {
+		case !c.TLSEnabled():
+			errs = append(errs, errors.New("OUTHAUL_HTTP_PORT=off needs HTTPS: set OUTHAUL_ACME_EMAIL or OUTHAUL_LOCAL_CA"))
+		case c.ACMEEnabled():
+			errs = append(errs, errors.New("OUTHAUL_HTTP_PORT=off with Let's Encrypt needs port 80 for its HTTP challenge; use OUTHAUL_LOCAL_CA or a DNS challenge"))
+		}
 	}
 	return errors.Join(errs...)
 }
@@ -273,6 +283,20 @@ func (p *parser) duration(key string, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return d
+}
+
+// httpPort reads OUTHAUL_HTTP_PORT: "80" keeps the plain-HTTP entrypoint,
+// "off" publishes no port 80. Empty keeps the default. Anything else is
+// reported by Validate.
+func (p *parser) httpPort(key string) bool {
+	switch strings.ToLower(p.getenv(key)) {
+	case "", "80":
+		return false
+	case "off":
+		return true
+	}
+	p.reject(key, p.getenv(key), "80 or off")
+	return false
 }
 
 // port parses a TCP port number.

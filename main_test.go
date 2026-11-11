@@ -518,3 +518,31 @@ func TestReconcileProxyOutlivesTheRequest(t *testing.T) {
 		t.Errorf("Traefik after ReconcileProxy = %+v, want it running", c)
 	}
 }
+
+func TestEnableTunnelRefusedWithHTTPOff(t *testing.T) {
+	cfg := config.Config{DataDir: t.TempDir(), Network: "outhaul", ListenAddr: ":8080", HTTPOff: true}
+	st, err := openStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ic := &infraController{dc: docker.NewFake(), st: st, cfg: cfg}
+	err = ic.Enable(context.Background(), "tok")
+	if err == nil || !strings.Contains(err.Error(), "OUTHAUL_HTTP_PORT") {
+		t.Fatalf("Enable with HTTP off = %v, want an error naming OUTHAUL_HTTP_PORT", err)
+	}
+	if on, err := st.TunnelEnabled(context.Background()); err != nil || on {
+		t.Errorf("TunnelEnabled = %v, %v; the token must not be stored", on, err)
+	}
+}
+
+func TestHTTPOffRefusesAnEnabledTunnel(t *testing.T) {
+	cfg := config.Config{HTTPOff: true}
+	err := httpOffTunnelError(cfg, true)
+	if err == nil || !strings.Contains(err.Error(), "OUTHAUL_HTTP_PORT") {
+		t.Fatalf("httpOffTunnelError(off, tunnel) = %v, want an error naming OUTHAUL_HTTP_PORT", err)
+	}
+	if err := httpOffTunnelError(cfg, false); err != nil {
+		t.Errorf("httpOffTunnelError(off, no tunnel) = %v, want nil", err)
+	}
+}

@@ -145,3 +145,16 @@ func checkGolden(t *testing.T, path string, got any) {
 		t.Errorf("%s does not match the code's output; run with -update only when the change is intended.\n--- want\n%s\n--- got\n%s", path, wantJSON, gotJSON)
 	}
 }
+
+func loadRouteGolden(t *testing.T) map[string]map[string]string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", "route_labels.golden.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]map[string]string
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}

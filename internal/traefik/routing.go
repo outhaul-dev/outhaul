@@ -12,6 +12,7 @@ type Routing struct {
 	TLS          bool   // HTTPS routers are written: Let's Encrypt or the local CA is on, and no tunnel is
 	CertResolver string // "le" under Let's Encrypt, "" under the local CA
 	GateAddress  string // the forward-auth address protected rows call
+	HTTPOff      bool   // no web entrypoint: every row has one router, on websecure
 }
 
 // RoutingFrom builds the settings routers are written from. A Cloudflare
@@ -22,6 +23,7 @@ func RoutingFrom(cfg config.Config, tunnelOn bool) Routing {
 		TLS:          cfg.TLSEnabled() && !tunnelOn,
 		CertResolver: cfg.CertResolver(),
 		GateAddress:  cfg.GateAddress(),
+		HTTPOff:      cfg.HTTPOff && !tunnelOn,
 	}
 }
 

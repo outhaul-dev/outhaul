@@ -174,6 +174,11 @@ func serve() error {
 	// ingress postures), then mint certs before Traefik comes up so the file
 	// provider finds them on first watch.
 	var certMgr *localca.Manager
+	if on, err := st.TunnelEnabled(context.Background()); err == nil {
+		if err := httpOffTunnelError(cfg, on); err != nil {
+			return err
+		}
+	}
 	if cfg.LocalCAEnabled() {
 		if on, err := st.TunnelEnabled(context.Background()); err == nil && on {
 			return fmt.Errorf("OUTHAUL_LOCAL_CA is set but a Cloudflare Tunnel is enabled; disable the tunnel in Settings first (or unset OUTHAUL_LOCAL_CA)")
@@ -468,6 +473,7 @@ func (ic *infraController) proxyConfig(ctx context.Context, tunnelOn, protectedR
 		AdminPort:        ic.cfg.AdminPort(),
 		DynamicDir:       ic.cfg.DynamicDir(),
 		ProtectedRoutes:  protectedRoutes,
+		Routing:          traefik.RoutingFrom(ic.cfg, false),
 	}
 	if tunnelOn {
 		pc.TunnelMode = true
@@ -503,12 +509,25 @@ func (ic *infraController) logStatus(ctx context.Context) {
 	log.Printf("Traefik proxy ready on :80 (network %q; set OUTHAUL_ACME_EMAIL to enable HTTPS)", ic.cfg.Network)
 }
 
+// httpOffTunnelError reports why an HTTPS-only server can't also have a
+// Cloudflare Tunnel: cloudflared reaches Traefik on port 80, which
+// OUTHAUL_HTTP_PORT=off does not publish.
+func httpOffTunnelError(cfg config.Config, tunnelOn bool) error {
+	if cfg.HTTPOff && tunnelOn {
+		return fmt.Errorf("OUTHAUL_HTTP_PORT=off and a Cloudflare Tunnel can't be combined: cloudflared reaches Traefik on port 80; disable the tunnel in Settings first (or unset OUTHAUL_HTTP_PORT)")
+	}
+	return nil
+}
+
 // Enable persists the connector token and brings the tunnel up live. The
 // reconcile is run on a detached context, not the caller's request context:
 // it recreates Traefik, which can drop the very connection driving the request
 // (when the admin UI is proxied through Traefik). A cancelled reconcile could
 // strand the server with no ingress, so it must run to completion.
 func (ic *infraController) Enable(_ context.Context, token string) error {
+	if ic.cfg.HTTPOff {
+		return fmt.Errorf("cannot enable a Cloudflare Tunnel while OUTHAUL_HTTP_PORT=off; unset it and restart first")
+	}
 	if ic.cfg.LocalCAEnabled() {
 		return fmt.Errorf("cannot enable a Cloudflare Tunnel while OUTHAUL_LOCAL_CA is set; unset it and restart first")
 	}

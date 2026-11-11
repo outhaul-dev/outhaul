@@ -648,3 +648,40 @@ func TestProxyMapsGateHost(t *testing.T) {
 		t.Errorf("admin route: ProxyMapsGateHost = %v, %v; want true, true", mapped, known)
 	}
 }
+
+func TestHTTPOffPublishesOnly443(t *testing.T) {
+	pc := localCAProxyConfig(t)
+	pc.Routing = Routing{TLS: true, HTTPOff: true}
+	spec := proxySpec(pc)
+	want := []docker.PortMapping{{HostPort: "443", ContainerPort: "443", Proto: "tcp"}}
+	if len(spec.Ports) != len(want) || spec.Ports[0] != want[0] {
+		t.Errorf("ports = %v, want %v", spec.Ports, want)
+	}
+	for _, flag := range spec.Cmd {
+		if strings.Contains(flag, "entrypoints.web.") {
+			t.Errorf("HTTP-off spec names the web entrypoint: %q", flag)
+		}
+		if strings.Contains(flag, "redirections") {
+			t.Errorf("HTTP-off spec carries a redirect: %q", flag)
+		}
+	}
+}
+
+func TestHTTPOffAdminRouteIsOnWebsecure(t *testing.T) {
+	pc := localCAProxyConfig(t)
+	pc.Routing = Routing{TLS: true, HTTPOff: true}
+	pc.AdminHost = "outhaul.example.com"
+	if err := writeAdminDynamicConfig(pc); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(pc.DynamicDir, adminDynamicFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "- websecure") {
+		t.Errorf("admin route should use websecure:\n%s", body)
+	}
+	if strings.Contains(string(body), "- web\n") {
+		t.Errorf("admin route names the web entrypoint with HTTP off:\n%s", body)
+	}
+}

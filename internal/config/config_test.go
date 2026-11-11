@@ -349,3 +349,87 @@ func TestPruneBuildCacheDefaultsOn(t *testing.T) {
 		t.Errorf("Validate: %v", err)
 	}
 }
+
+func TestHTTPPortSetting(t *testing.T) {
+	cases := []struct {
+		val     string
+		localCA bool
+		wantOff bool
+		wantErr bool
+	}{
+		{"", false, false, false},
+		{"80", false, false, false},
+		{"off", true, true, false},
+		{"OFF", true, true, false},
+		{"8080", false, false, true},
+		{"on", false, false, true},
+		{"no", false, false, true},
+	}
+	for _, tc := range cases {
+		cfg := Load(func(k string) string {
+			switch k {
+			case "OUTHAUL_HTTP_PORT":
+				return tc.val
+			case "OUTHAUL_LOCAL_CA":
+				if tc.localCA {
+					return "true"
+				}
+			}
+			return ""
+		})
+		if cfg.HTTPOff != tc.wantOff {
+			t.Errorf("OUTHAUL_HTTP_PORT=%q -> HTTPOff %v, want %v", tc.val, cfg.HTTPOff, tc.wantOff)
+		}
+		err := cfg.Validate()
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("OUTHAUL_HTTP_PORT=%q: Validate accepted it", tc.val)
+				continue
+			}
+			for _, want := range []string{"OUTHAUL_HTTP_PORT", "80 or off"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("OUTHAUL_HTTP_PORT=%q: error %q does not contain %q", tc.val, err, want)
+				}
+			}
+		} else if err != nil {
+			t.Errorf("OUTHAUL_HTTP_PORT=%q: Validate: %v", tc.val, err)
+		}
+	}
+}
+
+func TestHTTPOffNeedsHTTPS(t *testing.T) {
+	off := Load(func(k string) string {
+		if k == "OUTHAUL_HTTP_PORT" {
+			return "off"
+		}
+		return ""
+	})
+	err := off.Validate()
+	if err == nil {
+		t.Fatal("HTTP off without HTTPS: Validate accepted it")
+	}
+	for _, want := range []string{"OUTHAUL_HTTP_PORT", "HTTPS"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+
+	acme := Load(func(k string) string {
+		switch k {
+		case "OUTHAUL_HTTP_PORT":
+			return "off"
+		case "OUTHAUL_ACME_EMAIL":
+			return "ops@example.com"
+		}
+		return ""
+	})
+	err = acme.Validate()
+	if err == nil {
+		t.Fatal("HTTP off with the HTTP challenge: Validate accepted it")
+	}
+	for _, want := range []string{"OUTHAUL_HTTP_PORT", "port 80"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+}

@@ -73,6 +73,17 @@ func RouteLabels(router string, d core.Domain, port int, rt Routing) map[string]
 	mws := identityMiddlewares(router, d.Protected, rt.GateAddress, labels)
 	mws = append(mws, rewriteMiddlewares(router, d.Path, d.InternalPath, labels)...)
 	labels["traefik.http.routers."+router+".middlewares"] = strings.Join(mws, ",")
+	if rt.HTTPOff && rt.TLS {
+		// No plain HTTP: every row is served over HTTPS whatever its own box
+		// says, with one router that keeps the row's base name so RowHasGate
+		// and the code matching a container's router to a row work unchanged.
+		labels["traefik.http.routers."+router+".entrypoints"] = "websecure"
+		labels["traefik.http.routers."+router+".tls"] = "true"
+		if rt.CertResolver != "" {
+			labels["traefik.http.routers."+router+".tls.certresolver"] = rt.CertResolver
+		}
+		return labels
+	}
 	if rt.routeWantsTLS(d) {
 		tls := router + "-tls"
 		labels["traefik.http.routers."+tls+".rule"] = rule
