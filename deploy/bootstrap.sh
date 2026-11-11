@@ -6,6 +6,10 @@ set -eu
 
 OUTHAUL_REPO="${OUTHAUL_REPO:-https://github.com/outhaul-dev/outhaul.git}"
 
+# The unattended interface sets these; the defaults keep today's wizard path.
+NONINTERACTIVE=0
+INSTALL_DOCKER=0
+
 # ------------------------------------------------------------------ helpers --
 
 # Prints the concrete Go version to download (e.g. 1.26.4). Prefers the
@@ -376,8 +380,47 @@ preflight() {
 	note "memory: $((MEM_KB / 1024)) MB RAM, $((SWAP_KB / 1024)) MB swap"
 }
 
+have_docker() { command -v docker >/dev/null 2>&1; }
+have_docker_service() { systemctl cat docker.service >/dev/null 2>&1; }
+have_docker_socket() { [ -e /var/run/docker.sock ]; }
+
+# True when an installed Docker answers and has compose v2. The daemon may
+# still be starting (first boot, or just after the install), so wait 30s.
+docker_works() {
+	have_docker || return 1
+	_i=0
+	while [ "$_i" -lt 30 ]; do
+		if docker version --format '{{.Server.Version}}' >/dev/null 2>&1 &&
+			docker compose version >/dev/null 2>&1; then
+			return 0
+		fi
+		sleep 1
+		_i=$((_i + 1))
+	done
+	return 1
+}
+
+# Prints what is wrong with a Docker that is present but not working.
+docker_problem() {
+	if ! docker version --format '{{.Server.Version}}' >/dev/null 2>&1; then
+		printf '%s\n' "the Docker daemon is not answering"
+	else
+		printf '%s\n' "the docker compose v2 plugin is missing"
+	fi
+}
+
+# Three states: a working Docker is used as it is; an absent one is installed
+# only when allowed; one that is present but broken is started once and then
+# reported — get.docker.com never runs over it.
 ensure_docker() {
-	if command -v docker >/dev/null 2>&1; then step_ok "Docker present"; else
+	if docker_works; then
+		step_ok "Docker is working"
+		return
+	fi
+	if ! have_docker && ! have_docker_service && ! have_docker_socket; then
+		if [ "$NONINTERACTIVE" = 1 ] && [ "$INSTALL_DOCKER" != 1 ]; then
+			die "Docker is not installed; install it first or pass --install-docker"
+		fi
 		spinner_start "installing Docker (get.docker.com)"
 		# set +e so a failed install still reaches spinner_stop + die (see build_binary note).
 		set +e
@@ -387,9 +430,13 @@ ensure_docker() {
 		spinner_stop "$rc"
 		[ "$rc" -eq 0 ] || die "Docker install failed — see ${LOGFILE:-the install log}"
 	fi
+	# Present but not answering: start the daemon once. Never reinstall.
 	systemctl enable --now docker >/dev/null 2>&1 || true
-	docker compose version >/dev/null 2>&1 || die "docker compose v2 plugin missing (install docker-compose-plugin)"
-	step_ok "docker compose v2 available"
+	if docker_works; then
+		step_ok "Docker is working"
+		return
+	fi
+	die "$(docker_problem)"
 }
 
 ensure_git() {
