@@ -38,6 +38,11 @@ by DNS-01. On a CDN-fronted install the CDN usually routes only names under the
 wildcard; a name outside it is still useful for an apex domain or a second
 zone.
 
+Checked on `traefik:v3.7.6`: a host that already had its own certificate keeps
+it when the wildcard is turned on over the same `acme.json`; it is not
+re-issued from the wildcard until the stored certificate is no longer used.
+`deploy/test/integration_ingress.sh` reports what a run sees.
+
 ## HTTPS only
 `OUTHAUL_HTTP_PORT=off` publishes no port 80. Traefik has no `web` entrypoint
 and every router is on `websecure`; there is no plain-HTTP router and no

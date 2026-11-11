@@ -183,6 +183,14 @@ func ProxyMapsGateHost(ctx context.Context, dc docker.Client, pc ProxyConfig) (m
 	return false, false
 }
 
+// ProxyFlags returns the flags and environment proxySpec gives the managed
+// Traefik container, for the real-Traefik scripts so they run the code Outhaul
+// runs rather than a copy of it.
+func ProxyFlags(pc ProxyConfig) (cmd, env []string) {
+	spec := proxySpec(pc)
+	return spec.Cmd, spec.Env
+}
+
 // proxySpec builds the desired Traefik container spec (deterministic), stamping a
 // config hash so drift can be detected on the next boot.
 func proxySpec(pc ProxyConfig) docker.ContainerSpec {

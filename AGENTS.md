@@ -24,6 +24,7 @@ sh deploy/test/run.sh  # installer unit tests (CI: when deploy/** changes)
 shellcheck -s sh --severity=warning deploy/bootstrap.sh deploy/update.sh deploy/test/*.sh
 
 sh deploy/test/integration_gate.sh  # protected-route labels on a real Traefik (not in CI)
+sh deploy/test/integration_ingress.sh  # DNS-01, the wildcard and HTTPS-only ports on a real Traefik, Pebble and challtestsrv (not in CI)
 sh deploy/dev/run.sh   # the full stack in a container, against the host Docker daemon
 ```
 
@@ -41,6 +42,12 @@ carries `traefik.enable`, so a Traefik that exposes only labelled containers,
 like Outhaul's own, ignores them. `--outhaul HOST:PORT` uses a running
 Outhaul's gate instead of the stub; the script's header says how. That mode
 hasn't been run against a real Outhaul yet.
+
+`deploy/test/integration_ingress.sh` starts Pebble and
+`pebble-challtestsrv` and a Traefik built from `traefik.ProxyFlags`, and
+checks DNS-01, the wildcard and the HTTPS-only ports. It needs outbound DNS
+from its Traefik to challtestsrv; it starts only `outhaul-ingtest-*`
+containers, on loopback ports, and removes them when it ends.
 
 `go build .` leaves an `outhaul` binary in the repository root. Don't commit
 it.

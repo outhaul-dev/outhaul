@@ -685,3 +685,15 @@ func TestHTTPOffAdminRouteIsOnWebsecure(t *testing.T) {
 		t.Errorf("admin route names the web entrypoint with HTTP off:\n%s", body)
 	}
 }
+
+func TestProxyFlagsAreTheSpecs(t *testing.T) {
+	pc := tlsProxyConfig()
+	spec := proxySpec(pc)
+	cmd, env := ProxyFlags(pc)
+	if strings.Join(cmd, "\n") != strings.Join(spec.Cmd, "\n") {
+		t.Errorf("cmd = %v, want proxySpec's %v", cmd, spec.Cmd)
+	}
+	if strings.Join(env, "\n") != strings.Join(spec.Env, "\n") {
+		t.Errorf("env = %v, want proxySpec's %v", env, spec.Env)
+	}
+}
