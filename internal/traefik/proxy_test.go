@@ -697,3 +697,60 @@ func TestProxyFlagsAreTheSpecs(t *testing.T) {
 		t.Errorf("env = %v, want proxySpec's %v", env, spec.Env)
 	}
 }
+
+// With a header required, a Traefik whose configuration differs is replaced
+// from the local image if the pull fails: a change of flags alone never needs
+// a pull.
+func TestHeaderRequiredUsesTheLocalImageWhenThePullFails(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+	f.Images = map[string]bool{testProxyConfig().Image: true}
+	if err := EnsureProxy(ctx, f, testProxyConfig(), nil); err != nil {
+		t.Fatalf("initial EnsureProxy: %v", err)
+	}
+	f.FailPull = func(string) error { return errors.New("registry down") }
+	pc := testProxyConfig()
+	pc.Routing = Routing{HeaderName: "X-Azure-FDID", HeaderValue: "abc-123"}
+	if err := EnsureProxy(ctx, f, pc, nil); err != nil {
+		t.Fatalf("EnsureProxy with a local image: %v", err)
+	}
+	c, _ := f.FindContainer(ctx, pc.ContainerName)
+	if c == nil || !c.Running() {
+		t.Fatalf("traefik is not running: %+v", c)
+	}
+	constraint := "--providers.docker.constraints=" + pc.Routing.Constraint()
+	found := false
+	for _, spec := range f.Created {
+		if spec.Name != pc.ContainerName {
+			continue
+		}
+		for _, flag := range spec.Cmd {
+			if flag == constraint {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("the new Traefik does not carry %q: %v", constraint, f.Created)
+	}
+}
+
+// If the image isn't on the server either, a Traefik that can't be replaced
+// must not go on serving containers without the header check.
+func TestHeaderRequiredStopsTraefikItCannotReplace(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+	if err := EnsureProxy(ctx, f, testProxyConfig(), nil); err != nil {
+		t.Fatalf("initial EnsureProxy: %v", err)
+	}
+	f.FailPull = func(string) error { return errors.New("registry down") }
+	pc := testProxyConfig()
+	pc.Routing = Routing{HeaderName: "X-Azure-FDID", HeaderValue: "abc-123"}
+	if err := EnsureProxy(ctx, f, pc, nil); err == nil {
+		t.Fatal("EnsureProxy should fail when it cannot pull the image")
+	}
+	c, _ := f.FindContainer(ctx, pc.ContainerName)
+	if c != nil && c.Running() {
+		t.Error("the old Traefik is still running without the constraint")
+	}
+}

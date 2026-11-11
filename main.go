@@ -201,7 +201,8 @@ func serve() error {
 		}
 	}
 
-	infra := ensureInfra(dc, cfg, st)
+	workerCtx, stopWorker := context.WithCancel(context.Background())
+	infra := ensureInfra(workerCtx, dc, cfg, st)
 
 	ghClient := github.New()
 	// One registry, shared by the deploy worker, the preview manager, and the
@@ -225,7 +226,6 @@ func serve() error {
 	checker := update.NewChecker(update.Current(),
 		&update.Comparer{Client: &http.Client{Timeout: 15 * time.Second}}, time.Now)
 
-	workerCtx, stopWorker := context.WithCancel(context.Background())
 	workerDone := make(chan struct{})
 	// worker.Run is launched below, after the preview manager is wired in as the
 	// after-deploy hook (SetDeployHook must be called before Run).
@@ -374,21 +374,48 @@ type infraController struct {
 // enabled) the cloudflared connector. Failures are logged, not fatal, so the
 // admin UI still starts (e.g. when Docker is down). It returns a controller the
 // server uses to toggle the tunnel at runtime.
-func ensureInfra(dc docker.Client, cfg config.Config, st *store.Store) *infraController {
+func ensureInfra(ctx context.Context, dc docker.Client, cfg config.Config, st *store.Store) *infraController {
 	ic := &infraController{dc: dc, st: st, cfg: cfg}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	pingCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	if err := dc.Ping(ctx); err != nil {
+	if err := dc.Ping(pingCtx); err != nil {
 		log.Printf("WARNING: Docker not reachable (%v); deploys will fail until it is available", err)
+		if cfg.HeaderRequired() {
+			go ic.retryReconcile(ctx, 30*time.Second)
+		}
 		return ic
 	}
-	if err := ic.reconcile(ctx); err != nil {
+	if err := ic.reconcile(pingCtx); err != nil {
 		log.Printf("WARNING: could not ensure infrastructure: %v", err)
+		if cfg.HeaderRequired() {
+			go ic.retryReconcile(ctx, 30*time.Second)
+		}
 		return ic
 	}
-	ic.logStatus(ctx)
+	ic.logStatus(pingCtx)
 	return ic
+}
+
+// retryReconcile calls ic.reconcile every interval until it succeeds once or
+// ctx ends, logging each failure. With a request header required, a Traefik
+// that couldn't be replaced must not be left serving old containers, so the
+// attempt is not a one-shot at startup.
+func (ic *infraController) retryReconcile(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		if err := ic.reconcile(ctx); err == nil {
+			return
+		} else {
+			log.Printf("reconcile: %v; retrying in %v", err, interval)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 // reconcile makes Traefik's posture and the connector match the stored tunnel

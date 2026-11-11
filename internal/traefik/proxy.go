@@ -137,7 +137,19 @@ func EnsureProxy(ctx context.Context, dc docker.Client, pc ProxyConfig, logOut i
 
 	// (Re)create needed. Pull FIRST so a pull failure never leaves us with no proxy.
 	if err := dc.PullImage(ctx, pc.Image, logOut); err != nil {
-		return fmt.Errorf("pull traefik image: %w", err)
+		if pc.Routing.Constraint() == "" {
+			return fmt.Errorf("pull traefik image: %w", err)
+		}
+		// A header is required: the old Traefik has no constraint, so it must
+		// not keep serving. Use the local image when it is there; a change of
+		// flags alone never needs a pull. Otherwise stop the old one.
+		local, lerr := dc.ListImages(ctx, pc.Image)
+		if lerr != nil || len(local) == 0 {
+			if existing != nil && existing.Running() {
+				_ = dc.StopContainer(ctx, existing.ID, proxyStopTimeout)
+			}
+			return fmt.Errorf("pull traefik image: %w", err)
+		}
 	}
 	if existing != nil {
 		if existing.Running() {

@@ -546,3 +546,75 @@ func TestHTTPOffRefusesAnEnabledTunnel(t *testing.T) {
 		t.Errorf("httpOffTunnelError(off, no tunnel) = %v, want nil", err)
 	}
 }
+
+// countingNetwork fails EnsureNetwork and counts the attempts, so a retry is
+// visible without waiting for it to succeed.
+type countingNetwork struct {
+	*docker.Fake
+	calls int
+}
+
+func (c *countingNetwork) EnsureNetwork(context.Context, string) error {
+	c.calls++
+	return errors.New("docker unreachable")
+}
+
+func TestReconcileIsRetriedWhileAHeaderIsRequired(t *testing.T) {
+	cfg := config.Config{
+		DataDir: t.TempDir(), Network: "outhaul", TraefikImage: config.DefaultTraefikImage,
+		ListenAddr: ":8080", RequireHeaderName: "X-Azure-FDID", RequireHeaderValue: "abc-123",
+	}
+	st, err := openStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	f := docker.NewFake()
+	pulls := 0
+	f.FailPull = func(string) error {
+		pulls++
+		if pulls <= 2 {
+			return errors.New("registry down")
+		}
+		return nil
+	}
+	ic := &infraController{dc: f, st: st, cfg: cfg}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ic.retryReconcile(ctx, time.Millisecond)
+	c, _ := f.FindContainer(ctx, "outhaul-traefik")
+	if c == nil || !c.Running() {
+		t.Fatalf("retryReconcile left no running Traefik: %+v", c)
+	}
+	found := false
+	for _, spec := range f.Created {
+		for _, flag := range spec.Cmd {
+			if strings.HasPrefix(flag, "--providers.docker.constraints=") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("the retried Traefik has no constraint: %v", f.Created)
+	}
+	if pulls != 3 {
+		t.Errorf("pulls = %d, want 3 (two failures, then success)", pulls)
+	}
+}
+
+func TestStartupDoesNotRetryWithoutAHeader(t *testing.T) {
+	cfg := config.Config{DataDir: t.TempDir(), Network: "outhaul", TraefikImage: config.DefaultTraefikImage, ListenAddr: ":8080"}
+	st, err := openStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	f := &countingNetwork{Fake: docker.NewFake()}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ensureInfra(ctx, f, cfg, st)
+	time.Sleep(50 * time.Millisecond)
+	if f.calls != 1 {
+		t.Errorf("EnsureNetwork calls = %d, want 1 (no retry without a header)", f.calls)
+	}
+}
