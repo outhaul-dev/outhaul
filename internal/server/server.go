@@ -112,6 +112,9 @@ type Server struct {
 	protectNew bool            // OUTHAUL_PROTECT_NEW_DOMAINS: a new row requires sign-in
 	routing    traefik.Routing // the server-wide routing settings the pages show
 
+	gitHTTP    GitHTTPOptions // git over HTTPS and push tokens
+	gitHTTPSet bool           // SetGitHTTP was called
+
 	azureDestinationSet bool              // OUTHAUL_BACKUP_AZURE_* set: the Azure row belongs to the environment
 	stateBackup         *StateBackupPanel // nil or no schedule: no State backup panel
 

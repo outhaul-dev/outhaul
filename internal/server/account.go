@@ -37,6 +37,12 @@ func (s *Server) handleAccount(w http.ResponseWriter, r *http.Request) {
 // renderAccount renders the account page, also to redisplay it with an error
 // after a rejected push key.
 func (s *Server) renderAccount(w http.ResponseWriter, r *http.Request, status int, errMsg string) {
+	s.renderAccountWith(w, r, status, errMsg, nil)
+}
+
+// renderAccountWith is renderAccount with extra template data, such as a new
+// push token to show once.
+func (s *Server) renderAccountWith(w http.ResponseWriter, r *http.Request, status int, errMsg string, extra map[string]any) {
 	me, _ := userFrom(r)
 	keys, err := s.store.ListPushKeysForUser(r.Context(), me.ID)
 	if err != nil {
@@ -49,6 +55,14 @@ func (s *Server) renderAccount(w http.ResponseWriter, r *http.Request, status in
 	}
 	if errMsg != "" {
 		data["Error"] = errMsg
+	}
+	if s.gitHTTPOn() {
+		if !s.addPushTokenData(w, r, me, data) {
+			return
+		}
+	}
+	for k, v := range extra {
+		data[k] = v
 	}
 	s.render(w, r, status, "account", data)
 }

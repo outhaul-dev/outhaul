@@ -433,6 +433,9 @@ func serve() error {
 		return fmt.Errorf("build server: %w", err)
 	}
 	srv.SetRepos(repos)
+	if cfg.GitHTTP {
+		srv.SetGitHTTP(server.GitHTTPOptions{DefaultDays: cfg.PushTokenDefaultDays, MaxDays: cfg.PushTokenMaxDays, SSOMaxAge: cfg.PushTokenSSOMaxAge})
+	}
 	srv.SetRouting(traefik.RoutingFrom(cfg, false))
 	go func() {
 		for {
