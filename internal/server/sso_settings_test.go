@@ -477,3 +477,21 @@ func TestProbeSSOUsesTheEnvironmentSettings(t *testing.T) {
 		t.Fatalf("discovery saw %+v", *seen)
 	}
 }
+
+func TestSettingsListTheGroupMapping(t *testing.T) {
+	e, _ := ssoEnv(t)
+	e.srv.ssoEnv = SSOEnvironment{
+		FromEnvironment: true, Issuer: "https://idp.example.com", ClientID: "cid", ClientSecret: "sec",
+		GroupsClaim: "groups", Scopes: []string{"groups"},
+		RoleGroups: []core.GroupRole{
+			{Group: "outhaul-admins", Role: core.RoleSystemAdmin},
+			{Group: "outhaul-engineers", Role: core.RoleProjectAdmin},
+		},
+	}
+	page := body(t, e.get(t, "/settings"))
+	for _, want := range []string{"outhaul-admins", "System admin", "outhaul-engineers", "Project admin", "Groups claim", "groups"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the settings page lacks %q", want)
+		}
+	}
+}

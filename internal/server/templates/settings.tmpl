@@ -264,6 +264,16 @@
   </form>
   {{end}}
   {{end}}
+  {{if .RoleGroups}}
+  <h3>Roles from groups</h3>
+  <p class="muted env-note">At each sign-in to Outhaul, the highest of these groups decides the person's role. This comes from the environment and can't be changed here. A <span class="mono">project_member</span> is on no project; map <span class="mono">project_admin</span> to a group for people who should start their own.</p>
+  <table class="table">
+    <tbody>
+      {{range .RoleGroups}}<tr><td class="mono">{{.Group}}</td><td>{{.Role.Label}}</td></tr>{{end}}
+    </tbody>
+  </table>
+  <p class="muted env-note">Groups claim: <span class="mono">{{.GroupsClaim}}</span>{{if .Scopes}}. Extra scopes: <span class="mono">{{.Scopes}}</span>{{end}}</p>
+  {{end}}
   {{end}}
   {{end}}
 </section>

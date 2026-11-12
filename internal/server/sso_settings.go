@@ -180,6 +180,13 @@ func (s *Server) dropSSOProvider() {
 // ssoPanel is the SSO panel's view data.
 func (s *Server) ssoPanel(r *http.Request) map[string]any {
 	p := map[string]any{"RedirectURI": s.ssoRedirectURI()}
+	if len(s.ssoEnv.RoleGroups) > 0 {
+		p["RoleGroups"] = s.ssoEnv.RoleGroups
+		p["GroupsClaim"] = s.ssoEnv.GroupsClaim
+	}
+	if len(s.ssoEnv.Scopes) > 0 {
+		p["Scopes"] = strings.Join(s.ssoEnv.Scopes, " ")
+	}
 	if s.ssoEnv.FromEnvironment {
 		p["FromEnvironment"] = true
 		p["Issuer"], p["ClientID"] = s.ssoEnv.Issuer, s.ssoEnv.ClientID
