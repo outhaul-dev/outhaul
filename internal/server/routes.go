@@ -175,6 +175,9 @@ func (s *Server) routes() []route {
 			route{"POST /account/push-tokens/{id}/delete", levelAccount, nil, s.accountPage(s.handleDeletePushToken)},
 			route{"POST /users/{id}/push-tokens/{tokenID}/delete", levelSystemAdmin, nil, s.handleAdminDeletePushToken},
 		)
+		// git push, fetch and clone over HTTPS: each request signs itself in
+		// with a push token, never a session.
+		routes = append(routes, s.gitRoutes()...)
 	}
 	return routes
 }

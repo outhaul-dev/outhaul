@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"time"
 
@@ -15,6 +16,12 @@ import (
 type GitHTTPOptions struct {
 	DefaultDays, MaxDays int
 	SSOMaxAge            time.Duration
+	// ClientAddr is the address a request is counted and recorded under; nil
+	// takes the connection's own address.
+	ClientAddr func(*http.Request) netip.Addr
+	// BridgeReady reports whether the hook bridge is listening; nil means it
+	// is.
+	BridgeReady func() bool
 }
 
 // SetGitHTTP turns on push tokens and their pages. Call it before Handler.

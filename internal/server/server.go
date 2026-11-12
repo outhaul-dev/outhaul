@@ -22,6 +22,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/compose"
 	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/docker"
+	"github.com/outhaul-dev/outhaul/internal/githttp"
 	"github.com/outhaul-dev/outhaul/internal/github"
 	"github.com/outhaul-dev/outhaul/internal/gitrepo"
 	"github.com/outhaul-dev/outhaul/internal/gitsource"
@@ -112,8 +113,9 @@ type Server struct {
 	protectNew bool            // OUTHAUL_PROTECT_NEW_DOMAINS: a new row requires sign-in
 	routing    traefik.Routing // the server-wide routing settings the pages show
 
-	gitHTTP    GitHTTPOptions // git over HTTPS and push tokens
-	gitHTTPSet bool           // SetGitHTTP was called
+	gitHTTP    GitHTTPOptions   // git over HTTPS and push tokens
+	gitHTTPSet bool             // SetGitHTTP was called
+	git        *githttp.Handler // the transport, built by Handler; see gitHandler
 
 	azureDestinationSet bool              // OUTHAUL_BACKUP_AZURE_* set: the Azure row belongs to the environment
 	stateBackup         *StateBackupPanel // nil or no schedule: no State backup panel
@@ -326,7 +328,7 @@ func (s *Server) Handler() http.Handler {
 	// would ride the session cookie. Refuse any unsafe request whose fetch
 	// metadata (or Origin) says it came from another origin. Webhooks are
 	// server-to-server and carry neither header, so they pass.
-	return http.NewCrossOriginProtection().Handler(limitBodies(mux))
+	return http.NewCrossOriginProtection().Handler(s.limitBodies(mux))
 }
 
 // maxRequestBody bounds every request body. The largest legitimate ones (a
@@ -336,9 +338,15 @@ func (s *Server) Handler() http.Handler {
 const maxRequestBody = 1 << 20
 
 // limitBodies refuses a body declared over maxRequestBody and cuts off an
-// undeclared (chunked) one once it passes the limit.
-func limitBodies(next http.Handler) http.Handler {
+// undeclared (chunked) one once it passes the limit. A push, fetch or clone
+// over HTTPS has no limit, as over SSH; its handler reads the body only once
+// the request has passed every check.
+func (s *Server) limitBodies(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.gitHTTPOn() && isGitPost(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if r.ContentLength > maxRequestBody {
 			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
 			return

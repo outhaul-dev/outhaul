@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1494,4 +1495,63 @@ func TestUploadTimeoutHint(t *testing.T) {
 	if got := uploadTimeoutHint(false, 0); got != "" {
 		t.Errorf("with HTTPS pushes off: %q", got)
 	}
+}
+
+// traefikIPs answers ContainerIP from the test and counts the calls.
+type traefikIPs struct {
+	*docker.Fake
+	ip    string
+	err   error
+	asked []string // "<container> on <network>", one per call
+}
+
+func (f *traefikIPs) ContainerIP(_ context.Context, id, network string) (string, error) {
+	f.asked = append(f.asked, id+" on "+network)
+	return f.ip, f.err
+}
+
+func TestTraefikAddr(t *testing.T) {
+	ctx := context.Background()
+	t.Run("the configured address wins", func(t *testing.T) {
+		f := &traefikIPs{Fake: docker.NewFake(), ip: "172.30.0.9"}
+		got, ok := traefikAddr(config.Config{TraefikIP: "172.30.0.2", Network: "outhaul"}, f)(ctx)
+		if !ok || got != netip.MustParseAddr("172.30.0.2") {
+			t.Errorf("got %v %v, want 172.30.0.2", got, ok)
+		}
+		if len(f.asked) != 0 {
+			t.Errorf("Docker was asked %q", f.asked)
+		}
+	})
+	t.Run("Docker's answer, asked once a minute", func(t *testing.T) {
+		f := &traefikIPs{Fake: docker.NewFake(), ip: "172.30.0.9"}
+		now := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
+		addr := traefikAddrAt(config.Config{Network: "outhaul"}, f, func() time.Time { return now })
+		for i := 0; i < 3; i++ {
+			if got, ok := addr(ctx); !ok || got != netip.MustParseAddr("172.30.0.9") {
+				t.Fatalf("call %d: %v %v, want 172.30.0.9", i, got, ok)
+			}
+			now = now.Add(10 * time.Second)
+		}
+		if want := []string{"outhaul-traefik on outhaul"}; !slices.Equal(f.asked, want) {
+			t.Errorf("asked %q, want %q", f.asked, want)
+		}
+		now = now.Add(time.Minute)
+		addr(ctx)
+		if len(f.asked) != 2 {
+			t.Errorf("after a minute Docker was asked %d times in all, want 2", len(f.asked))
+		}
+	})
+	t.Run("an error gives ok false, and is remembered too", func(t *testing.T) {
+		f := &traefikIPs{Fake: docker.NewFake(), err: errors.New("no such container: outhaul-traefik")}
+		now := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
+		addr := traefikAddrAt(config.Config{Network: "outhaul"}, f, func() time.Time { return now })
+		for i := 0; i < 2; i++ {
+			if got, ok := addr(ctx); ok {
+				t.Errorf("call %d: %v, want ok false", i, got)
+			}
+		}
+		if len(f.asked) != 1 {
+			t.Errorf("Docker was asked %d times, want once", len(f.asked))
+		}
+	})
 }
