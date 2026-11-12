@@ -759,6 +759,35 @@ figures. In strict mode `Policy.Max` is the app's limit, and `Check` refuses a
 service above it. A changed limit applies when the container is next created;
 nothing redeploys at startup. The user guide is `docs/GUARD-RAILS.md`.
 
+### Compose restart policy (opt-in)
+
+With `OUTHAUL_COMPOSE_RESTART=unless-stopped`, a Compose deploy gives every
+service that states no restart policy of its own one, so Docker brings the stack
+back after a reboot the way it does apps and databases. Unset, no Compose deploy
+reads the model for it, and the override is byte for byte what it was.
+
+`compose.RestartExtras` reads `compose.Model` and returns `Extra.Restart` for
+each service that gets the policy, plus every service it leaves alone with the
+reason: one that sets `restart` (any value, `"no"` included) or
+`deploy.restart_policy`, and one another service waits on with
+`condition: service_completed_successfully` — restarted, it never completes and
+the deploy times out. `compose.MergeExtras` folds that map into the limits
+extras, and `compose.Override` writes `restart:` as the service block's first
+key. A `depends_on` it cannot read fails the deployment in `building`, naming
+the service and the option and no value. `needsModel` counts the setting, so
+turning it on makes every Compose deploy read the file's model, hence Docker
+Compose 2.35 or newer.
+
+Two consequences are deliberate and documented. A run-once service that nothing
+waits on runs again each time it exits, so the docs say to give it
+`restart: "no"`. And a service with no healthcheck that exits at start stops
+failing the deploy: `up` exits 0 and the service restarts in a loop, where
+today it fails; a healthcheck still fails `up --wait`. The policy applies at a
+stack's next deploy, nothing redeploys an existing stack, and
+`deploy/outhaul.service` doesn't change: Docker owns reboots, and
+`deploy/test/test_unit.sh` holds its ordering. The user guide is
+`docs/SHARED-HOST.md`.
+
 ### Queue and concurrency semantics
 
 The worker runs at most `core.MaxPipelines` (four) deployments at once. With

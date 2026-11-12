@@ -502,3 +502,65 @@ func TestOverrideKeepsRoutedServices(t *testing.T) {
 		}
 	}
 }
+
+// A service with no domain row gets the policy and nothing else, and no
+// top-level networks: block appears because nothing joins the shared network.
+func TestOverrideWritesTheRestartPolicy(t *testing.T) {
+	got := string(Override(core.App{Name: "shop"}, nil, "outhaul", traefik.Routing{}, map[string]Extra{
+		"worker": {Restart: "unless-stopped"},
+	}))
+	if !strings.Contains(got, "  \"worker\":\n    restart: \"unless-stopped\"\n") {
+		t.Errorf("override missing worker's restart policy; got:\n%s", got)
+	}
+	if strings.Contains(got, "networks:") {
+		t.Errorf("a restart-only override joins the shared network:\n%s", got)
+	}
+	if strings.Contains(got, "labels:") {
+		t.Errorf("a restart-only override writes labels:\n%s", got)
+	}
+}
+
+// The policy is the service block's first key, before the networks and labels a
+// published service gets.
+func TestOverrideWritesRestartBesideLabels(t *testing.T) {
+	app := core.App{Name: "shop"}
+	domains := []core.Domain{{ID: 1, Host: "shop.example.com", Service: "web", Port: 3000, TLS: true}}
+	rt := traefik.Routing{TLS: true, CertResolver: "le", GateAddress: "addr"}
+	got := string(Override(app, domains, "outhaul", rt, map[string]Extra{
+		"web": {Restart: "unless-stopped"},
+	}))
+	if !strings.Contains(got, "  \"web\":\n    restart: \"unless-stopped\"\n    networks:\n") {
+		t.Errorf("restart is not the service block's first key; got:\n%s", got)
+	}
+	if !strings.Contains(got, "Host(`shop.example.com`)") {
+		t.Errorf("override lost the domain's router; got:\n%s", got)
+	}
+	if !strings.Contains(got, "networks:\n  \"outhaul\":\n    external: true\n") {
+		t.Errorf("override lost the top-level networks block; got:\n%s", got)
+	}
+}
+
+// One service can gain both an R7 limit and the policy; a service that only
+// gains the policy keeps its block to the one line.
+func TestOverrideWritesRestartAndLimits(t *testing.T) {
+	domains := []core.Domain{{ID: 1, Host: "shop.example.com", Service: "web", Port: 3000, TLS: true}}
+	extra := MergeExtras(
+		map[string]Extra{"web": {Limits: core.Limits{MilliCPUs: 500}}},
+		map[string]Extra{"web": {Restart: "unless-stopped"}, "worker": {Restart: "unless-stopped"}},
+	)
+	rt := traefik.Routing{TLS: true, CertResolver: "le", GateAddress: "addr"}
+	got := string(Override(core.App{Name: "shop"}, domains, "outhaul", rt, extra))
+	if !strings.Contains(got, "  \"web\":\n    restart: \"unless-stopped\"\n    networks:\n") {
+		t.Errorf("web missing restart before its networks; got:\n%s", got)
+	}
+	if !strings.Contains(got, "    cpus: 0.5\n") {
+		t.Errorf("web lost its limit; got:\n%s", got)
+	}
+	worker := got[strings.Index(got, "  \"worker\":\n"):]
+	if !strings.HasPrefix(worker, "  \"worker\":\n    restart: \"unless-stopped\"\n") {
+		t.Errorf("worker's block is not the policy alone; got:\n%s", worker)
+	}
+	if strings.Contains(worker, "labels:") || strings.Contains(worker, "cpus:") {
+		t.Errorf("worker gained more than the policy; got:\n%s", worker)
+	}
+}

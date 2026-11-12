@@ -239,6 +239,15 @@ fixed in five batches. All five are on `main`.
   service.
 - **The Compose model is never logged.** It is `docker compose config` output
   with its variables interpolated, so it can carry secrets.
+- **Compose restart policy.** With `OUTHAUL_COMPOSE_RESTART=unless-stopped` a
+  service that states no policy of its own gets one, except one another service
+  waits on to finish (`condition: service_completed_successfully`). A policy the
+  file states is never changed, `restart: "no"` and `deploy.restart_policy`
+  included. A service with no healthcheck that exits at start is restarted and
+  the deploy still succeeds, where today's deploy fails; a healthcheck still
+  fails `up --wait`. The deploy log names every service either way, nothing
+  redeploys a stack that exists, and the setting needs Docker Compose 2.35 or
+  newer.
 - **A refusal names the service and the option** (`service "web": ports: ...`)
   and never quotes a value from the file, so the deploy log says what to
   change.

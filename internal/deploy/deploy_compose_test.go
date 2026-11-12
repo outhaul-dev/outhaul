@@ -791,3 +791,167 @@ func TestStrictRefusesAServiceAboveTheAppLimit(t *testing.T) {
 		t.Errorf("compose build ran despite the refusal: %+v", calls)
 	}
 }
+
+// With the setting on, a service that states no restart policy of its own gains
+// one, and the log names every service with what it kept.
+func TestComposePipelineGivesTheRestartPolicy(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.ComposeRestart = "unless-stopped"
+	app := h.composeApp(t, "shop", "docker-compose.yml", "")
+	h.compose.ConfigJSON = []byte(`{
+		"name": "outhaul-shop",
+		"services": {
+			"db": {"image": "postgres:16", "restart": "no"},
+			"migrate": {"image": "example.com/migrate:1"},
+			"web": {"image": "nginx:1", "depends_on": {"migrate": {"condition": "service_completed_successfully"}}},
+			"worker": {"image": "example.com/worker:1", "deploy": {"restart_policy": {"condition": "on-failure"}}}
+		}
+	}`)
+
+	var override string
+	h.compose.Hook = func(c compose.Call) {
+		if c.Verb != "up" {
+			return
+		}
+		if b, err := os.ReadFile(filepath.Join(c.Dir, compose.OverrideFile)); err == nil {
+			override = string(b)
+		}
+	}
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	if got := h.status(t, dep.ID); got.Status != core.StatusRunning {
+		t.Fatalf("status = %q (%q), want running", got.Status, got.Reason)
+	}
+	if calls := h.compose.CallsFor("config"); len(calls) != 1 {
+		t.Errorf("config calls = %d, want 1", len(calls))
+	}
+	if !strings.Contains(override, "  \"web\":\n    restart: \"unless-stopped\"\n") {
+		t.Errorf("override missing web's policy; got:\n%s", override)
+	}
+	for _, svc := range []string{"db", "migrate", "worker"} {
+		if strings.Contains(override, "  \""+svc+"\":") {
+			t.Errorf("override gives %s a block it should not have; got:\n%s", svc, override)
+		}
+	}
+	if strings.Contains(override, "networks:") {
+		t.Errorf("the override joins the shared network without a domain; got:\n%s", override)
+	}
+
+	log := h.logOf(dep)
+	lines := []string{
+		`Restart policy "unless-stopped" (OUTHAUL_COMPOSE_RESTART):`,
+		"  db: left alone, it sets its own restart policy",
+		"  migrate: left alone, another service waits for it to finish",
+		"  web: restart: unless-stopped",
+		"  worker: left alone, it sets its own restart policy",
+	}
+	at := 0
+	for _, want := range lines {
+		i := strings.Index(log[at:], want)
+		if i < 0 {
+			t.Fatalf("log missing %q, or out of order; got:\n%s", want, log)
+		}
+		at += i + len(want)
+	}
+}
+
+// An install that has not set the restart policy runs no config call and
+// writes today's override.
+func TestComposePipelineWithoutTheRestartSettingIsUnchanged(t *testing.T) {
+	h := newHarness(t)
+	app := h.composeApp(t, "shop", "docker-compose.yml", "shop.example.com")
+
+	var override string
+	h.compose.Hook = func(c compose.Call) {
+		if c.Verb != "up" {
+			return
+		}
+		if b, err := os.ReadFile(filepath.Join(c.Dir, compose.OverrideFile)); err == nil {
+			override = string(b)
+		}
+	}
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	if got := h.status(t, dep.ID); got.Status != core.StatusRunning {
+		t.Fatalf("status = %q (%q), want running", got.Status, got.Reason)
+	}
+	if calls := h.compose.CallsFor("config"); len(calls) != 0 {
+		t.Errorf("compose config ran without the setting: %+v", calls)
+	}
+	if !strings.Contains(override, "Host(`shop.example.com`)") {
+		t.Errorf("override lost the domain's router; got:\n%s", override)
+	}
+	if strings.Contains(override, "restart") {
+		t.Errorf("override carries a restart line without the setting; got:\n%s", override)
+	}
+	if strings.Contains(h.logOf(dep), "OUTHAUL_COMPOSE_RESTART") {
+		t.Errorf("the log names the setting though it is unset:\n%s", h.logOf(dep))
+	}
+}
+
+// Turning the setting on makes every Compose deploy read the file's model, so a
+// file Compose cannot load fails the deploy before it builds.
+func TestComposePipelineFailsWhenComposeCannotReadTheFile(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.ComposeRestart = "unless-stopped"
+	h.compose.FailConfig = errors.New("yaml: line 3: found character that cannot start any token")
+	app := h.composeApp(t, "shop", "docker-compose.yml", "")
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed {
+		t.Fatalf("status = %q (%q), want failed", got.Status, got.Reason)
+	}
+	if !strings.Contains(got.Reason, "cannot start any token") {
+		t.Errorf("reason = %q, want Compose's own line", got.Reason)
+	}
+	if n := len(h.compose.CallsFor("build")); n != 0 {
+		t.Errorf("build calls = %d, want 0", n)
+	}
+	if n := len(h.compose.CallsFor("up")); n != 0 {
+		t.Errorf("up calls = %d, want 0", n)
+	}
+}
+
+// A depends_on the selection cannot read fails the deploy, naming the service
+// and the option and quoting no value.
+func TestComposePipelineRefusesAnUnreadableDependsOn(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.ComposeRestart = "unless-stopped"
+	h.compose.ConfigJSON = []byte(`{
+		"name": "outhaul-shop",
+		"services": {
+			"web": {"image": "nginx:1", "depends_on": "db"},
+			"db": {"image": "postgres:16"}
+		}
+	}`)
+	app := h.composeApp(t, "shop", "docker-compose.yml", "")
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed {
+		t.Fatalf("status = %q (%q), want failed", got.Status, got.Reason)
+	}
+	for _, want := range []string{`service "web"`, "depends_on"} {
+		if !strings.Contains(got.Reason, want) {
+			t.Errorf("reason = %q, want it to mention %q", got.Reason, want)
+		}
+	}
+	if strings.Contains(got.Reason, "db") {
+		t.Errorf("reason = %q, want it to quote no value from the file", got.Reason)
+	}
+	if n := len(h.compose.CallsFor("build")); n != 0 {
+		t.Errorf("build calls = %d, want 0", n)
+	}
+	if n := len(h.compose.CallsFor("up")); n != 0 {
+		t.Errorf("up calls = %d, want 0", n)
+	}
+}

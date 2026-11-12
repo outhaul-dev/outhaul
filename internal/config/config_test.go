@@ -1344,3 +1344,40 @@ func TestTraefikIPNeedsTheSubnet(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadComposeRestart(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"", ""},
+		{"unless-stopped", "unless-stopped"},
+		{"Unless-Stopped", "unless-stopped"},
+	} {
+		c := Load(func(k string) string {
+			if k == "OUTHAUL_COMPOSE_RESTART" {
+				return tc.in
+			}
+			return ""
+		})
+		if c.ComposeRestart != tc.want {
+			t.Errorf("OUTHAUL_COMPOSE_RESTART=%q -> %q, want %q", tc.in, c.ComposeRestart, tc.want)
+		}
+		if err := c.Validate(); err != nil {
+			t.Errorf("OUTHAUL_COMPOSE_RESTART=%q: Validate: %v", tc.in, err)
+		}
+	}
+}
+
+func TestValidateRejectsMalformedComposeRestart(t *testing.T) {
+	for _, in := range []string{"always", "on-failure:3"} {
+		c := Load(func(k string) string {
+			if k == "OUTHAUL_COMPOSE_RESTART" {
+				return in
+			}
+			return ""
+		})
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), "OUTHAUL_COMPOSE_RESTART") ||
+			!strings.Contains(err.Error(), "unless-stopped") {
+			t.Errorf("OUTHAUL_COMPOSE_RESTART=%q: Validate = %v, want an error naming the variable and unless-stopped", in, err)
+		}
+	}
+}

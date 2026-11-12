@@ -255,6 +255,7 @@ No config files — defaults with `OUTHAUL_*` environment overrides:
 | `OUTHAUL_TRAEFIK_IMAGE` | `traefik:v3.3`       | Managed Traefik image                     |
 | `OUTHAUL_NETWORK`       | `outhaul`            | Shared Docker network for app containers  |
 | `OUTHAUL_CONTAINER_POLICY` | unset (off)       | Refuse Compose files that reach the host or another app — see [docs/GUARD-RAILS.md](docs/GUARD-RAILS.md) |
+| `OUTHAUL_COMPOSE_RESTART` | unset (only the Compose file's own policies) | `unless-stopped` gives every Compose service that states no restart policy of its own one, so Docker brings the stack back after a reboot; needs Docker Compose 2.35 or newer — see [docs/SHARED-HOST.md](docs/SHARED-HOST.md) |
 | `OUTHAUL_NETWORK_SUBNET` | (unset: Docker picks) | Fixed IPv4 subnet for the shared network, `/28` or larger — see docs/SHARED-HOST.md |
 | `OUTHAUL_TRAEFIK_IP`    | (unset: Docker picks) | Traefik's fixed address in the subnet's lower half — see docs/SHARED-HOST.md |
 | `OUTHAUL_DEFAULT_CPUS`  | unset (no limit)     | Per-container CPU limit: `1`, `0.5`, `1.5`; at most the server's CPUs — see [docs/GUARD-RAILS.md](docs/GUARD-RAILS.md) |

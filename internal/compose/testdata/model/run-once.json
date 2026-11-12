@@ -1,0 +1,79 @@
+{
+  "name": "demo",
+  "networks": {
+    "default": {
+      "name": "demo_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "api": {
+      "command": null,
+      "entrypoint": null,
+      "image": "example.com/api:1",
+      "networks": {
+        "default": null
+      },
+      "depends_on": {
+        "web": {
+          "condition": "service_started",
+          "required": true
+        }
+      }
+    },
+    "batch": {
+      "command": null,
+      "entrypoint": null,
+      "image": "example.com/batch:1",
+      "networks": {
+        "default": null
+      }
+    },
+    "db": {
+      "restart": "no",
+      "command": null,
+      "entrypoint": null,
+      "image": "postgres:16",
+      "networks": {
+        "default": null
+      }
+    },
+    "migrate": {
+      "command": null,
+      "entrypoint": null,
+      "image": "example.com/migrate:1",
+      "networks": {
+        "default": null
+      }
+    },
+    "web": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "networks": {
+        "default": null
+      },
+      "depends_on": {
+        "migrate": {
+          "condition": "service_completed_successfully",
+          "required": true
+        }
+      }
+    },
+    "worker": {
+      "deploy": {
+        "resources": {},
+        "restart_policy": {
+          "condition": "on-failure"
+        },
+        "placement": {}
+      },
+      "command": null,
+      "entrypoint": null,
+      "image": "example.com/worker:1",
+      "networks": {
+        "default": null
+      }
+    }
+  }
+}

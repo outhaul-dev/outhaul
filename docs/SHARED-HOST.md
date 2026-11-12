@@ -2,7 +2,8 @@
 
 These settings suit a host running many people's apps. They are off unless set:
 an ordinary install lets Docker pick the shared network's subnet and Traefik's
-address.
+address, and a Compose service comes back after a reboot only if its own file
+says so.
 
 ## A fixed subnet and Traefik address
 
@@ -169,3 +170,62 @@ These need the shared host; none is run by CI.
    acting. A stack stopped in the UI beforehand is still stopped.
 3. With another subnet in the environment file, Outhaul refuses to start, and
    the journal names the network it found and the one the settings ask for.
+4. A Compose stack deployed with `OUTHAUL_COMPOSE_RESTART=unless-stopped` comes
+   back after the reboot in item 2 with nobody acting.
+
+## Compose services after a reboot
+
+| Variable | Values | Default | Needs |
+|---|---|---|---|
+| `OUTHAUL_COMPOSE_RESTART` | `unless-stopped` | unset: only what the Compose file says | Docker Compose 2.35 or newer on the host: with the setting on, every Compose deploy reads the file's normalised model — see [GUARD-RAILS.md](GUARD-RAILS.md#docker-compose-235-or-newer) |
+
+```sh
+OUTHAUL_COMPOSE_RESTART=unless-stopped
+```
+
+A single-container app and a database come back after a reboot on their own,
+because Outhaul creates them with `unless-stopped`. A Compose service comes back
+only if its own file says so. With this setting every service of a stack gets
+`unless-stopped` at its next deploy, so Docker brings it back the same way.
+
+Three services are left as the file has them:
+
+- one that sets `restart`, whatever the value, `"no"` and `always` alike;
+- one that sets `deploy.restart_policy`, which Compose turns into the
+  container's policy and which wins over `restart`;
+- one that another service waits on with
+  `condition: service_completed_successfully`: it is meant to run once, and
+  restarted it never completes, so the deploy would time out.
+
+The deploy log names every service of the stack, with the policy it gained or
+why it kept its own. The policy is applied by deploying: a stack that exists
+keeps its containers until its next deploy, and Outhaul redeploys nothing.
+
+### Run-once services
+
+A service that is meant to run once, and that nothing waits on, looks like a
+server to Outhaul: it gets the policy and runs again each time it exits. That is
+the case the file can't show, so give it `restart: "no"`:
+
+```yaml
+services:
+  migrate:
+    image: example.com/migrate:1
+    restart: "no"
+```
+
+### What the policy does to a failed deploy
+
+A service with no healthcheck that exits at start fails the deploy today
+(`container … exited (1)`, and the same for exit 0). With the policy, `up`
+exits 0 and the service restarts in a loop, so the stack is up with one service
+that is not. A service that has a healthcheck still fails the deploy, with
+`is unhealthy`.
+
+The setting needs Docker Compose 2.35 or newer: with it on, every Compose deploy
+reads the file's normalised model, and an older host fails the deploy before it
+builds, with the message in
+[GUARD-RAILS.md](GUARD-RAILS.md#docker-compose-235-or-newer).
+
+Whether a stopped stack stays stopped across a reboot is under
+[Checking the real host](#checking-the-real-host) above.

@@ -54,6 +54,9 @@ func Override(app core.App, domains []core.Domain, network string, rt traefik.Ro
 	b.WriteString("services:\n")
 	for _, svc := range services {
 		fmt.Fprintf(&b, "  %s:\n", quoteYAML(svc))
+		if p := extra[svc].Restart; p != "" {
+			fmt.Fprintf(&b, "    restart: %s\n", quoteYAML(p))
+		}
 		if ds := byService[svc]; len(ds) > 0 {
 			labels := map[string]string{
 				"traefik.enable":         "true",
