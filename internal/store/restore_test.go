@@ -190,7 +190,7 @@ func TestAppliedMigrationsAndStateCounts(t *testing.T) {
 		t.Fatalf("StateCounts = %d, %d, %d, %v", accounts, apps, databases, err)
 	}
 	applied, err := s.AppliedMigrations(ctx)
-	if err != nil || len(applied) == 0 || applied[len(applied)-1] != "migrations/0032_app_limits.sql" {
+	if err != nil || len(applied) == 0 || applied[len(applied)-1] != "migrations/0033_push_tokens.sql" {
 		t.Fatalf("AppliedMigrations = %v, %v", applied, err)
 	}
 }

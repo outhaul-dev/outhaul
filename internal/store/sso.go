@@ -110,10 +110,15 @@ func (s *Store) EndSSOSessions(ctx context.Context) error {
 
 // endSSOSessions ends the sessions of SSO accounts and every SSO-kind gateway
 // session (route visits included, which have no account) with its route
-// sessions. Password-kind gateway sessions stay.
+// sessions, and deletes those accounts' push tokens: the sign-in a token rested
+// on no longer counts. Password-kind gateway sessions and tokens stay.
 func endSSOSessions(ctx context.Context, q execer) error {
 	if _, err := q.ExecContext(ctx,
 		`DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE sign_in = 'sso')`); err != nil {
+		return err
+	}
+	if _, err := q.ExecContext(ctx,
+		`DELETE FROM push_tokens WHERE user_id IN (SELECT id FROM users WHERE sign_in = 'sso')`); err != nil {
 		return err
 	}
 	return deleteGateSessionsOfKind(ctx, q, core.SignInSSO)
