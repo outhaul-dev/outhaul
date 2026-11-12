@@ -1,15 +1,16 @@
 #!/usr/bin/env sh
 # Runs a real Outhaul, Traefik and Outhaul's own Docker daemon behind a
-# stand-in CDN, and checks sign-in, protected routes and webhooks through it.
-# Not run by CI.
+# stand-in CDN, and checks sign-in, protected routes, webhooks, and git push
+# and clone over HTTPS with a push token through it. Not run by CI.
 #
 #   sh deploy/test/integration_proxy.sh
 #
 # It builds deploy/test/Dockerfile.proxytest (Debian 13 with systemd and its
 # own Docker daemon, plus the outhaul binary and deploy/test/oidcstub) and
 # starts it privileged as outhaul-proxytest-*. Outhaul runs inside with the
-# local CA, OUTHAUL_HTTP_PORT=off, a required header, OUTHAUL_ADMIN_DIRECT=off
-# and a public URL. nginx inside that container is the stand-in CDN: it
+# local CA, OUTHAUL_HTTP_PORT=off, a required header, OUTHAUL_ADMIN_DIRECT=off,
+# a public URL, and git over HTTPS (OUTHAUL_GIT_HTTP=on, with
+# OUTHAUL_UPLOAD_TIMEOUT). nginx inside that container is the stand-in CDN: it
 # terminates TLS with its own certificate, forwards to Traefik on 8443 with the
 # request's Host as both Host and SNI, verifies the origin certificate against
 # the local CA's root, and sets X-Probe-Id itself, overwriting any the client
@@ -123,6 +124,8 @@ OUTHAUL_NETWORK=outhaul \
 OUTHAUL_REQUIRE_HEADER_NAME=X-Probe-Id \
 OUTHAUL_REQUIRE_HEADER_VALUE="$value" \
 OUTHAUL_ADMIN_DIRECT=off \
+OUTHAUL_GIT_HTTP=on \
+OUTHAUL_UPLOAD_TIMEOUT=10m \
 	outhaul serve >/work/outhaul.log 2>&1 &
 echo $! >/work/outhaul.pid
 EOF
@@ -388,6 +391,81 @@ else
 fi
 listeners=$(ce sh -c "ss -ltn | grep ':$admin_port ' | wc -l" | tr -d ' ')
 [ "$listeners" = 2 ] && pass "ss lists port 8080 on two addresses only" || fail "ss lists port 8080 on two addresses only" "count=$listeners" "$(ce sh -c "ss -ltn | grep ':$admin_port '")"
+
+echo "== git push over HTTPS"
+# git runs as a person's would: its HOME is /work/gitclient (mode 700), which
+# holds its global config and the credential helper's file, and it has no
+# terminal to prompt on. The remote is the public URL itself. git has nothing
+# like curl's --connect-to, so it resolves the public host to 127.0.0.3, and
+# the container's nat table sends 127.0.0.3:443 to the stand-in on 8443.
+# Without that rule git would reach Traefik with no header, and get 404.
+gitsh() { docker exec -e HOME=/work/gitclient -e GIT_TERMINAL_PROMPT=0 "$cid" sh -c "$1"; }
+ce iptables -t nat -I OUTPUT -p tcp -d 127.0.0.3 --dport 443 -j REDIRECT --to-ports 8443 ||
+	die "send 127.0.0.3:443 to the stand-in"
+ce sh -c 'mkdir -p /work/gitclient && chmod 700 /work/gitclient' || die "make the git client's HOME"
+gitsh "git config --global credential.helper store && git config --global http.sslCAInfo /work/cdn.crt &&
+	git config --global http.curloptResolve $publichost:443:127.0.0.3" || die "configure the git client"
+# The token stays inside the container, under /work/gitclient: first the page
+# that shows it, then the credential helper's file. It is never on a command
+# line or in this script's output, and a failure prints no part of the page.
+code=$(ce curl -sS -o /work/gitclient/token.html -w '%{http_code}' -c /work/admin.jar -b /work/admin.jar \
+	--connect-to "$publichost:443:127.0.0.1:8443" --cacert /work/cdn.crt \
+	-X POST "$public/account/push-tokens" --data-urlencode label=proxytest --data-urlencode days=1)
+shown=$(ce sh -c 'grep -oE "ohp_[0-9a-f]{64}" /work/gitclient/token.html | wc -l' | tr -d ' ')
+if [ "$code:$shown" = 200:1 ]; then
+	pass "the Account page makes a push token and shows it once, through the stand-in"
+else
+	fail "the Account page makes a push token and shows it once, through the stand-in" "status=$code tokens on the page=$shown"
+fi
+ce sh -c 'umask 077 && t=$(grep -oE "ohp_[0-9a-f]{64}" /work/gitclient/token.html) &&
+	printf "https://proxytest:%s@outhaul.shared.demo.example.com\n" "$t" >/work/gitclient/.git-credentials
+	rm -f /work/gitclient/token.html'
+
+ce sh -c 'cd /work/repo && echo "pushed over HTTPS" >pushed.txt && git add pushed.txt && git commit -qm "push over HTTPS"' ||
+	die "commit in /work/repo"
+want=$(ce sh -c 'cd /work/repo && git rev-parse HEAD')
+rc=$(gitsh "cd /work/repo && git push $public/git/app.git main >/work/push.out 2>&1; echo \$?")
+if [ "$rc" = 0 ] && ce grep -q "build log: $public/deployments/[0-9]" /work/push.out && ce grep -q "✓ deployed " /work/push.out; then
+	pass "a token in a credential helper pushes and deploys through the stand-in"
+else
+	fail "a token in a credential helper pushes and deploys through the stand-in" "git exit=$rc" "$(ce tail -15 /work/push.out)"
+fi
+rc=$(gitsh "git clone -q $public/git/app.git /work/clone >/work/clone.out 2>&1; echo \$?")
+got=$(ce sh -c 'cd /work/clone 2>/dev/null && git rev-parse HEAD')
+if [ "$rc" = 0 ] && [ -n "$want" ] && [ "$got" = "$want" ]; then
+	pass "git clone works through the stand-in"
+else
+	fail "git clone works through the stand-in" "git exit=$rc head='$got' pushed='$want'" "$(ce tail -15 /work/clone.out)"
+fi
+# Every answer Outhaul gives on /git/ carries the 1980 Expires header, so its
+# absence shows the 404 is Traefik's own.
+code=$(direct "$publichost" "/git/app.git/info/refs?service=git-receive-pack" -D /work/git-direct.h -o /dev/null -w '%{http_code}')
+if [ "$code" = 404 ] && ! ce grep -qi '^expires: Fri, 01 Jan 1980' /work/git-direct.h; then
+	pass "git without the required header matches no router"
+else
+	fail "git without the required header matches no router" "status=$code" "$(ce cat /work/git-direct.h)"
+fi
+# The wrong token comes last, because after a 401 to a request that carried
+# credentials git erases them from the helper's file.
+ce sh -c 'umask 077 && printf "https://proxytest:ohp_%064d@outhaul.shared.demo.example.com\n" 0 >/work/gitclient/.git-credentials'
+rc=$(gitsh "cd /work/repo && git push $public/git/app.git main >/work/push-bad.out 2>&1; echo \$?")
+if [ "$rc" != 0 ] && ce grep -q "that push token isn't valid" /work/push-bad.out; then
+	pass "a wrong token in the helper is refused, and git prints why"
+else
+	fail "a wrong token in the helper is refused, and git prints why" "git exit=$rc" "$(ce tail -15 /work/push-bad.out)"
+fi
+line=$(ce sh -c 'grep "git push over HTTPS: " /work/outhaul.log | tail -1')
+leaks=$(ce sh -c 'grep -c ohp_ /work/outhaul.log || true')
+case $line in
+*'"proxytest"'*'to app app:'*) [ "$leaks" = 0 ] && ok=1 || ok=0 ;;
+*) ok=0 ;;
+esac
+if [ "$ok" = 1 ]; then
+	pass "the log names the push's token label and app, and holds no token"
+	info "${line#*git push over HTTPS: }"
+else
+	fail "the log names the push's token label and app, and holds no token" "line='$line'" "lines with ohp_: $leaks"
+fi
 
 echo "== restart with another header value"
 ce sh /work-write-nginx.sh def-456 >/dev/null 2>&1 || die "reload nginx with the new header"

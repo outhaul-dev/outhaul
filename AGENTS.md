@@ -58,7 +58,8 @@ containers, on loopback ports, and removes them when it ends.
 `deploy/test/integration_proxy.sh` builds a privileged Debian container with
 its own Docker daemon (`deploy/test/Dockerfile.proxytest`), runs a real Outhaul
 and Traefik inside it, and puts a stand-in CDN (nginx) and OIDC provider
-(`deploy/test/oidcstub`) in front. It starts only `outhaul-proxytest-*`
+(`deploy/test/oidcstub`) in front; it also pushes and clones over HTTPS with a
+push token through the stand-in. It starts only `outhaul-proxytest-*`
 containers and removes them when it ends. It has found real defects (an admin
 route the YAML parser rejected), so run it after changing how a router or the
 admin route is written.
