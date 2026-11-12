@@ -75,9 +75,9 @@ func (s *Server) handleDeployTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The form has no sign-in switch: a deploy that doesn't say is protected,
-	// as call 19 asks. An explicit protected_offered without protected is the
-	// only way to open a template's rows, and no page sends it.
+	// The form has no sign-in switch: a deploy that doesn't say is protected.
+	// An explicit protected_offered without protected is the only way to open a
+	// template's rows, and no page sends it.
 	protect := s.protectNew && (r.FormValue("protected_offered") == "" || r.FormValue("protected") != "")
 
 	// Every host is checked before the app exists, as the new-app form does.

@@ -271,12 +271,16 @@ func TestDeployTemplateRefusesWhenTheGateHostFails(t *testing.T) {
 	e, px := newProtectionEnv(t)
 	e.srv.protectNew = true
 	px.err = errors.New("docker unreachable")
+	notified := e.deployer.notified
 	r := e.postForm(t, "/templates/wordpress", url.Values{"name": {"blog"}})
 	if r.StatusCode < 400 || !strings.Contains(body(t, r), "docker unreachable") {
 		t.Fatalf("deploy template: status %d, want a refusal naming the cause", r.StatusCode)
 	}
 	if _, err := e.store.GetAppByName(context.Background(), "blog"); !errors.Is(err, sql.ErrNoRows) {
 		t.Errorf("app survived a failed gate host: %v", err)
+	}
+	if e.deployer.notified != notified {
+		t.Errorf("the deployer was notified %d times, want none", e.deployer.notified-notified)
 	}
 }
 
