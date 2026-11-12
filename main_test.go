@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -910,5 +911,26 @@ func TestTrustedAllWarning(t *testing.T) {
 	}
 	if got := trustedAllWarning(config.Config{}); got != "" {
 		t.Errorf("warning = %q without trust-all, want empty", got)
+	}
+}
+
+func TestProxyConfigCarriesTrustedProxies(t *testing.T) {
+	cfg := config.Config{
+		Network: "outhaul", TraefikImage: config.DefaultTraefikImage,
+		TrustedProxies: []string{"192.0.2.0/24"},
+	}
+	ic := &infraController{dc: docker.NewFake(), cfg: cfg}
+	for _, tunnelOn := range []bool{false, true} {
+		pc := ic.proxyConfig(context.Background(), tunnelOn, false)
+		if !slices.Equal(pc.TrustedProxies, cfg.TrustedProxies) || pc.TrustAllProxies {
+			t.Errorf("tunnelOn=%v: TrustedProxies=%v TrustAllProxies=%v", tunnelOn, pc.TrustedProxies, pc.TrustAllProxies)
+		}
+	}
+	ic.cfg = config.Config{Network: "outhaul", TrustAllProxies: true}
+	for _, tunnelOn := range []bool{false, true} {
+		pc := ic.proxyConfig(context.Background(), tunnelOn, false)
+		if !pc.TrustAllProxies || len(pc.TrustedProxies) != 0 {
+			t.Errorf("tunnelOn=%v: TrustedProxies=%v TrustAllProxies=%v", tunnelOn, pc.TrustedProxies, pc.TrustAllProxies)
+		}
 	}
 }

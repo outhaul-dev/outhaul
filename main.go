@@ -627,6 +627,8 @@ func (ic *infraController) proxyConfig(ctx context.Context, tunnelOn, protectedR
 		DynamicDir:       ic.cfg.DynamicDir(),
 		ProtectedRoutes:  protectedRoutes,
 		Routing:          traefik.RoutingFrom(ic.cfg, false),
+		TrustedProxies:   ic.cfg.TrustedProxies,
+		TrustAllProxies:  ic.cfg.TrustAllProxies,
 	}
 	if !ic.cfg.AdminDirect {
 		pc.GateHost = ic.gateway

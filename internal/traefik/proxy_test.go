@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -813,5 +814,187 @@ func TestHeaderRequiredReportsAStopFailure(t *testing.T) {
 	err := EnsureProxy(ctx, stopFails{f}, pc, nil)
 	if err == nil || !strings.Contains(err.Error(), "stop") {
 		t.Fatalf("EnsureProxy = %v, want an error naming the failed stop", err)
+	}
+}
+
+func trustedFlags(spec docker.ContainerSpec, ep string) (trustedips, insecure, middleware bool, ips string) {
+	for _, f := range spec.Cmd {
+		switch {
+		case strings.HasPrefix(f, "--entrypoints."+ep+".forwardedheaders.trustedips="):
+			trustedips = true
+			ips = strings.TrimPrefix(f, "--entrypoints."+ep+".forwardedheaders.trustedips=")
+		case f == "--entrypoints."+ep+".forwardedheaders.insecure=true":
+			insecure = true
+		case f == "--entrypoints."+ep+".http.middlewares=outhaul-forwarded@file":
+			middleware = true
+		}
+	}
+	return
+}
+
+func TestProxySpecTrustsAddresses(t *testing.T) {
+	pc := tlsProxyConfig()
+	pc.DynamicDir = t.TempDir()
+	pc.TrustedProxies = []string{"192.0.2.0/24", "2001:db8::1"}
+	spec := proxySpec(pc)
+	for _, ep := range []string{"web", "websecure"} {
+		if !slices.Contains(spec.Cmd, "--entrypoints."+ep+".forwardedheaders.trustedips=192.0.2.0/24,2001:db8::1") {
+			t.Errorf("%s: trustedips flag missing: %v", ep, spec.Cmd)
+		}
+		if !slices.Contains(spec.Cmd, "--entrypoints."+ep+".http.middlewares=outhaul-forwarded@file") {
+			t.Errorf("%s: middleware flag missing: %v", ep, spec.Cmd)
+		}
+	}
+	for _, f := range spec.Cmd {
+		if strings.Contains(f, "forwardedheaders.insecure") {
+			t.Errorf("unexpected insecure flag %q", f)
+		}
+	}
+	for _, want := range []string{"--providers.file.directory=/etc/traefik/dynamic", "--providers.file.watch=true"} {
+		if !slices.Contains(spec.Cmd, want) {
+			t.Errorf("missing %q: %v", want, spec.Cmd)
+		}
+	}
+	want := docker.Mount{Source: pc.DynamicDir, Target: "/etc/traefik/dynamic", ReadOnly: true}
+	if !slices.Contains(spec.Mounts, want) {
+		t.Errorf("mounts = %v, want %v", spec.Mounts, want)
+	}
+}
+
+func TestProxySpecTrustsAll(t *testing.T) {
+	pc := tlsProxyConfig()
+	pc.DynamicDir = t.TempDir()
+	pc.TrustAllProxies = true
+	spec := proxySpec(pc)
+	for _, ep := range []string{"web", "websecure"} {
+		if !slices.Contains(spec.Cmd, "--entrypoints."+ep+".forwardedheaders.insecure=true") {
+			t.Errorf("%s: insecure flag missing: %v", ep, spec.Cmd)
+		}
+	}
+	for _, f := range spec.Cmd {
+		if strings.Contains(f, "forwardedheaders.trustedips") {
+			t.Errorf("unexpected trustedips flag %q", f)
+		}
+	}
+}
+
+func TestProxySpecTrustedEntrypoints(t *testing.T) {
+	tunnel := testProxyConfig()
+	tunnel.TunnelMode = true
+	httpOff := tlsProxyConfig()
+	httpOff.Routing.HTTPOff = true
+	cases := []struct {
+		name string
+		pc   ProxyConfig
+		want []string
+	}{
+		{"plain HTTP", testProxyConfig(), []string{"web"}},
+		{"ACME", tlsProxyConfig(), []string{"web", "websecure"}},
+		{"local CA", localCAProxyConfig(t), []string{"web", "websecure"}},
+		{"tunnel", tunnel, []string{"web"}},
+		{"HTTP off", httpOff, []string{"websecure"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pc := tc.pc
+			pc.DynamicDir = t.TempDir()
+			pc.TrustedProxies = []string{"192.0.2.1"}
+			spec := proxySpec(pc)
+			for _, ep := range []string{"web", "websecure"} {
+				ips, _, mw, got := trustedFlags(spec, ep)
+				if slices.Contains(tc.want, ep) {
+					if !ips || !mw || got != "192.0.2.1" {
+						t.Errorf("%s: want trust flags, got trustedips=%v middleware=%v: %v", ep, ips, mw, spec.Cmd)
+					}
+				} else if ips || mw {
+					t.Errorf("%s: want no trust flags: %v", ep, spec.Cmd)
+				}
+			}
+		})
+	}
+}
+
+func TestProxySpecHashChangesWithTrust(t *testing.T) {
+	pc := tlsProxyConfig()
+	pc.DynamicDir = t.TempDir()
+	base := proxySpec(pc).Labels["outhaul.config-hash"]
+	pc.TrustedProxies = []string{"192.0.2.1"}
+	named := proxySpec(pc).Labels["outhaul.config-hash"]
+	if named == base {
+		t.Error("naming a proxy did not change the hash")
+	}
+	pc.TrustedProxies = nil
+	pc.TrustAllProxies = true
+	all := proxySpec(pc).Labels["outhaul.config-hash"]
+	if all == base || all == named {
+		t.Errorf("trusting all gave hash %s, same as base %s or named %s", all, base, named)
+	}
+}
+
+func TestEnsureProxyWritesAndRemovesForwardedConfig(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+	pc := tlsProxyConfig()
+	pc.DynamicDir = t.TempDir()
+	pc.TrustedProxies = []string{"192.0.2.1"}
+	if err := EnsureProxy(ctx, f, pc, nil); err != nil {
+		t.Fatalf("EnsureProxy: %v", err)
+	}
+	path := filepath.Join(pc.DynamicDir, forwardedDynamicFile)
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("forwarded config not written: %v", err)
+	}
+	if string(got) != ForwardedDynamicConfig() {
+		t.Errorf("forwarded config = %q, want %q", got, ForwardedDynamicConfig())
+	}
+	pc.TrustedProxies = nil
+	if err := EnsureProxy(ctx, f, pc, nil); err != nil {
+		t.Fatalf("EnsureProxy (trust off): %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("forwarded config should be removed, stat err = %v", err)
+	}
+}
+
+func TestEnsureProxyKeepsForwardedConfigWhenThePullFailsWhileTurningItOff(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+	pc := tlsProxyConfig()
+	pc.DynamicDir = t.TempDir()
+	pc.TrustedProxies = []string{"192.0.2.1"}
+	if err := EnsureProxy(ctx, f, pc, nil); err != nil {
+		t.Fatalf("EnsureProxy: %v", err)
+	}
+	path := filepath.Join(pc.DynamicDir, forwardedDynamicFile)
+	before, _ := f.FindContainer(ctx, pc.ContainerName)
+	pc.TrustedProxies = nil
+	f.FailPull = func(string) error { return errors.New("registry down") }
+	if err := EnsureProxy(ctx, f, pc, nil); err == nil {
+		t.Fatal("EnsureProxy should fail when the pull fails")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("the old Traefik still names the middleware, so the file must stay: %v", err)
+	}
+	if before == nil || !before.Running() {
+		t.Errorf("the old Traefik should still be running: %+v", before)
+	}
+}
+
+func TestEnsureProxyTrustedNeedsDynamicDir(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+	pc := tlsProxyConfig()
+	pc.TrustedProxies = []string{"192.0.2.1"}
+	pc.DynamicDir = ""
+	err := EnsureProxy(ctx, f, pc, nil)
+	if err == nil || !strings.Contains(err.Error(), "OUTHAUL_TRUSTED_PROXIES") {
+		t.Fatalf("EnsureProxy = %v, want an error naming OUTHAUL_TRUSTED_PROXIES", err)
+	}
+	if f.Networks[pc.Network] {
+		t.Error("a network was created")
+	}
+	if c, _ := f.FindContainer(ctx, pc.ContainerName); c != nil {
+		t.Error("a container was created")
 	}
 }
