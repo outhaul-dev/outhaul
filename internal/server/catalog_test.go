@@ -220,3 +220,96 @@ func TestTemplateAppPage(t *testing.T) {
 		t.Error("project page missing the template badge or repo cell")
 	}
 }
+
+// With the setting on, every row a template deploy writes requires sign-in.
+func TestDeployTemplateProtectsItsRows(t *testing.T) {
+	e, _ := newProtectionEnv(t)
+	e.srv.protectNew = true
+	r := e.postForm(t, "/templates/wordpress", url.Values{"name": {"blog"}, "project_id": {itoa(core.DefaultProjectID)}})
+	if r.StatusCode >= 400 {
+		t.Fatalf("deploy template: status %d, body %s", r.StatusCode, body(t, r))
+	}
+	r.Body.Close()
+	app, err := e.store.GetAppByName(context.Background(), "blog")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := e.store.ListDomains(context.Background(), app.ID)
+	if len(rows) == 0 {
+		t.Fatal("no rows were written")
+	}
+	for _, d := range rows {
+		if !d.Protected {
+			t.Errorf("row %s%s is open", d.Host, d.Path)
+		}
+	}
+	if e.deployer.notified == 0 {
+		t.Error("the first deploy was not queued")
+	}
+}
+
+// The template form offers no switch: a request that doesn't say is protected.
+func TestDeployTemplateWithoutTheFormsFieldIsProtected(t *testing.T) {
+	e, _ := newProtectionEnv(t)
+	e.srv.protectNew = true
+	r := e.postForm(t, "/templates/wordpress", url.Values{"name": {"blog"}})
+	if r.StatusCode >= 400 {
+		t.Fatalf("deploy template: status %d, body %s", r.StatusCode, body(t, r))
+	}
+	r.Body.Close()
+	app, _ := e.store.GetAppByName(context.Background(), "blog")
+	rows, _ := e.store.ListDomains(context.Background(), app.ID)
+	for _, d := range rows {
+		if !d.Protected {
+			t.Errorf("row %s%s is open", d.Host, d.Path)
+		}
+	}
+}
+
+// A failed gate-host reconcile removes the app and queues no deployment.
+func TestDeployTemplateRefusesWhenTheGateHostFails(t *testing.T) {
+	e, px := newProtectionEnv(t)
+	e.srv.protectNew = true
+	px.err = errors.New("docker unreachable")
+	r := e.postForm(t, "/templates/wordpress", url.Values{"name": {"blog"}})
+	if r.StatusCode < 400 || !strings.Contains(body(t, r), "docker unreachable") {
+		t.Fatalf("deploy template: status %d, want a refusal naming the cause", r.StatusCode)
+	}
+	if _, err := e.store.GetAppByName(context.Background(), "blog"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("app survived a failed gate host: %v", err)
+	}
+}
+
+// Another app's old open route on the host is refused, and nothing is written.
+func TestDeployTemplateRefusesAnotherAppsOldRoute(t *testing.T) {
+	e, _ := newProtectionEnv(t)
+	e.srv.protectNew = true
+	e.srv.naming = core.Naming{Suffix: "shared.demo.example.com"}
+	leftoverHooks(t, e, []core.Domain{{Host: "blog.shared.demo.example.com", Port: 80}}, nil)
+
+	r := e.postForm(t, "/templates/wordpress", url.Values{"name": {"blog"}})
+	if r.StatusCode < 400 || !strings.Contains(body(t, r), "hooks") {
+		t.Fatalf("deploy template: status %d, want a refusal naming the app that must redeploy", r.StatusCode)
+	}
+	if _, err := e.store.GetAppByName(context.Background(), "blog"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("app survived a refused host: %v", err)
+	}
+}
+
+// With the setting off the rows are open, as they were.
+func TestDeployTemplateWithoutTheSettingLeavesRowsOpen(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	r := e.postForm(t, "/templates/wordpress", url.Values{"name": {"blog"}})
+	if r.StatusCode >= 400 {
+		t.Fatalf("deploy template: status %d, body %s", r.StatusCode, body(t, r))
+	}
+	r.Body.Close()
+	app, _ := e.store.GetAppByName(context.Background(), "blog")
+	rows, _ := e.store.ListDomains(context.Background(), app.ID)
+	for _, d := range rows {
+		if d.Protected {
+			t.Errorf("row %s%s is protected with the setting off", d.Host, d.Path)
+		}
+	}
+}
