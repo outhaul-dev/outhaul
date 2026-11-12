@@ -587,7 +587,7 @@ type countingNetwork struct {
 	calls atomic.Int64
 }
 
-func (c *countingNetwork) EnsureNetwork(context.Context, string) error {
+func (c *countingNetwork) EnsureNetwork(context.Context, docker.NetworkSpec) error {
 	c.calls.Add(1)
 	return errors.New("docker unreachable")
 }

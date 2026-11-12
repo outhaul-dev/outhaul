@@ -33,7 +33,7 @@ type ConnectorConfig struct {
 // starts it if stopped, or pulls the image and (re)creates it otherwise. A
 // changed token yields a new hash and triggers a recreate.
 func EnsureConnector(ctx context.Context, dc docker.Client, cc ConnectorConfig, logOut io.Writer) error {
-	if err := dc.EnsureNetwork(ctx, cc.Network); err != nil {
+	if err := dc.EnsureNetwork(ctx, docker.NetworkSpec{Name: cc.Network}); err != nil {
 		return fmt.Errorf("ensure network %q: %w", cc.Network, err)
 	}
 	spec := connectorSpec(cc)

@@ -58,6 +58,25 @@ func PlanSubnet(cidr string) (SubnetPlan, error) {
 	return plan, nil
 }
 
+// NetworkFor returns the spec for the named network. An empty subnet leaves
+// Docker to choose the network's addressing; otherwise the subnet's canonical
+// form supplies the gateway and the dynamic range.
+func NetworkFor(name, subnet string) (NetworkSpec, error) {
+	if subnet == "" {
+		return NetworkSpec{Name: name}, nil
+	}
+	plan, err := PlanSubnet(subnet)
+	if err != nil {
+		return NetworkSpec{}, err
+	}
+	return NetworkSpec{
+		Name:    name,
+		Subnet:  plan.Subnet,
+		Gateway: plan.Gateway,
+		IPRange: plan.IPRange,
+	}, nil
+}
+
 // Fixed reports whether ip is an IPv4 address in the subnet's fixed range,
 // inclusive of the First and Last addresses.
 func (p SubnetPlan) Fixed(ip string) bool {

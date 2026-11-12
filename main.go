@@ -541,7 +541,7 @@ func (ic *infraController) reconcile(ctx context.Context) error {
 	if !ic.cfg.AdminDirect {
 		// The admin UI will listen only on loopback and this address, and
 		// Traefik maps host.docker.internal to it instead of host-gateway.
-		if err := ic.dc.EnsureNetwork(ctx, ic.cfg.Network); err != nil {
+		if err := ic.dc.EnsureNetwork(ctx, docker.NetworkSpec{Name: ic.cfg.Network}); err != nil {
 			return fmt.Errorf("ensure network %q: %w", ic.cfg.Network, err)
 		}
 		gw, err := ic.dc.NetworkGateway(ctx, ic.cfg.Network)

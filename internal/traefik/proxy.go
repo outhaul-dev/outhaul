@@ -120,7 +120,7 @@ func EnsureProxy(ctx context.Context, dc docker.Client, pc ProxyConfig, logOut i
 	if err := removeStaleLocalCertsConfig(pc); err != nil {
 		return fmt.Errorf("remove stale local-certs config: %w", err)
 	}
-	if err := dc.EnsureNetwork(ctx, pc.Network); err != nil {
+	if err := dc.EnsureNetwork(ctx, docker.NetworkSpec{Name: pc.Network}); err != nil {
 		return fmt.Errorf("ensure network %q: %w", pc.Network, err)
 	}
 
