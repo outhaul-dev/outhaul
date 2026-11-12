@@ -199,7 +199,9 @@
     //
     // When sign-in is unavailable the server renders the switch disabled, for
     // a new or open row; a protected row's switch is enabled, so it can be
-    // turned off, with its own reason.
+    // turned off, with its own reason — unless OUTHAUL_PROTECT_NEW_DOMAINS is
+    // on, when the switch is always enabled and a save that can't protect the
+    // row is refused instead.
     var protect = document.getElementById('domain-protected');
     var protectNote = document.getElementById('domain-protect-note');
     var reasonOff = document.getElementById('domain-protect-reason');
