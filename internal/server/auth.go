@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -230,6 +231,12 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request, status int, e
 
 func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	user, err := s.checkPassword(r.Context(), r.FormValue("username"), r.FormValue("password"))
+	var locked *signInLockedError
+	if errors.As(err, &locked) {
+		w.Header().Set("Retry-After", strconv.Itoa(locked.retryAfter()))
+		s.loginPage(w, r, http.StatusTooManyRequests, locked.Error())
+		return
+	}
 	if errors.Is(err, errHashBusy) {
 		s.loginPage(w, r, http.StatusServiceUnavailable, busyMessage)
 		return

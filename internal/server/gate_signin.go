@@ -533,15 +533,31 @@ func (s *Server) gateLooping(w http.ResponseWriter, r *http.Request, host, n str
 // session.
 func (s *Server) checkPassword(ctx context.Context, username, password string) (core.User, error) {
 	user, err := s.store.GetUserByName(ctx, username)
+	known := err == nil
+	if s.signIn != nil {
+		wait, ok := s.signIn.allow(username, known)
+		if !ok {
+			if known && s.signInLog.allow(time.Now()) {
+				log.Printf("server: sign-in for %q is locked after repeated failures", logText(username))
+			}
+			return core.User{}, &signInLockedError{wait: wait}
+		}
+	}
 	if err != nil || user.PasswordHash == "" || user.SignIn != core.SignInPassword {
 		return core.User{}, errBadCredentials
 	}
 	var ok bool
 	if busy := s.withHashSlot(ctx, func() { ok, err = VerifyPassword(user.PasswordHash, password) }); busy != nil {
+		if s.signIn != nil {
+			s.signIn.giveBack(username, known)
+		}
 		return core.User{}, busy
 	}
 	if err != nil || !ok {
 		return core.User{}, errBadCredentials
+	}
+	if s.signIn != nil {
+		s.signIn.clear(username)
 	}
 	return user, nil
 }
@@ -570,6 +586,12 @@ func (s *Server) handleGateSignIn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user, err := s.checkPassword(r.Context(), r.PostFormValue("username"), r.PostFormValue("password"))
+	var locked *signInLockedError
+	if errors.As(err, &locked) {
+		w.Header().Set("Retry-After", strconv.Itoa(locked.retryAfter()))
+		s.gateLoginPage(w, r, http.StatusTooManyRequests, host, rd, n, locked.Error())
+		return
+	}
 	if errors.Is(err, errHashBusy) {
 		s.gateLoginPage(w, r, http.StatusServiceUnavailable, host, rd, n, busyMessage)
 		return

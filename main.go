@@ -394,6 +394,7 @@ func serve() error {
 		Prefix:      cfg.StateBackupPrefix,
 	})
 	srv.SetHTTPSPort(cfg.HTTPSPort)
+	srv.SetSignInBackoff(cfg.SignInBackoff)
 	go srv.RunRestorePass(workerCtx)
 	srv.SetBuild(update.Current())
 	if updatesOff {

@@ -222,10 +222,12 @@ fixed in five batches. All five are on `main`.
   shell on the host. A `git push`, fetch or clone over SSH follows the same rule as the web:
   the key's owner must be a system admin, or project member or above on the
   app's project.
-- **Login.** There is no per-IP or per-user backoff. Behind Traefik every
-  request shares one remote address, and a per-user lockout lets an attacker
-  lock out the only admin. The two-at-a-time limit on hashing caps the rate of
-  guesses.
+- **Login.** There is no per-IP backoff: behind Traefik every request shares
+  one remote address. A per-username backoff exists only with
+  `OUTHAUL_SIGNIN_BACKOFF=on`. It is in memory, and a lock ends by itself
+  within 15 minutes. Someone who keeps guessing at a name can hold that name
+  locked, so the way back in is a new account: `outhaul admin create`, run on
+  the host. The two-at-a-time limit on hashing always applies.
 - **Protected routes.** The gate is defined in each app's own labels, never in
   the file provider: Traefik drops a router that names a middleware the file
   provider doesn't define, and its requests fall to an open router. Every open

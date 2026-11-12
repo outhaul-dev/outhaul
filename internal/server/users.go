@@ -339,6 +339,9 @@ func (s *Server) handleAccountSetupSubmit(w http.ResponseWriter, r *http.Request
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	if s.signIn != nil {
+		s.signIn.clear(done.Username)
+	}
 	if err := s.login(w, r, done); err != nil {
 		log.Printf("server: sign in user %d after setup: %v", done.ID, err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
