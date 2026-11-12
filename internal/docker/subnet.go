@@ -52,7 +52,7 @@ func PlanSubnet(cidr string) (SubnetPlan, error) {
 		Subnet:  ipnet.String(),
 		Gateway: makeAddr(ip4 + 1),
 		First:   makeAddr(ip4 + 2),
-		Last:    makeAddr(ip4+uint32(half)-1),
+		Last:    makeAddr(ip4 + uint32(half) - 1),
 		IPRange: makeCIDR(ip4+uint32(half), prefix+1),
 	}
 	return plan, nil
@@ -66,9 +66,14 @@ func (p SubnetPlan) Fixed(ip string) bool {
 		return false
 	}
 	ip4 := binary.BigEndian.Uint32(addr.To4())
-	first := ipToInt(p.First)
-	last := ipToInt(p.Last)
-	return ip4 >= first && ip4 <= last
+	first := net.ParseIP(p.First)
+	last := net.ParseIP(p.Last)
+	if first == nil || first.To4() == nil || last == nil || last.To4() == nil {
+		return false
+	}
+	first4 := binary.BigEndian.Uint32(first.To4())
+	last4 := binary.BigEndian.Uint32(last.To4())
+	return ip4 >= first4 && ip4 <= last4
 }
 
 func makeAddr(u uint32) string {
@@ -79,41 +84,4 @@ func makeAddr(u uint32) string {
 
 func makeCIDR(u uint32, prefix int) string {
 	return net.IPv4(byte(u>>24), byte(u>>16), byte(u>>8), byte(u)).String() + "/" + strconv.Itoa(prefix)
-}
-
-func ipToInt(s string) uint32 {
-	var u uint32
-	for i := 0; i < 4; i++ {
-		dot := indexOfByte(s, '.')
-		if i == 3 {
-			if dot != len(s) {
-				return 0
-			}
-			n, err := strconv.Atoi(s)
-			if err != nil {
-				return 0
-			}
-			u = u*256 + uint32(n)
-			return u
-		}
-		if dot == len(s) {
-			return 0
-		}
-		n, err := strconv.Atoi(s[:dot])
-		if err != nil {
-			return 0
-		}
-		u = u*256 + uint32(n)
-		s = s[dot+1:]
-	}
-	return u
-}
-
-func indexOfByte(s string, c byte) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == c {
-			return i
-		}
-	}
-	return len(s)
 }

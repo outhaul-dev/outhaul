@@ -155,6 +155,42 @@ func TestSubnetPlanFixed(t *testing.T) {
 	}
 }
 
+func TestSubnetPlanRejectsInvalidBoundaries(t *testing.T) {
+	cases := []struct {
+		plan  SubnetPlan
+		ip    string
+		label string
+	}{
+		{
+			plan:  SubnetPlan{},
+			ip:    "0.0.0.0",
+			label: "a zero-value plan rejects everything",
+		},
+		{
+			plan:  SubnetPlan{First: "not-an-ip", Last: "172.30.0.127"},
+			ip:    "172.30.0.50",
+			label: "an unparseable first boundary",
+		},
+		{
+			plan:  SubnetPlan{First: "172.30.0.2", Last: "not-an-ip"},
+			ip:    "172.30.0.50",
+			label: "an unparseable last boundary",
+		},
+		{
+			plan:  SubnetPlan{First: "fd00::2", Last: "fd00::7"},
+			ip:    "172.30.0.50",
+			label: "IPv6 boundaries",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.label, func(t *testing.T) {
+			if got := c.plan.Fixed(c.ip); got {
+				t.Errorf("SubnetPlan%+v.Fixed(%q) = true, want false", c.plan, c.ip)
+			}
+		})
+	}
+}
+
 func TestPlanSubnetHostBitsError(t *testing.T) {
 	cidr := "172.30.0.5/24"
 	_, err := PlanSubnet(cidr)
@@ -171,10 +207,6 @@ func TestPlanSubnetHostBitsError(t *testing.T) {
 }
 
 func TestPlanSubnetCanonicalizesCIDR(t *testing.T) {
-	_, err := PlanSubnet("172.30.0.0/024")
-	if err != nil {
-		t.Fatalf("PlanSubnet(%q) returned %v", "172.30.0.0/024", err)
-	}
 	subnet, err := PlanSubnet("172.30.0.0/024")
 	if err != nil {
 		t.Fatalf("PlanSubnet(%q) returned %v", "172.30.0.0/024", err)
@@ -204,11 +236,14 @@ func TestPlanSubnetPrefixError(t *testing.T) {
 		t.Fatalf("PlanSubnet(%q) returned nil, want an error", "172.30.0.0/29")
 	}
 	msg := err.Error()
-	if !contains(msg, "/28") {
-		t.Errorf("error = %q, want it to contain %q", msg, "/28")
+	if !contains(msg, "want a prefix") {
+		t.Errorf("error = %q, want it to contain %q", msg, "want a prefix")
 	}
-	if !contains(msg, "28") {
-		t.Errorf("error = %q, want it to contain %q", msg, "28")
+	if !contains(msg, "/28 or larger") {
+		t.Errorf("error = %q, want it to contain %q", msg, "/28 or larger")
+	}
+	if !contains(msg, "not /29") {
+		t.Errorf("error = %q, want it to contain %q", msg, "not /29")
 	}
 }
 
