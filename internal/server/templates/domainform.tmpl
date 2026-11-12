@@ -14,6 +14,16 @@
 
       <!-- Step 1: Host -->
       <div class="stack" data-step>
+        {{if .DefaultDomain}}
+        <label class="field-check">
+          <input type="radio" name="host_kind" value="default">
+          <span>Default domain {{template "hint" "This app's name under the server's domain suffix. It resolves here already, so no DNS record is needed."}}</span>
+        </label>
+        <label class="field" data-host="default" hidden>
+          <span>Generated host</span>
+          <input type="text" value="{{.DefaultDomain}}" disabled>
+        </label>
+        {{end}}
         <label class="field-check">
           <input type="radio" name="host_kind" value="custom" checked>
           <span>Custom domain {{template "hint" "A hostname you own and have pointed at this server's IP with a DNS A record, e.g. shop.example.com."}}</span>
@@ -22,7 +32,7 @@
           <span>Host</span>
           <input type="text" name="host" id="domain-host" placeholder="shop.example.com">
         </label>
-        {{if .ServerIP}}
+        {{if and .ServerIP (not .DefaultDomain)}}
         <label class="field-check">
           <input type="radio" name="host_kind" value="sslip">
           <span>Free sslip.io domain {{template "hint" "A zero-config hostname that resolves to this server's IP via sslip.io — handy for testing without owning a domain."}}</span>

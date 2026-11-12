@@ -310,6 +310,11 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		Branch: branch, AutoDeploy: autoDeploy, GithubRepo: githubRepo, GitSourceID: gitSourceID,
 		WebhookToken: newSecret(), WebhookSecret: newSecret(), ProjectID: projectID,
 	}
+	// The form offers <name>.<suffix> and leaves the field optional: a
+	// single-container app with no domain takes that name.
+	if kind != core.KindCompose && app.Domain == "" && s.naming.Suffix != "" {
+		app.Domain = name + "." + s.naming.Suffix
+	}
 	// Compose domains live in their own table (a stack can have many); the
 	// form's optional domain/service/port trio seeds the first row after the
 	// app exists.
@@ -832,6 +837,9 @@ func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, status in
 		"PreviewsAvailable": app.Source == core.SourceGithub,
 		"PreviewConfig":     previewCfg,
 		"Previews":          previewRows,
+	}
+	if host := s.naming.HostUnderSuffix(app.Name); host != "" {
+		data["DefaultDomain"] = host
 	}
 	// Breadcrumb context; tolerate a missing project rather than 500 the page.
 	if p, err := s.store.GetProject(r.Context(), app.ProjectID); err == nil {
@@ -1497,7 +1505,15 @@ func parseVolumeForm(r *http.Request, app core.App) (string, string) {
 // server's sslip.io wildcard instead of the custom field.
 func (s *Server) parseDomainForm(r *http.Request, app core.App) (core.Domain, string) {
 	host := strings.TrimSpace(r.FormValue("host"))
-	if r.FormValue("host_kind") == "sslip" {
+	// An sslip.io kind stays accepted under a suffix, so a page rendered before
+	// the suffix was set still works.
+	switch r.FormValue("host_kind") {
+	case "default":
+		host = s.naming.HostUnderSuffix(app.Name)
+		if host == "" {
+			return core.Domain{}, "This server has no domain suffix configured, so a default domain can't be generated. Enter a custom domain."
+		}
+	case "sslip":
 		if s.naming.ServerIP == "" {
 			return core.Domain{}, "This server has no public IP configured, so a sslip.io domain can't be generated. Enter a custom domain."
 		}
