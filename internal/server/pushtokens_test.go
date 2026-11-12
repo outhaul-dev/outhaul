@@ -163,6 +163,10 @@ func TestAccountPagePushTokens(t *testing.T) {
 	if err := e.store.TouchPushToken(ctx, used.ID, now, "198.51.100.9"); err != nil {
 		t.Fatal(err)
 	}
+	// A password account with a sign-in time must not get the SSO line.
+	if _, err := e.rawDB(t).Exec(`UPDATE users SET last_sign_in_at = ? WHERE id = ?`, now.UTC().Format(time.RFC3339Nano), uid); err != nil {
+		t.Fatal(err)
+	}
 	page := body(t, e.getAs(t, tok, "/account"))
 	for _, want := range []string{"expired", "198.51.100.9"} {
 		if !strings.Contains(page, want) {
