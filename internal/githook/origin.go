@@ -30,8 +30,20 @@ func OriginFromEnv(getenv func(string) string) Origin {
 		return Origin{}
 	}
 	o := Origin{TokenID: id}
-	if a, err := netip.ParseAddr(getenv(EnvClientAddr)); err == nil {
-		o.Addr = a.String()
+	if a, ok := parseClientAddr(getenv(EnvClientAddr)); ok {
+		o.Addr = a
 	}
 	return o
+}
+
+// parseClientAddr is the one place an address from the hook is accepted. A
+// zone (fe80::1%eth0) is refused: a TCP peer's address never needs one, and
+// the zone is free text that would reach the log. What it returns is always
+// the canonical form of a zoneless address.
+func parseClientAddr(s string) (string, bool) {
+	a, err := netip.ParseAddr(s)
+	if err != nil || a.Zone() != "" {
+		return "", false
+	}
+	return a.String(), true
 }

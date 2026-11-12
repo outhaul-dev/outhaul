@@ -130,7 +130,7 @@ func (b *Bridge) logHTTPSPush(ctx context.Context, app core.App, req request) {
 	if tok, err := b.store.GetPushToken(ctx, id); err == nil {
 		token = fmt.Sprintf("token %d %q", id, tok.Label)
 		if u, err := b.store.GetUser(ctx, tok.UserID); err == nil {
-			who = fmt.Sprintf("%s (user %d)", u.Display(), u.ID)
+			who = fmt.Sprintf("%q (user %d)", u.Display(), u.ID)
 		}
 	}
 	addr := req.Origin.Addr
@@ -139,7 +139,7 @@ func (b *Bridge) logHTTPSPush(ctx context.Context, app core.App, req request) {
 	}
 	refs := make([]string, 0, len(req.Refs))
 	for _, u := range req.Refs {
-		refs = append(refs, u.Ref+" "+u.New)
+		refs = append(refs, fmt.Sprintf("%q", u.Ref+" "+u.New))
 	}
 	log.Printf("git push over HTTPS: %s, %s, from %s, to app %s: %s", who, token, addr, app.Name, strings.Join(refs, ", "))
 }

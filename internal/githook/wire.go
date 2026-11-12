@@ -9,7 +9,6 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"net/netip"
 	"strconv"
 	"strings"
 )
@@ -48,11 +47,11 @@ func readRequest(r *bufio.Reader) (request, error) {
 			}
 			req.Origin.TokenID = id
 		case strings.HasPrefix(line, "addr "):
-			a, err := netip.ParseAddr(strings.TrimPrefix(line, "addr "))
-			if err != nil {
+			a, ok := parseClientAddr(strings.TrimPrefix(line, "addr "))
+			if !ok {
 				return req, fmt.Errorf("bad addr line %q", line)
 			}
-			req.Origin.Addr = a.String()
+			req.Origin.Addr = a
 		case strings.HasPrefix(line, "ref "):
 			f := strings.Fields(strings.TrimPrefix(line, "ref "))
 			if len(f) != 3 {

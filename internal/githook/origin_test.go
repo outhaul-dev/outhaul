@@ -43,7 +43,7 @@ func TestRequestRoundTripWithOrigin(t *testing.T) {
 }
 
 func TestReadRequestRefusesBadOrigin(t *testing.T) {
-	for _, line := range []string{"token x", "token -1", "addr not-an-ip"} {
+	for _, line := range []string{"token x", "token -1", "token 0", "addr not-an-ip", "addr fe80::1%eth0", "addr 1.2.3.4%x\x1b[2J"} {
 		if _, err := readRequest(newBufReader("app api\n" + line + "\n\n")); err == nil {
 			t.Errorf("%q: no error", line)
 		}
@@ -67,6 +67,17 @@ func TestOriginFromEnv(t *testing.T) {
 	got = OriginFromEnv(env(map[string]string{EnvTokenID: "7", EnvClientAddr: "nope"}))
 	if got != (Origin{TokenID: 7}) {
 		t.Fatalf("bad addr: %+v", got)
+	}
+}
+
+func TestOriginFromEnvDropsAZonedAddress(t *testing.T) {
+	for _, addr := range []string{"fe80::1%eth0", "fe80::1%x\x1b[2J"} {
+		got := OriginFromEnv(func(k string) string {
+			return map[string]string{EnvTokenID: "7", EnvClientAddr: addr}[k]
+		})
+		if got != (Origin{TokenID: 7}) {
+			t.Errorf("%q: %+v, want the id and no address", addr, got)
+		}
 	}
 }
 
@@ -183,6 +194,16 @@ func TestBridgeLogsAPushWhoseTokenIsGone(t *testing.T) {
 	line := logs.String()
 	if !strings.Contains(line, fmt.Sprint(tokID)) || !strings.Contains(line, "removed") {
 		t.Fatalf("log = %q", line)
+	}
+}
+
+func TestBridgeLogsAnHTTPSPushWithNoAddress(t *testing.T) {
+	b, _, _, tokID := httpsFixture(t)
+	logs := captureLog(t)
+	runHandle(t, b, request{App: "api", Refs: []RefUpdate{{"0", "abc123", "refs/heads/dev"}},
+		Origin: Origin{TokenID: tokID}})
+	if !strings.Contains(logs.String(), "an unknown address") {
+		t.Fatalf("log = %q", logs.String())
 	}
 }
 
