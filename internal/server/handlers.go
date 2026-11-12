@@ -1501,8 +1501,9 @@ func parseVolumeForm(r *http.Request, app core.App) (string, string) {
 
 // parseDomainForm reads and validates the wizard's fields for one route. For a
 // compose app it requires a service + port; for a single-container app it forces
-// service="" and port=AppPort. host_kind=="sslip" mints a host under the
-// server's sslip.io wildcard instead of the custom field.
+// service="" and port=AppPort. host_kind=="default" mints the app's name under
+// the server's domain suffix, and host_kind=="sslip" its name under the server's
+// sslip.io wildcard, instead of the custom field.
 func (s *Server) parseDomainForm(r *http.Request, app core.App) (core.Domain, string) {
 	host := strings.TrimSpace(r.FormValue("host"))
 	// An sslip.io kind stays accepted under a suffix, so a page rendered before

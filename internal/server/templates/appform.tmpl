@@ -88,7 +88,7 @@
       <!-- Step 3: Expose -->
       <div class="stack" data-step>
         <label class="field">
-          <span>Domain {{template "hint" "The hostname Traefik routes to this app, e.g. web.example.com. Leave it blank to use this app's name under the server's domain suffix. For a Compose stack you can leave this blank to keep the stack internal-only."}}</span>
+          <span>Domain {{if .DomainSuffix}}{{template "hint" "The hostname Traefik routes to this app, e.g. web.example.com. Leave it blank to use this app's name under the server's domain suffix. For a Compose stack you can leave this blank to keep the stack internal-only."}}{{else}}{{template "hint" "The hostname Traefik routes to this app, e.g. web.example.com. For a Compose stack you can leave this blank to keep the stack internal-only."}}{{end}}</span>
           <input type="text" name="domain" id="domain-input" placeholder="web.example.com" value="{{with .Form}}{{.Domain}}{{end}}"{{if not .DomainSuffix}} required{{end}}>
         </label>
         <label class="field" data-kind="compose" hidden>

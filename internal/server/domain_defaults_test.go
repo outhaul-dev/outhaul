@@ -72,6 +72,23 @@ func TestCreateAppFillsTheDomainUnderASuffix(t *testing.T) {
 	if len(rows) != 1 || rows[0].Host != "web.shared.demo.example.com" {
 		t.Errorf("rows = %+v, want one on web.shared.demo.example.com", rows)
 	}
+
+	// The form offers the suffix and leaves the field optional with it.
+	apps := body(t, e.get(t, "/apps"))
+	if !strings.Contains(apps, `data-default-domain="shared.demo.example.com"`) {
+		t.Error("the app form does not carry the suffix")
+	}
+	_, after, ok := strings.Cut(apps, `id="domain-input"`)
+	if !ok {
+		t.Fatal("the app form has no domain input")
+	}
+	input, _, _ := strings.Cut(after, ">")
+	if strings.Contains(input, "required") {
+		t.Error("the domain input is still required under a suffix")
+	}
+	if !strings.Contains(apps, "domain suffix. For a Compose stack you can leave this blank") {
+		t.Error("the domain hint does not say a blank takes the name under the suffix")
+	}
 }
 
 // With neither setting an install sees no change: the sslip option, a required
@@ -91,5 +108,8 @@ func TestNoSuffixKeepsTodaysNamesAndForms(t *testing.T) {
 	apps := body(t, e.get(t, "/apps"))
 	if strings.Contains(apps, `data-default-domain="`) {
 		t.Error("the app form mentions a default domain without a suffix")
+	}
+	if strings.Contains(apps, "domain suffix") {
+		t.Error("the app form's domain hint mentions a suffix that is not set")
 	}
 }
