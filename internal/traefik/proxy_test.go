@@ -855,6 +855,24 @@ func TestProxyHashChangesWithTheAddress(t *testing.T) {
 	}
 }
 
+// A fixed address is only reserved by the network's fixed range, so it is
+// meaningless without a subnet: refuse it here too, not only in config.Validate,
+// because a ProxyConfig can be built without going through Load.
+func TestEnsureProxyRefusesAnAddressWithoutASubnet(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+	pc := testProxyConfig()
+	pc.IPv4 = "172.30.0.2"
+
+	err := EnsureProxy(ctx, f, pc, nil)
+	if err == nil || !strings.Contains(err.Error(), "OUTHAUL_NETWORK_SUBNET") {
+		t.Fatalf("EnsureProxy = %v, want an error naming the missing subnet", err)
+	}
+	if len(f.NetworkSpecs) != 0 || len(f.Created) != 0 || len(f.Pulled) != 0 {
+		t.Errorf("network specs %+v, created %+v, pulled %v; want no side effects", f.NetworkSpecs, f.Created, f.Pulled)
+	}
+}
+
 func TestEnsureProxyUsesTheNetworkSpec(t *testing.T) {
 	ctx := context.Background()
 	f := docker.NewFake()
@@ -963,5 +981,65 @@ func TestEnsureProxyKeepsItsOwnAddress(t *testing.T) {
 	}
 	if len(f.Created) != 2 || f.Created[1].IPv4 != "172.30.0.2" {
 		t.Fatalf("created specs = %+v, want the replacement with IPv4 %q", f.Created, "172.30.0.2")
+	}
+}
+
+// The upgrade this setting exists for: an install that already fixed the
+// subnet, with Traefik at an address Docker picked, then sets
+// OUTHAUL_TRAEFIK_IP. The address is part of the container, so Traefik is
+// recreated at it.
+func TestEnsureProxyAddsTheAddressOnUpgrade(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+	pc := testProxyConfig()
+	pc.Subnet = "172.30.0.0/24"
+	if err := EnsureProxy(ctx, f, pc, nil); err != nil {
+		t.Fatalf("initial EnsureProxy: %v", err)
+	}
+	before, _ := f.FindContainer(ctx, pc.ContainerName)
+	if before == nil {
+		t.Fatal("no Traefik after the first EnsureProxy")
+	}
+	if len(f.Created) != 1 || f.Created[0].IPv4 != "" {
+		t.Fatalf("created specs = %+v, want one with no address", f.Created)
+	}
+
+	pc.IPv4 = "172.30.0.2"
+	if err := EnsureProxy(ctx, f, pc, nil); err != nil {
+		t.Fatalf("EnsureProxy after setting the address: %v", err)
+	}
+	after, _ := f.FindContainer(ctx, pc.ContainerName)
+	if after == nil || !after.Running() {
+		t.Fatalf("Traefik is not running after the upgrade: %+v", after)
+	}
+	if after.ID == before.ID {
+		t.Error("adding the address should recreate Traefik")
+	}
+	if len(f.Created) != 2 || f.Created[1].IPv4 != "172.30.0.2" {
+		t.Fatalf("created specs = %+v, want the replacement with IPv4 %q", f.Created, "172.30.0.2")
+	}
+}
+
+// inspectFails is a Docker whose network inspection fails.
+type inspectFails struct{ *docker.Fake }
+
+func (inspectFails) InspectNetwork(context.Context, string) (docker.NetworkInfo, error) {
+	return docker.NetworkInfo{}, errors.New("docker unreachable")
+}
+
+// When the address can't be checked, say so: the operator needs to know the
+// old Traefik was left running because the conflict could not be ruled out.
+func TestEnsureProxyReportsAFailedAddressCheck(t *testing.T) {
+	ctx := context.Background()
+	pc := testProxyConfig()
+	pc.Subnet, pc.IPv4 = "172.30.0.0/24", "172.30.0.2"
+	f := &inspectFails{Fake: docker.NewFake()}
+
+	err := EnsureProxy(ctx, f, pc, nil)
+	if err == nil || !strings.Contains(err.Error(), "check who holds Traefik's address 172.30.0.2") || !strings.Contains(err.Error(), "docker unreachable") {
+		t.Fatalf("EnsureProxy = %v, want the failed address check and its cause", err)
+	}
+	if len(f.Created) != 0 {
+		t.Errorf("containers created = %+v, want none", f.Created)
 	}
 }

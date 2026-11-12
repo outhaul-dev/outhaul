@@ -166,6 +166,12 @@ func (r *real) InspectNetwork(ctx context.Context, name string) (NetworkInfo, er
 	}
 	for _, c := range n.Containers {
 		addr, _, _ := strings.Cut(c.IPv4Address, "/")
+		if addr == "" {
+			// Attached IPv6-only, or not fully attached yet: no IPv4
+			// address to record, and an empty one must not look like a
+			// holder of a fixed address.
+			continue
+		}
 		info.IPv4s[c.Name] = addr
 	}
 	return info, nil

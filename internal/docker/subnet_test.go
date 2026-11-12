@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -91,11 +92,6 @@ func TestPlanSubnetRejects(t *testing.T) {
 			label: "IPv6 network is rejected",
 		},
 		{
-			cidr:  "172.30.0.0/29",
-			want:  "/28",
-			label: "a /29 is below the minimum",
-		},
-		{
 			cidr:  "172.30.0.5/24",
 			want:  "host bits",
 			label: "host bits are rejected",
@@ -118,7 +114,7 @@ func TestPlanSubnetRejects(t *testing.T) {
 				t.Errorf("PlanSubnet(%q) returned nil, want an error", c.cidr)
 				return
 			}
-			if c.want != "" && !contains(err.Error(), c.want) {
+			if c.want != "" && !strings.Contains(err.Error(), c.want) {
 				t.Errorf("PlanSubnet(%q) error = %q, want it to contain %q", c.cidr, err.Error(), c.want)
 			}
 		})
@@ -198,10 +194,10 @@ func TestPlanSubnetHostBitsError(t *testing.T) {
 		t.Fatalf("PlanSubnet(%q) returned nil, want an error", cidr)
 	}
 	msg := err.Error()
-	if !contains(msg, "host bits") {
+	if !strings.Contains(msg, "host bits") {
 		t.Errorf("error = %q, want it to contain %q", msg, "host bits")
 	}
-	if !contains(msg, "172.30.0.0/24") {
+	if !strings.Contains(msg, "172.30.0.0/24") {
 		t.Errorf("error = %q, want it to contain %q", msg, "172.30.0.0/24")
 	}
 }
@@ -222,10 +218,10 @@ func TestPlanSubnetIPVersionError(t *testing.T) {
 		t.Fatalf("PlanSubnet(%q) returned nil, want an error", "fd00::/64")
 	}
 	msg := err.Error()
-	if !contains(msg, "IPv4") {
+	if !strings.Contains(msg, "IPv4") {
 		t.Errorf("error = %q, want it to contain %q", msg, "IPv4")
 	}
-	if !contains(msg, "IPv6") {
+	if !strings.Contains(msg, "IPv6") {
 		t.Errorf("error = %q, want it to contain %q", msg, "IPv6")
 	}
 }
@@ -236,26 +232,13 @@ func TestPlanSubnetPrefixError(t *testing.T) {
 		t.Fatalf("PlanSubnet(%q) returned nil, want an error", "172.30.0.0/29")
 	}
 	msg := err.Error()
-	if !contains(msg, "want a prefix") {
+	if !strings.Contains(msg, "want a prefix") {
 		t.Errorf("error = %q, want it to contain %q", msg, "want a prefix")
 	}
-	if !contains(msg, "/28 or larger") {
+	if !strings.Contains(msg, "/28 or larger") {
 		t.Errorf("error = %q, want it to contain %q", msg, "/28 or larger")
 	}
-	if !contains(msg, "not /29") {
+	if !strings.Contains(msg, "not /29") {
 		t.Errorf("error = %q, want it to contain %q", msg, "not /29")
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 || indexOf(s, substr) >= 0)
-}
-
-func indexOf(s, substr string) int {
-	for i := 0; i+len(substr) <= len(s); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
 }

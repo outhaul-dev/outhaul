@@ -1,7 +1,3 @@
-// Package docker abstracts the container operations Outhaul needs behind a
-// small Client interface. A real SDK-backed implementation drives the local
-// Docker daemon; an in-memory Fake backs unit tests. No test touches a real
-// daemon.
 package docker
 
 import (

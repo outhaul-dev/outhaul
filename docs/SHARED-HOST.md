@@ -24,6 +24,12 @@ The gateway and the address ranges follow from the subnet:
 | Fixed addresses | `172.30.0.2` to `172.30.0.127` | the rest of the lower half. Docker never hands these out |
 | Dynamic range | `172.30.0.128/25` | the upper half, passed as the network's `IPRange` |
 
+The dynamic range is the upper half, so the subnet's size decides how many
+containers can hold an address. A `/28` leaves about eight, shared by
+cloudflared, every single-container app, every database, every deploy's
+health-check container and every published Compose service. Size the subnet for
+the host: the `/24` above leaves about 126.
+
 ### Why a fixed address
 
 Every container on the host can reach the cloud metadata service at
@@ -66,7 +72,19 @@ a warning and the admin UI still starts.
 
 An install that already has its network can't be changed in place: other
 containers are on it, and Outhaul never removes or reconfigures one. Move it by
-hand, with the containers disconnected but still running:
+hand, with the containers disconnected but still running.
+
+First pick a subnet that no existing network uses and that lies outside Docker's
+default pool. The example `172.30.0.0/24` above is inside that pool
+(`172.17.0.0/16` to `172.31.0.0/16`, then `192.168.0.0/16`), so on a host that
+already runs stacks one of their networks may hold it, and Docker then refuses
+to create Outhaul's. A `10.x` block is a safer choice. Make sure the host's own
+LAN doesn't overlap either, and check what the host uses:
+
+```sh
+docker network ls
+docker network inspect $(docker network ls -q) --format '{{.Name}} {{range .IPAM.Config}}{{.Subnet}} {{end}}'
+```
 
 ```sh
 systemctl stop outhaul
@@ -76,21 +94,35 @@ docker network disconnect outhaul <name>     # once for each name the line above
 docker network rm outhaul
 ```
 
-Then set both variables, in `/etc/outhaul.env` or the installer's drop-in (the
-paths are in `docs/MANUAL-DEPLOY.md`), and start Outhaul, which creates the
-network with the subnet:
+Then set both variables, in `/etc/outhaul.env` (the `OUTHAUL_*` file the
+installer doesn't rewrite) or the operator's own `--env-file` or extra env file.
+The `10-install.conf` drop-in is installer-owned and rewritten by an unattended
+or `--env-file` run, so a setting put there is lost at the next such run (the
+paths are in `docs/MANUAL-DEPLOY.md`). Start Outhaul, which creates the network
+with the subnet:
 
 ```sh
 systemctl start outhaul
 docker network connect outhaul <name>        # once for each name, as before
 ```
 
+If startup fails because the pool overlaps, correct `OUTHAUL_NETWORK_SUBNET` and
+start Outhaul again: nothing but the shared network's attachment is lost, and
+every container named above is still running.
+
 A disconnected container keeps running; it only loses the shared network, so it
-can't be reached through Traefik until it is connected again. Traefik must be
-recreated, not moved with the others: while it is attached, Docker won't remove
-the network, and once it is disconnected Outhaul finds a container whose
-settings haven't changed and adopts it, leaving it off the shared network. A
-Compose stack's published services can instead be reattached with
+can't be reached through Traefik until it is connected again. A container that
+resolved a peer or the proxy at start-up may need a restart once it is
+reconnected. cloudflared is on the shared network too: reconnect or recreate it
+as well, or the tunnel stays up but cannot reach Traefik.
+
+Traefik must be recreated, not moved with the others: while it is attached,
+Docker won't remove the network, and once it is disconnected Outhaul may adopt
+it as it is. With only the subnet set, its settings haven't changed, so Outhaul
+adopts the disconnected Traefik and leaves it off the shared network. With
+`OUTHAUL_TRAEFIK_IP` set, the address changes its settings, so Outhaul recreates
+it at the address anyway. `docker rm -f` above is the one step that works either
+way. A Compose stack's published services can instead be reattached with
 `docker compose up -d`.
 
 ### The firewall rule
@@ -111,7 +143,7 @@ that can set a source address is outside what the rule can tell apart.
 
 | What | Runs as | Network | Needs the metadata service |
 |---|---|---|---|
-| Traefik | container | the shared one, at the fixed address | yes, for DNS-01 with the host's identity |
+| Traefik | container | the shared one, at the fixed address when `OUTHAUL_TRAEFIK_IP` is set | yes, for DNS-01 with the host's identity |
 | cloudflared | container | the shared one, at an address Docker picks | no: it dials out with its own token |
 | Single-container apps, and each deploy's health-check container (`outhaul-deploy-<id>`) | container | the shared one, at an address Docker picks | no |
 | Databases (`outhaul-db-<name>` and the `-new` replacement) | container | the shared one, at an address Docker picks | no |

@@ -113,6 +113,14 @@ func (pc ProxyConfig) adminRoutingEnabled() bool {
 // (e.g. TLS was just enabled), it is stopped, removed, and recreated so the
 // new flags actually take effect.
 func EnsureProxy(ctx context.Context, dc docker.Client, pc ProxyConfig, logOut io.Writer) error {
+	// A fixed address is reserved by the network's fixed range, which only
+	// exists with a fixed subnet. Docker would accept the address on a network
+	// whose subnet it chose, and Traefik would come up outside the range the
+	// firewall names. Validate refuses this too; a ProxyConfig built elsewhere
+	// must not slip past.
+	if pc.IPv4 != "" && pc.Subnet == "" {
+		return fmt.Errorf("OUTHAUL_TRAEFIK_IP=%s needs OUTHAUL_NETWORK_SUBNET, which fixes the addresses Traefik may use", pc.IPv4)
+	}
 	if pc.DockerSocket == "" {
 		pc.DockerSocket = DefaultDockerSocket
 	}

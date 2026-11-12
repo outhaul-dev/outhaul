@@ -1034,6 +1034,31 @@ func TestTraefikIPSetting(t *testing.T) {
 	}
 }
 
+// Both settings are stored in the form the rest of the server compares them in:
+// the subnet's canonical CIDR and the address as four dotted octets. A mapped
+// or zero-padded spelling must not reach Docker, the config hash or the
+// comparison with the address Docker reports.
+func TestFixedNetworkSettingsAreCanonical(t *testing.T) {
+	cfg := Load(func(k string) string {
+		switch k {
+		case "OUTHAUL_NETWORK_SUBNET":
+			return "172.30.0.0/024"
+		case "OUTHAUL_TRAEFIK_IP":
+			return "::ffff:172.30.0.2"
+		}
+		return ""
+	})
+	if cfg.NetworkSubnet != "172.30.0.0/24" {
+		t.Errorf("OUTHAUL_NETWORK_SUBNET=172.30.0.0/024 -> %q, want %q", cfg.NetworkSubnet, "172.30.0.0/24")
+	}
+	if cfg.TraefikIP != "172.30.0.2" {
+		t.Errorf("OUTHAUL_TRAEFIK_IP=::ffff:172.30.0.2 -> %q, want %q", cfg.TraefikIP, "172.30.0.2")
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("canonical values: Validate: %v", err)
+	}
+}
+
 func TestTraefikIPNeedsTheSubnet(t *testing.T) {
 	cfg := Load(func(k string) string {
 		if k == "OUTHAUL_TRAEFIK_IP" {

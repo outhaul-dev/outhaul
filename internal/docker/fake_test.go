@@ -157,3 +157,71 @@ func TestFakeRemoveVolume(t *testing.T) {
 		t.Fatalf("RemoveVolume of a missing volume should be nil, got %v", err)
 	}
 }
+
+// A fixed address belongs to the container that holds it. Removing or renaming
+// that container must move the bookkeeping with it, or a fake-backed test
+// reports a conflict the real daemon does not.
+func TestFakeTracksRemovedAndRenamedAddresses(t *testing.T) {
+	ctx := context.Background()
+	f := NewFake()
+	if err := f.EnsureNetwork(ctx, NetworkSpec{
+		Name: "outhaul", Subnet: "172.30.0.0/24", Gateway: "172.30.0.1", IPRange: "172.30.0.128/25",
+	}); err != nil {
+		t.Fatalf("EnsureNetwork: %v", err)
+	}
+	id, err := f.CreateContainer(ctx, ContainerSpec{
+		Name: "outhaul-traefik", Image: "traefik:example", Networks: []string{"outhaul"}, IPv4: "172.30.0.2",
+	})
+	if err != nil {
+		t.Fatalf("CreateContainer: %v", err)
+	}
+	if got := f.NetworkDetails["outhaul"].IPv4s["outhaul-traefik"]; got != "172.30.0.2" {
+		t.Fatalf("IPv4s[outhaul-traefik] = %q, want %q", got, "172.30.0.2")
+	}
+
+	if err := f.RenameContainer(ctx, id, "outhaul-traefik-old"); err != nil {
+		t.Fatalf("RenameContainer: %v", err)
+	}
+	addresses := f.NetworkDetails["outhaul"].IPv4s
+	if _, stale := addresses["outhaul-traefik"]; stale {
+		t.Errorf("IPv4s still names the old container: %v", addresses)
+	}
+	if got := addresses["outhaul-traefik-old"]; got != "172.30.0.2" {
+		t.Errorf("IPv4s[outhaul-traefik-old] = %q, want %q", got, "172.30.0.2")
+	}
+
+	if err := f.RemoveContainer(ctx, id, true); err != nil {
+		t.Fatalf("RemoveContainer: %v", err)
+	}
+	if addresses := f.NetworkDetails["outhaul"].IPv4s; len(addresses) != 0 {
+		t.Errorf("IPv4s = %v, want the removed container's address gone", addresses)
+	}
+}
+
+// The real client always returns an address map; a caller may write into it.
+// A network the fake only knows by name must not yield a nil map.
+func TestFakeInspectNetworkAlwaysHasTheAddressMap(t *testing.T) {
+	ctx := context.Background()
+	f := NewFake()
+	f.Networks["outhaul"] = true
+
+	info, err := f.InspectNetwork(ctx, "outhaul")
+	if err != nil {
+		t.Fatalf("InspectNetwork: %v", err)
+	}
+	if info.IPv4s == nil {
+		t.Fatal("InspectNetwork returned a nil IPv4s map for a known network")
+	}
+	info.IPv4s["probe"] = "172.30.0.9"
+
+	if err := f.EnsureNetwork(ctx, NetworkSpec{Name: "outhaul"}); err != nil {
+		t.Fatalf("EnsureNetwork for an existing name: %v", err)
+	}
+	info, err = f.InspectNetwork(ctx, "outhaul")
+	if err != nil {
+		t.Fatalf("InspectNetwork after EnsureNetwork: %v", err)
+	}
+	if info.IPv4s == nil {
+		t.Fatal("EnsureNetwork left the address map nil")
+	}
+}

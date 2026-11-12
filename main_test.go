@@ -734,11 +734,14 @@ func TestStartupFailsWhenTheNetworkCannotBeCreated(t *testing.T) {
 }
 
 func TestNoSubnetLeavesTheNetworkToDocker(t *testing.T) {
-	f := docker.NewFake()
-	f.Networks["outhaul"] = true
-	f.NetworkDetails["outhaul"] = docker.NetworkInfo{
+	fake := docker.NewFake()
+	fake.Networks["outhaul"] = true
+	fake.NetworkDetails["outhaul"] = docker.NetworkInfo{
 		Subnet: "10.0.0.0/24", Gateway: "10.0.0.1", IPRange: "10.0.0.128/25",
 	}
+	// With no subnet, startup must return before it talks to Docker at all, so
+	// an unreachable daemon changes nothing.
+	f := &pingFails{Fake: fake, msg: "docker daemon is down"}
 	cfg := config.Config{Network: "outhaul"}
 	if err := ensureFixedNetwork(context.Background(), f, cfg); err != nil {
 		t.Fatalf("ensureFixedNetwork with no subnet: %v", err)
@@ -824,16 +827,21 @@ func TestReconcileCarriesTheFixedNetwork(t *testing.T) {
 		t.Fatal("reconcile asked for no network named outhaul")
 	}
 	var traefikIPv4, connectorIPv4 string
+	sawConnector := false
 	for _, spec := range f.Created {
 		switch spec.Name {
 		case "outhaul-traefik":
 			traefikIPv4 = spec.IPv4
 		case tunnel.ContainerName:
+			sawConnector = true
 			connectorIPv4 = spec.IPv4
 		}
 	}
 	if traefikIPv4 != "172.30.0.2" {
 		t.Errorf("Traefik IPv4 = %q, want 172.30.0.2", traefikIPv4)
+	}
+	if !sawConnector {
+		t.Fatalf("reconcile created no connector %q: %+v", tunnel.ContainerName, f.Created)
 	}
 	if connectorIPv4 != "" {
 		t.Errorf("connector IPv4 = %q, want Docker to pick it", connectorIPv4)

@@ -656,28 +656,33 @@ func (p *parser) ip(key string) string {
 }
 
 // subnet parses OUTHAUL_NETWORK_SUBNET: an IPv4 network in CIDR form, /28 or
-// larger; empty leaves the subnet to Docker.
+// larger; empty leaves the subnet to Docker. It is stored in canonical form, so
+// the settings compare with what Docker reports.
 func (p *parser) subnet(key string) string {
 	v := p.getenv(key)
 	if v == "" {
 		return ""
 	}
-	if _, err := docker.PlanSubnet(v); err != nil {
+	plan, err := docker.PlanSubnet(v)
+	if err != nil {
 		p.problems = append(p.problems, fmt.Errorf("%s=%q: %v", key, v, err))
 		return ""
 	}
-	return v
+	return plan.Subnet
 }
 
-// ipv4 parses an IPv4 address; empty stays empty.
+// ipv4 parses an IPv4 address; empty stays empty. It is stored as four dotted
+// octets, so an IPv4-mapped IPv6 spelling compares equal to the address Docker
+// reports.
 func (p *parser) ipv4(key string) string {
 	v := p.getenv(key)
 	if v == "" {
 		return ""
 	}
-	if ip := net.ParseIP(v); ip == nil || ip.To4() == nil {
+	ip := net.ParseIP(v)
+	if ip == nil || ip.To4() == nil {
 		p.reject(key, v, "an IPv4 address such as 172.30.0.2")
 		return ""
 	}
-	return v
+	return ip.To4().String()
 }

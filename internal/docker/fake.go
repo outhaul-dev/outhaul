@@ -142,6 +142,12 @@ func (f *Fake) EnsureNetwork(_ context.Context, spec NetworkSpec) error {
 		return nil
 	}
 	f.Networks[spec.Name] = true
+	if !detailed {
+		// Docker knows the name. Give it the shape a real inspect returns, so
+		// a later InspectNetwork hands back an address map, never nil.
+		info = NetworkInfo{IPv4s: map[string]string{}}
+		f.NetworkDetails[spec.Name] = info
+	}
 	if spec.Subnet == "" {
 		return nil
 	}
@@ -157,6 +163,9 @@ func (f *Fake) InspectNetwork(_ context.Context, name string) (NetworkInfo, erro
 	info, detailed := f.NetworkDetails[name]
 	if !detailed && !f.Networks[name] {
 		return NetworkInfo{}, fmt.Errorf("network %q not found", name)
+	}
+	if info.IPv4s == nil {
+		info.IPv4s = map[string]string{}
 	}
 	return info, nil
 }
@@ -267,6 +276,7 @@ func (f *Fake) RemoveContainer(_ context.Context, id string, _ bool) error {
 	if _, ok := f.Containers[id]; !ok {
 		return fmt.Errorf("no such container: %s", id)
 	}
+	f.forgetAddresses(f.Containers[id].Name)
 	delete(f.Containers, id)
 	return nil
 }
@@ -281,8 +291,28 @@ func (f *Fake) RenameContainer(_ context.Context, id, name string) error {
 	if f.byName(name) != nil {
 		return fmt.Errorf("container name %q already in use", name)
 	}
+	old := c.Name
 	c.Name = name
+	for net, info := range f.NetworkDetails {
+		if addr, held := info.IPv4s[old]; held {
+			delete(info.IPv4s, old)
+			info.IPv4s[name] = addr
+			f.NetworkDetails[net] = info
+		}
+	}
 	return nil
+}
+
+// forgetAddresses drops a container's fixed addresses from every network's
+// bookkeeping (caller holds the lock).
+func (f *Fake) forgetAddresses(name string) {
+	for net, info := range f.NetworkDetails {
+		if _, held := info.IPv4s[name]; !held {
+			continue
+		}
+		delete(info.IPv4s, name)
+		f.NetworkDetails[net] = info
+	}
 }
 
 func (f *Fake) ContainerLogs(_ context.Context, id string, tail int) (io.ReadCloser, error) {

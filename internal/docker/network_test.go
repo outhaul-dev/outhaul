@@ -198,7 +198,7 @@ func TestInspectNetwork(t *testing.T) {
 		`{"Name":"outhaul","IPAM":{"Config":[
 			{"Subnet":"fd00::/64","Gateway":"fd00::1"},
 			{"Subnet":"172.30.0.0/24","Gateway":"172.30.0.1","IPRange":"172.30.0.128/25"}
-		]},"Containers":{"id1":{"Name":"outhaul-traefik","IPv4Address":"172.30.0.2/24"}}}`)
+		]},"Containers":{"id1":{"Name":"outhaul-traefik","IPv4Address":"172.30.0.2/24"},"id2":{"Name":"ipv6-only","IPv4Address":""}}}`)
 	info, err := r.InspectNetwork(context.Background(), "outhaul")
 	if err != nil {
 		t.Fatalf("InspectNetwork: %v", err)
@@ -208,6 +208,9 @@ func TestInspectNetwork(t *testing.T) {
 	}
 	if got := info.IPv4s["outhaul-traefik"]; got != "172.30.0.2" {
 		t.Errorf("IPv4s[outhaul-traefik] = %q, want %q", got, "172.30.0.2")
+	}
+	if _, present := info.IPv4s["ipv6-only"]; present {
+		t.Errorf("IPv4s = %v, want a container with no IPv4 address left out", info.IPv4s)
 	}
 	if len(info.IPv4s) != 1 {
 		t.Errorf("IPv4s = %v, want exactly the one attached container", info.IPv4s)
