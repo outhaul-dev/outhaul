@@ -134,9 +134,10 @@ func TestProtectNewOffChangesNothing(t *testing.T) {
 	}
 }
 
-// The form's switch is on, and a single-container app's own row is protected.
+// The form's switch is on, a single-container app's own row is protected, and
+// the proxy was reconciled so the gate's host is mapped.
 func TestCreateAppProtectsItsRow(t *testing.T) {
-	e, _ := newProtectionEnv(t)
+	e, px := newProtectionEnv(t)
 	e.srv.protectNew = true
 	form := appForm("web", "web.test")
 	form.Set("protected_offered", "1")
@@ -153,6 +154,9 @@ func TestCreateAppProtectsItsRow(t *testing.T) {
 	rows, _ := e.store.ListDomains(context.Background(), app.ID)
 	if len(rows) != 1 || !rows[0].Protected {
 		t.Errorf("rows = %+v, want one protected", rows)
+	}
+	if px.calls != 1 {
+		t.Errorf("proxy reconciled %d times, want the gate host mapped once", px.calls)
 	}
 	page := body(t, e.get(t, "/apps"))
 	if !strings.Contains(page, `name="protected_offered"`) || !strings.Contains(page, `name="protected" checked`) {

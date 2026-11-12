@@ -393,7 +393,9 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 			log.Printf("create app: read the person's projects: %v", err)
 			scope = projectScope{}
 		}
-		others, err := s.leftoverRoutes(r.Context(), core.App{Name: name, ProjectID: projectID},
+		// The app doesn't exist yet, so nothing is exempt: an orphan container a
+		// same-named app's failed teardown left behind still serves the host openly.
+		others, err := s.leftoverRoutes(r.Context(), core.App{},
 			map[string]bool{strings.ToLower(host): true}, scope)
 		if err != nil {
 			s.renderAppsWithError(w, r, fmt.Sprintf("The app wasn't created: Outhaul couldn't tell which other apps still serve old routes on %s (%v).", host, err))
@@ -443,6 +445,9 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		if err := s.ensureGateHost(ctx); err != nil {
 			if undo := s.store.DeleteApp(ctx, created.ID); undo != nil {
 				log.Printf("create app: remove %q after the proxy failed: %v", app.Name, undo)
+				s.renderAppsWithError(w, r, fmt.Sprintf(
+					"Sign-in couldn't be turned on: Outhaul couldn't map the gate (%v), and couldn't remove the app it had just created (%v). Delete it from the list before trying again.", err, undo))
+				return
 			}
 			s.renderAppsWithError(w, r, fmt.Sprintf(
 				"The app wasn't created: Outhaul couldn't map the sign-in gate before it deploys (%v).", err))
