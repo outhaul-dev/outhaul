@@ -136,10 +136,22 @@ func runCA(args []string) int {
 	return 0
 }
 
+// trustedAllWarning names the risk of OUTHAUL_TRUSTED_PROXIES=all without a
+// required header, and returns "" when there is nothing to warn about.
+func trustedAllWarning(cfg config.Config) string {
+	if !cfg.TrustAllProxies || cfg.HeaderRequired() {
+		return ""
+	}
+	return "WARNING: OUTHAUL_TRUSTED_PROXIES=all trusts any peer that can connect; set OUTHAUL_REQUIRE_HEADER_NAME and OUTHAUL_REQUIRE_HEADER_VALUE so a request without the header matches no router."
+}
+
 func serve() error {
 	cfg := config.Load(os.Getenv)
 	if err := cfg.Validate(); err != nil {
 		return err
+	}
+	if w := trustedAllWarning(cfg); w != "" {
+		log.Printf("%s", w)
 	}
 
 	// A strict container policy or a required request header hides Outhaul's
@@ -646,6 +658,8 @@ func (ic *infraController) proxyConfig(ctx context.Context, tunnelOn, protectedR
 		DynamicDir:       ic.cfg.DynamicDir(),
 		ProtectedRoutes:  protectedRoutes,
 		Routing:          traefik.RoutingFrom(ic.cfg, false),
+		TrustedProxies:   ic.cfg.TrustedProxies,
+		TrustAllProxies:  ic.cfg.TrustAllProxies,
 	}
 	if !ic.cfg.AdminDirect {
 		pc.GateHost = ic.gateway

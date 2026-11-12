@@ -724,6 +724,40 @@ separating apps on the Docker network"
 (`2026-11-02-sso-roles-protected-routes-design.md`) no longer holds for its
 first half, and only while strict mode is set.
 
+### Trusted proxies (opt-in)
+
+`OUTHAUL_TRUSTED_PROXIES` (IP addresses and CIDRs, or `all`) makes Traefik
+believe the forwarded headers of the proxies in front of it, so an app can see
+the visitor's address. Unset, nothing changes. The user guide is the "Trusted
+proxies" section of `docs/BEHIND-A-PROXY.md`.
+
+**Opt-in, per entrypoint, all or nothing per address.** `proxySpec` gives every
+entrypoint it declares (`web`, `websecure`, whichever exist) the same trust: a
+peer whose address is in the list is trusted on all of them, and one that isn't
+is trusted on none. There is no per-app or per-route trust.
+
+**Flags and one file, never a label.** The setting lives in `ProxyConfig`
+(`TrustedProxies`, `TrustAllProxies`), not in `traefik.Routing`. It adds
+`forwardedheaders.trustedips` (or `.insecure=true` for `all`) and
+`http.middlewares=outhaul-forwarded@file` to each entrypoint, turns on the file
+provider, and `EnsureProxy` writes `outhaul-forwarded.yml`, a middleware that
+blanks `X-Real-Ip`, `X-Forwarded-Uri`, `-Method` and `-Prefix`. No router label
+and no ingress stamp changes, so no app redeploys; Traefik is recreated once, as
+for any flag change. The file is written before Traefik is created and removed
+only once a replacement has started, so a failed image pull leaves the file in
+place and can't take every route down. The exception is a required header: an
+old Traefik without the constraint must not keep serving, so it is replaced from
+a local image or stopped, which fails closed. `all` is paired with the required
+header, and `serve` warns when it isn't.
+
+**The gate is untouched.** Its forward-auth keeps `trustforwardheader=false`, so
+a client can't choose what it is told. The middleware sits on the entrypoint, not
+on any router, and a missing file closes the entrypoint rather than opening a
+route (see `AGENTS.md`).
+
+`deploy/test/integration_gate.sh` checks the headers, the removed four, the gate
+and the fail-closed case on a real Traefik (not in CI).
+
 ---
 
 ## Package layout

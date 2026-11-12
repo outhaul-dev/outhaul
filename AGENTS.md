@@ -42,7 +42,10 @@ open domain rows on a real Traefik, with a stub in place of Outhaul. It needs
 Docker and Go, starts only `outhaul-gatetest-*` containers and a network of the
 same name, on loopback ports, and removes them when it ends. None of them
 carries `traefik.enable`, so a Traefik that exposes only labelled containers,
-like Outhaul's own, ignores them. `--outhaul HOST:PORT` uses a running
+like Outhaul's own, ignores them. It also checks the forwarded headers on a Traefik that trusts
+its peer and one that doesn't, that `X-Real-Ip`, `X-Forwarded-Uri`, `-Method`
+and `-Prefix` are removed on both, and that a missing middleware file closes the
+entrypoint. `--outhaul HOST:PORT` uses a running
 Outhaul's gate instead of the stub; the script's header says how. That mode
 hasn't been run against a real Outhaul yet.
 
@@ -270,6 +273,22 @@ fixed in five batches. All five are on `main`.
   Docker gateway only. See `docs/BEHIND-A-PROXY.md`; the real-Traefik and
   end-to-end checks are `deploy/test/integration_ingress.sh` and
   `deploy/test/integration_proxy.sh`.
+- **Trusted proxies.** `OUTHAUL_TRUSTED_PROXIES` is opt-in: unset, Traefik
+  believes no forwarded header. It is held in `traefik.ProxyConfig`, never in
+  `traefik.Routing`, and changes Traefik's flags and one file, never a router
+  label or the ingress stamp. `all` is meant to be paired with the required
+  header, and `serve` warns when it isn't. While trust is on, every entrypoint
+  names the `outhaul-forwarded` middleware, which removes `X-Real-Ip`,
+  `X-Forwarded-Uri`, `-Method`, `-Prefix` and the two `X-Forwarded-Tls-Client-Cert*`
+  headers, and `underscoreheadersstrategy=delete` drops every header with an
+  underscore in its name (needs Traefik v3.7.6 or newer); if the file is missing,
+  the entrypoint answers 404 (fails closed). The file is written before Traefik
+  is created, replaced by rename, and removed only after a replacement starts. It is the only middleware
+  in the file provider, and that doesn't contradict the gate's rule: an
+  entrypoint middleware that is missing closes the entrypoint, while a router
+  that names a missing file-provider middleware is dropped and its requests fall
+  to an open router. So the gate stays in each app's own labels, with
+  `trustforwardheader=false`. See `docs/BEHIND-A-PROXY.md`.
 
 ### Open: reliability and UX
 

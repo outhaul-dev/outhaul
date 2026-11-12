@@ -1,6 +1,7 @@
 package traefik
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -28,6 +29,11 @@ const fallbackDockerAPIVersion = "1.44"
 // adminDynamicFile is the file-provider config (under DynamicDir) that routes
 // the admin UI over HTTPS. host.docker.internal resolves to the host gateway.
 const adminDynamicFile = "outhaul-admin.yml"
+
+// forwardedDynamicFile is the file-provider config (under DynamicDir) that
+// defines the outhaul-forwarded middleware the entrypoints name while proxies
+// are trusted.
+const forwardedDynamicFile = "outhaul-forwarded.yml"
 
 // proxyStopTimeout bounds how long we wait for a drifted Traefik container to
 // stop gracefully before it is removed and recreated.
@@ -90,6 +96,17 @@ type ProxyConfig struct {
 	// host-gateway. The admin port is closed to every other address with
 	// OUTHAUL_ADMIN_DIRECT=off, so Traefik must reach this one.
 	GateHost string
+
+	// TrustedProxies and TrustAllProxies name the proxies in front of Traefik
+	// whose forwarded headers it believes. They are not part of Routing: no
+	// router is written from them, only Traefik's own flags and one file.
+	TrustedProxies  []string
+	TrustAllProxies bool
+}
+
+// trustsProxy reports whether Traefik believes any proxy's forwarded headers.
+func (pc ProxyConfig) trustsProxy() bool {
+	return pc.TrustAllProxies || len(pc.TrustedProxies) > 0
 }
 
 // adminRoutingEnabled reports whether the admin UI should be published
@@ -114,11 +131,20 @@ func EnsureProxy(ctx context.Context, dc docker.Client, pc ProxyConfig, logOut i
 	if pc.DockerSocket == "" {
 		pc.DockerSocket = DefaultDockerSocket
 	}
+	if pc.trustsProxy() && pc.DynamicDir == "" {
+		return fmt.Errorf("OUTHAUL_TRUSTED_PROXIES needs a directory for Traefik's file provider, and none is configured")
+	}
 	if err := writeAdminDynamicConfig(pc); err != nil {
 		return fmt.Errorf("write admin dynamic config: %w", err)
 	}
 	if err := removeStaleLocalCertsConfig(pc); err != nil {
 		return fmt.Errorf("remove stale local-certs config: %w", err)
+	}
+	// While trust is on, the file must exist before Traefik is created, so a
+	// replacement finds the middleware its flags name. When trust is off it
+	// goes only once nothing running still names it.
+	if err := writeForwardedDynamicConfig(pc); err != nil {
+		return fmt.Errorf("write forwarded-headers config: %w", err)
 	}
 	if err := dc.EnsureNetwork(ctx, pc.Network); err != nil {
 		return fmt.Errorf("ensure network %q: %w", pc.Network, err)
@@ -130,13 +156,24 @@ func EnsureProxy(ctx context.Context, dc docker.Client, pc ProxyConfig, logOut i
 	if err != nil {
 		return fmt.Errorf("find traefik container: %w", err)
 	}
+	finish := func() error {
+		if pc.trustsProxy() {
+			return nil
+		}
+		if err := removeForwardedDynamicConfig(pc); err != nil {
+			return fmt.Errorf("remove forwarded-headers config: %w", err)
+		}
+		return nil
+	}
 	// Adopt only if its config matches; otherwise recreate so new flags
 	// (e.g. newly-enabled TLS) actually take effect.
 	if existing != nil && existing.Labels["outhaul.config-hash"] == spec.Labels["outhaul.config-hash"] {
-		if existing.Running() {
-			return nil
+		if !existing.Running() {
+			if err := dc.StartContainer(ctx, existing.ID); err != nil {
+				return err
+			}
 		}
-		return dc.StartContainer(ctx, existing.ID)
+		return finish()
 	}
 
 	// (Re)create needed. Pull FIRST so a pull failure never leaves us with no proxy.
@@ -172,7 +209,7 @@ func EnsureProxy(ctx context.Context, dc docker.Client, pc ProxyConfig, logOut i
 	if err := dc.StartContainer(ctx, id); err != nil {
 		return fmt.Errorf("start traefik: %w", err)
 	}
-	return nil
+	return finish()
 }
 
 // ProxyMapsGateHost reports whether the running Traefik maps the gate's host
@@ -234,8 +271,10 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 		cmd = append(cmd, "--providers.docker.constraints="+constraint)
 	}
 	httpOff := pc.Routing.HTTPOff && !pc.TunnelMode
+	var entrypoints []string
 	if !httpOff {
 		cmd = append(cmd, "--entrypoints.web.address=:80")
+		entrypoints = append(entrypoints, "web")
 	}
 	var ports []docker.PortMapping
 	if !pc.TunnelMode && !httpOff {
@@ -251,11 +290,12 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 	env := []string{"DOCKER_API_VERSION=" + apiVersion}
 	var extraHosts []string
 
-	// The file provider carries the admin-UI router and/or the local-CA cert
-	// list; host-gateway is needed for the admin route and for the gate of
+	// The file provider carries the admin-UI router, the local-CA cert list
+	// and, while a proxy is trusted, the forwarded-headers middleware;
+	// host-gateway is needed for the admin route and for the gate of
 	// any protected route. Without either, the spec is what it was before
 	// protected routes, so upgrading doesn't recreate Traefik.
-	if pc.adminRoutingEnabled() || (pc.LocalCA && !pc.TunnelMode) {
+	if pc.adminRoutingEnabled() || (pc.LocalCA && !pc.TunnelMode) || pc.trustsProxy() {
 		cmd = append(cmd,
 			"--providers.file.directory=/etc/traefik/dynamic",
 			"--providers.file.watch=true",
@@ -272,6 +312,7 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 
 	if (pc.ACME || pc.LocalCA) && !pc.TunnelMode {
 		cmd = append(cmd, "--entrypoints.websecure.address=:443")
+		entrypoints = append(entrypoints, "websecure")
 		if pc.ACME && pc.Routing.Wildcard != "" {
 			cmd = append(cmd,
 				"--entrypoints.websecure.http.tls.certresolver=le",
@@ -285,6 +326,19 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 			)
 		}
 		ports = append(ports, docker.PortMapping{HostPort: pc.HTTPSPort, ContainerPort: "443", Proto: "tcp"})
+	}
+	if pc.trustsProxy() {
+		for _, ep := range entrypoints {
+			if pc.TrustAllProxies {
+				cmd = append(cmd, "--entrypoints."+ep+".forwardedheaders.insecure=true")
+			} else {
+				cmd = append(cmd, "--entrypoints."+ep+".forwardedheaders.trustedips="+strings.Join(pc.TrustedProxies, ","))
+			}
+			cmd = append(cmd,
+				"--entrypoints."+ep+".http.middlewares=outhaul-forwarded@file",
+				"--entrypoints."+ep+".http.underscoreheadersstrategy=delete",
+			)
+		}
 	}
 	if pc.ACME && !pc.TunnelMode {
 		if pc.DNSProvider != "" {
@@ -390,6 +444,66 @@ func writeAdminDynamicConfig(pc ProxyConfig) error {
 		tlsBlock = ""
 	}
 	return os.WriteFile(path, []byte(adminDynamicConfig(pc, entrypoint, tlsBlock)), 0o644)
+}
+
+// ForwardedDynamicConfig is the file-provider YAML EnsureProxy writes while
+// proxies are trusted: a middleware that blanks the headers a proxy has no
+// reason to send, so a visitor can't forge them.
+func ForwardedDynamicConfig() string {
+	return `# Managed by Outhaul — removes the headers a proxy has no reason to send.
+# Do not edit by hand.
+http:
+  middlewares:
+    outhaul-forwarded:
+      headers:
+        customRequestHeaders:
+          X-Real-Ip: ""
+          X-Forwarded-Uri: ""
+          X-Forwarded-Method: ""
+          X-Forwarded-Prefix: ""
+          X-Forwarded-Tls-Client-Cert: ""
+          X-Forwarded-Tls-Client-Cert-Info: ""
+`
+}
+
+// writeForwardedDynamicConfig writes the forwarded-headers middleware file
+// when proxies are trusted, and does nothing otherwise.
+func writeForwardedDynamicConfig(pc ProxyConfig) error {
+	if pc.DynamicDir == "" || !pc.trustsProxy() {
+		return nil
+	}
+	if err := os.MkdirAll(pc.DynamicDir, 0o700); err != nil {
+		return err
+	}
+	path := filepath.Join(pc.DynamicDir, forwardedDynamicFile)
+	want := []byte(ForwardedDynamicConfig())
+	// A file that is missing, empty or half written closes every route on
+	// the entrypoint, so leave a file that is already right alone, and
+	// replace any other by rename, never by truncating it.
+	if have, err := os.ReadFile(path); err == nil && bytes.Equal(have, want) {
+		return nil
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, want, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// removeForwardedDynamicConfig removes the middleware file, ignoring its
+// absence. Call it only once no running Traefik names the middleware.
+func removeForwardedDynamicConfig(pc ProxyConfig) error {
+	if pc.DynamicDir == "" {
+		return nil
+	}
+	if err := os.Remove(filepath.Join(pc.DynamicDir, forwardedDynamicFile)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 // removeStaleLocalCertsConfig clears localca's file-provider cert list when

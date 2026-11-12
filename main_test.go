@@ -989,3 +989,43 @@ func TestComposeEnvironmentFollowsStrictAndHeader(t *testing.T) {
 		})
 	}
 }
+
+func TestTrustedAllWarning(t *testing.T) {
+	w := trustedAllWarning(config.Config{TrustAllProxies: true})
+	for _, want := range []string{"OUTHAUL_TRUSTED_PROXIES", "OUTHAUL_REQUIRE_HEADER_NAME", "OUTHAUL_REQUIRE_HEADER_VALUE"} {
+		if !strings.Contains(w, want) {
+			t.Errorf("warning %q does not name %s", w, want)
+		}
+	}
+	if got := trustedAllWarning(config.Config{
+		TrustAllProxies:    true,
+		RequireHeaderName:  "X-Probe-Id",
+		RequireHeaderValue: "abc-123",
+	}); got != "" {
+		t.Errorf("warning = %q with a required header, want empty", got)
+	}
+	if got := trustedAllWarning(config.Config{}); got != "" {
+		t.Errorf("warning = %q without trust-all, want empty", got)
+	}
+}
+
+func TestProxyConfigCarriesTrustedProxies(t *testing.T) {
+	cfg := config.Config{
+		Network: "outhaul", TraefikImage: config.DefaultTraefikImage,
+		TrustedProxies: []string{"192.0.2.0/24"},
+	}
+	ic := &infraController{dc: docker.NewFake(), cfg: cfg}
+	for _, tunnelOn := range []bool{false, true} {
+		pc := ic.proxyConfig(context.Background(), tunnelOn, false)
+		if !slices.Equal(pc.TrustedProxies, cfg.TrustedProxies) || pc.TrustAllProxies {
+			t.Errorf("tunnelOn=%v: TrustedProxies=%v TrustAllProxies=%v", tunnelOn, pc.TrustedProxies, pc.TrustAllProxies)
+		}
+	}
+	ic.cfg = config.Config{Network: "outhaul", TrustAllProxies: true}
+	for _, tunnelOn := range []bool{false, true} {
+		pc := ic.proxyConfig(context.Background(), tunnelOn, false)
+		if !pc.TrustAllProxies || len(pc.TrustedProxies) != 0 {
+			t.Errorf("tunnelOn=%v: TrustedProxies=%v TrustAllProxies=%v", tunnelOn, pc.TrustedProxies, pc.TrustAllProxies)
+		}
+	}
+}

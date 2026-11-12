@@ -2,6 +2,7 @@ package config
 
 import (
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1015,5 +1016,51 @@ func TestAdminDirectSetting(t *testing.T) {
 	})
 	if err := portOnly.Validate(); err != nil {
 		t.Errorf("a port-only listen address: %v", err)
+	}
+}
+
+func TestTrustedProxiesSetting(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []string
+		all  bool
+		bad  bool
+	}{
+		{"unset", "", nil, false, false},
+		{"address", "192.0.2.1", []string{"192.0.2.1"}, false, false},
+		{"cidr and ipv6, spaces", " 192.0.2.0/24 , 2001:db8::1 ", []string{"192.0.2.0/24", "2001:db8::1"}, false, false},
+		{"all", "all", nil, true, false},
+		{"all in another case", "ALL", nil, true, false},
+		{"all mixed", "all,192.0.2.1", nil, false, true},
+		{"empty first", ",192.0.2.1", nil, false, true},
+		{"empty last", "192.0.2.1,", nil, false, true},
+		{"double comma", "192.0.2.1,,192.0.2.2", nil, false, true},
+		{"bad address", "192.0.2.999", nil, false, true},
+		{"bad cidr", "10.0.0.0/33", nil, false, true},
+		{"hostname", "proxy.example.com", nil, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{}
+			if tc.in != "" {
+				env["OUTHAUL_TRUSTED_PROXIES"] = tc.in
+			}
+			c := Load(func(k string) string { return env[k] })
+			err := c.Validate()
+			if tc.bad {
+				if err == nil || !strings.Contains(err.Error(), "OUTHAUL_TRUSTED_PROXIES") {
+					t.Fatalf("Validate error = %v, want one naming OUTHAUL_TRUSTED_PROXIES", err)
+				}
+			} else if err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+			if !reflect.DeepEqual(c.TrustedProxies, tc.want) {
+				t.Errorf("TrustedProxies = %#v, want %#v", c.TrustedProxies, tc.want)
+			}
+			if c.TrustAllProxies != tc.all {
+				t.Errorf("TrustAllProxies = %v, want %v", c.TrustAllProxies, tc.all)
+			}
+		})
 	}
 }

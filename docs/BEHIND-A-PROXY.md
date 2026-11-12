@@ -27,7 +27,9 @@ So the settings cover: certificates by DNS-01 with one wildcard
 (`OUTHAUL_ACME_DNS_PROVIDER`, `OUTHAUL_ACME_DNS_ENV`, `OUTHAUL_TLS_WILDCARD`);
 no port 80 (`OUTHAUL_HTTP_PORT`); a required request header on every route
 (`OUTHAUL_REQUIRE_HEADER_NAME`, `OUTHAUL_REQUIRE_HEADER_VALUE`); and an admin
-port only Traefik can reach (`OUTHAUL_ADMIN_DIRECT`).
+port only Traefik can reach (`OUTHAUL_ADMIN_DIRECT`). A fifth setting, which
+proxies Traefik believes about the visitor's address (`OUTHAUL_TRUSTED_PROXIES`),
+is covered under "Trusted proxies".
 
 ## Settings
 
@@ -40,6 +42,7 @@ port only Traefik can reach (`OUTHAUL_ADMIN_DIRECT`).
 | `OUTHAUL_REQUIRE_HEADER_NAME` | a header name: letters, digits and `-` | unset | `OUTHAUL_REQUIRE_HEADER_VALUE` |
 | `OUTHAUL_REQUIRE_HEADER_VALUE` | letters, digits and `-._~+/=:`, at most 256 characters | unset | `OUTHAUL_REQUIRE_HEADER_NAME` |
 | `OUTHAUL_ADMIN_DIRECT` | `on` or `off` | `on` | `off` needs `OUTHAUL_PUBLIC_URL`, and HTTPS or a tunnel to publish it. `OUTHAUL_LISTEN_ADDR` may then give a port but not a host |
+| `OUTHAUL_TRUSTED_PROXIES` | IP addresses and CIDRs, comma-separated, or `all` | unset: no proxy is trusted, as today | `all` should be paired with `OUTHAUL_REQUIRE_HEADER_NAME` and `..._VALUE`; `serve` warns when it is not |
 
 The first deployment sets these. systemd doesn't expand variables in an
 environment file, so each value is written out:
@@ -54,6 +57,7 @@ OUTHAUL_HTTP_PORT=off
 OUTHAUL_REQUIRE_HEADER_NAME=X-Azure-FDID
 OUTHAUL_REQUIRE_HEADER_VALUE=<the profile's GUID>
 OUTHAUL_ADMIN_DIRECT=off
+OUTHAUL_TRUSTED_PROXIES=all
 ```
 
 Outhaul passes Traefik exactly the variables named, and adds none. In
@@ -136,6 +140,94 @@ labels in Docker show it.
 
 With port 80 open as well, its redirect to HTTPS answers before any rule is
 read, so the header is not checked there; it is checked on 443.
+
+## Trusted proxies
+
+By default Traefik believes no one: it replaces `X-Forwarded-For`, `-Host`,
+`-Proto` and `-Port` with what it sees on the connection, so an app sees the
+CDN's address, not the visitor's. `OUTHAUL_TRUSTED_PROXIES` names the peers whose
+forwarded headers Traefik keeps and adds to. It takes IP addresses and CIDRs,
+comma-separated (`192.0.2.0/24,2001:db8::/32`), or `all`. Unset, it changes
+nothing. A malformed list stops startup, naming the setting.
+
+It applies to every entrypoint Traefik declares: `web` and `websecure`, `web`
+alone in tunnel mode, and `websecure` alone with `OUTHAUL_HTTP_PORT=off`.
+
+The addresses are the ones Traefik sees on the connection, not the visitor's. A
+connection from the host itself can arrive from the Docker bridge gateway, not
+from the host's own address, and a CDN's addresses are the ones its edge
+connects from. An entry that matches no peer trusts nobody, which is what an
+unset list does.
+
+`all` trusts any peer that can connect. It is safe only when nothing but the
+proxy can reach Traefik's ports, and it is meant to be paired with the required
+header, so a request that skips the proxy matches no router. `outhaul serve`
+logs a warning when `all` is set without both header settings; it doesn't refuse
+to start, because a firewall may be doing that job. The warning never contains a
+header value.
+
+### What an app receives
+
+With the CDN trusted, `X-Forwarded-For` is the visitor's address followed by the
+CDN's, as Traefik adds the address it saw: `203.0.113.7, 198.51.100.20`. This
+assumes the CDN appends the visitor's address to the chain, as a proxy does. If
+it forwards a `X-Forwarded-For` the client supplied without adding an entry of
+its own, the chain holds forged entries, and nothing before the CDN's own
+address can be trusted; check what your CDN does first. Where it does append, the
+entry before the last is the visitor's. Tell the app's framework there are two
+proxies in front of it (Traefik and the CDN), or it will take the CDN's address,
+or worse, the first entry, which a visitor can write. `X-Forwarded-Host` and
+`-Proto` are what the CDN sent. A visitor's own values for them reach the app
+only if the CDN passes them on, so the CDN should overwrite them.
+
+`X-Real-Ip` is not the visitor's address unless the proxy sets it. Traefik keeps
+the value a trusted proxy sends, or writes the peer's address when none arrives,
+and then Outhaul's `outhaul-forwarded` middleware removes the header (see below),
+so an app never receives `X-Real-Ip` while trust is on. Even before that, a
+trusted proxy that forwards a client's own `X-Real-Ip` would let the client
+choose it, so an app should read `X-Forwarded-For`.
+
+### The headers removed
+
+While trust is on, a middleware named `outhaul-forwarded`, in a file Outhaul
+writes under Traefik's file provider (`outhaul-forwarded.yml`), is set on every
+entrypoint. It removes `X-Real-Ip`, `X-Forwarded-Uri`, `X-Forwarded-Method`,
+`X-Forwarded-Prefix`, `X-Forwarded-Tls-Client-Cert` and
+`X-Forwarded-Tls-Client-Cert-Info` from every request, so a visitor can't forge
+them through a trusted proxy.
+
+Each of those entrypoints also drops every request header whose name holds an
+underscore (`--entrypoints.<name>.http.underscoreheadersstrategy=delete`). Many
+CGI-style stacks (PHP, and many WSGI and Rack setups) fold `X_Real_Ip` into the
+same variable as `X-Real-Ip`, so without this a visitor could still choose the
+address such an app reads. It is blunt on purpose: an app's own header with an
+underscore in its name, such as `My_App_Header`, is dropped too, while trust is
+on. An entrypoint that trusts nobody already drops them. The flag needs Traefik
+v3.7.6 or newer, the version Outhaul bundles; if `OUTHAUL_TRAEFIK_IMAGE` pins an
+older image, upgrade it before setting `OUTHAUL_TRUSTED_PROXIES`.
+
+If the file is missing, Traefik disables the routers on the entrypoints that name
+the middleware and answers 404, so it fails closed. It is not the gate: the gate
+stays in each app's own labels, and the middleware is not on any router.
+Outhaul replaces the file by writing a temporary copy and renaming it, and leaves
+it alone when it already holds the right content, so a rewrite never shows
+Traefik an empty file. The directory is all or nothing while trust is on: a
+sibling file in it that fails to parse also takes the routes down when Traefik
+starts, and the same fail-closed answer follows.
+
+Turning the setting off removes the file only once the replacement Traefik has
+started. If its image can't be pulled, the file stays and a failed pull can't take
+every route down, with one exception: while a request header is required, an old
+Traefik without the constraint must not keep serving, so it is replaced from a
+local image if there is one, and otherwise stopped, which fails closed.
+
+### The gate is unchanged
+
+A protected route's forward-auth keeps `trustforwardheader=false`, so a client
+can't choose what the gate is told: it receives the `X-Forwarded-*` headers
+Traefik writes for that call, and never the client's `X-Real-Ip` or
+`X-Forwarded-Prefix`. No label and no ingress stamp changes with this setting, so
+no app redeploys when it does; changing it recreates Traefik once.
 
 ## When a setting changes
 
@@ -240,6 +332,18 @@ These need the staging host and its CDN.
 7. `ss -ltn` on the host shows port 8080 on loopback and one Docker bridge
    address only. From another machine in the network, a connection to the
    host's port 8080 is refused.
+8. With `OUTHAUL_TRUSTED_PROXIES` set to the CDN's addresses, an app that echoes
+   its request headers, reached through the CDN, shows an `X-Forwarded-For`
+   whose entry before the last is the visitor's address, and the CDN's address
+   last.
+9. The same request with a made-up value for each of `X-Forwarded-Host`,
+   `X-Forwarded-Proto`, `X-Forwarded-Port`, `X-Real-Ip`, `X-Forwarded-Uri`,
+   `X-Forwarded-Method` and `X-Forwarded-Prefix`, sent from the visitor's side,
+   shows the first three overwritten by the CDN or absent, and the other four
+   absent at the app. So are the same four with underscores in place of the
+   hyphens (`X_Real_Ip`), and `X-Forwarded-Tls-Client-Cert` and
+   `X-Forwarded-Tls-Client-Cert-Info`.
+10. A protected app's sign-in still works through the CDN with trust on.
 
 ## Testing so far
 
@@ -253,7 +357,11 @@ Three scripts check this without a real CDN, and none is run by CI:
   header and the constraint behave as described.
 - `deploy/test/integration_gate.sh` (with `GATETEST_HEADER` and
   `GATETEST_HTTP_OFF`) checks protected and open rows on a real Traefik with the
-  header term and with no port 80.
+  header term and with no port 80. It also runs a Traefik that trusts its peer
+  and one that trusts a list matching nobody, and checks which forwarded headers
+  reach an app, that `X-Real-Ip`, `X-Forwarded-Uri`, `-Method`, `-Prefix`, their
+  underscore spellings and the two TLS client-cert headers are removed in both, that the gate answers the same, and that with the middleware
+  file gone the entrypoints answer 404.
 - `deploy/test/integration_proxy.sh` runs a real Outhaul and Traefik behind a
   stand-in CDN and a stand-in OIDC provider. It checks first-boot setup,
   password and SSO sign-in, a protected app (the redirect, the code, the
