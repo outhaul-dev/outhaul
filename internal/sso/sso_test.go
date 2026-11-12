@@ -389,3 +389,21 @@ func TestFakeRecordsExchangeAndChecksNonce(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestValidIssuer(t *testing.T) {
+	for _, in := range []string{
+		"https://idp.example.com",
+		"https://idp.example.com/oauth2/default",
+		"http://localhost:8080",
+		"http://127.0.0.1:9000",
+	} {
+		if err := ValidIssuer(in); err != nil {
+			t.Errorf("ValidIssuer(%q) = %v, want nil", in, err)
+		}
+	}
+	for _, in := range []string{"", " ", "idp.example.com", "https://", "http://idp.example.com", "http://10.0.0.1", "ftp://idp.example.com"} {
+		if err := ValidIssuer(in); err == nil {
+			t.Errorf("ValidIssuer(%q) = nil, want an error", in)
+		}
+	}
+}

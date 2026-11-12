@@ -151,9 +151,18 @@ func validate(cfg Config) error {
 	case strings.TrimSpace(cfg.RedirectURL) == "":
 		return errors.New("sso: the redirect URL is empty")
 	}
-	u, err := url.Parse(cfg.Issuer)
+	if err := ValidIssuer(cfg.Issuer); err != nil {
+		return fmt.Errorf("sso: %w", err)
+	}
+	return nil
+}
+
+// ValidIssuer reports whether issuer is an absolute URL starting with https://,
+// or with http:// on a loopback host. Settings and startup share it.
+func ValidIssuer(issuer string) error {
+	u, err := url.Parse(issuer)
 	if err != nil || !u.IsAbs() || u.Hostname() == "" {
-		return errors.New("sso: the issuer must be an absolute URL such as https://idp.example.com")
+		return errors.New("the issuer must be an absolute URL such as https://idp.example.com")
 	}
 	if u.Scheme == "https" {
 		return nil
@@ -161,7 +170,7 @@ func validate(cfg Config) error {
 	if u.Scheme == "http" && isLoopback(u.Hostname()) {
 		return nil
 	}
-	return errors.New("sso: the issuer must start with https:// (http:// is allowed only for localhost)")
+	return errors.New("the issuer must start with https:// (http:// is allowed only for localhost)")
 }
 
 func isLoopback(host string) bool {

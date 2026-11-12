@@ -14,6 +14,14 @@ const (
 // AssignableRoles are the roles an admin can give an account, highest last.
 var AssignableRoles = []Role{RoleProjectViewer, RoleProjectMember, RoleProjectAdmin, RoleSystemAdmin}
 
+// GroupRole maps one of the provider's groups to the role it gives. The
+// mapping is read from OUTHAUL_SSO_ROLE_GROUPS; order is the order the pairs
+// were written in.
+type GroupRole struct {
+	Group string
+	Role  Role
+}
+
 func (r Role) rank() int {
 	switch r {
 	case RoleNone:
