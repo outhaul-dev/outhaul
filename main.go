@@ -368,6 +368,7 @@ func serve() error {
 	// HTTPS when protected rows are served that way (as the pages do).
 	previews.SetProxyControl(infra)
 	previews.SetHTTPSOnly(cfg.HTTPOff)
+	previews.SetProtectNewDomains(cfg.ProtectNewDomains)
 	previews.SetProtectedHTTPS(func(ctx context.Context) bool {
 		if cfg.TLSEnabled() {
 			return true
