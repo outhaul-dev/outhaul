@@ -228,6 +228,7 @@ func TestDomainSuffixSetting(t *testing.T) {
 		{"suffix", "shared.demo.example.com", "shared.demo.example.com", false},
 		{"case and a trailing dot", "Shared.Demo.Example.COM.", "shared.demo.example.com", false},
 		{"two labels", "example.com", "example.com", false},
+		{"one label", "com", "", true},
 		{"189 characters", long, long, false},
 		{"190 characters", tooLong, "", true},
 		{"one dot", ".", "", true},
@@ -417,7 +418,7 @@ Expected: FAIL — `DomainSuffix`, `OneLabelUnder`, and the MinIO/suffix names a
 
 - [ ] **Step 4: Implement**
 
-- `internal/config/config.go`: add `DomainSuffix string` beside `ServerIP`, `DomainSuffix: p.domainSuffix("OUTHAUL_DOMAIN_SUFFIX")` in `Load`, the parser above (trim, lower-case, drop one trailing dot, then `maxSuffixLen` and `domainNameRe`; on failure `p.reject(key, raw, "a domain such as shared.demo.example.com, at most 189 characters")`), and the wildcard agreement check in `Validate`:
+- `internal/config/config.go`: add `DomainSuffix string` beside `ServerIP`, `DomainSuffix: p.domainSuffix("OUTHAUL_DOMAIN_SUFFIX")` in `Load`, the parser above (trim, lower-case, drop one trailing dot, then `maxSuffixLen`, `domainNameRe` and at least one dot; on failure `p.reject(key, raw, "a domain such as shared.demo.example.com, at least two labels, at most 189 characters")`), and the wildcard agreement check in `Validate`:
 
 ```go
 if c.TLSWildcard != "" && c.DomainSuffix != "" && !strings.EqualFold(c.TLSWildcard, "*."+c.DomainSuffix) {

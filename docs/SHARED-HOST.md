@@ -39,7 +39,9 @@ An app name is 2 to 40 characters of `a-z`, `0-9` and `-`, so it is always a
 valid label, but `<app>-<label>` has to fit in one label of 63 characters:
 choose short labels. For the same reason `OUTHAUL_DOMAIN_SUFFIX` is capped at
 189 characters, which leaves room for a full 63-character label under a
-253-character name.
+253-character name, and it must be at least two labels: a suffix of one label
+would make `OUTHAUL_DOMAIN_SUFFIX_ONLY` accept any `*.com` host, which no
+certificate covers.
 
 The domain dialog's first option is "Default domain", which gives
 `<app>.<suffix>`, and "Free sslip.io domain" is no longer offered. The server
