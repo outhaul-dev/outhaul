@@ -17,7 +17,7 @@
 
 <section class="panel">
   <h2 class="panel-title">Push keys</h2>
-  <p class="muted env-note">SSH public keys that are yours and allowed to <code>git push</code> to deploy. Add your laptop or CI key, then push to a push-to-deploy app's <code>ssh://git@…</code> remote.</p>
+  <p class="muted env-note">SSH public keys that are yours and allowed to <code>git push</code> to deploy. Add your laptop or CI key, then push to a push-to-deploy app's <code>ssh://git@…</code> remote.{{if .GitHTTPRemoteBase}} Over HTTPS, a push token below signs <code>git</code> in to <code>{{.GitHTTPRemoteBase}}/git/&lt;app&gt;.git</code> instead.{{end}}</p>
   {{if .PushKeys}}
   <table class="table">
     <thead><tr><th>Label</th><th>Fingerprint</th><th>Added</th><th>Last used</th><th></th></tr></thead>

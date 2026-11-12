@@ -254,7 +254,7 @@ at the commit that was running, unless its image was kept.
 | --- | --- | --- |
 | `outhaul.db` | yes, without sign-in sessions | put back by `restore-state` |
 | `secret.key` | never | supplied by a person |
-| Sign-in sessions, protected-route sessions, one-time codes | no: removed from the copy | everyone signs in again |
+| Sign-in sessions, protected-route sessions, one-time codes, push tokens | no: removed from the copy | everyone signs in again and creates new push tokens |
 | `traefik/acme/acme.json` (ACME account, certificates, private keys) | no | Traefik orders again: one wildcard under R1, otherwise one order per host, which a host with many names must weigh against Let's Encrypt's limits |
 | `traefik/dynamic`, `traefik/certs`, `work/`, `update/`, `git-hook.sock` | no | written again at startup |
 | `ca/` (the local CA's root and key) | no: a private key | a new root at first start, which devices must trust again, unless the old directory is copied back first |

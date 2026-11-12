@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/rand"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -10,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -259,5 +261,129 @@ func TestGitRoutesArePublic(t *testing.T) {
 		if rt.level == levelUnset || rt.handler == nil {
 			t.Errorf("%s has no level or no handler", rt.pattern)
 		}
+	}
+}
+
+// fakeSSH stands in for a running (addr set) or stopped SSH server.
+type fakeSSH struct{ addr string }
+
+func (f fakeSSH) Addr() string        { return f.addr }
+func (f fakeSSH) Rebind(string) error { return nil }
+
+const httpsTokenNote = `Account → Push tokens</a> as the password. Don't put the token in the remote's address.`
+
+func pushAppFor(t *testing.T, e *testEnv, tag bool) core.App {
+	t.Helper()
+	app := core.App{
+		Name: "pushed", Domain: "pushed.example.com",
+		Source: core.SourcePush, Branch: "main", Kind: core.KindNixpacks,
+	}
+	if tag {
+		app.DeployTrigger = "tag"
+		app.TagPattern = "v*"
+	}
+	app, err := e.store.CreateApp(context.Background(), app)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return app
+}
+
+func pageAs(t *testing.T, e *testEnv, tok, path string) string {
+	t.Helper()
+	resp := e.getAs(t, tok, path)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s = %d", path, resp.StatusCode)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	return string(b)
+}
+
+func TestAppPagePushRemotes(t *testing.T) {
+	const httpsLine = "git remote add outhaul https://slip.example.com/git/pushed.git"
+	setup := func(sshAddr string, on bool) func(*Server) {
+		return func(s *Server) {
+			if on {
+				s.SetGitHTTP(GitHTTPOptions{DefaultDays: 7, MaxDays: 30, SSOMaxAge: 7 * 24 * time.Hour})
+			}
+			if sshAddr != "" {
+				s.SetSSHControl(fakeSSH{sshAddr})
+			}
+		}
+	}
+	tests := []struct {
+		name     string
+		on       bool
+		ssh      string
+		wantHTTP bool
+		wantSSH  bool
+	}{
+		{"off, ssh running", false, ":2222", false, true},
+		{"on, ssh running", true, ":2222", true, true},
+		{"on, ssh off", true, "", true, false},
+		{"off, ssh off", false, "", false, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newTestEnvWith(t, setup(tc.ssh, tc.on))
+			app := pushAppFor(t, e, false)
+			tok := e.signInAs(t, "root", core.RoleSystemAdmin)
+			page := pageAs(t, e, tok, "/apps/"+strconv.FormatInt(app.ID, 10))
+			if got := strings.Contains(page, httpsLine); got != tc.wantHTTP {
+				t.Errorf("https remote shown = %v, want %v", got, tc.wantHTTP)
+			}
+			if got := strings.Contains(page, httpsTokenNote); got != tc.wantHTTP {
+				t.Errorf("token note shown = %v, want %v", got, tc.wantHTTP)
+			}
+			if got := strings.Contains(page, "ssh://git@"); got != tc.wantSSH {
+				t.Errorf("ssh remote shown = %v, want %v", got, tc.wantSSH)
+			}
+			if !tc.on && strings.Contains(page, "/git/") {
+				t.Error("page names /git/ with git over HTTPS off")
+			}
+		})
+	}
+
+	t.Run("tag line under the https lines", func(t *testing.T) {
+		e := newTestEnvWith(t, setup("", true))
+		app := pushAppFor(t, e, true)
+		tok := e.signInAs(t, "root", core.RoleSystemAdmin)
+		page := pageAs(t, e, tok, "/apps/"+strconv.FormatInt(app.ID, 10))
+		i := strings.Index(page, httpsLine)
+		if i < 0 || !strings.Contains(page[i:], "git tag &lt;tag&gt; &amp;&amp; git push outhaul &lt;tag&gt;") && !strings.Contains(page[i:], "git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;") {
+			t.Error("no tag line under the https lines")
+		}
+	})
+
+	t.Run("a viewer sees neither", func(t *testing.T) {
+		e := newTestEnvWith(t, setup(":2222", true))
+		app := pushAppFor(t, e, false)
+		tok := e.signInAs(t, "viewer", core.RoleProjectViewer, app.ProjectID)
+		page := pageAs(t, e, tok, "/apps/"+strconv.FormatInt(app.ID, 10))
+		if strings.Contains(page, "/git/") || strings.Contains(page, "ssh://git@") || strings.Contains(page, httpsTokenNote) {
+			t.Error("a viewer sees a push remote")
+		}
+	})
+}
+
+func TestAccountPushKeysTextNamesHTTPS(t *testing.T) {
+	on := newTestEnvWith(t, func(s *Server) {
+		s.SetGitHTTP(GitHTTPOptions{DefaultDays: 7, MaxDays: 30, SSOMaxAge: 7 * 24 * time.Hour})
+		s.SetSSHControl(fakeSSH{":2222"})
+	})
+	tok := on.signInAs(t, "root", core.RoleSystemAdmin)
+	if p := pageAs(t, on, tok, "/account"); !strings.Contains(p, "https://slip.example.com/git/") {
+		t.Error("push keys text doesn't name the https remote")
+	}
+	off := newTestEnvWith(t, func(s *Server) { s.SetSSHControl(fakeSSH{":2222"}) })
+	tok = off.signInAs(t, "root", core.RoleSystemAdmin)
+	p := pageAs(t, off, tok, "/account")
+	if strings.Contains(p, "/git/") {
+		t.Error("account page names /git/ with git over HTTPS off")
+	}
+	const today = `Add your laptop or CI key, then push to a push-to-deploy app's <code>ssh://git@…</code> remote.</p>`
+	if !strings.Contains(p, today) {
+		t.Error("push keys text changed with git over HTTPS off")
 	}
 }

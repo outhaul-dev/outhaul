@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
@@ -68,6 +69,7 @@ func (s *Server) addPushTokenData(w http.ResponseWriter, r *http.Request, me cor
 		views = append(views, s.tokenView(t, "", now))
 	}
 	data["GitHTTP"] = true
+	data["GitHTTPRemoteBase"] = strings.TrimRight(s.publicURL, "/")
 	data["PushTokens"] = views
 	data["TokenDefaultDays"] = s.gitHTTP.DefaultDays
 	data["TokenMaxDays"] = s.gitHTTP.MaxDays

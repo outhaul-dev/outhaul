@@ -174,14 +174,19 @@
 </section>
 
 <section class="tab" data-tab="deployments">
-{{if .PushRemote}}
+{{if or .PushRemote .PushHTTPSRemote}}
 <section class="panel">
   <h2 class="panel-title">Deploy with git push</h2>
-  <p class="muted">Add this remote once, then push to deploy — the build streams into your terminal.</p>
+  <p class="muted">Add this remote once, then push to deploy — the build streams into your terminal.</p>{{if .PushHTTPSRemote}}
+  <div class="copywrap"><pre class="mono">git remote add outhaul {{.PushHTTPSRemote}}
+git push outhaul {{.PushBranch}}{{if eq .App.DeployTrigger "tag"}}
+git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.TagPattern}}{{end}}</pre>{{template "copybtn" .}}</div>
+  <p class="muted env-note">Git asks for a username and a password. Type any username, and a push token from <a href="/account">Account → Push tokens</a> as the password. Don't put the token in the remote's address.</p>{{end}}{{if .PushRemote}}{{if .PushHTTPSRemote}}
+  <p class="muted">Or over SSH:</p>{{end}}
   <div class="copywrap"><pre class="mono">git remote add outhaul {{.PushRemote}}
 git push outhaul {{.PushBranch}}{{if eq .App.DeployTrigger "tag"}}
 git tag &lt;tag&gt; && git push outhaul &lt;tag&gt;   # a tag matching {{.App.TagPattern}}{{end}}</pre>{{template "copybtn" .}}</div>
-  <p class="muted env-note">Your push key must be registered under <a href="/account">Account → Push keys</a>, and the SSH port must be reachable from your machine.</p>
+  <p class="muted env-note">Your push key must be registered under <a href="/account">Account → Push keys</a>, and the SSH port must be reachable from your machine.</p>{{end}}
 </section>
 {{end}}
 

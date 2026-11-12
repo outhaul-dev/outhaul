@@ -247,6 +247,7 @@ The flag is part of Traefik's config hash, so changing the setting recreates
 Traefik once. With the setting unset, nothing changes. Like
 `OUTHAUL_TRUSTED_PROXIES`, it changes no label, so no app redeploys. A CDN or
 proxy in front of Traefik has timeouts of its own, and they apply as well.
+For `git push` over HTTPS through a CDN, see [GIT-HTTP.md](GIT-HTTP.md).
 
 Outhaul's own server has no read timeout past the headers, so nothing else on
 the host is in the way.
