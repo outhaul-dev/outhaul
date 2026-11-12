@@ -259,9 +259,11 @@ die() {
 
 echo "== setup"
 (cd "$root" && go build -o "$work/gatelabels" ./deploy/test/gatelabels) || die "go build gatelabels"
-mkdir -p "$work/dynamic"
-(cd "$root" && go build -o "$work/forwardedconfig" ./deploy/test/forwardedconfig) || die "go build forwardedconfig"
-"$work/forwardedconfig" >"$work/dynamic/outhaul-forwarded.yml" || die "write the forwarded-headers config"
+if [ "$mode" = stub ]; then
+	mkdir -p "$work/dynamic"
+	(cd "$root" && go build -o "$work/forwardedconfig" ./deploy/test/forwardedconfig) || die "go build forwardedconfig"
+	"$work/forwardedconfig" >"$work/dynamic/outhaul-forwarded.yml" || die "write the forwarded-headers config"
+fi
 routes="gt-wiki,wiki.test,,,protected gt-hooks,wiki.test,/webhooks,,open gt-shop,shop.test,,,open gt-admin,shop.test,/admin,/,protected,notls"
 if [ "$mode" = outhaul ] && [ -n "$route_host" ]; then
 	routes="$routes gt-real,$route_host,,,protected"
@@ -1497,10 +1499,10 @@ rm -f "$work/dynamic/outhaul-forwarded.yml"
 trustedips_api() { curl -sS --max-time 5 "http://127.0.0.1:$trustedips_api_port/api/http/$1" 2>/dev/null; }
 # settle WANT_OPEN WANT_PROTECTED: polls up to 15 seconds until open shop.test/
 # answers WANT_OPEN, and protected wiki.test/page answers WANT_PROTECTED, on
-# every entrypoint. The last statuses are left in $last.
+# every entrypoint, or until the 15 seconds are up. The last statuses are left in $last.
 settle() {
-	i=0
-	while [ $i -lt 15 ]; do
+	deadline=$(($(date +%s) + 15))
+	while [ "$(date +%s)" -lt "$deadline" ]; do
 		good=yes
 		last=
 		for scheme in $schemes; do
@@ -1512,7 +1514,6 @@ settle() {
 		done
 		if [ $good = yes ]; then return 0; fi
 		sleep 1
-		i=$((i + 1))
 	done
 	return 1
 }
