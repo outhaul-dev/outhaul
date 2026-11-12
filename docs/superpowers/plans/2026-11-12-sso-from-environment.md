@@ -626,7 +626,9 @@ func TestSyncSSOStartupWithNoSettingsEndsSessionsAndForgetsTheRecord(t *testing.
 	ctx := context.Background()
 	s := openWithBox(t)
 	const iss = "https://idp.example.com"
-	if err := s.SetSSOSettings(ctx, SSOSettings{Issuer: iss, ClientID: "cid", ClientSecret: "sec"}, false); err != nil {
+	// A previous run took its provider from the environment: a run record, and
+	// no stored settings.
+	if _, err := s.SyncSSOStartup(ctx, SSOSettings{Issuer: iss, ClientID: "cid"}, true); err != nil {
 		t.Fatal(err)
 	}
 	_, tok := ssoSessionUser(t, s, "sub-1")
