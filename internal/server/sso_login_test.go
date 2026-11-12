@@ -1195,8 +1195,8 @@ func TestSetupRefusesSSOUsernames(t *testing.T) {
 		t.Fatal("an account was created")
 	}
 	// The Users page says the same.
-	if err := validUsername("SSO:x"); err == nil || err.Error() != ssoPrefixRefusal {
-		t.Errorf("validUsername = %v, want %q", err, ssoPrefixRefusal)
+	if err := ValidUsername("SSO:x"); err == nil || err.Error() != ssoPrefixRefusal {
+		t.Errorf("ValidUsername = %v, want %q", err, ssoPrefixRefusal)
 	}
 	e.completeSetup(t)
 }

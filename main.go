@@ -64,6 +64,9 @@ func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "restore-state" {
 		os.Exit(runRestoreState(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
 	}
+	if len(os.Args) >= 2 && os.Args[1] == "admin" {
+		os.Exit(runAdmin(os.Args[2:], os.Getenv, os.Stdin, os.Stdout, os.Stderr))
+	}
 	if len(os.Args) < 2 || os.Args[1] != "serve" {
 		usage()
 		os.Exit(2)
@@ -79,6 +82,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "       outhaul version")
 	fmt.Fprintln(os.Stderr, "       outhaul images")
 	fmt.Fprintln(os.Stderr, "       outhaul restore-state --from <file> [--key-file PATH]")
+	fmt.Fprintln(os.Stderr, "       outhaul admin create NAME")
 	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "Starts the Outhaul admin UI and deploy worker.")
 	fmt.Fprintln(os.Stderr, "Configuration via OUTHAUL_* environment variables (see ARCHITECTURE.md).")

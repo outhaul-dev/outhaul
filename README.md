@@ -219,6 +219,23 @@ leaves the old database and key beside the new ones. The full steps, the
 environment it needs and what a rebuild does not bring back are in
 [docs/STATE-BACKUP.md](docs/STATE-BACKUP.md).
 
+### Creating an admin from the host
+
+`outhaul admin create` makes a password system admin when nobody can sign in,
+for example while a username is locked after repeated failed sign-ins:
+
+```sh
+sudo -u outhaul outhaul admin create alice
+```
+
+Run it as the account that owns the database (`outhaul` on a normal install);
+it refuses other users, root included, and prints the `sudo -u` line to use. It
+asks for the password twice without echo, or reads the first line of standard
+input when there is no terminal, and never takes the password as an argument.
+It creates an account only: it does not reset a password, unlock a name, or
+create a database. Set `OUTHAUL_DATA_DIR` if the data directory isn't the
+default.
+
 ## Configuration
 
 No config files — defaults with `OUTHAUL_*` environment overrides:

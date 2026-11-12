@@ -110,7 +110,8 @@ func hasSSOPrefix(name string) bool {
 	return strings.HasPrefix(strings.ToLower(name), "sso:")
 }
 
-func validUsername(name string) error {
+// ValidUsername reports whether name may be a password account's username.
+func ValidUsername(name string) error {
 	if len(name) < 3 {
 		return errors.New("The username must be at least 3 characters.")
 	}
@@ -140,7 +141,7 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusBadRequest, "Choose a role from the list.")
 		return
 	}
-	if err := validUsername(username); err != nil {
+	if err := ValidUsername(username); err != nil {
 		fail(http.StatusBadRequest, err.Error())
 		return
 	}
@@ -314,7 +315,7 @@ func (s *Server) handleAccountSetupSubmit(w http.ResponseWriter, r *http.Request
 		s.setupPage(w, r, status, map[string]any{"Token": token, "Username": user.Username, "Error": msg})
 	}
 	password := r.FormValue("password")
-	if err := validateCredentials(user.Username, password); err != nil {
+	if err := ValidateCredentials(user.Username, password); err != nil {
 		again(http.StatusBadRequest, err.Error())
 		return
 	}
