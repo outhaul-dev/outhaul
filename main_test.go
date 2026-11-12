@@ -893,3 +893,22 @@ func TestNewUpdatesOff(t *testing.T) {
 		t.Fatalf("main: got (%v, %v, %v), want a Dir and a Checker", d, k, off)
 	}
 }
+
+func TestTrustedAllWarning(t *testing.T) {
+	w := trustedAllWarning(config.Config{TrustAllProxies: true})
+	for _, want := range []string{"OUTHAUL_TRUSTED_PROXIES", "OUTHAUL_REQUIRE_HEADER_NAME", "OUTHAUL_REQUIRE_HEADER_VALUE"} {
+		if !strings.Contains(w, want) {
+			t.Errorf("warning %q does not name %s", w, want)
+		}
+	}
+	if got := trustedAllWarning(config.Config{
+		TrustAllProxies:    true,
+		RequireHeaderName:  "X-Probe-Id",
+		RequireHeaderValue: "abc-123",
+	}); got != "" {
+		t.Errorf("warning = %q with a required header, want empty", got)
+	}
+	if got := trustedAllWarning(config.Config{}); got != "" {
+		t.Errorf("warning = %q without trust-all, want empty", got)
+	}
+}

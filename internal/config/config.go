@@ -55,6 +55,9 @@ type Config struct {
 	PublicURL string // externally reachable base URL of the admin UI (for GitHub callbacks/webhooks); empty disables GitHub App setup
 	ServerIP  string // public IP used in generated sslip.io template domains; empty means auto-detect
 
+	TrustedProxies  []string // OUTHAUL_TRUSTED_PROXIES: addresses and CIDRs trimmed; nil when unset
+	TrustAllProxies bool     // OUTHAUL_TRUSTED_PROXIES=all
+
 	BackupAzureAccount   string // OUTHAUL_BACKUP_AZURE_ACCOUNT; the storage account for the Azure destination
 	BackupAzureContainer string // OUTHAUL_BACKUP_AZURE_CONTAINER; its private container
 	AzureClientID        string // AZURE_CLIENT_ID; the managed identity, when the VM has more than one
@@ -115,6 +118,7 @@ func Load(getenv Getenv) Config {
 		StateBackupPrefix:      p.keyPrefix("OUTHAUL_STATE_BACKUP_PREFIX"),
 	}
 	c.stateBackupKeepSet = getenv("OUTHAUL_STATE_BACKUP_KEEP") != ""
+	c.TrustedProxies, c.TrustAllProxies = p.trustedProxies("OUTHAUL_TRUSTED_PROXIES")
 	c.problems = p.problems
 	return c
 }
@@ -631,6 +635,29 @@ func (p *parser) keyPrefix(key string) string {
 		p.reject(key, v, "letters, digits, '-', '_', '.' and '/', with no '/' at either end")
 	}
 	return v
+}
+
+// trustedProxies reads OUTHAUL_TRUSTED_PROXIES: comma-separated IP addresses
+// or CIDRs, or "all" (in any case) on its own. A bad entry leaves trust off.
+func (p *parser) trustedProxies(key string) ([]string, bool) {
+	v := p.getenv(key)
+	if v == "" {
+		return nil, false
+	}
+	if strings.EqualFold(strings.TrimSpace(v), "all") {
+		return nil, true
+	}
+	var out []string
+	for _, raw := range strings.Split(v, ",") {
+		e := strings.TrimSpace(raw)
+		_, _, cidrErr := net.ParseCIDR(e)
+		if net.ParseIP(e) == nil && cidrErr != nil {
+			p.reject(key, v, "IP addresses or CIDRs, comma-separated, or all")
+			return nil, false
+		}
+		out = append(out, e)
+	}
+	return out, false
 }
 
 // ip parses an IP address; empty stays empty.
