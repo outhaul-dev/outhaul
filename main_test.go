@@ -391,6 +391,76 @@ func TestReconcileMapsTheGateHostWhileARouteIsProtected(t *testing.T) {
 	}
 }
 
+// gateMapped reports whether the Traefik the fake created maps the gate's
+// host to the host gateway.
+func gateMapped(t *testing.T, dc *docker.Fake) bool {
+	t.Helper()
+	var spec *docker.ContainerSpec
+	for i := range dc.Created {
+		if dc.Created[i].Name == "outhaul-traefik" {
+			spec = &dc.Created[i]
+		}
+	}
+	if spec == nil {
+		t.Fatal("no Traefik container was created")
+	}
+	for _, h := range spec.ExtraHosts {
+		if h == "host.docker.internal:host-gateway" {
+			return true
+		}
+	}
+	return false
+}
+
+// Every new row will be protected, so the gate's host is mapped from startup,
+// whatever the rows say. No public URL (so no admin route) and no protected
+// row: only the setting can map it.
+// Model this on TestReconcileMapsTheGateHostWhileARouteIsProtected.
+func TestReconcileMapsTheGateHostForNewDomains(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Config{
+		DataDir: t.TempDir(), Network: "outhaul", TraefikImage: config.DefaultTraefikImage,
+		CloudflaredImage: config.DefaultCloudflaredImage, HTTPSPort: "443", ListenAddr: ":8080",
+		ACMEEmail: "ops@example.com", AdminDirect: true, ProtectNewDomains: true,
+	}
+	st, err := openStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	dc := docker.NewFake()
+	ic := &infraController{dc: dc, st: st, cfg: cfg}
+	if err := ic.reconcile(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if !gateMapped(t, dc) {
+		t.Error("the gate host is not mapped although every new row will be protected")
+	}
+}
+
+// The same config with the setting off maps nothing, as it always did.
+func TestReconcileLeavesTheGateHostUnmappedWithoutProtectNewDomains(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Config{
+		DataDir: t.TempDir(), Network: "outhaul", TraefikImage: config.DefaultTraefikImage,
+		CloudflaredImage: config.DefaultCloudflaredImage, HTTPSPort: "443", ListenAddr: ":8080",
+		ACMEEmail: "ops@example.com", AdminDirect: true,
+	}
+	st, err := openStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	dc := docker.NewFake()
+	ic := &infraController{dc: dc, st: st, cfg: cfg}
+	if err := ic.reconcile(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if gateMapped(t, dc) {
+		t.Error("with the setting off the gate host must stay unmapped")
+	}
+}
+
 // listFails is a Docker whose container listing fails.
 type listFails struct{ *docker.Fake }
 
@@ -639,6 +709,31 @@ func TestHTTPOffRefusesAnEnabledTunnel(t *testing.T) {
 	}
 }
 
+func TestProtectNewDomainsError(t *testing.T) {
+	on := config.Config{ProtectNewDomains: true, PublicURL: "https://paas.example.com"}
+	if err := protectNewDomainsError(on, false, nil); err == nil || !strings.Contains(err.Error(), "OUTHAUL_PROTECT_NEW_DOMAINS") {
+		t.Fatalf("no HTTPS and no tunnel: %v, want an error naming the setting", err)
+	}
+	if err := protectNewDomainsError(on, true, nil); err != nil {
+		t.Errorf("a tunnel serves it: %v", err)
+	}
+	https := on
+	https.ACMEEmail = "ops@example.com"
+	if err := protectNewDomainsError(https, false, nil); err != nil {
+		t.Errorf("HTTPS serves it: %v", err)
+	}
+	if err := protectNewDomainsError(https, false, errors.New("no such table")); err != nil {
+		t.Errorf("HTTPS makes an unreadable tunnel setting irrelevant: %v", err)
+	}
+	if err := protectNewDomainsError(on, false, errors.New("no such table")); err == nil || !strings.Contains(err.Error(), "no such table") {
+		t.Errorf("an unreadable tunnel setting: %v, want the cause named", err)
+	}
+	off := config.Config{PublicURL: "https://paas.example.com"}
+	if err := protectNewDomainsError(off, false, errors.New("no such table")); err != nil {
+		t.Errorf("the setting off: %v", err)
+	}
+}
+
 // countingNetwork fails EnsureNetwork and counts the attempts, so a retry is
 // visible without waiting for it to succeed.
 type countingNetwork struct {
@@ -839,6 +934,38 @@ func TestDisableTunnelRefusedWhenOnlyItPublishesTheAdminUI(t *testing.T) {
 	}
 	if on, err := st.TunnelEnabled(context.Background()); err != nil || !on {
 		t.Errorf("TunnelEnabled = %v, %v; the tunnel must stay enabled", on, err)
+	}
+}
+
+// Disabling the tunnel would leave a protected row with no HTTPS at all.
+func TestDisableTunnelRefusedWithProtectNewDomains(t *testing.T) {
+	cfg := config.Config{
+		DataDir: t.TempDir(), Network: "outhaul", TraefikImage: config.DefaultTraefikImage,
+		ListenAddr: ":8080", AdminDirect: true,
+		PublicURL: "https://paas.example.com", ProtectNewDomains: true,
+	}
+	st, err := openStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SetCloudflareToken(context.Background(), "tok"); err != nil {
+		t.Fatal(err)
+	}
+	ic := &infraController{dc: docker.NewFake(), st: st, cfg: cfg}
+	err = ic.Disable(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "OUTHAUL_PROTECT_NEW_DOMAINS") {
+		t.Fatalf("Disable = %v, want an error naming OUTHAUL_PROTECT_NEW_DOMAINS", err)
+	}
+	if on, err := st.TunnelEnabled(context.Background()); err != nil || !on {
+		t.Errorf("TunnelEnabled = %v, %v; the tunnel must stay enabled", on, err)
+	}
+
+	// With HTTPS configured the tunnel can go.
+	cfg.ACMEEmail = "ops@example.com"
+	ic.cfg = cfg
+	if err := ic.Disable(context.Background()); err != nil {
+		t.Errorf("Disable with HTTPS: %v", err)
 	}
 }
 

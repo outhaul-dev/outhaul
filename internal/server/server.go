@@ -109,6 +109,7 @@ type Server struct {
 	publicURL  string
 	naming     core.Naming     // for generated template and preview hosts
 	tlsEnabled bool            // ACME or local CA configured: HTTPS automation is available
+	protectNew bool            // OUTHAUL_PROTECT_NEW_DOMAINS: a new row requires sign-in
 	routing    traefik.Routing // the server-wide routing settings the pages show
 
 	azureDestinationSet bool              // OUTHAUL_BACKUP_AZURE_* set: the Azure row belongs to the environment
@@ -259,6 +260,10 @@ func (s *Server) SetSignInBackoff(on bool) {
 	s.signIn = nil
 }
 
+// SetProtectNewDomains records OUTHAUL_PROTECT_NEW_DOMAINS: every new domain
+// row starts requiring sign-in. Call before Handler.
+func (s *Server) SetProtectNewDomains(on bool) { s.protectNew = on }
+
 // syncCerts refreshes local-CA certs after a domain change; best-effort — a
 // route reaches Traefik on the next deploy anyway, minting can lag a beat.
 func (s *Server) syncCerts(ctx context.Context) {
@@ -349,6 +354,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, page
 	data["IsSystemAdmin"] = me.Role.AtLeast(core.RoleSystemAdmin)
 	data["CanManage"] = me.Role.AtLeast(core.RoleProjectAdmin)
 	data["CanChange"] = s.canChange(r)
+	data["ProtectNewDomains"] = s.protectNew
 	data["DomainSuffix"] = s.naming.Suffix
 	data["HasRole"] = me.Role.AtLeast(core.RoleProjectViewer)
 	var buf bytes.Buffer

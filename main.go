@@ -228,13 +228,17 @@ func serve() error {
 	// ingress postures), then mint certs before Traefik comes up so the file
 	// provider finds them on first watch.
 	var certMgr *localca.Manager
-	if on, err := st.TunnelEnabled(context.Background()); err == nil {
-		if err := httpOffTunnelError(cfg, on); err != nil {
+	tunnelOn, tunnelErr := st.TunnelEnabled(context.Background())
+	if tunnelErr == nil {
+		if err := httpOffTunnelError(cfg, tunnelOn); err != nil {
 			return err
 		}
-		if err := adminPublishError(cfg, on); err != nil {
+		if err := adminPublishError(cfg, tunnelOn); err != nil {
 			return err
 		}
+	}
+	if err := protectNewDomainsError(cfg, tunnelOn, tunnelErr); err != nil {
+		return err
 	}
 	if warning := adminPortWarning(cfg); warning != "" {
 		log.Print(warning)
@@ -423,6 +427,7 @@ func serve() error {
 	})
 	srv.SetHTTPSPort(cfg.HTTPSPort)
 	srv.SetSignInBackoff(cfg.SignInBackoff)
+	srv.SetProtectNewDomains(cfg.ProtectNewDomains)
 	go srv.RunRestorePass(workerCtx)
 	srv.SetContainerPolicy(cfg.StrictContainerPolicy())
 	srv.SetBuild(update.Current())
@@ -589,7 +594,12 @@ func (ic *infraController) reconcile(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read which routes require sign-in: %w", err)
 	}
-	if !protected {
+	if ic.cfg.ProtectNewDomains {
+		// Every row created from now on is protected, so the gate's host is
+		// mapped whatever the rows say. The admin route needs it anyway, so
+		// this usually recreates nothing.
+		protected = true
+	} else if !protected {
 		protected = ic.gatedContainersRemain(ctx, tunnelOn)
 	}
 	if !ic.cfg.AdminDirect {
@@ -721,6 +731,23 @@ func httpOffTunnelError(cfg config.Config, tunnelOn bool) error {
 	return nil
 }
 
+// protectNewDomainsError reports why an install that requires sign-in on every
+// new domain can't be served: people need somewhere to sign in, over HTTPS or
+// through a tunnel, and that has to be known, not guessed. An unreadable
+// tunnel setting is refused rather than skipped, as the two checks above do:
+// with no HTTPS nothing can be verified, and guessing "no tunnel" would start
+// a server that then creates rows nobody could get through. With HTTPS
+// configured the read is irrelevant, so its error is ignored.
+func protectNewDomainsError(cfg config.Config, tunnelOn bool, tunnelErr error) error {
+	if !cfg.ProtectNewDomains || cfg.TLSEnabled() || tunnelOn {
+		return nil
+	}
+	if tunnelErr != nil {
+		return fmt.Errorf("OUTHAUL_PROTECT_NEW_DOMAINS needs HTTPS or a Cloudflare Tunnel, and the tunnel setting couldn't be read: %w", tunnelErr)
+	}
+	return errors.New("OUTHAUL_PROTECT_NEW_DOMAINS needs HTTPS or a Cloudflare Tunnel: set OUTHAUL_ACME_EMAIL or OUTHAUL_LOCAL_CA, or enable the tunnel in Settings")
+}
+
 // Enable persists the connector token and brings the tunnel up live. The
 // reconcile is run on a detached context, not the caller's request context:
 // it recreates Traefik, which can drop the very connection driving the request
@@ -762,6 +789,9 @@ func (ic *infraController) ReconcileProxy(_ context.Context) error {
 // with Enable, this runs on a detached context (see Enable) so the reconcile
 // that recreates Traefik isn't cancelled by the request that triggered it.
 func (ic *infraController) Disable(_ context.Context) error {
+	if ic.cfg.ProtectNewDomains && !ic.cfg.TLSEnabled() {
+		return errors.New("cannot disable the Cloudflare Tunnel while OUTHAUL_PROTECT_NEW_DOMAINS is set: with no HTTPS, nobody could get through a protected row")
+	}
 	if err := adminPublishError(ic.cfg, false); err != nil {
 		return err
 	}

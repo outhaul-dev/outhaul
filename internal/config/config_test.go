@@ -1193,3 +1193,30 @@ func TestDomainSuffixOnlySetting(t *testing.T) {
 		t.Errorf("Validate = %v, want one naming both settings", err)
 	}
 }
+
+func TestProtectNewDomainsSetting(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		env     map[string]string
+		wantErr bool
+	}{
+		{"unset", nil, false},
+		{"off", map[string]string{"OUTHAUL_PROTECT_NEW_DOMAINS": "no"}, false},
+		{"on without a public URL", map[string]string{"OUTHAUL_PROTECT_NEW_DOMAINS": "yes"}, true},
+		{"on with a public URL", map[string]string{
+			"OUTHAUL_PROTECT_NEW_DOMAINS": "yes", "OUTHAUL_PUBLIC_URL": "https://paas.example.com",
+		}, false},
+		{"malformed", map[string]string{"OUTHAUL_PROTECT_NEW_DOMAINS": "maybe"}, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := Load(func(k string) string { return c.env[k] })
+			err := cfg.Validate()
+			if c.wantErr != (err != nil) {
+				t.Fatalf("Validate = %v, want an error: %v", err, c.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "OUTHAUL_PROTECT_NEW_DOMAINS") {
+				t.Errorf("error %q does not name OUTHAUL_PROTECT_NEW_DOMAINS", err)
+			}
+		})
+	}
+}

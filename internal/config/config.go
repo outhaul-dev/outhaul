@@ -54,10 +54,11 @@ type Config struct {
 	AdminDirect        bool          // the admin UI listens on every interface (default); false: loopback + the Docker gateway
 	SignInBackoff      bool          // OUTHAUL_SIGNIN_BACKOFF: lock a username after repeated failed password sign-ins
 
-	PublicURL        string // externally reachable base URL of the admin UI (for GitHub callbacks/webhooks); empty disables GitHub App setup
-	ServerIP         string // public IP used in generated sslip.io template domains; empty means auto-detect
-	DomainSuffix     string // OUTHAUL_DOMAIN_SUFFIX, lower-cased, one trailing dot dropped; "" keeps sslip.io names
-	DomainSuffixOnly bool   // OUTHAUL_DOMAIN_SUFFIX_ONLY; needs OUTHAUL_DOMAIN_SUFFIX
+	PublicURL         string // externally reachable base URL of the admin UI (for GitHub callbacks/webhooks); empty disables GitHub App setup
+	ProtectNewDomains bool   // OUTHAUL_PROTECT_NEW_DOMAINS: a new domain row requires sign-in
+	ServerIP          string // public IP used in generated sslip.io template domains; empty means auto-detect
+	DomainSuffix      string // OUTHAUL_DOMAIN_SUFFIX, lower-cased, one trailing dot dropped; "" keeps sslip.io names
+	DomainSuffixOnly  bool   // OUTHAUL_DOMAIN_SUFFIX_ONLY; needs OUTHAUL_DOMAIN_SUFFIX
 
 	TrustedProxies  []string // OUTHAUL_TRUSTED_PROXIES: addresses and CIDRs trimmed; nil when unset
 	TrustAllProxies bool     // OUTHAUL_TRUSTED_PROXIES=all
@@ -111,10 +112,11 @@ func Load(getenv Getenv) Config {
 		AdminDirect:        p.boolDefault("OUTHAUL_ADMIN_DIRECT", true),
 		SignInBackoff:      p.bool("OUTHAUL_SIGNIN_BACKOFF"),
 
-		PublicURL:        p.url("OUTHAUL_PUBLIC_URL"),
-		ServerIP:         p.ip("OUTHAUL_SERVER_IP"),
-		DomainSuffix:     p.domainSuffix("OUTHAUL_DOMAIN_SUFFIX"),
-		DomainSuffixOnly: p.bool("OUTHAUL_DOMAIN_SUFFIX_ONLY"),
+		PublicURL:         p.url("OUTHAUL_PUBLIC_URL"),
+		ProtectNewDomains: p.bool("OUTHAUL_PROTECT_NEW_DOMAINS"),
+		ServerIP:          p.ip("OUTHAUL_SERVER_IP"),
+		DomainSuffix:      p.domainSuffix("OUTHAUL_DOMAIN_SUFFIX"),
+		DomainSuffixOnly:  p.bool("OUTHAUL_DOMAIN_SUFFIX_ONLY"),
 
 		BackupAzureAccount:   getenv("OUTHAUL_BACKUP_AZURE_ACCOUNT"),
 		BackupAzureContainer: getenv("OUTHAUL_BACKUP_AZURE_CONTAINER"),
@@ -232,6 +234,9 @@ func (c Config) Validate() error {
 	}
 	if c.RequireHeaderValue != "" && c.RequireHeaderName == "" {
 		errs = append(errs, errors.New("OUTHAUL_REQUIRE_HEADER_VALUE needs OUTHAUL_REQUIRE_HEADER_NAME"))
+	}
+	if c.ProtectNewDomains && !c.PublicURLSet() {
+		errs = append(errs, errors.New("OUTHAUL_PROTECT_NEW_DOMAINS needs OUTHAUL_PUBLIC_URL, where people are sent to sign in"))
 	}
 	if !c.AdminDirect {
 		if !c.PublicURLSet() {

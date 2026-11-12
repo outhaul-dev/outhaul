@@ -272,6 +272,7 @@ No config files — defaults with `OUTHAUL_*` environment overrides:
 | `OUTHAUL_IMAGE_KEEP`    | `5`                  | Built images kept per app for rollback (`0` keeps all) |
 | `OUTHAUL_PRUNE_BUILD_CACHE` | `yes`            | Nightly prune of build cache unused for 7 days; it is daemon-wide, so set `no` on a host shared with other builds |
 | `OUTHAUL_PUBLIC_URL`    | (empty)              | Public base URL of the admin UI; enables GitHub App + webhook URLs, SSO and protected routes |
+| `OUTHAUL_PROTECT_NEW_DOMAINS` | `no`           | `yes` makes every new domain require sign-in: the dialog's switch starts on, and the new-app form, a template deploy, a first `git push` and a preview's own address all get it. Needs `OUTHAUL_PUBLIC_URL` and HTTPS or a tunnel — see docs/PROTECTED-ROUTES.md |
 | `OUTHAUL_SERVER_IP`     | (auto-detected)      | Public IP embedded in generated `sslip.io` template domains |
 | `OUTHAUL_DOMAIN_SUFFIX` | (empty)             | A domain such as `shared.demo.example.com`; every generated name becomes one label under it — see docs/SHARED-HOST.md |
 | `OUTHAUL_DOMAIN_SUFFIX_ONLY` | `no`            | `yes` refuses any domain that isn't exactly one label under `OUTHAUL_DOMAIN_SUFFIX`, whoever writes it — see docs/SHARED-HOST.md |
