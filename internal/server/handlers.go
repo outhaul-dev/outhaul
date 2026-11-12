@@ -1066,7 +1066,14 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 	// if the browser goes: the reconcile can recreate the Traefik it came through.
 	ctx := context.WithoutCancel(r.Context())
 	var others []otherRedeploy
-	if r.FormValue("protected") != "" {
+	// A new row requires sign-in while the server requires it on new domains,
+	// unless the dialog turned it off. A request without the dialog's
+	// protected_offered (a script, an old page) didn't choose, so protect it.
+	protect := r.FormValue("protected") != ""
+	if s.protectNew && r.FormValue("protected_offered") == "" {
+		protect = true
+	}
+	if protect {
 		if ok, reason := s.protectionAvailability(ctx, d); !ok {
 			http.Error(w, reason, http.StatusBadRequest)
 			return

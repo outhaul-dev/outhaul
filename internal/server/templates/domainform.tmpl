@@ -95,9 +95,12 @@
           <input type="hidden" name="exception_was" id="domain-exception-was" value="0">
           <input type="hidden" name="others_was" value="{{.OthersWas}}">
           <label class="field-check">
-            <input type="checkbox" class="switch" role="switch" name="protected" id="domain-protected"{{if not .ProtectionAvailable}} disabled{{end}}>
+            <input type="checkbox" class="switch" role="switch" name="protected" id="domain-protected"{{if .ProtectNewDomains}} checked{{end}}{{if and (not .ProtectNewDomains) (not .ProtectionAvailable)}} disabled{{end}}>
             <span>Require sign-in</span>
           </label>
+          {{if .ProtectNewDomains}}
+          <p class="muted">New addresses require sign-in. To make this one public, turn this switch off on the host's row; to leave one path open, such as a webhook, add a row for that path with the switch off.</p>
+          {{end}}
           <p class="muted">People must sign in to Outhaul before they reach this address. Everyone who can sign in gets through, and the app receives their name in the <span class="mono">X-Outhaul-User</span> header.</p>
           {{if not .ProtectionAvailable}}
           <p class="env-note" id="domain-protect-reason">{{.ProtectionReason}}</p>
@@ -108,7 +111,7 @@
             {{with .ProtectionWarning}}<strong>{{.}}</strong>{{end}}
             {{range .AlsoRedeploys}}<p class="protect-also" data-also-host="{{.Host}}">{{.Sentence}}</p>{{end}}
             {{range .PreviewRedeploys}}<p class="protect-also" data-also-preview>{{.Sentence}}</p>{{end}}
-            {{if .HasPreviews}}<p class="protect-also" id="domain-previews-stay">Existing previews stay protected. New ones will be open.</p>{{end}}
+            {{if .HasPreviews}}<p class="protect-also" id="domain-previews-stay">{{if .ProtectNewDomains}}Existing previews stay protected. A new preview's own address will require sign-in too.{{else}}Existing previews stay protected. New ones will be open.{{end}}</p>{{end}}
           </div>
         </div>
         <p class="muted env-note">Other domain changes apply on this app's next deploy.</p>
