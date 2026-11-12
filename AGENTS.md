@@ -257,6 +257,11 @@ fixed in five batches. All five are on `main`.
   Docker gateway only. See `docs/BEHIND-A-PROXY.md`; the real-Traefik and
   end-to-end checks are `deploy/test/integration_ingress.sh` and
   `deploy/test/integration_proxy.sh`.
+- **The fixed network.** `OUTHAUL_NETWORK_SUBNET` gives Docker the gateway
+  (the subnet's first address) and the upper half as its dynamic range;
+  `OUTHAUL_TRAEFIK_IP` must be in the lower half, after the gateway. Outhaul
+  never recreates a network that exists with another subnet: startup says so
+  and the docs give the move.
 
 ### Open: reliability and UX
 
