@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"sync"
@@ -25,6 +26,7 @@ type metricsSample struct {
 	Host       hostView        `json:"host"`
 	Self       selfView        `json:"self"`
 	Containers []containerStat `json:"containers"`
+	Processes  bool            `json:"processes,omitempty"` // any row has a process limit
 }
 
 type hostView struct {
@@ -52,6 +54,7 @@ type containerStat struct {
 	CPU  string `json:"cpu"`
 	Mem  string `json:"mem"`
 	Net  string `json:"net"`
+	Pids string `json:"pids,omitempty"` // "12 · limit 512"; empty when no limit
 }
 
 // handleMetrics renders the Metrics page shell; the numbers are filled by the
@@ -74,11 +77,19 @@ func (s *Server) handleMetricsSample(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) metricsSnapshot(ctx context.Context) metricsSample {
 	host, self := s.metrics.Sample()
-	return metricsSample{
+	rows := s.containerStats(ctx)
+	m := metricsSample{
 		Host:       hostViewOf(host),
 		Self:       selfViewOf(self),
-		Containers: s.containerStats(ctx),
+		Containers: rows,
 	}
+	for _, r := range rows {
+		if r.Pids != "" {
+			m.Processes = true
+			break
+		}
+	}
+	return m
 }
 
 func hostViewOf(h hostmetrics.Host) hostView {
@@ -155,12 +166,25 @@ func (s *Server) containerStats(ctx context.Context) []containerStat {
 			if err != nil {
 				return
 			}
+			cpu := fmt.Sprintf("%.1f%%", st.CPUPercent)
+			if st.CPULimit > 0 {
+				cpu = fmt.Sprintf("%.1f%% · limit %s", st.CPUPercent, fmtCPU(int64(math.Round(st.CPULimit*1000))))
+			}
+			mem := fmtBytes(st.MemUsage)
+			if st.MemLimited {
+				mem += " · of " + fmtBytes(st.MemLimit)
+			}
+			pids := ""
+			if st.PidsLimit > 0 {
+				pids = fmt.Sprintf("%d · limit %d", st.Pids, st.PidsLimit)
+			}
 			out[i] = containerStat{
 				Name: tg.name,
 				Kind: tg.kind,
-				CPU:  fmt.Sprintf("%.1f", st.CPUPercent),
-				Mem:  fmtBytes(st.MemUsage),
+				CPU:  cpu,
+				Mem:  mem,
 				Net:  fmtBytes(st.NetRx) + " ↓ · " + fmtBytes(st.NetTx) + " ↑",
+				Pids: pids,
 			}
 			ok[i] = true
 		}()

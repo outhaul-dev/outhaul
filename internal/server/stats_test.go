@@ -184,3 +184,89 @@ func TestFmtUptime(t *testing.T) {
 		}
 	}
 }
+
+func TestAppStatsOneContainerWithLimits(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	app := seedRunningApp(t, e, "")
+	e.runtime.stats = map[string]docker.Stats{"c1": {
+		CPUPercent: 12.3, MemUsage: 118 << 20, MemLimit: 1 << 30,
+		MemLimited: true, CPULimit: 1, Pids: 12, PidsLimit: 512,
+	}}
+
+	s := getStats(t, e, app.ID)
+	if s.CPUSub != "limit 1 CPU" {
+		t.Errorf("cpuSub = %q, want limit 1 CPU", s.CPUSub)
+	}
+	if s.MemSub != "of 1.0 GiB" {
+		t.Errorf("memSub = %q, want of 1.0 GiB (the container's own limit)", s.MemSub)
+	}
+	if s.Pids != "12" || s.PidsSub != "of 512" {
+		t.Errorf("pids = %q %q, want 12 / of 512", s.Pids, s.PidsSub)
+	}
+}
+
+func TestAppStatsStackWithTheSameLimit(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app := seedComposeStack(t, e)
+	e.runtime.stats = map[string]docker.Stats{
+		"c1": {CPUPercent: 1, MemUsage: 100 << 20, MemLimit: 1 << 30, MemLimited: true,
+			CPULimit: 0.5, Pids: 3, PidsLimit: 512},
+		"c2": {CPUPercent: 2, MemUsage: 200 << 20, MemLimit: 1 << 30, MemLimited: true,
+			CPULimit: 0.5, Pids: 4, PidsLimit: 512},
+	}
+
+	s := getStats(t, e, app.ID)
+	if s.CPUSub != "limit 0.5 CPU" {
+		t.Errorf("cpuSub = %q, want limit 0.5 CPU", s.CPUSub)
+	}
+	if s.MemSub != "of 1.0 GiB" {
+		t.Errorf("memSub = %q, want of 1.0 GiB", s.MemSub)
+	}
+	if s.Pids != "7" || s.PidsSub != "of 512" {
+		t.Errorf("pids = %q %q, want the stack's sum 7 / of 512", s.Pids, s.PidsSub)
+	}
+}
+
+func TestAppStatsStackWithDifferentLimits(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	app := seedComposeStack(t, e)
+	e.runtime.stats = map[string]docker.Stats{
+		"c1": {CPUPercent: 1, MemUsage: 100 << 20, MemLimit: 1 << 30, MemLimited: true,
+			CPULimit: 0.5, Pids: 3, PidsLimit: 512},
+		"c2": {CPUPercent: 2, MemUsage: 200 << 20, MemLimit: 31 << 30,
+			Pids: 4},
+	}
+
+	s := getStats(t, e, app.ID)
+	for name, got := range map[string]string{"cpuSub": s.CPUSub, "memSub": s.MemSub, "pidsSub": s.PidsSub} {
+		if got != "limits differ" {
+			t.Errorf("%s = %q, want limits differ", name, got)
+		}
+	}
+	if s.Pids != "7" {
+		t.Errorf("pids = %q, want the stack's sum 7", s.Pids)
+	}
+}
+
+func TestAppStatsWithoutLimitsShowsToday(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	app := seedRunningApp(t, e, "")
+	e.runtime.stats = map[string]docker.Stats{"c1": {
+		CPUPercent: 12.3, MemUsage: 118 << 20, MemLimit: 31 << 30,
+	}}
+
+	s := getStats(t, e, app.ID)
+	if s.CPUSub != "" {
+		t.Errorf("cpuSub = %q, want empty with no limit", s.CPUSub)
+	}
+	if s.MemSub != "of 31 GiB" {
+		t.Errorf("memSub = %q, want today's host-total text of 31 GiB", s.MemSub)
+	}
+	if s.Pids != "" || s.PidsSub != "" {
+		t.Errorf("pids = %q %q, want both empty with no process limit", s.Pids, s.PidsSub)
+	}
+}
