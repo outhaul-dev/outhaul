@@ -61,10 +61,142 @@ On save, Outhaul contacts the provider (OIDC discovery) and refuses settings tha
 fail, with the reason. The client secret is stored encrypted and is never shown again.
 To keep it when you edit other fields, leave the secret box empty.
 
+## Connecting SSO from the environment
+
+Instead of the Settings page, the provider can be connected from Outhaul's
+environment, for a host that is rebuilt from a script. Three variables, all or none,
+and `OUTHAUL_PUBLIC_URL` must be set too:
+
+| Variable | Value |
+| --- | --- |
+| `OUTHAUL_SSO_ISSUER` | The issuer URL, held to the same rule as on Settings |
+| `OUTHAUL_SSO_CLIENT_ID` | The client ID |
+| `OUTHAUL_SSO_CLIENT_SECRET_FILE` | An absolute path to a file holding the client secret, or the name of a systemd credential |
+
+Outhaul refuses to start if only some of the three are set, or if the issuer is set
+without `OUTHAUL_PUBLIC_URL`.
+
+While they are set, the environment wins. The Settings panel shows the issuer, the
+client ID and the redirect URI as text, with no form and no Remove button, and saving
+or removing SSO there is refused (HTTP 409). Settings stored earlier are kept, unused,
+and are used again if you remove the variables.
+
+The service runs as the `outhaul` user, which can't read a file only root can. systemd
+can: it reads a credential as root when the unit starts, and gives the service a copy
+only that unit's user can read. Keep the secret in a file owned by root with mode 0600,
+and add a drop-in:
+
+```ini
+# /etc/systemd/system/outhaul.service.d/sso.conf
+[Service]
+LoadCredential=sso-client-secret:/etc/outhaul/sso-client-secret
+```
+
+```sh
+# /etc/outhaul.env
+OUTHAUL_SSO_ISSUER=https://idp.example.com
+OUTHAUL_SSO_CLIENT_ID=<client id>
+OUTHAUL_SSO_CLIENT_SECRET_FILE=sso-client-secret
+```
+
+A value that isn't an absolute path is the name of a credential, and has no `/`; `.` and
+`..` are refused.
+systemd tells the service where its credentials are with `CREDENTIALS_DIRECTORY`; if
+that isn't set, Outhaul stops at startup and says so. The drop-in goes in
+`/etc/systemd/system/outhaul.service.d/`, not in the unit file, because the installer
+and the updater replace the unit file. An absolute path is read as it is, for a file the
+`outhaul` user can read some other way.
+
+- The secret is read once, at startup. It never enters the environment or the database,
+  and it isn't logged or shown on a page.
+- One trailing newline is dropped. An empty file, or one over 4096 bytes, stops startup.
+- Replacing the file takes effect at the next restart.
+- Outhaul doesn't wait for the provider at startup. A provider that can't be reached is
+  logged, and Outhaul starts anyway; the first sign-in tries it again.
+
+Outhaul remembers the issuer and client ID it last ran with. If either differs at
+startup, from the environment or from Settings, every SSO sign-in is ended, protected
+routes included, exactly as saving a new issuer on Settings does, and the log says so.
+Password sessions are not affected. Nobody can be asked to confirm this when it comes
+from the environment, so remember that a changed issuer makes everyone a new account
+with no role (see [Accounts are not linked by email](#accounts-are-not-linked-by-email)),
+unless the groups below give them one.
+
+## Roles from groups
+
+By default a new SSO account has no role and waits for a system admin. If the provider
+sends the person's groups, Outhaul can give the role itself, at each sign-in to Outhaul.
+This is off until you set `OUTHAUL_SSO_ROLE_GROUPS`.
+
+| Variable | Meaning |
+| --- | --- |
+| `OUTHAUL_SSO_ROLE_GROUPS` | `role:group` pairs, separated by commas, such as `system_admin:outhaul-admins,project_member:engineering`. The role is `system_admin`, `project_admin`, `project_member` or `project_viewer`. The first colon splits the pair, so a group name may contain colons but not a comma. Spaces around each part are trimmed. A group maps to one role |
+| `OUTHAUL_SSO_GROUPS_CLAIM` | The claim of the ID token that holds the groups. `groups` unless you name another. Needs `OUTHAUL_SSO_ROLE_GROUPS` |
+| `OUTHAUL_SSO_SCOPES` | Extra scopes to request, separated by commas or spaces. None by default |
+
+Some providers send the groups claim only when a scope such as `groups` is asked for,
+and some refuse a scope they don't define, so Outhaul adds none of its own: the scopes
+are `openid email profile` and whatever you list.
+
+The rule:
+
+- The highest role any of the person's groups maps to wins. Group names are compared
+  exactly, including case.
+- The groups come from the ID token only. The claim may be a list of names or one name.
+  If there is no claim, or it is anything else, the person has no groups. A claim that
+  only points at the groups, because there are too many to send, counts as no groups.
+- It runs only when someone signs in to Outhaul itself. Signing in to a protected route
+  creates no account and changes no role.
+
+| The person's groups | The account's role came from | The role after sign-in |
+| --- | --- | --- |
+| Map to a role | Anything | That role. It is marked as from a group |
+| Map to nothing | A group | No role. The mark is removed |
+| Map to nothing | A system admin's hand, or the account is new | Unchanged |
+
+Things to know:
+
+- **A role set by hand lasts until the next sign-in** of someone in a mapped group, which
+  sets the mapped role again, whether the hand-set one was higher or lower. The Users
+  page says so beside the role of an account that came from a group. For these people the
+  provider decides: to change their role, change their groups.
+- **Removal shows at the next sign-in.** SSO sessions last 8 hours, so someone taken out
+  of a group keeps their role until then. To cut them off at once, also delete the
+  account on the Users page, which ends its sessions. Then, if the provider still lets
+  them in, they get a new account at their next sign-in, with the role their groups map to.
+- **`project_member` shares no project.** A role says what a person may do; which
+  projects they see is set separately, on each project. A project member on no project
+  sees none and can't create one. A project admin can create projects, and sees the ones
+  they create, so map a group to `project_admin` to let people start on their own.
+- **A `system_admin` mapping means whoever can change that group at the provider controls
+  Outhaul's admins.** Keep that group small and protected.
+- **Password accounts are never affected.** Only the SSO account for that issuer and
+  subject changes, and the rule that the last password system admin can't be demoted or
+  removed stands.
+- One log line is written when a sign-in changes a role, with the account and the old and
+  new role. Group names aren't logged.
+
+Settings lists the mapping, the claim's name and the extra scopes, as text.
+
+### Okta: sending groups
+
+Written from Okta's documentation, and not followed against a real organization yet.
+
+1. In the Okta admin console, open the Outhaul application, then Sign On, and edit
+   the OpenID Connect ID Token section. (On a custom authorization server, add the claim
+   under Security, API, the server, Claims instead.)
+2. Add a claim named `groups`, included in the ID token always, with a "Matches regex"
+   or "Starts with" filter that selects the groups Outhaul should see, for example
+   `outhaul-`. A filter that matches only the Outhaul groups keeps the token small.
+3. On a custom authorization server, make sure the `groups` scope exists, under Scopes.
+4. In Outhaul, set `OUTHAUL_SSO_SCOPES=groups` and the mapping, for example
+   `OUTHAUL_SSO_ROLE_GROUPS=system_admin:outhaul-admins,project_member:outhaul-staff`,
+   and restart.
+
 ## Who can sign in
 
 Everyone the provider lets sign in gets an Outhaul account the first time they sign
-in to Outhaul. The account has no role (see below). Everyone the provider lets sign in
+in to Outhaul. The account has no role, unless a group maps to one (see below). Everyone the provider lets sign in
 also gets through every protected route, whether or not they have an account: signing
 in to a protected route doesn't create one. See
 [PROTECTED-ROUTES.md](PROTECTED-ROUTES.md#who-gets-through).
@@ -82,6 +214,10 @@ provider where anyone can sign in, such as public Google accounts, is not safe t
 
 You can't give someone a role before their first sign-in, because the account doesn't
 exist until then. The new role applies from their next request.
+
+With `OUTHAUL_SSO_ROLE_GROUPS` set (see [Roles from groups](#roles-from-groups)), a
+person in a mapped group arrives with that role and doesn't wait on the Users page. Anyone
+in no mapped group still arrives with no role.
 
 An SSO account never has an Outhaul password and can't sign in through the password
 form. A password sign-in can't end up in an SSO account either.
@@ -136,8 +272,12 @@ seconds, not on every attempt.
   sign-in, protected routes included, and ones in progress. Password sessions are not
   affected.
 - Replacing only the client secret does not end any sign-in.
+- The same holds for the environment: a changed issuer or client ID at startup ends every
+  SSO sign-in. See [Connecting SSO from the environment](#connecting-sso-from-the-environment).
 
-To turn SSO off, press "Remove SSO" in the panel. The button disappears from the login
+To turn SSO off, press "Remove SSO" in the panel. If SSO is connected from the
+environment, remove the three variables instead and restart; any settings stored earlier
+apply again, so press "Remove SSO" then too if you want SSO off. The button disappears from the login
 page, and the SSO accounts remain on the Users page, but nobody can use them to sign in
 until a provider is connected again.
 
