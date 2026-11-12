@@ -93,9 +93,34 @@ func (d *Docker) Config(ctx context.Context, dir string, files []string, project
 			(strings.Contains(s, "unknown flag") || strings.Contains(s, "unknown shorthand flag")) {
 			return nil, fmt.Errorf("reading a Compose file needs Docker Compose 2.35 or newer: %w", err)
 		}
+		// Compose writes why it could not read the file to stderr, which the
+		// deploy log already has. Carrying the last line into the error puts
+		// it in the deployment's reason too. stdout and the model never
+		// appear here.
+		if reason := lastStderrLine(stderr); reason != "" {
+			return nil, fmt.Errorf("%w: %s", err, reason)
+		}
 		return nil, err
 	}
 	return stdout, nil
+}
+
+// lastStderrLine returns the last non-empty line of stderr, trimmed and capped
+// so a long Compose diagnostic cannot fill the deployment's reason. The full
+// stderr stays in the deploy log.
+func lastStderrLine(stderr []byte) string {
+	lines := strings.Split(string(stderr), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		if r := []rune(line); len(r) > 300 {
+			line = strings.TrimSpace(string(r[:300]))
+		}
+		return line
+	}
+	return ""
 }
 
 func (d *Docker) Up(ctx context.Context, dir string, files []string, project string, waitTimeout time.Duration, out io.Writer) error {

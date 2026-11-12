@@ -125,6 +125,33 @@ func TestDockerConfigOtherFailure(t *testing.T) {
 	}
 }
 
+// Compose's own reason for a load failure goes to stderr and the deploy log.
+// The returned error carries its last line so the deployment's reason says
+// what is wrong with the file. stdout, where a successful model would go, is
+// never included.
+func TestDockerConfigCarriesComposesMessage(t *testing.T) {
+	d := &Docker{Bin: tempScript(t, `#!/bin/sh
+printf '{"name":"model-must-not-leak"}\n'
+echo 'warning: first line' >&2
+echo 'validating /srv/app/docker-compose.yml: services.web.ports must be a list' >&2
+exit 1
+`)}
+	_, err := d.Config(context.Background(), "", []string{"docker-compose.yml"}, "outhaul-demo", io.Discard)
+	if err == nil {
+		t.Fatal("Config returned no error")
+	}
+	for _, want := range []string{"docker compose config failed", "services.web.ports must be a list"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to contain %q", err, want)
+		}
+	}
+	for _, unwanted := range []string{"warning: first line", "model-must-not-leak"} {
+		if strings.Contains(err.Error(), unwanted) {
+			t.Errorf("error = %v, want it without %q", err, unwanted)
+		}
+	}
+}
+
 func TestProjectName(t *testing.T) {
 	if got := ProjectName("web"); got != "outhaul-web" {
 		t.Errorf("ProjectName = %q", got)

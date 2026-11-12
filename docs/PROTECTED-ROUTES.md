@@ -97,8 +97,8 @@ to the failed deployment. Until the column says "Sign-in required", treat the ad
 as open.
 
 While a request header is required (see [BEHIND-A-PROXY.md](BEHIND-A-PROXY.md)),
-Outhaul also refuses a Compose file's own `traefik.*` labels and an image's own
-`traefik.*` labels: either would add a route without the header.
+Outhaul also refuses a Compose file's own `traefik.*` or `outhaul.*` labels and
+an image's own `traefik.*` labels: either would add a route without the header.
 
 These saves redeploy a running app:
 

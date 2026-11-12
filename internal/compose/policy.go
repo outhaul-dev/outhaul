@@ -22,7 +22,7 @@ type Policy struct {
 
 // Violation is one reason a Compose file is refused. Where names the object
 // (`service "web"`), Option the key path, and Reason says what to write
-// instead. No field quotes a value from the model.
+// instead. No field quotes a value from the model except a refused path.
 type Violation struct {
 	Where  string
 	Option string
@@ -391,7 +391,9 @@ func allowServiceKey(Model, json.RawMessage, Policy, func(string, string)) {}
 
 func checkVolumes(_ Model, raw json.RawMessage, _ Policy, add func(string, string)) {
 	var vols []struct {
-		Type string `json:"type"`
+		Type   string `json:"type"`
+		Source string `json:"source"`
+		Target string `json:"target"`
 	}
 	if err := json.Unmarshal(raw, &vols); err != nil {
 		add("volumes", unexpectedShape)
@@ -401,7 +403,11 @@ func checkVolumes(_ Model, raw json.RawMessage, _ Policy, add func(string, strin
 		switch v.Type {
 		case "volume", "tmpfs":
 		case "bind":
-			add("volumes", "a bind mount is a host path. Use a named volume.")
+			source := v.Source
+			if source == "" {
+				source = v.Target
+			}
+			add("volumes", fmt.Sprintf("a bind mount of %s is a host path. Use a named volume.", source))
 		case "image":
 			add("volumes", "an image-backed volume is not allowed. Use a named volume.")
 		default:
@@ -516,7 +522,10 @@ func checkNetworks(_ Model, raw json.RawMessage, _ Policy, add func(string, stri
 	}
 }
 
-// checkEnvFiles keeps every env_file path inside the checkout.
+// checkEnvFiles keeps every env_file path inside the checkout. Compose prints
+// the path as written but follows a symlink at `up`, so the path is also
+// resolved: one that leads out of the checkout would hand the container a host
+// file.
 func checkEnvFiles(_ Model, raw json.RawMessage, p Policy, add func(string, string)) {
 	var files []struct {
 		Path string `json:"path"`
@@ -526,14 +535,16 @@ func checkEnvFiles(_ Model, raw json.RawMessage, p Policy, add func(string, stri
 		return
 	}
 	for _, f := range files {
-		if !inside(p.WorkDir, f.Path) {
-			add("env_file", "env_file must stay inside the checkout.")
+		if !insideResolved(p.WorkDir, f.Path) {
+			add("env_file", fmt.Sprintf("env_file %s must stay inside the checkout.", f.Path))
 		}
 	}
 }
 
 // checkLabelFiles keeps every label_file path inside the checkout. Compose
-// has already merged the labels it adds into Service.Labels.
+// has already merged the labels it adds into Service.Labels. As with env_file,
+// a path that resolves outside the checkout is refused: Compose follows the
+// symlink at `up`.
 func checkLabelFiles(_ Model, raw json.RawMessage, p Policy, add func(string, string)) {
 	var files []string
 	if err := json.Unmarshal(raw, &files); err != nil {
@@ -541,8 +552,8 @@ func checkLabelFiles(_ Model, raw json.RawMessage, p Policy, add func(string, st
 		return
 	}
 	for _, f := range files {
-		if !inside(p.WorkDir, f) {
-			add("label_file", "label_file must stay inside the checkout.")
+		if !insideResolved(p.WorkDir, f) {
+			add("label_file", fmt.Sprintf("label_file %s must stay inside the checkout.", f))
 		}
 	}
 }
@@ -846,7 +857,7 @@ func sortedKeys(m map[string]json.RawMessage) []string {
 // inside reports whether p is inside workDir. Both are compared as text after
 // filepath.Clean; workDir is also tried as EvalSymlinks resolves it, because
 // Compose may print the resolved path of a checkout reached through a symlink.
-// Symlinks inside the checkout are not followed.
+// Symlinks inside the checkout are not followed here.
 func inside(workDir, p string) bool {
 	if workDir == "" {
 		return false
@@ -859,6 +870,22 @@ func inside(workDir, p string) bool {
 		return false
 	}
 	return within(filepath.Clean(resolved), filepath.Clean(p))
+}
+
+// insideResolved is inside for a file Compose opens at `up`. Text alone is not
+// enough for env_file and label_file: Compose prints the symlink's own path but
+// follows it, so a link inside the checkout can name a host file. A path that
+// is missing keeps the text result; there is nothing to follow yet, and the
+// ordinary deploy fails if Compose needs it.
+func insideResolved(workDir, p string) bool {
+	if !inside(workDir, p) {
+		return false
+	}
+	resolved, err := filepath.EvalSymlinks(p)
+	if err != nil {
+		return true
+	}
+	return inside(workDir, resolved)
 }
 
 func within(dir, p string) bool {

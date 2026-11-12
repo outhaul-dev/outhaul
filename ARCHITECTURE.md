@@ -669,10 +669,11 @@ service key is allowed as written, allowed after a check (mounts, namespaces,
 references, hooks, builds), refused by name with a reason, or refused because it
 is not on the list at all. A top-level entry, service or option that fails
 yields a `compose.Violation` of Where (`service "web"`), Option (`privileged`)
-and Reason; no field quotes a value from the model. The deploy log prints every
-violation, and the deployment's reason is the first plus a count. The catalog
-test `TestEveryTemplatePassesTheStrictPolicy` runs every one-click template
-through the same check, so a template can't be offered and then refused.
+and Reason; no field quotes a value from the model except a refused path. The
+deploy log prints every violation, and the deployment's reason is the first
+plus a count. The catalog test `TestEveryTemplatePassesTheStrictPolicy` runs
+every one-click template through the same check, so a template can't be offered
+and then refused.
 
 **Labels and images.** `Policy.RoutingLabels` refuses any service label that
 begins `traefik.` or `outhaul.`, in any case and including one a `label_file:`
@@ -757,9 +758,9 @@ outhaul/
         dockerfile.go         # shells out to `docker build` for the repo's own Dockerfile
 
     compose/                  # docker compose stacks behind a Runner interface (fake for tests)
-        compose.go            # Runner: Build/Up (files) + Stop/Restart/Down (label-based, -p only)
+        compose.go            # Runner: Config/Pull/Build/Up (files) + Stop/Restart/Down (label-based, -p only)
         model.go              # Model: `docker compose config --format json` parsed for the checks
-        policy.go             # Check: the strict allow-list, with label and image refusals
+        policy.go             # Check: the strict allow-list and routing-label refusal (the image check lives in deploy)
         override.go           # Override: generated outhaul.override.yml publishing services on their domains
         fake.go               # in-memory fake for unit tests
 

@@ -42,13 +42,14 @@ func TestEveryTemplatePassesTheStrictPolicy(t *testing.T) {
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
-			// An explicit empty environment keeps the host's own variables
-			// from filling in ${domain} and the generated secrets. Compose
-			// still warns that they are unset; that warning is expected and
-			// not a failure, so it goes to a buffer the test only prints if
-			// Compose itself fails.
+			// A restricted environment keeps PATH and HOME, so Compose is
+			// found, but not the host's OUTHAUL_* settings; ${domain} and the
+			// generated secrets stay empty, so the check sees shapes, not
+			// values. Compose still warns that they are unset; that warning
+			// is expected and not a failure, so it goes to a buffer the test
+			// only prints if Compose itself fails.
 			var warnings bytes.Buffer
-			runner := &compose.Docker{Env: []string{}}
+			runner := &compose.Docker{Env: compose.RestrictedEnv(os.Environ())}
 			out, err := runner.Config(ctx, dir, []string{file}, "check-"+tmpl.ID, &warnings)
 			if err != nil {
 				t.Fatalf("docker compose config: %v\n%s", err, warnings.String())

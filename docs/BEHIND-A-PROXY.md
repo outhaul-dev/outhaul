@@ -211,7 +211,16 @@ A Compose file can write `traefik.*` labels on its own services. While a request
 header is required, such a file is refused before it is built, as is any service
 image whose own labels carry `traefik.*` after the pull: either would add a route
 without the header. On a service Outhaul doesn't route, Traefik's constraint
-ignores the labels, but the file is refused anyway.
+ignores the labels, but the file is refused anyway. `outhaul.*` labels are
+refused too, because Outhaul finds a stack's containers and the ingress stamp by
+them.
+
+Reading a Compose file this way asks `docker compose` for its normalised JSON,
+so a header-required Compose deploy needs Docker Compose 2.35 or newer even
+when strict mode is off. Its `docker compose` runs also get the reduced
+environment described in [GUARD-RAILS.md](GUARD-RAILS.md#the-environment-compose-sees),
+so a file's `${OUTHAUL_REQUIRE_HEADER_VALUE}` is empty. The stack's own `.env`
+still supplies the app's variables.
 
 ## Checking a real host
 

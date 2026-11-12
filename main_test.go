@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/outhaul-dev/outhaul/internal/compose"
 	"github.com/outhaul-dev/outhaul/internal/config"
 	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/docker"
@@ -942,25 +941,51 @@ func TestStrictPolicyWarnsAboutPublishedDatabasePorts(t *testing.T) {
 	}
 }
 
-// Every Compose runner shares one environment. With the strict container
-// policy off it is nil, so runs inherit exactly as before. With it on it is
-// the keep-list, and not even the setting that turned it on (an OUTHAUL_*
-// variable) reaches a Compose file's ${NAME}.
-func TestStrictPolicyReducesTheComposeEnvironment(t *testing.T) {
-	if r := newComposeRunner(nil); r.Env != nil {
-		t.Fatalf("runner Env without the strict policy = %q, want nil (inherit)", r.Env)
-	}
-
+// Every Compose runner shares one environment. Strict mode, or a required
+// request header on its own, reduces it to the keep-list: no OUTHAUL_* setting
+// and not the header's value reaches a Compose file's ${NAME}. With both off
+// it is nil, so runs inherit exactly as before.
+func TestComposeEnvironmentFollowsStrictAndHeader(t *testing.T) {
 	t.Setenv("OUTHAUL_CONTAINER_POLICY", "strict")
+	t.Setenv("OUTHAUL_REQUIRE_HEADER_NAME", "X-Azure-FDID")
+	t.Setenv("OUTHAUL_REQUIRE_HEADER_VALUE", "header-secret")
 	t.Setenv("PATH", "/usr/local/bin:/usr/bin")
-	r := newComposeRunner(compose.RestrictedEnv(os.Environ()))
-	if want := "PATH=" + os.Getenv("PATH"); !slices.Contains(r.Env, want) {
-		t.Errorf("runner Env = %q, want it to contain %q", r.Env, want)
+
+	cases := []struct {
+		name    string
+		cfg     config.Config
+		reduced bool
+	}{
+		{"strict container policy", config.Config{ContainerPolicy: "strict"}, true},
+		{"header required without strict mode", config.Config{
+			RequireHeaderName: "X-Azure-FDID", RequireHeaderValue: "header-secret",
+		}, true},
+		{"neither", config.Config{}, false},
 	}
-	for _, kv := range r.Env {
-		if strings.HasPrefix(kv, "OUTHAUL_") {
-			t.Errorf("runner Env = %q, want no OUTHAUL_* setting in it", r.Env)
-			break
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := composeEnvFor(tc.cfg)
+			if !tc.reduced {
+				if env != nil {
+					t.Fatalf("composeEnvFor = %q, want nil (inherit)", env)
+				}
+				if r := newComposeRunner(env); r.Env != nil {
+					t.Fatalf("runner Env = %q, want nil (inherit)", r.Env)
+				}
+				return
+			}
+			if env == nil {
+				t.Fatal("composeEnvFor = nil, want the restricted environment")
+			}
+			if want := "PATH=" + os.Getenv("PATH"); !slices.Contains(env, want) {
+				t.Errorf("composeEnvFor = %q, want it to contain %q", env, want)
+			}
+			for _, kv := range env {
+				if strings.HasPrefix(kv, "OUTHAUL_") {
+					t.Errorf("composeEnvFor = %q, want no OUTHAUL_* setting in it", env)
+					break
+				}
+			}
+		})
 	}
 }

@@ -137,15 +137,13 @@ func serve() error {
 		return err
 	}
 
-	// A strict container policy hides Outhaul's own environment from Compose
-	// files: every `docker compose` call gets only a small keep-list, so a
-	// file's ${NAME} cannot read OUTHAUL_* settings or secrets. Off, the slice
-	// is nil and every run inherits the environment exactly as before. The
-	// stack's own .env still supplies the app's variables.
-	var composeEnv []string
-	if cfg.StrictContainerPolicy() {
-		composeEnv = compose.RestrictedEnv(os.Environ())
-	}
+	// A strict container policy or a required request header hides Outhaul's
+	// own environment from Compose files: every `docker compose` call gets only
+	// a small keep-list, so a file's ${NAME} cannot read OUTHAUL_* settings or
+	// secrets, including the header's own value. Off in both, the slice is nil
+	// and every run inherits the environment exactly as before. The stack's own
+	// .env still supplies the app's variables.
+	composeEnv := composeEnvFor(cfg)
 
 	// Data directories.
 	if err := os.MkdirAll(cfg.WorkDir(), 0o755); err != nil {
@@ -416,6 +414,17 @@ func newComposeRunner(env []string) *compose.Docker {
 	d := compose.NewDocker()
 	d.Env = env
 	return d
+}
+
+// composeEnvFor returns the environment every `docker compose` call gets. A
+// strict container policy or a required request header hides Outhaul's own
+// environment, including the header's value, behind compose.RestrictedEnv; in
+// neither case nil inherits it exactly as before.
+func composeEnvFor(cfg config.Config) []string {
+	if cfg.StrictContainerPolicy() || cfg.HeaderRequired() {
+		return compose.RestrictedEnv(os.Environ())
+	}
+	return nil
 }
 
 // infraController reconciles the managed Traefik proxy and cloudflared connector

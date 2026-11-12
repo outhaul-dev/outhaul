@@ -189,8 +189,12 @@ func (w *Worker) checkComposeImages(ctx context.Context, model compose.Model) er
 			return fmt.Errorf("service %q: image %s is not on the server after pull: %w", svc.Name, svc.Image, err)
 		}
 		if bad := routingLabelKeys(labels); len(bad) > 0 {
-			return fmt.Errorf("refusing service %q: image %s carries traefik labels (checked at pull time): %s",
-				svc.Name, svc.Image, strings.Join(bad, ", "))
+			checked := "checked at pull time"
+			if _, builds := svc.Raw["build"]; builds {
+				checked = "checked after build"
+			}
+			return fmt.Errorf("refusing service %q: image %s carries traefik labels (%s): %s",
+				svc.Name, svc.Image, checked, strings.Join(bad, ", "))
 		}
 	}
 	return nil
@@ -230,7 +234,8 @@ func composeSource(app core.App) string {
 // policyViolationReason formats a Compose check's violations for the deploy log
 // and the deployment's reason. The log gets every violation, indented to sit
 // under the header line; the reason is the first without that indent, plus a
-// count of the rest. No field of a Violation quotes the model's values.
+// count of the rest. No field of a Violation quotes the model's values except
+// a refused path.
 func policyViolationReason(vs []compose.Violation) (reason string, lines []string) {
 	lines = make([]string, len(vs))
 	for i, v := range vs {

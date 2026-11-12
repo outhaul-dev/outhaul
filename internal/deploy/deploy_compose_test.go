@@ -403,7 +403,7 @@ func TestComposePipelineRefusesAHostPathBeforeBuilding(t *testing.T) {
 	if n := len(h.compose.CallsFor("up")); n != 0 {
 		t.Errorf("up calls = %d, want 0", n)
 	}
-	want := `service "web": volumes: a bind mount is a host path. Use a named volume.`
+	want := `service "web": volumes: a bind mount of /srv/data is a host path. Use a named volume.`
 	if log := h.logOf(dep); !strings.Contains(log, want) {
 		t.Errorf("log missing %q; got:\n%s", want, log)
 	}
@@ -548,6 +548,37 @@ func TestHeaderRequiredRefusesAComposeImageWithTraefikLabels(t *testing.T) {
 	}
 	if n := len(h.compose.CallsFor("up")); n != 0 {
 		t.Errorf("up calls = %d, want 0", n)
+	}
+}
+
+// A service with a build section gets its image from `compose build`, so the
+// label check runs after that, not at pull time; the message says which.
+func TestComposeImageRefusalNamesTheCheckPoint(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.ContainerPolicy = "strict"
+	h.compose.ConfigJSON = []byte(`{
+		"name": "outhaul-shop",
+		"services": {
+			"web": {"image": "outhaul-shop-web", "build": {"context": "."}}
+		}
+	}`)
+	h.docker.ImageLabelsByRef = map[string]map[string]string{
+		"outhaul-shop-web": {"traefik.http.routers.evil.rule": "Host(`shop.example.com`)"},
+	}
+	app := h.composeApp(t, "shop", "docker-compose.yml", "")
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed {
+		t.Fatalf("status = %q (%q), want failed", got.Status, got.Reason)
+	}
+	if !strings.Contains(got.Reason, "checked after build") {
+		t.Errorf("reason = %q, want it to say the image was checked after build", got.Reason)
+	}
+	if strings.Contains(got.Reason, "checked at pull time") {
+		t.Errorf("reason = %q, want no pull-time claim for a built image", got.Reason)
 	}
 }
 

@@ -12,6 +12,12 @@ containment: it doesn't stop someone who means to get out, and it doesn't
 separate one app from another on the network. See
 [ARCHITECTURE.md](../ARCHITECTURE.md#container-guard-rails-opt-in).
 
+Two smaller rules also run while a request header is required
+(`OUTHAUL_REQUIRE_HEADER_NAME`), even with strict mode off: a Compose file
+can't add its own `traefik.*` or `outhaul.*` labels, and the Compose
+environment is reduced so a file can't read the header's value. See
+[BEHIND-A-PROXY.md](BEHIND-A-PROXY.md#the-required-header).
+
 Turning strict mode on checks nothing that already runs. A running app keeps
 running until its next deploy, and the next deploy is when the rules apply.
 
@@ -39,9 +45,15 @@ These are refused in the same way:
   same stack.
 - A fixed `ipv4_address`, `ipv6_address` or `mac_address`. Use a service name.
 - `security_opt:` other than `no-new-privileges`.
-- An `env_file:` or `label_file:` outside the checkout, and a `build.context:`
-  or `build.dockerfile:` outside it, or an `oci-layout://` context.
-- `build.privileged:`, `build.ssh:`, `build.cache_from:` and `build.cache_to:`.
+- An `env_file:` or `label_file:` outside the checkout, including one reachable
+  through a symlink inside the checkout that resolves outside it, and a
+  `build.context:` or `build.dockerfile:` outside it, or an `oci-layout://`
+  context.
+- `build.privileged:`, `build.ssh:`, `build.cache_from:`, `build.cache_to:`,
+  `build.entitlements:` and `build.isolation:`.
+- `use_api_socket:`. A service does not get the Docker socket.
+- A build secret defined with `file:`; a build secret must use
+  `environment:`.
 - `driver_opts:` on a volume (it can turn a named volume into a host path), an
   `external:` volume, and a volume or network whose `name:` isn't the default
   one.
@@ -110,21 +122,23 @@ can still do things the container it produces cannot.
 
 ## The environment Compose sees
 
-While strict mode is on, `docker compose` runs with only the variables it
-needs: `PATH`, `HOME`, the locale and temporary-directory settings, the TLS
+While strict mode is on, or a request header is required even without strict
+mode, `docker compose` runs with only the variables it needs: `PATH`, `HOME`,
+`USER`, `LOGNAME`, the locale and temporary-directory settings, the TLS
 certificate settings, the Docker, BuildKit, Buildx and Compose settings, and
 the proxy settings. A Compose file's `${NAME}` therefore can't read Outhaul's
-own `OUTHAUL_*` settings or the secrets in its environment. The stack's own
-`.env`, which Outhaul writes beside the Compose file on each deploy, still
-supplies the app's variables.
+own `OUTHAUL_*` settings or the secrets in its environment, including the
+required header's value. The stack's own `.env`, which Outhaul writes beside
+the Compose file on each deploy, still supplies the app's variables.
 
 ## Docker Compose 2.35 or newer
 
-Strict mode reads a Compose file by asking `docker compose` for its normalised
-JSON, with `--no-env-resolution`. That flag arrived in Docker Compose 2.35, and
-it keeps the contents of an `env_file` reference from being expanded into the
-model. On an older host a Compose deploy fails before it starts, with a message
-that includes:
+Strict mode, or a required request header even without strict mode, reads a
+Compose file by asking `docker compose` for its normalised JSON, with
+`--no-env-resolution`. That flag arrived in Docker Compose 2.35, and it keeps
+the contents of an `env_file` reference from being expanded into the model. On
+an older host a Compose deploy fails before it starts, with a message that
+includes:
 
 ```
 reading a Compose file needs Docker Compose 2.35 or newer: ...
@@ -168,6 +182,6 @@ Not yet run:
 - [ ] A database can't be given an external port, and `ss -ltn` shows none.
 - [ ] `docker compose version` on the host is 2.35 or newer.
 - [ ] A Compose file that reads `${OUTHAUL_REQUIRE_HEADER_VALUE}` gets nothing
-      when strict mode reduces the environment.
+      when strict mode or the required header reduces the environment.
 
 When they have been run, this list records the results.

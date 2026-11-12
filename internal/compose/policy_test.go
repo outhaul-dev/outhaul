@@ -1,6 +1,7 @@
 package compose
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -585,6 +586,108 @@ func TestInside(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := inside(tc.workDir, tc.path); got != tc.want {
 				t.Errorf("inside(%q, %q) = %v, want %v", tc.workDir, tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
+// An env_file or label_file inside the checkout can still name a host file
+// through a symlink. Compose prints the link's own path, so the text check
+// passes, but it follows the link at `up`. The resolved path must stay inside
+// too; a link that stays inside, or a file that does not exist yet, passes.
+func TestEnvAndLabelFilesRefuseSymlinksOutOfTheCheckout(t *testing.T) {
+	base := t.TempDir()
+	work := filepath.Join(base, "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(base, "host.env")
+	if err := os.WriteFile(outside, []byte("SECRET=host\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inside := filepath.Join(work, "app.env")
+	if err := os.WriteFile(inside, []byte("APP=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	leak := filepath.Join(work, "leak.env")
+	if err := os.Symlink(outside, leak); err != nil {
+		t.Fatal(err)
+	}
+	linkInside := filepath.Join(work, "link.env")
+	if err := os.Symlink(inside, linkInside); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(work, "missing.env")
+
+	model := fmt.Sprintf(`{"services":{"web":{"image":"nginx","env_file":[{"path":%q},{"path":%q},{"path":%q}],"label_file":[%q,%q]}}}`,
+		leak, linkInside, missing, leak, linkInside)
+	m, err := ParseModel([]byte(model))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := Check(m, Policy{Strict: true, WorkDir: work})
+	if len(got) != 2 {
+		t.Fatalf("Check() = %+v, want one env_file and one label_file refusal", got)
+	}
+	options := map[string]bool{}
+	for _, v := range got {
+		if v.Where != `service "web"` {
+			t.Errorf("violation %+v has Where %q, want service \"web\"", v, v.Where)
+		}
+		options[v.Option] = true
+		if !strings.Contains(v.Reason, leak) {
+			t.Errorf("violation %+v does not name the offending path %q", v, leak)
+		}
+		if strings.Contains(v.Reason, linkInside) || strings.Contains(v.Reason, missing) {
+			t.Errorf("violation %+v refuses a link that stays inside or a missing file", v)
+		}
+	}
+	if !options["env_file"] || !options["label_file"] {
+		t.Errorf("refusals = %+v, want both env_file and label_file", got)
+	}
+}
+
+// insideResolved follows the file itself, unlike inside, which deliberately
+// looks only at the path as printed.
+func TestInsideResolved(t *testing.T) {
+	base := t.TempDir()
+	work := filepath.Join(base, "work")
+	if err := os.MkdirAll(work, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(base, "outside.env")
+	if err := os.WriteFile(outside, []byte("X=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inside := filepath.Join(work, "app.env")
+	if err := os.WriteFile(inside, []byte("X=1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	escape := filepath.Join(work, "escape")
+	if err := os.Symlink(outside, escape); err != nil {
+		t.Fatal(err)
+	}
+	linkInside := filepath.Join(work, "link")
+	if err := os.Symlink(inside, linkInside); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(work, "missing")
+
+	cases := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"a real file inside", inside, true},
+		{"a link that stays inside", linkInside, true},
+		{"a link out of the checkout", escape, false},
+		{"a missing file keeps the text result", missing, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := insideResolved(work, tc.path); got != tc.want {
+				t.Errorf("insideResolved(%q, %q) = %v, want %v", work, tc.path, got, tc.want)
 			}
 		})
 	}

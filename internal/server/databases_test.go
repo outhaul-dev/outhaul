@@ -375,6 +375,29 @@ func TestStrictPolicyOffersToStopAnExistingPort(t *testing.T) {
 	}
 }
 
+// A read-only viewer sees the warning about a database that still publishes a
+// port under the strict policy, but gets no form to change it.
+func TestViewerSeesTheStrictPortWarningWithoutTheForm(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	d := seedDatabase(t, e, "shop", core.EnginePostgres)
+	if err := e.store.SetDatabaseExtPort(context.Background(), d.ID, 5433); err != nil {
+		t.Fatal(err)
+	}
+	e.srv.SetContainerPolicy(true)
+	viewer := e.signInAs(t, "vera", core.RoleProjectViewer, d.ProjectID)
+
+	page := body(t, e.getAs(t, viewer, "/databases/"+itoa(d.ID)))
+	if !strings.Contains(page, "still publishes port 5433") {
+		t.Error("viewer page does not warn that the database still publishes its port")
+	}
+	for _, unwanted := range []string{"Stop publishing port", `name="external_port"`} {
+		if strings.Contains(page, unwanted) {
+			t.Errorf("viewer page offers %q, want the warning only", unwanted)
+		}
+	}
+}
+
 func TestDatabaseLogsSSEStreams(t *testing.T) {
 	e := newTestEnv(t)
 	e.login(t)
