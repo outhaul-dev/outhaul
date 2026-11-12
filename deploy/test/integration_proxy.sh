@@ -110,9 +110,17 @@ cat >"$work/start-outhaul.sh" <<'EOF'
 #!/bin/sh
 set -eu
 value=$1
+# Outhaul keeps its port while it drains a deploy in flight (up to 20s), so
+# wait for it to exit: otherwise the new one can't bind and dies, and the old
+# one answers /healthz until it goes.
 if [ -f /work/outhaul.pid ]; then
-	kill "$(cat /work/outhaul.pid)" >/dev/null 2>&1 || true
-	sleep 1
+	old=$(cat /work/outhaul.pid)
+	kill "$old" >/dev/null 2>&1 || true
+	i=0
+	while kill -0 "$old" 2>/dev/null && [ $i -lt 45 ]; do
+		sleep 1
+		i=$((i + 1))
+	done
 fi
 OUTHAUL_DATA_DIR=/var/lib/outhaul \
 OUTHAUL_LISTEN_ADDR=:8080 \
