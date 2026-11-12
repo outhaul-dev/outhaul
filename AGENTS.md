@@ -266,9 +266,11 @@ fixed in five batches. All five are on `main`.
   label or the ingress stamp. `all` is meant to be paired with the required
   header, and `serve` warns when it isn't. While trust is on, every entrypoint
   names the `outhaul-forwarded` middleware, which removes `X-Real-Ip`,
-  `X-Forwarded-Uri`, `-Method` and `-Prefix`; if its file is missing, the
-  entrypoint answers 404 (fails closed). The file is written before Traefik is
-  created and removed only after a replacement starts. It is the only middleware
+  `X-Forwarded-Uri`, `-Method`, `-Prefix` and the two `X-Forwarded-Tls-Client-Cert*`
+  headers, and `underscoreheadersstrategy=delete` drops every header with an
+  underscore in its name (needs Traefik v3.7.6 or newer); if the file is missing,
+  the entrypoint answers 404 (fails closed). The file is written before Traefik
+  is created, replaced by rename, and removed only after a replacement starts. It is the only middleware
   in the file provider, and that doesn't contradict the gate's rule: an
   entrypoint middleware that is missing closes the entrypoint, while a router
   that names a missing file-provider middleware is dropped and its requests fall

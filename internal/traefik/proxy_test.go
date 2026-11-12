@@ -832,6 +832,10 @@ func trustedFlags(spec docker.ContainerSpec, ep string) (trustedips, insecure, m
 	return
 }
 
+func dropsUnderscoreHeaders(spec docker.ContainerSpec, ep string) bool {
+	return slices.Contains(spec.Cmd, "--entrypoints."+ep+".http.underscoreheadersstrategy=delete")
+}
+
 func TestProxySpecTrustsAddresses(t *testing.T) {
 	pc := tlsProxyConfig()
 	pc.DynamicDir = t.TempDir()
@@ -843,6 +847,9 @@ func TestProxySpecTrustsAddresses(t *testing.T) {
 		}
 		if !slices.Contains(spec.Cmd, "--entrypoints."+ep+".http.middlewares=outhaul-forwarded@file") {
 			t.Errorf("%s: middleware flag missing: %v", ep, spec.Cmd)
+		}
+		if !dropsUnderscoreHeaders(spec, ep) {
+			t.Errorf("%s: underscore-headers flag missing: %v", ep, spec.Cmd)
 		}
 	}
 	for _, f := range spec.Cmd {
@@ -869,6 +876,9 @@ func TestProxySpecTrustsAll(t *testing.T) {
 	for _, ep := range []string{"web", "websecure"} {
 		if !slices.Contains(spec.Cmd, "--entrypoints."+ep+".forwardedheaders.insecure=true") {
 			t.Errorf("%s: insecure flag missing: %v", ep, spec.Cmd)
+		}
+		if !dropsUnderscoreHeaders(spec, ep) {
+			t.Errorf("%s: underscore-headers flag missing: %v", ep, spec.Cmd)
 		}
 	}
 	for _, f := range spec.Cmd {
@@ -902,15 +912,41 @@ func TestProxySpecTrustedEntrypoints(t *testing.T) {
 			spec := proxySpec(pc)
 			for _, ep := range []string{"web", "websecure"} {
 				ips, _, mw, got := trustedFlags(spec, ep)
+				us := dropsUnderscoreHeaders(spec, ep)
 				if slices.Contains(tc.want, ep) {
-					if !ips || !mw || got != "192.0.2.1" {
-						t.Errorf("%s: want trust flags, got trustedips=%v middleware=%v: %v", ep, ips, mw, spec.Cmd)
+					if !ips || !mw || !us || got != "192.0.2.1" {
+						t.Errorf("%s: want trust flags, got trustedips=%v middleware=%v underscore=%v: %v", ep, ips, mw, us, spec.Cmd)
 					}
-				} else if ips || mw {
+				} else if ips || mw || us {
 					t.Errorf("%s: want no trust flags: %v", ep, spec.Cmd)
 				}
 			}
+			for _, f := range spec.Cmd {
+				if strings.Contains(f, "underscoreheadersstrategy") && !slices.Contains(tc.want, strings.SplitN(strings.TrimPrefix(f, "--entrypoints."), ".", 2)[0]) {
+					t.Errorf("underscore flag %q is on an entrypoint that trusts nobody", f)
+				}
+			}
 		})
+	}
+}
+
+func TestProxySpecUnsetTrustAddsNoUnderscoreFlag(t *testing.T) {
+	for _, f := range proxySpec(tlsProxyConfig()).Cmd {
+		if strings.Contains(f, "underscoreheadersstrategy") {
+			t.Errorf("unexpected flag %q with no proxy trusted", f)
+		}
+	}
+}
+
+func TestForwardedDynamicConfigBlanksTheHeaders(t *testing.T) {
+	got := ForwardedDynamicConfig()
+	for _, h := range []string{
+		"X-Real-Ip", "X-Forwarded-Uri", "X-Forwarded-Method", "X-Forwarded-Prefix",
+		"X-Forwarded-Tls-Client-Cert", "X-Forwarded-Tls-Client-Cert-Info",
+	} {
+		if !strings.Contains(got, "          "+h+": \"\"\n") {
+			t.Errorf("config does not blank %s:\n%s", h, got)
+		}
 	}
 }
 
@@ -957,6 +993,41 @@ func TestEnsureProxyWritesAndRemovesForwardedConfig(t *testing.T) {
 	}
 }
 
+func TestEnsureProxyRewritesForwardedConfigWithoutATmpFile(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+	pc := tlsProxyConfig()
+	pc.DynamicDir = t.TempDir()
+	pc.TrustedProxies = []string{"192.0.2.1"}
+	path := filepath.Join(pc.DynamicDir, forwardedDynamicFile)
+	for i := 0; i < 2; i++ {
+		if err := EnsureProxy(ctx, f, pc, nil); err != nil {
+			t.Fatalf("EnsureProxy #%d: %v", i+1, err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != ForwardedDynamicConfig() {
+			t.Fatalf("after #%d: config = %q, err = %v", i+1, got, err)
+		}
+		if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+			t.Fatalf("after #%d: tmp file left behind, stat err = %v", i+1, err)
+		}
+	}
+	// A file that holds something else is replaced whole.
+	if err := os.WriteFile(path, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureProxy(ctx, f, pc, nil); err != nil {
+		t.Fatalf("EnsureProxy (stale): %v", err)
+	}
+	got, _ := os.ReadFile(path)
+	if string(got) != ForwardedDynamicConfig() {
+		t.Errorf("stale config not replaced: %q", got)
+	}
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("tmp file left behind, stat err = %v", err)
+	}
+}
+
 func TestEnsureProxyKeepsForwardedConfigWhenThePullFailsWhileTurningItOff(t *testing.T) {
 	ctx := context.Background()
 	f := docker.NewFake()
@@ -967,7 +1038,6 @@ func TestEnsureProxyKeepsForwardedConfigWhenThePullFailsWhileTurningItOff(t *tes
 		t.Fatalf("EnsureProxy: %v", err)
 	}
 	path := filepath.Join(pc.DynamicDir, forwardedDynamicFile)
-	before, _ := f.FindContainer(ctx, pc.ContainerName)
 	pc.TrustedProxies = nil
 	f.FailPull = func(string) error { return errors.New("registry down") }
 	if err := EnsureProxy(ctx, f, pc, nil); err == nil {
@@ -976,8 +1046,9 @@ func TestEnsureProxyKeepsForwardedConfigWhenThePullFailsWhileTurningItOff(t *tes
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("the old Traefik still names the middleware, so the file must stay: %v", err)
 	}
-	if before == nil || !before.Running() {
-		t.Errorf("the old Traefik should still be running: %+v", before)
+	after, _ := f.FindContainer(ctx, pc.ContainerName)
+	if after == nil || !after.Running() {
+		t.Errorf("the old Traefik should still be running: %+v", after)
 	}
 }
 

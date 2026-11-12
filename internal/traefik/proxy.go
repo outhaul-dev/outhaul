@@ -1,6 +1,7 @@
 package traefik
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -289,8 +290,9 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 	env := []string{"DOCKER_API_VERSION=" + apiVersion}
 	var extraHosts []string
 
-	// The file provider carries the admin-UI router and/or the local-CA cert
-	// list; host-gateway is needed for the admin route and for the gate of
+	// The file provider carries the admin-UI router, the local-CA cert list
+	// and, while a proxy is trusted, the forwarded-headers middleware;
+	// host-gateway is needed for the admin route and for the gate of
 	// any protected route. Without either, the spec is what it was before
 	// protected routes, so upgrading doesn't recreate Traefik.
 	if pc.adminRoutingEnabled() || (pc.LocalCA && !pc.TunnelMode) || pc.trustsProxy() {
@@ -332,7 +334,10 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 			} else {
 				cmd = append(cmd, "--entrypoints."+ep+".forwardedheaders.trustedips="+strings.Join(pc.TrustedProxies, ","))
 			}
-			cmd = append(cmd, "--entrypoints."+ep+".http.middlewares=outhaul-forwarded@file")
+			cmd = append(cmd,
+				"--entrypoints."+ep+".http.middlewares=outhaul-forwarded@file",
+				"--entrypoints."+ep+".http.underscoreheadersstrategy=delete",
+			)
 		}
 	}
 	if pc.ACME && !pc.TunnelMode {
@@ -456,6 +461,8 @@ http:
           X-Forwarded-Uri: ""
           X-Forwarded-Method: ""
           X-Forwarded-Prefix: ""
+          X-Forwarded-Tls-Client-Cert: ""
+          X-Forwarded-Tls-Client-Cert-Info: ""
 `
 }
 
@@ -468,7 +475,23 @@ func writeForwardedDynamicConfig(pc ProxyConfig) error {
 	if err := os.MkdirAll(pc.DynamicDir, 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(pc.DynamicDir, forwardedDynamicFile), []byte(ForwardedDynamicConfig()), 0o644)
+	path := filepath.Join(pc.DynamicDir, forwardedDynamicFile)
+	want := []byte(ForwardedDynamicConfig())
+	// A file that is missing, empty or half written closes every route on
+	// the entrypoint, so leave a file that is already right alone, and
+	// replace any other by rename, never by truncating it.
+	if have, err := os.ReadFile(path); err == nil && bytes.Equal(have, want) {
+		return nil
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, want, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // removeForwardedDynamicConfig removes the middleware file, ignoring its

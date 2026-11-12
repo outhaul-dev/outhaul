@@ -57,6 +57,7 @@ OUTHAUL_HTTP_PORT=off
 OUTHAUL_REQUIRE_HEADER_NAME=X-Azure-FDID
 OUTHAUL_REQUIRE_HEADER_VALUE=<the profile's GUID>
 OUTHAUL_ADMIN_DIRECT=off
+OUTHAUL_TRUSTED_PROXIES=all
 ```
 
 Outhaul passes Traefik exactly the variables named, and adds none. In
@@ -190,13 +191,29 @@ choose it, so an app should read `X-Forwarded-For`.
 
 While trust is on, a middleware named `outhaul-forwarded`, in a file Outhaul
 writes under Traefik's file provider (`outhaul-forwarded.yml`), is set on every
-entrypoint. It removes `X-Real-Ip`, `X-Forwarded-Uri`, `X-Forwarded-Method` and
-`X-Forwarded-Prefix` from every request, so a visitor can't forge them through a
-trusted proxy.
+entrypoint. It removes `X-Real-Ip`, `X-Forwarded-Uri`, `X-Forwarded-Method`,
+`X-Forwarded-Prefix`, `X-Forwarded-Tls-Client-Cert` and
+`X-Forwarded-Tls-Client-Cert-Info` from every request, so a visitor can't forge
+them through a trusted proxy.
+
+Each of those entrypoints also drops every request header whose name holds an
+underscore (`--entrypoints.<name>.http.underscoreheadersstrategy=delete`). Many
+CGI-style stacks (PHP, and many WSGI and Rack setups) fold `X_Real_Ip` into the
+same variable as `X-Real-Ip`, so without this a visitor could still choose the
+address such an app reads. It is blunt on purpose: an app's own header with an
+underscore in its name, such as `My_App_Header`, is dropped too, while trust is
+on. An entrypoint that trusts nobody already drops them. The flag needs Traefik
+v3.7.6 or newer, the version Outhaul bundles; if `OUTHAUL_TRAEFIK_IMAGE` pins an
+older image, upgrade it before setting `OUTHAUL_TRUSTED_PROXIES`.
 
 If the file is missing, Traefik disables the routers on the entrypoints that name
 the middleware and answers 404, so it fails closed. It is not the gate: the gate
 stays in each app's own labels, and the middleware is not on any router.
+Outhaul replaces the file by writing a temporary copy and renaming it, and leaves
+it alone when it already holds the right content, so a rewrite never shows
+Traefik an empty file. The directory is all or nothing while trust is on: a
+sibling file in it that fails to parse also takes the routes down when Traefik
+starts, and the same fail-closed answer follows.
 
 Turning the setting off removes the file only once the replacement Traefik has
 started. If its image can't be pulled, the file stays and a failed pull can't take
@@ -312,7 +329,9 @@ These need the staging host and its CDN.
    `X-Forwarded-Proto`, `X-Forwarded-Port`, `X-Real-Ip`, `X-Forwarded-Uri`,
    `X-Forwarded-Method` and `X-Forwarded-Prefix`, sent from the visitor's side,
    shows the first three overwritten by the CDN or absent, and the other four
-   absent at the app.
+   absent at the app. So are the same four with underscores in place of the
+   hyphens (`X_Real_Ip`), and `X-Forwarded-Tls-Client-Cert` and
+   `X-Forwarded-Tls-Client-Cert-Info`.
 10. A protected app's sign-in still works through the CDN with trust on.
 
 ## Testing so far
@@ -329,8 +348,8 @@ Three scripts check this without a real CDN, and none is run by CI:
   `GATETEST_HTTP_OFF`) checks protected and open rows on a real Traefik with the
   header term and with no port 80. It also runs a Traefik that trusts its peer
   and one that trusts a list matching nobody, and checks which forwarded headers
-  reach an app, that `X-Real-Ip`, `X-Forwarded-Uri`, `-Method` and `-Prefix` are
-  removed in both, that the gate answers the same, and that with the middleware
+  reach an app, that `X-Real-Ip`, `X-Forwarded-Uri`, `-Method`, `-Prefix`, their
+  underscore spellings and the two TLS client-cert headers are removed in both, that the gate answers the same, and that with the middleware
   file gone the entrypoints answer 404.
 - `deploy/test/integration_proxy.sh` runs a real Outhaul and Traefik behind a
   stand-in CDN and a stand-in OIDC provider. It checks first-boot setup,

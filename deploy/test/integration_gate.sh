@@ -44,7 +44,8 @@
 #                 headers. Outhaul's don't, and that alone hides a gate that
 #                 trusts them, so the X-Forwarded-* checks also run here;
 #       trustedips   main, but its entrypoints trust the client's forwarded
-#                 headers and remove the four a proxy has no reason to send;
+#                 headers, remove the six a proxy has no reason to send and
+#                 drop every header with an underscore in its name;
 #       untrustedips the same with a list that matches no peer;
 #       redirect  web redirecting to websecure, with the flags Outhaul's
 #                 Traefik uses under TLS;
@@ -459,13 +460,14 @@ start_traefik() { # name, mapped|unmapped, extra Traefik arguments...
 }
 # start_trustedips_traefik NAME CIDR: like main, but its entrypoints trust the
 # forwarded headers of a client in CIDR and run the middleware that removes the
-# four a proxy has no reason to send, read from the mounted file.
+# six a proxy has no reason to send, read from the mounted file, and drop every
+# header whose name holds an underscore.
 start_trustedips_traefik() {
 	dynamic_mount="$work/dynamic:/etc/traefik/dynamic:ro"
 	ips_args="--providers.file.directory=/etc/traefik/dynamic --providers.file.watch=true"
 	for ep in web websecure; do
 		if [ "$ep" = web ] && [ "$http_off" = 1 ]; then continue; fi
-		ips_args="$ips_args --entrypoints.$ep.forwardedheaders.trustedips=$2 --entrypoints.$ep.http.middlewares=outhaul-forwarded@file"
+		ips_args="$ips_args --entrypoints.$ep.forwardedheaders.trustedips=$2 --entrypoints.$ep.http.middlewares=outhaul-forwarded@file --entrypoints.$ep.http.underscoreheadersstrategy=delete"
 	done
 	# shellcheck disable=SC2086 # one word per flag
 	start_traefik "$1" mapped $ips_args
@@ -480,7 +482,7 @@ if [ "$mode" = stub ]; then
 		--entrypoints.web.http.redirections.entrypoint.to=websecure \
 		--entrypoints.web.http.redirections.entrypoint.scheme=https
 	start_traefik "$unmapped_c" unmapped
-	net_subnet=$(docker network inspect "$net" -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}')
+	net_subnet=$(docker network inspect "$net" -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' | awk '{print $1}')
 	[ -n "$net_subnet" ] || die "read the subnet of $net"
 	start_trustedips_traefik "$trustedips_c" "$net_subnet"
 	start_trustedips_traefik "$untrustedips_c" 203.0.113.0/24
@@ -1176,6 +1178,9 @@ done
 
 echo "== what an app receives when Traefik trusts the client's proxy"
 # One request with every forged header, to an open row, through each Traefik.
+underscored="x_real_ip x_forwarded_uri x_forwarded_method x_forwarded_prefix"
+tls_certs="x-forwarded-tls-client-cert x-forwarded-tls-client-cert-info"
+removed="x-real-ip x-forwarded-uri x-forwarded-method x-forwarded-prefix $underscored $tls_certs"
 # lacks BODY HEADER...: whether BODY has none of the lines "h HEADER: ".
 lacks() {
 	body=$1
@@ -1185,19 +1190,22 @@ lacks() {
 	done
 	return 0
 }
+# shellcheck disable=SC2086 # one word per header name
 for scheme in $schemes; do
 	for via in main trusting trustedips untrustedips; do
 		code=$(req "$scheme" shop.test /cart \
 			-H 'X-Forwarded-For: 203.0.113.9' -H 'X-Forwarded-Host: evil.test' -H 'X-Forwarded-Proto: https' \
 			-H 'X-Forwarded-Uri: /evil' -H 'X-Forwarded-Method: POST' -H 'X-Forwarded-Prefix: /evil' \
-			-H 'X-Real-Ip: 6.6.6.6' -H 'X-Outhaul-User: mallory')
+			-H 'X-Real-Ip: 6.6.6.6' -H 'X-Outhaul-User: mallory' \
+			-H 'X_Real_Ip: 6.6.6.6' -H 'X_Forwarded_Uri: /evil' -H 'X_Forwarded_Method: POST' -H 'X_Forwarded_Prefix: /evil' \
+			-H 'X-Forwarded-Tls-Client-Cert: forged-cert' -H 'X-Forwarded-Tls-Client-Cert-Info: forged-info')
 		body=$(cat "$work/b")
 		desc="$scheme shop.test/cart via the $via Traefik, with every header forged"
 		case $via in
-		trustedips) want="a trusted client: its X-Forwarded-For, -Host and -Proto reach the app, and X-Real-Ip, -Uri, -Method and -Prefix are removed" ;;
-		untrustedips) want="a client outside the list: its headers are replaced, and X-Real-Ip, -Uri, -Method and -Prefix are removed all the same" ;;
-		trusting) want="the control, which trusts every client and removes nothing: all forged headers arrive, except X-Outhaul-User" ;;
-		*) want="trusting nobody: the client's headers are replaced, and Traefik sets X-Real-Ip itself" ;;
+		trustedips) want="a trusted client: its X-Forwarded-For, -Host and -Proto reach the app, and X-Real-Ip, -Uri, -Method, -Prefix, their underscore spellings and the two TLS client-cert headers are removed" ;;
+		untrustedips) want="a client outside the list: its headers are replaced, and the same headers, with their underscore spellings and the two TLS client-cert headers, are removed all the same" ;;
+		trusting) want="the control, which trusts every client and removes nothing: all forged headers arrive, underscore spellings and TLS client-cert headers included, except X-Outhaul-User" ;;
+		*) want="trusting nobody: the client's headers are replaced, Traefik sets X-Real-Ip itself, and the underscore spellings and TLS client-cert headers are removed" ;;
 		esac
 		ok=no
 		if [ "$code" = 200 ] && ! has "$body" mallory && lacks "$body" x-outhaul-user; then
@@ -1205,22 +1213,26 @@ for scheme in $schemes; do
 			trustedips)
 				if has "$body" 'h x-forwarded-for: 203.0.113.9, ' && has "$body" 'h x-forwarded-host: evil.test' &&
 					has "$body" 'h x-forwarded-proto: https' &&
-					lacks "$body" x-real-ip x-forwarded-uri x-forwarded-method x-forwarded-prefix; then ok=yes; fi
+					lacks "$body" $removed; then ok=yes; fi
 				;;
 			untrustedips)
 				if ! has "$body" 203.0.113.9 && has "$body" 'h x-forwarded-host: shop.test' &&
-					lacks "$body" x-real-ip x-forwarded-uri x-forwarded-method x-forwarded-prefix; then ok=yes; fi
+					lacks "$body" $removed; then ok=yes; fi
 				;;
 			trusting)
 				if has "$body" 'h x-real-ip: 6.6.6.6' && has "$body" 'h x-forwarded-uri: /evil' &&
 					has "$body" 'h x-forwarded-method: POST' && has "$body" 'h x-forwarded-prefix: /evil' &&
-					has "$body" 'h x-forwarded-host: evil.test' && has "$body" 'h x-forwarded-for: 203.0.113.9, '; then ok=yes; fi
+					has "$body" 'h x-forwarded-host: evil.test' && has "$body" 'h x-forwarded-for: 203.0.113.9, ' &&
+					has "$body" 'h x_real_ip: 6.6.6.6' && has "$body" 'h x_forwarded_uri: /evil' &&
+					has "$body" 'h x_forwarded_method: POST' && has "$body" 'h x_forwarded_prefix: /evil' &&
+					has "$body" 'h x-forwarded-tls-client-cert: forged-cert' &&
+					has "$body" 'h x-forwarded-tls-client-cert-info: forged-info'; then ok=yes; fi
 				;;
 			*)
 				realip=$(printf '%s\n' "$body" | sed -n 's/^h x-real-ip: //p')
 				if ! has "$body" 203.0.113.9 && has "$body" 'h x-forwarded-host: shop.test' &&
 					[ -n "$realip" ] && [ "$realip" != 6.6.6.6 ] &&
-					lacks "$body" x-forwarded-uri x-forwarded-method x-forwarded-prefix; then ok=yes; fi
+					lacks "$body" x-forwarded-uri x-forwarded-method x-forwarded-prefix $underscored $tls_certs; then ok=yes; fi
 				;;
 			esac
 		fi
