@@ -26,13 +26,14 @@ Every name Outhaul generates is then one label under it:
 | a template's `${email}` | `<random>@<name>.<suffix>` |
 | a preview with no base domain | `[<service>-]<app>-pr-<n>.<suffix>` |
 | the first `git push` for a new app | `<app>.<suffix>` |
-| the new-app form, pre-filled as the name is typed, or left blank | `<app>.<suffix>` |
+| the new-app form, pre-filled as the name is typed, or left blank (a single-container app) | `<app>.<suffix>` |
 | the domain dialog's "Default domain" | `<app>.<suffix>` |
 
 A template's `${domain}` is now the same name every time it appears, where a
 random `sslip.io` name changed on each render. A manifest that needs two names
 writes `${domain:<label>}`, as the MinIO template's API name does with
-`${domain:api}`; without a suffix it gives what `${domain}` gives.
+`${domain:api}`; without a suffix it gives a zero-DNS `sslip.io` name, as
+`${domain}` does (a different random one each time).
 
 An app name is 2 to 40 characters of `a-z`, `0-9` and `-`, so it is always a
 valid label, but `<app>-<label>` has to fit in one label of 63 characters:
@@ -43,7 +44,8 @@ choose short labels. For the same reason `OUTHAUL_DOMAIN_SUFFIX` is capped at
 The domain dialog's first option is "Default domain", which gives
 `<app>.<suffix>`, and "Free sslip.io domain" is no longer offered. The server
 still accepts it from a page rendered before the suffix was set, so a form left
-open in a browser doesn't fail.
+open in a browser doesn't fail (the suffix-only rule may still refuse the host
+it names).
 
 A preview base domain that an app sets still wins over the suffix. Left empty,
 it falls back to the suffix, so a preview is one label under it too.

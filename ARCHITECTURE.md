@@ -676,7 +676,8 @@ state and mismatch checks still see every container.
 With `OUTHAUL_DOMAIN_SUFFIX`, every name Outhaul generates is one label under
 it, the shape a wildcard for `*.<suffix>` covers: a template's `${domain}` is
 `<app>.<suffix>`, a preview `[<service>-]<app>-pr-<n>.<suffix>`, and a first
-`git push` `<app>.<suffix>`. Unset, nothing changes and `sslip.io` names are
+`git push` `<app>.<suffix>`. The exception is a preview base domain an app sets
+itself, which still wins. Unset, nothing changes and `sslip.io` names are
 generated as before. The user guide is `docs/SHARED-HOST.md`.
 
 **One value for naming.** `core.Naming` carries the server's IP, the suffix and
