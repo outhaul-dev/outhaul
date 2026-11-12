@@ -9,10 +9,12 @@ import (
 )
 
 // Extra is what the override adds to one service: the limits Outhaul applies
-// for resources the service does not set itself.
+// for resources the service does not set itself, and the restart policy it
+// gives a service that states none.
 type Extra struct {
 	Limits   core.Limits // only the fields to write
 	InDeploy bool        // write them under deploy.resources.limits
+	Restart  string      // the restart policy to write; "" for none
 }
 
 // LimitExtras returns the additions for every service that needs one. A
