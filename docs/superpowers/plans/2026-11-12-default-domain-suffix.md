@@ -544,8 +544,8 @@ func TestNoSuffixKeepsTodaysNamesAndForms(t *testing.T) {
 		t.Error("the dialog offers a default host without a suffix")
 	}
 	apps := body(t, e.get(t, "/apps"))
-	if strings.Contains(apps, "data-default-domain") {
-		t.Error("the app form mentions a default domain without a suffix")
+	if strings.Contains(apps, `data-default-domain="`) {
+		t.Error("the app form renders a default domain without a suffix")
 	}
 }
 ```
@@ -630,10 +630,12 @@ and the domain field:
 
 ```html
         <label class="field">
-          <span>Domain {{template "hint" "The hostname Traefik routes to this app, e.g. web.example.com. Leave it blank to use this app's name under the server's domain suffix. For a Compose stack you can leave this blank to keep the stack internal-only."}}</span>
+          <span>Domain {{if .DomainSuffix}}{{template "hint" "The hostname Traefik routes to this app, e.g. web.example.com. Leave it blank to use this app's name under the server's domain suffix. For a Compose stack you can leave this blank to keep the stack internal-only."}}{{else}}{{template "hint" "The hostname Traefik routes to this app, e.g. web.example.com. For a Compose stack you can leave this blank to keep the stack internal-only."}}{{end}}</span>
           <input type="text" name="domain" id="domain-input" placeholder="web.example.com" value="{{with .Form}}{{.Domain}}{{end}}"{{if not .DomainSuffix}} required{{end}}>
         </label>
 ```
+
+The `else` branch is the pre-change hint character for character: an install that sets nothing sees no change, including its copy. Only the script's string literal contains `data-default-domain` when there is no suffix, which is why `TestNoSuffixKeepsTodaysNamesAndForms` asserts on the rendered attribute (`data-default-domain="`), not the bare token.
 
 and in the script: declare these three above `function applyKind`, because `applyKind` reads `defaultDomain`:
 
