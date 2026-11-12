@@ -32,6 +32,7 @@ type userRow struct {
 	Password      bool
 	NoPasswordYet bool // a password account whose owner hasn't set one
 	Admin         bool // reaches every project
+	FromGroups    bool // the role came from the provider's groups
 }
 
 // usersPage renders the Users page. extra carries the error or the one-time
@@ -47,11 +48,12 @@ func (s *Server) usersPage(w http.ResponseWriter, r *http.Request, status int, e
 	waiting := 0
 	for _, u := range list {
 		row := userRow{
-			UserRow:  u,
-			Name:     u.Display(),
-			Self:     u.ID == me.ID,
-			Password: u.SignIn == core.SignInPassword,
-			Admin:    u.Role == core.RoleSystemAdmin,
+			UserRow:    u,
+			Name:       u.Display(),
+			Self:       u.ID == me.ID,
+			Password:   u.SignIn == core.SignInPassword,
+			Admin:      u.Role == core.RoleSystemAdmin,
+			FromGroups: u.RoleFromGroups && len(s.ssoEnv.RoleGroups) > 0,
 		}
 		row.NoPasswordYet = row.Password && u.PasswordHash == ""
 		if u.SignIn == core.SignInSSO && u.Role == core.RoleNone {

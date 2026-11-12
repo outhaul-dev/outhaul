@@ -38,9 +38,11 @@ right here before writing the worker.
   argon2id password hash, session cookie. The first account, a system admin, is
   created on first boot via a printed one-time setup URL. A system admin can
   also be created on the host with `outhaul admin create`. People can also sign
-  in through any OIDC provider (SSO), configured on Settings; see `docs/SSO.md`.
+  in through any OIDC provider (SSO), configured on Settings or in the
+  environment; see `docs/SSO.md`.
   An SSO account is keyed by the provider's issuer and subject, never linked by
-  email, has no password, and starts with no role. SSO sessions last 8 hours;
+  email, has no password, and starts with no role unless one of its provider
+  groups is mapped to one. SSO sessions last 8 hours;
   password sessions last 7 days. The last system admin who can sign in with a
   password can't be demoted or removed. A domain row can put the same sign-in in
   front of an app (protected routes, below).
@@ -624,6 +626,23 @@ sign-in, or require sign-in where another project's app has a route
 stub in place of Outhaul (not in CI). Its `--outhaul` mode uses a running
 Outhaul instead, but hasn't been run against one yet, and the whole flow with a
 real Outhaul and a real SSO provider hasn't been run end to end.
+
+### SSO from configuration, and roles from groups (opt-in)
+
+`OUTHAUL_SSO_ISSUER`, `OUTHAUL_SSO_CLIENT_ID` and
+`OUTHAUL_SSO_CLIENT_SECRET_FILE` connect the provider without the Settings
+page. The environment wins while it is set; stored settings are kept, unused.
+The secret is read once at startup and never written to the database. A plain
+`settings` record of the issuer and client ID last run with lets startup end
+every SSO sign-in when they change, exactly as saving on Settings does.
+
+`OUTHAUL_SSO_ROLE_GROUPS` maps the provider's groups to Outhaul's roles at each
+sign-in to Outhaul. The highest mapped role wins. A mapped role always applies;
+one that came from a group goes when no group maps any more; a hand-given role
+lasts until the next sign-in for someone in a mapped group. Protected-route sign-ins neither create an
+account nor change a role, and a password account's role is never touched. This
+replaces the 2026-11-02 design's "taking roles or groups from the SSO provider"
+non-goal, opt-in. See `docs/SSO.md`.
 
 ### Behind a TLS-terminating proxy (opt-in)
 

@@ -278,6 +278,7 @@ func TestCADirs(t *testing.T) {
 // which serve runs first, names each bad variable.
 func TestValidateRejectsMalformedValues(t *testing.T) {
 	cases := []struct{ key, val string }{
+		{"OUTHAUL_SSO_ISSUER", "http://idp.example.com"},
 		{"OUTHAUL_HEALTH_TIMEOUT", "120"},
 		{"OUTHAUL_HEALTH_TIMEOUT", "0"},
 		{"OUTHAUL_HEALTH_TIMEOUT", "-5s"},
@@ -1379,5 +1380,166 @@ func TestValidateRejectsMalformedComposeRestart(t *testing.T) {
 			!strings.Contains(err.Error(), "unless-stopped") {
 			t.Errorf("OUTHAUL_COMPOSE_RESTART=%q: Validate = %v, want an error naming the variable and unless-stopped", in, err)
 		}
+	}
+}
+
+func TestLoadSSOSettingsFromEnvironment(t *testing.T) {
+	c := Load(func(k string) string {
+		return map[string]string{
+			"OUTHAUL_PUBLIC_URL":             "https://outhaul.example.com",
+			"OUTHAUL_SSO_ISSUER":             "https://idp.example.com",
+			"OUTHAUL_SSO_CLIENT_ID":          "cid",
+			"OUTHAUL_SSO_CLIENT_SECRET_FILE": "sso-client-secret",
+			"OUTHAUL_SSO_SCOPES":             "groups, offline_access",
+		}[k]
+	})
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if c.SSOIssuer != "https://idp.example.com" || c.SSOClientID != "cid" || c.SSOClientSecretFile != "sso-client-secret" {
+		t.Errorf("provider = %q %q %q", c.SSOIssuer, c.SSOClientID, c.SSOClientSecretFile)
+	}
+	if len(c.SSOScopes) != 2 || c.SSOScopes[0] != "groups" || c.SSOScopes[1] != "offline_access" {
+		t.Errorf("scopes = %v", c.SSOScopes)
+	}
+}
+
+func TestValidateSSOFromEnvironmentIsAllOrNone(t *testing.T) {
+	all := map[string]string{
+		"OUTHAUL_PUBLIC_URL":             "https://outhaul.example.com",
+		"OUTHAUL_SSO_ISSUER":             "https://idp.example.com",
+		"OUTHAUL_SSO_CLIENT_ID":          "cid",
+		"OUTHAUL_SSO_CLIENT_SECRET_FILE": "sso-client-secret",
+	}
+	for omitted := range map[string]bool{
+		"OUTHAUL_SSO_ISSUER": true, "OUTHAUL_SSO_CLIENT_ID": true, "OUTHAUL_SSO_CLIENT_SECRET_FILE": true,
+	} {
+		env := map[string]string{}
+		for k, v := range all {
+			env[k] = v
+		}
+		delete(env, omitted)
+		err := Load(func(k string) string { return env[k] }).Validate()
+		if err == nil || !strings.Contains(err.Error(), "OUTHAUL_SSO_ISSUER, OUTHAUL_SSO_CLIENT_ID and OUTHAUL_SSO_CLIENT_SECRET_FILE") {
+			t.Errorf("without %s: %v", omitted, err)
+		}
+	}
+}
+
+func TestValidateSSOFromEnvironmentNeedsPublicURL(t *testing.T) {
+	err := Load(func(k string) string {
+		return map[string]string{
+			"OUTHAUL_SSO_ISSUER":             "https://idp.example.com",
+			"OUTHAUL_SSO_CLIENT_ID":          "cid",
+			"OUTHAUL_SSO_CLIENT_SECRET_FILE": "sso-client-secret",
+		}[k]
+	}).Validate()
+	if err == nil || !strings.Contains(err.Error(), "OUTHAUL_PUBLIC_URL") {
+		t.Fatalf("Validate = %v, want it to name OUTHAUL_PUBLIC_URL", err)
+	}
+}
+
+func TestLoadSSOSecretFileValue(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+		bad  bool
+	}{
+		{"/etc/outhaul/sso-client-secret", "/etc/outhaul/sso-client-secret", false},
+		{"sso-client-secret", "sso-client-secret", false},
+		{"secrets/sso-client-secret", "", true},
+		{"../sso-client-secret", "", true},
+	}
+	for _, tc := range cases {
+		c := Load(func(k string) string {
+			if k == "OUTHAUL_SSO_CLIENT_SECRET_FILE" {
+				return tc.in
+			}
+			return ""
+		})
+		if tc.bad {
+			if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "OUTHAUL_SSO_CLIENT_SECRET_FILE") {
+				t.Errorf("%q: Validate = %v, want it refused", tc.in, err)
+			}
+			continue
+		}
+		if c.SSOClientSecretFile != tc.want {
+			t.Errorf("%q parsed as %q, want %q", tc.in, c.SSOClientSecretFile, tc.want)
+		}
+	}
+}
+
+func TestLoadSSORoleGroups(t *testing.T) {
+	c := Load(func(k string) string {
+		return map[string]string{
+			"OUTHAUL_SSO_ROLE_GROUPS": " system_admin : outhaul-admins , project_admin:eng: platform , project_member:outhaul engine#1 , project_viewer:viewers ",
+		}[k]
+	})
+	want := []core.GroupRole{
+		{Group: "outhaul-admins", Role: core.RoleSystemAdmin},
+		{Group: "eng: platform", Role: core.RoleProjectAdmin},
+		{Group: "outhaul engine#1", Role: core.RoleProjectMember},
+		{Group: "viewers", Role: core.RoleProjectViewer},
+	}
+	if len(c.SSORoleGroups) != len(want) {
+		t.Fatalf("mapping = %v, want %v", c.SSORoleGroups, want)
+	}
+	for i := range want {
+		if c.SSORoleGroups[i] != want[i] {
+			t.Errorf("entry %d = %+v, want %+v", i, c.SSORoleGroups[i], want[i])
+		}
+	}
+}
+
+func TestLoadSSORoleGroupsRejects(t *testing.T) {
+	for _, in := range []string{
+		"wizard:eng",                            // unknown role
+		"none:eng",                              // not one of AssignableRoles
+		"eng",                                   // no colon
+		"project_member:",                       // empty group
+		"project_member:eng,project_viewer:eng", // the same group twice
+		"project_member:" + strings.Repeat("g", 257),
+	} {
+		err := Load(func(k string) string {
+			if k == "OUTHAUL_SSO_ROLE_GROUPS" {
+				return in
+			}
+			return ""
+		}).Validate()
+		if err == nil || !strings.Contains(err.Error(), "OUTHAUL_SSO_ROLE_GROUPS") {
+			t.Errorf("%q: Validate = %v, want it refused", in, err)
+		}
+	}
+}
+
+func TestLoadSSOScopesRejects(t *testing.T) {
+	err := Load(func(k string) string {
+		if k == "OUTHAUL_SSO_SCOPES" {
+			return `say"hi`
+		}
+		return ""
+	}).Validate()
+	if err == nil || !strings.Contains(err.Error(), "OUTHAUL_SSO_SCOPES") {
+		t.Fatalf("Validate = %v, want it refused", err)
+	}
+}
+
+func TestLoadSSOGroupsClaim(t *testing.T) {
+	with := func(mapping, claim string) Config {
+		return Load(func(k string) string {
+			return map[string]string{
+				"OUTHAUL_SSO_ROLE_GROUPS":  mapping,
+				"OUTHAUL_SSO_GROUPS_CLAIM": claim,
+			}[k]
+		})
+	}
+	if c := with("project_member:eng", ""); c.SSOGroupsClaim != "groups" {
+		t.Errorf("claim = %q, want the groups default", c.SSOGroupsClaim)
+	}
+	if c := with("project_member:eng", "teams"); c.SSOGroupsClaim != "teams" || c.Validate() != nil {
+		t.Errorf("claim = %q, Validate = %v", c.SSOGroupsClaim, c.Validate())
+	}
+	if err := with("", "teams").Validate(); err == nil || !strings.Contains(err.Error(), "OUTHAUL_SSO_GROUPS_CLAIM") {
+		t.Errorf("claim without mapping: %v, want a refusal", err)
 	}
 }

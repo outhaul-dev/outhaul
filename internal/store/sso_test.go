@@ -133,3 +133,220 @@ func TestSavingSSOSettingsEndsSessionsInTheSameTransaction(t *testing.T) {
 		t.Error("session survived clearing the settings")
 	}
 }
+
+// ssoSessionUser inserts an SSO account with a live session.
+func ssoSessionUser(t *testing.T, s *Store, subject string) (int64, string) {
+	t.Helper()
+	res, err := s.db.Exec(`INSERT INTO users (username, password_hash, created_at, role, sign_in, sso_issuer, sso_subject, email)
+		VALUES (?, '', ?, 'none', 'sso', 'https://idp.example.com', ?, ?)`,
+		ssoUsername("https://idp.example.com", subject), fmtTime(time.Now().UTC()), subject, subject+"@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+	tok := "tok-" + subject
+	if err := s.CreateSession(context.Background(), core.Session{Token: tok, UserID: id, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	return id, tok
+}
+
+func TestSyncSSOStartupKeepsSessionsWhenNothingChanged(t *testing.T) {
+	ctx := context.Background()
+	s := openWithBox(t)
+	const iss = "https://idp.example.com"
+	if err := s.SetSSOSettings(ctx, SSOSettings{Issuer: iss, ClientID: "cid", ClientSecret: "sec"}, false); err != nil {
+		t.Fatal(err)
+	}
+	_, tok := ssoSessionUser(t, s, "sub-1")
+	ended, err := s.SyncSSOStartup(ctx, SSOSettings{Issuer: iss, ClientID: "cid"}, true)
+	if err != nil || ended {
+		t.Fatalf("SyncSSOStartup = %v, %v; want no change", ended, err)
+	}
+	if _, err := s.GetSession(ctx, tok); err != nil {
+		t.Error("the session ended although nothing changed")
+	}
+}
+
+func TestSyncSSOStartupEndsSessionsWhenTheIssuerChanges(t *testing.T) {
+	ctx := context.Background()
+	s := openWithBox(t)
+	if err := s.SetSSOSettings(ctx, SSOSettings{Issuer: "https://old.example.com", ClientID: "cid", ClientSecret: "sec"}, false); err != nil {
+		t.Fatal(err)
+	}
+	_, tok := ssoSessionUser(t, s, "sub-1")
+	ended, err := s.SyncSSOStartup(ctx, SSOSettings{Issuer: "https://new.example.com", ClientID: "cid"}, true)
+	if err != nil || !ended {
+		t.Fatalf("SyncSSOStartup = %v, %v; want it to end sessions", ended, err)
+	}
+	if _, err := s.GetSession(ctx, tok); err == nil {
+		t.Error("the session survived an issuer change")
+	}
+	// The record now names the new issuer, so the next start changes nothing.
+	if ended, err := s.SyncSSOStartup(ctx, SSOSettings{Issuer: "https://new.example.com", ClientID: "cid"}, true); err != nil || ended {
+		t.Fatalf("second SyncSSOStartup = %v, %v; want no change", ended, err)
+	}
+}
+
+func TestSyncSSOStartupEndsSessionsWhenOnlyTheClientIDChanges(t *testing.T) {
+	ctx := context.Background()
+	s := openWithBox(t)
+	const iss = "https://idp.example.com"
+	if err := s.SetSSOSettings(ctx, SSOSettings{Issuer: iss, ClientID: "old", ClientSecret: "sec"}, false); err != nil {
+		t.Fatal(err)
+	}
+	_, tok := ssoSessionUser(t, s, "sub-1")
+	if ended, err := s.SyncSSOStartup(ctx, SSOSettings{Issuer: iss, ClientID: "new"}, true); err != nil || !ended {
+		t.Fatalf("SyncSSOStartup = %v, %v; want it to end sessions", ended, err)
+	}
+	if _, err := s.GetSession(ctx, tok); err == nil {
+		t.Error("the session survived a client-ID change")
+	}
+}
+
+// Before the record existed, the stored settings are the baseline.
+func TestSyncSSOStartupUsesStoredSettingsAsTheFirstBaseline(t *testing.T) {
+	ctx := context.Background()
+	s := openWithBox(t)
+	const iss = "https://idp.example.com"
+	for k, v := range map[string]string{"sso_issuer": iss, "sso_client_id": "cid"} {
+		if err := s.SetSetting(ctx, k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, tok := ssoSessionUser(t, s, "sub-1")
+	if ended, err := s.SyncSSOStartup(ctx, SSOSettings{Issuer: iss, ClientID: "cid"}, true); err != nil || ended {
+		t.Fatalf("same settings = %v, %v; want kept", ended, err)
+	}
+	if _, err := s.GetSession(ctx, tok); err != nil {
+		t.Error("a session ended although the settings matched")
+	}
+}
+
+// A Settings-connected install passes set=false at boot: the stored settings
+// are in force and nobody may be signed out.
+func TestSyncSSOStartupWithSettingsFromThePageKeepsSessions(t *testing.T) {
+	ctx := context.Background()
+	s := openWithBox(t)
+	const iss = "https://idp.example.com"
+	if err := s.SetSSOSettings(ctx, SSOSettings{Issuer: iss, ClientID: "cid", ClientSecret: "sec"}, false); err != nil {
+		t.Fatal(err)
+	}
+	_, tok := ssoSessionUser(t, s, "sub-1")
+	if ended, err := s.SyncSSOStartup(ctx, SSOSettings{}, false); err != nil || ended {
+		t.Fatalf("SyncSSOStartup = %v, %v; want the stored settings kept", ended, err)
+	}
+	if _, err := s.GetSession(ctx, tok); err != nil {
+		t.Error("a session ended although the stored settings were unchanged")
+	}
+}
+
+// An install from before this record, connected on Settings, upgrades with no
+// record and no environment: the stored settings are both in force and the
+// baseline.
+func TestSyncSSOStartupUpgradesSettingsFromThePageWithoutSigningAnyoneOut(t *testing.T) {
+	ctx := context.Background()
+	s := openWithBox(t)
+	const iss = "https://idp.example.com"
+	for k, v := range map[string]string{"sso_issuer": iss, "sso_client_id": "cid"} {
+		if err := s.SetSetting(ctx, k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, tok := ssoSessionUser(t, s, "sub-1")
+	if ended, err := s.SyncSSOStartup(ctx, SSOSettings{}, false); err != nil || ended {
+		t.Fatalf("SyncSSOStartup = %v, %v; want the stored settings kept", ended, err)
+	}
+	if _, err := s.GetSession(ctx, tok); err != nil {
+		t.Error("a session ended on the upgrade")
+	}
+	if got, ok, _ := s.GetSetting(ctx, "sso_last_issuer"); !ok || got != iss {
+		t.Errorf("record = %q, %v; want the stored issuer", got, ok)
+	}
+}
+
+func TestSyncSSOStartupWithNoSettingsEndsSessionsAndForgetsTheRecord(t *testing.T) {
+	ctx := context.Background()
+	s := openWithBox(t)
+	const iss = "https://idp.example.com"
+	// A previous run took its provider from the environment: a run record, and
+	// no stored settings.
+	if _, err := s.SyncSSOStartup(ctx, SSOSettings{Issuer: iss, ClientID: "cid"}, true); err != nil {
+		t.Fatal(err)
+	}
+	_, tok := ssoSessionUser(t, s, "sub-1")
+	ended, err := s.SyncSSOStartup(ctx, SSOSettings{}, false)
+	if err != nil || !ended {
+		t.Fatalf("SyncSSOStartup = %v, %v; want it to end sessions", ended, err)
+	}
+	if _, err := s.GetSession(ctx, tok); err == nil {
+		t.Error("the session survived SSO being unset")
+	}
+	if _, ok, _ := s.GetSetting(ctx, "sso_last_issuer"); ok {
+		t.Error("the run record was kept")
+	}
+	if ended, err := s.SyncSSOStartup(ctx, SSOSettings{}, false); err != nil || ended {
+		t.Fatalf("second SyncSSOStartup = %v, %v; want no change", ended, err)
+	}
+}
+
+// A host that never had SSO has nothing to report ending, though the record
+// is still written for the next start.
+func TestSyncSSOStartupFirstEverEnvironmentRunReportsNothing(t *testing.T) {
+	ctx := context.Background()
+	s := openWithBox(t)
+	const iss = "https://idp.example.com"
+	ended, err := s.SyncSSOStartup(ctx, SSOSettings{Issuer: iss, ClientID: "cid"}, true)
+	if err != nil || ended {
+		t.Fatalf("SyncSSOStartup = %v, %v; want false on a first-ever run", ended, err)
+	}
+	if got, ok, _ := s.GetSetting(ctx, "sso_last_issuer"); !ok || got != iss {
+		t.Errorf("recorded issuer = %q, %v; want %q", got, ok, iss)
+	}
+	if got, ok, _ := s.GetSetting(ctx, "sso_last_client_id"); !ok || got != "cid" {
+		t.Errorf("recorded client ID = %q, %v; want cid", got, ok)
+	}
+}
+
+func TestSyncSSOStartupLeavesPasswordSessionsAlone(t *testing.T) {
+	ctx := context.Background()
+	s := openWithBox(t)
+	if err := s.SetSSOSettings(ctx, SSOSettings{Issuer: "https://old.example.com", ClientID: "cid", ClientSecret: "sec"}, false); err != nil {
+		t.Fatal(err)
+	}
+	u, err := s.CreatePasswordAccount(ctx, "pat", core.RoleSystemAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok := "password-session"
+	if err := s.CreateSession(ctx, core.Session{Token: tok, UserID: u.ID, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SyncSSOStartup(ctx, SSOSettings{Issuer: "https://new.example.com", ClientID: "cid"}, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetSession(ctx, tok); err != nil {
+		t.Error("a password session ended with the SSO settings")
+	}
+}
+
+func TestSetAndClearSSOSettingsMaintainTheRunRecord(t *testing.T) {
+	ctx := context.Background()
+	s := openWithBox(t)
+	const iss = "https://idp.example.com"
+	if err := s.SetSSOSettings(ctx, SSOSettings{Issuer: iss, ClientID: "cid", ClientSecret: "sec"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, _ := s.GetSetting(ctx, "sso_last_issuer"); !ok || got != iss {
+		t.Fatalf("recorded issuer = %q, %v", got, ok)
+	}
+	if ended, err := s.SyncSSOStartup(ctx, SSOSettings{Issuer: iss, ClientID: "cid"}, true); err != nil || ended {
+		t.Fatalf("a save was counted again at the next start: %v, %v", ended, err)
+	}
+	if err := s.ClearSSOSettings(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := s.GetSetting(ctx, "sso_last_issuer"); ok {
+		t.Error("clearing SSO kept the run record")
+	}
+}

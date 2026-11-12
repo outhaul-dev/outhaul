@@ -672,7 +672,10 @@ func TestGatewayCookieFollowsThePublicURL(t *testing.T) {
 }
 
 func TestSSORouteVisitCreatesNoAccount(t *testing.T) {
-	e := ssoLoginEnv(t, fakeIdentity("sub-1", "dana@example.com"))
+	fake := fakeIdentity("sub-1", "dana@example.com")
+	fake.Identity.Groups = []string{"admins"}
+	e := ssoLoginEnv(t, fake)
+	e.srv.ssoEnv.RoleGroups = []core.GroupRole{{Group: "admins", Role: core.RoleSystemAdmin}}
 	seedGateRows(t, e)
 	ctx := context.Background()
 	before, err := e.store.ListUsers(ctx)

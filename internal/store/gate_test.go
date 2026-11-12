@@ -472,7 +472,7 @@ func TestRemovingAccountEndsItsGateSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sso, err := s.FindOrCreateSSOUser(ctx, "https://idp", "sub-1", "eli@example.com")
+	sso, _, err := s.FindOrCreateSSOUser(ctx, "https://idp", "sub-1", "eli@example.com", core.RoleNone, false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -33,7 +33,7 @@ func requirePasswordAccount(ctx context.Context, q interface {
 	return nil
 }
 
-const userCols = `id, username, password_hash, created_at, role, sign_in, sso_issuer, sso_subject, email, last_sign_in_at`
+const userCols = `id, username, password_hash, created_at, role, sign_in, sso_issuer, sso_subject, email, last_sign_in_at, role_from_groups`
 
 func scanUser(row scanner) (core.User, error) {
 	var (
@@ -43,7 +43,7 @@ func scanUser(row scanner) (core.User, error) {
 		lastIn    sql.NullString
 	)
 	if err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &createdAt, &role, &u.SignIn,
-		&u.SSOIssuer, &u.SSOSubject, &u.Email, &lastIn); err != nil {
+		&u.SSOIssuer, &u.SSOSubject, &u.Email, &lastIn, &u.RoleFromGroups); err != nil {
 		return core.User{}, err
 	}
 	u.Role = core.Role(role)
@@ -82,19 +82,28 @@ func ssoUsername(issuer, subject string) string {
 }
 
 // FindOrCreateSSOUser returns the SSO account for issuer and subject, creating
-// it with no role on the first sign-in. A later sign-in keeps its id and role
-// and refreshes its email. Email never selects an account, and a password
-// account is never returned or changed. The username is ssoUsername's.
+// it with no role on the first sign-in, and the role the account held before
+// this sign-in. A later sign-in keeps its id and refreshes its email. Email
+// never selects an account, and a password account is never returned or
+// changed. The username is ssoUsername's.
+//
+// groupsMapped says whether a group-to-role mapping is configured, and
+// groupRole is the highest role the sign-in's groups map to (RoleNone for
+// none). With no mapping the role is left alone. With one:
+//   - a mapped role always applies and marks the role as given by a group,
+//     whatever an admin gave by hand;
+//   - no mapped role removes the role only when the mark says a group gave it;
+//     a role an admin gave by hand, or a new account's none, stays.
 //
 // It is one transaction. If two first sign-ins race, the insert of the second
 // does nothing and it reads the account the first created.
-func (s *Store) FindOrCreateSSOUser(ctx context.Context, issuer, subject, email string) (core.User, error) {
+func (s *Store) FindOrCreateSSOUser(ctx context.Context, issuer, subject, email string, groupRole core.Role, groupsMapped bool) (core.User, core.Role, error) {
 	if issuer == "" || subject == "" || email == "" {
-		return core.User{}, errors.New("store: an SSO account needs an issuer, a subject and an email")
+		return core.User{}, core.RoleNone, errors.New("store: an SSO account needs an issuer, a subject and an email")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return core.User{}, err
+		return core.User{}, core.RoleNone, err
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx,
@@ -102,28 +111,44 @@ func (s *Store) FindOrCreateSSOUser(ctx context.Context, issuer, subject, email 
 		 VALUES (?, '', ?, ?, 'sso', ?, ?, ?)
 		 ON CONFLICT DO NOTHING`,
 		ssoUsername(issuer, subject), fmtTime(time.Now().UTC()), string(core.RoleNone), issuer, subject, email); err != nil {
-		return core.User{}, err
+		return core.User{}, core.RoleNone, err
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE users SET email = ? WHERE sign_in = 'sso' AND sso_issuer = ? AND sso_subject = ?`,
 		email, issuer, subject); err != nil {
-		return core.User{}, err
+		return core.User{}, core.RoleNone, err
 	}
+	const selectSSO = `SELECT ` + userCols + ` FROM users WHERE sign_in = 'sso' AND sso_issuer = ? AND sso_subject = ?`
 	// Not found means the insert did nothing because another account already
 	// holds the username: refuse rather than touch it.
-	u, err := scanUser(tx.QueryRowContext(ctx,
-		`SELECT `+userCols+` FROM users WHERE sign_in = 'sso' AND sso_issuer = ? AND sso_subject = ?`,
-		issuer, subject))
+	prev, err := scanUser(tx.QueryRowContext(ctx, selectSSO, issuer, subject))
 	if errors.Is(err, sql.ErrNoRows) {
-		return core.User{}, errors.New("store: another account already has the username this SSO account needs")
+		return core.User{}, core.RoleNone, errors.New("store: another account already has the username this SSO account needs")
 	}
 	if err != nil {
-		return core.User{}, err
+		return core.User{}, core.RoleNone, err
+	}
+	u := prev
+	if groupsMapped {
+		if groupRole != core.RoleNone {
+			_, err = tx.ExecContext(ctx, `UPDATE users SET role = ?, role_from_groups = 1
+				WHERE sign_in = 'sso' AND sso_issuer = ? AND sso_subject = ?`, string(groupRole), issuer, subject)
+		} else {
+			_, err = tx.ExecContext(ctx, `UPDATE users SET role = CASE WHEN role_from_groups = 1 THEN ? ELSE role END,
+				role_from_groups = 0
+				WHERE sign_in = 'sso' AND sso_issuer = ? AND sso_subject = ?`, string(core.RoleNone), issuer, subject)
+		}
+		if err != nil {
+			return core.User{}, core.RoleNone, err
+		}
+		if u, err = scanUser(tx.QueryRowContext(ctx, selectSSO, issuer, subject)); err != nil {
+			return core.User{}, core.RoleNone, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
-		return core.User{}, err
+		return core.User{}, core.RoleNone, err
 	}
-	return u, nil
+	return u, prev.Role, nil
 }
 
 // ListUsers returns every account: SSO accounts with no role first (they are
@@ -160,7 +185,8 @@ func (u userRowScanner) Scan(dest ...any) error {
 	return u.rows.Scan(append(dest, u.count)...)
 }
 
-// SetUserRole changes an account's role. It refuses to demote the last
+// SetUserRole changes an account's role by hand, which also clears the mark
+// that a group gave it. It refuses to demote the last
 // password account that is a system admin.
 func (s *Store) SetUserRole(ctx context.Context, id int64, role core.Role) error {
 	if _, ok := core.ParseRole(string(role)); !ok {
@@ -176,7 +202,7 @@ func (s *Store) SetUserRole(ctx context.Context, id int64, role core.Role) error
 			return err
 		}
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE users SET role = ? WHERE id = ?`, string(role), id)
+	res, err := tx.ExecContext(ctx, `UPDATE users SET role = ?, role_from_groups = 0 WHERE id = ?`, string(role), id)
 	if err != nil {
 		return err
 	}

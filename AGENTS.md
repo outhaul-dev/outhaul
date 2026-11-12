@@ -119,6 +119,18 @@ it.
 - **SSO accounts** are keyed by issuer and subject and are never linked by
   email. An SSO account has no password and can't use the password form. See
   `docs/SSO.md`.
+- **SSO from the environment.** `OUTHAUL_SSO_ISSUER`,
+  `OUTHAUL_SSO_CLIENT_ID` and `OUTHAUL_SSO_CLIENT_SECRET_FILE` win over the
+  stored settings while set; the secret is read once in `serve` and never
+  written to the database, a log line or a page. Saving or removing SSO on
+  Settings answers 409 while they are set. `SyncSSOStartup` records the issuer
+  and client ID last run with, and ends every SSO sign-in when they change.
+- **Roles from groups.** `OUTHAUL_SSO_ROLE_GROUPS` maps provider groups to
+  roles at each sign-in to Outhaul only. The highest wins and names are
+  compared exactly; `users.role_from_groups` marks the accounts it applies to,
+  and `SetUserRole` clears the mark. A mapped role always wins at the next
+  sign-in; one that came from a group goes when no group maps any more. It
+  never touches a password account, and protected-route sign-ins don't run it.
 - **Long-lived HTTP handlers** (SSE) must wait on `s.streamContext(r)`, not
   `r.Context()`. Otherwise shutdown waits out its whole timeout.
 - **New `OUTHAUL_*` settings** go through the `parser` in

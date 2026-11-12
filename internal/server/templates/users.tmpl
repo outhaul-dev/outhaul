@@ -34,6 +34,7 @@
             </select>
             <button type="submit" class="linkbtn" data-save>Save</button>
           </form>
+          {{if .FromGroups}}<p class="muted row-note">From an SSO group. A change here lasts until they next sign in.</p>{{end}}
         </td>
         <td class="mono muted">{{if .Admin}}all{{else}}{{.ProjectCount}}{{end}}</td>
         <td class="mono muted">{{if .LastSignInAt}}{{fmtTimePtr .LastSignInAt}}{{else}}never{{end}}</td>

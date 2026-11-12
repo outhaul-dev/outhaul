@@ -11,13 +11,16 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/cron"
 	"github.com/outhaul-dev/outhaul/internal/docker"
+	"github.com/outhaul-dev/outhaul/internal/sso"
 )
 
 // DefaultTraefikImage is the Traefik image Outhaul pulls and manages. Pinned to
@@ -77,6 +80,13 @@ type Config struct {
 	StateBackupDestination string // OUTHAUL_STATE_BACKUP_DESTINATION; "" means the Azure row
 	StateBackupKeep        int    // OUTHAUL_STATE_BACKUP_KEEP; 0 keeps every copy
 	StateBackupPrefix      string // OUTHAUL_STATE_BACKUP_PREFIX; keeps hosts sharing a container apart
+
+	SSOIssuer           string           // OUTHAUL_SSO_ISSUER; with the next two, connects SSO from the environment
+	SSOClientID         string           // OUTHAUL_SSO_CLIENT_ID
+	SSOClientSecretFile string           // OUTHAUL_SSO_CLIENT_SECRET_FILE: absolute path or systemd credential name
+	SSOGroupsClaim      string           // OUTHAUL_SSO_GROUPS_CLAIM; "groups" when the mapping is set
+	SSOScopes           []string         // OUTHAUL_SSO_SCOPES; extra scopes to request
+	SSORoleGroups       []core.GroupRole // OUTHAUL_SSO_ROLE_GROUPS; group -> role, in order
 
 	stateBackupKeepSet bool    // OUTHAUL_STATE_BACKUP_KEEP was present
 	problems           []error // malformed OUTHAUL_* values; reported by Validate
@@ -138,6 +148,20 @@ func Load(getenv Getenv) Config {
 		StateBackupDestination: getenv("OUTHAUL_STATE_BACKUP_DESTINATION"),
 		StateBackupKeep:        p.count("OUTHAUL_STATE_BACKUP_KEEP", 30),
 		StateBackupPrefix:      p.keyPrefix("OUTHAUL_STATE_BACKUP_PREFIX"),
+
+		SSOIssuer:           p.ssoIssuer("OUTHAUL_SSO_ISSUER"),
+		SSOClientID:         strings.TrimSpace(getenv("OUTHAUL_SSO_CLIENT_ID")),
+		SSOClientSecretFile: p.ssoSecretFile("OUTHAUL_SSO_CLIENT_SECRET_FILE"),
+		SSORoleGroups:       p.ssoRoleGroups("OUTHAUL_SSO_ROLE_GROUPS"),
+		SSOScopes:           p.scopes("OUTHAUL_SSO_SCOPES"),
+	}
+	switch claim := strings.TrimSpace(getenv("OUTHAUL_SSO_GROUPS_CLAIM")); {
+	case claim != "" && len(c.SSORoleGroups) == 0:
+		p.problems = append(p.problems, errors.New("OUTHAUL_SSO_GROUPS_CLAIM needs OUTHAUL_SSO_ROLE_GROUPS, the mapping whose groups it names"))
+	case claim != "":
+		c.SSOGroupsClaim = claim
+	case len(c.SSORoleGroups) > 0:
+		c.SSOGroupsClaim = "groups"
 	}
 	c.stateBackupKeepSet = getenv("OUTHAUL_STATE_BACKUP_KEEP") != ""
 	c.TrustedProxies, c.TrustAllProxies = p.trustedProxies("OUTHAUL_TRUSTED_PROXIES")
@@ -295,6 +319,18 @@ func (c Config) Validate() error {
 		}
 	} else if c.StateBackupDestination == "" && (c.BackupAzureAccount == "" || c.BackupAzureContainer == "") {
 		errs = append(errs, errors.New("OUTHAUL_STATE_BACKUP_SCHEDULE needs a destination: set OUTHAUL_STATE_BACKUP_DESTINATION, or OUTHAUL_BACKUP_AZURE_ACCOUNT and OUTHAUL_BACKUP_AZURE_CONTAINER"))
+	}
+	set := 0
+	for _, v := range []string{c.SSOIssuer, c.SSOClientID, c.SSOClientSecretFile} {
+		if v != "" {
+			set++
+		}
+	}
+	if set != 0 && set != 3 {
+		errs = append(errs, errors.New("OUTHAUL_SSO_ISSUER, OUTHAUL_SSO_CLIENT_ID and OUTHAUL_SSO_CLIENT_SECRET_FILE must be set together"))
+	}
+	if c.SSOIssuer != "" && !c.PublicURLSet() {
+		errs = append(errs, errors.New("OUTHAUL_SSO_ISSUER needs OUTHAUL_PUBLIC_URL, where the provider sends people back"))
 	}
 	return errors.Join(errs...)
 }
@@ -809,4 +845,85 @@ func (p *parser) ipv4(key string) string {
 		return ""
 	}
 	return ip.To4().String()
+}
+
+// ssoIssuer reads OUTHAUL_SSO_ISSUER, held to the rule the Settings form uses.
+func (p *parser) ssoIssuer(key string) string {
+	v := strings.TrimSpace(p.getenv(key))
+	if v == "" {
+		return ""
+	}
+	if err := sso.ValidIssuer(v); err != nil {
+		p.problems = append(p.problems, fmt.Errorf("%s=%q: %v", key, v, err))
+		return ""
+	}
+	return v
+}
+
+// ssoSecretFile reads OUTHAUL_SSO_CLIENT_SECRET_FILE: an absolute path, or a
+// systemd credential name, which has no '/'.
+func (p *parser) ssoSecretFile(key string) string {
+	v := strings.TrimSpace(p.getenv(key))
+	if v == "" || filepath.IsAbs(v) {
+		return v
+	}
+	if strings.Contains(v, "/") {
+		p.reject(key, v, "an absolute path, or a systemd credential name with no /")
+		return ""
+	}
+	return v
+}
+
+// ssoRoleGroups reads OUTHAUL_SSO_ROLE_GROUPS: comma-separated role:group
+// pairs, split at the first colon so a group name may contain colons. Group
+// names are not secret, so a problem names the entry.
+func (p *parser) ssoRoleGroups(key string) []core.GroupRole {
+	raw := p.getenv(key)
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var out []core.GroupRole
+	seen := map[string]bool{}
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		roleName, group, ok := strings.Cut(entry, ":")
+		if !ok {
+			p.reject(key, entry, "role:group pairs, such as project_member:engineering")
+			continue
+		}
+		roleName, group = strings.TrimSpace(roleName), strings.TrimSpace(group)
+		role := core.Role(roleName)
+		if !slices.Contains(core.AssignableRoles, role) {
+			p.reject(key, entry, "a role of system_admin, project_admin, project_member or project_viewer before the colon")
+			continue
+		}
+		if group == "" || len(group) > 256 {
+			p.reject(key, entry, "a group name of 1 to 256 bytes after the colon")
+			continue
+		}
+		if seen[group] {
+			p.problems = append(p.problems, fmt.Errorf("%s: the group %q is named twice", key, group))
+			continue
+		}
+		seen[group] = true
+		out = append(out, core.GroupRole{Group: group, Role: role})
+	}
+	return out
+}
+
+// scopes reads OUTHAUL_SSO_SCOPES: scope tokens separated by commas or
+// spaces. A token is printable ASCII with no quote or backslash, so it can go
+// into the authorization URL unescaped. A rejected token is not echoed.
+func (p *parser) scopes(key string) []string {
+	var out []string
+	for _, s := range strings.FieldsFunc(p.getenv(key), func(r rune) bool { return r == ',' || unicode.IsSpace(r) }) {
+		for i := 0; i < len(s); i++ {
+			if c := s[i]; c < 0x21 || c > 0x7e || c == '"' || c == '\\' {
+				p.problems = append(p.problems, fmt.Errorf("%s: want scope names of printable characters, with no quote or backslash", key))
+				return nil
+			}
+		}
+		out = append(out, s)
+	}
+	return out
 }

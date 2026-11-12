@@ -279,6 +279,12 @@ No config files — defaults with `OUTHAUL_*` environment overrides:
 | `OUTHAUL_IMAGE_KEEP`    | `5`                  | Built images kept per app for rollback (`0` keeps all) |
 | `OUTHAUL_PRUNE_BUILD_CACHE` | `yes`            | Nightly prune of build cache unused for 7 days; it is daemon-wide, so set `no` on a host shared with other builds |
 | `OUTHAUL_PUBLIC_URL`    | (empty)              | Public base URL of the admin UI; enables GitHub App + webhook URLs, SSO and protected routes |
+| `OUTHAUL_SSO_ISSUER`    | (empty)              | OIDC issuer URL; with the next two, connects SSO from the environment, and the environment wins over Settings — see docs/SSO.md |
+| `OUTHAUL_SSO_CLIENT_ID` | (empty)              | Client ID for that provider                          |
+| `OUTHAUL_SSO_CLIENT_SECRET_FILE` | (empty)      | Absolute path, or a systemd credential name, holding the client secret; never a secret in the environment |
+| `OUTHAUL_SSO_ROLE_GROUPS` | (empty)            | `role:group` pairs, comma-separated; gives SSO accounts a role at each sign-in — see docs/SSO.md |
+| `OUTHAUL_SSO_GROUPS_CLAIM` | `groups`          | The ID token claim holding group names; needs `OUTHAUL_SSO_ROLE_GROUPS` |
+| `OUTHAUL_SSO_SCOPES`    | (empty)              | Extra scopes to request at the provider, separated by commas or spaces |
 | `OUTHAUL_SERVER_IP`     | (auto-detected)      | Public IP embedded in generated `sslip.io` template domains |
 | `OUTHAUL_UPDATES`       | `main`               | `main` follows the newest commit on `main`; `off` stops the panel's update actions, the background check and the root updater (`releases` is not built) |
 | `OUTHAUL_SSH_ADDR`      | `:2222`              | git-push SSH listen address; `off` opens no listener (the repositories and hook socket stay) |

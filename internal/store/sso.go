@@ -12,6 +12,9 @@ const (
 	ssoIssuerKey   = "sso_issuer"
 	ssoClientIDKey = "sso_client_id"
 	ssoSecretKey   = "sso_client_secret"
+
+	ssoLastIssuerKey   = "sso_last_issuer"
+	ssoLastClientIDKey = "sso_last_client_id"
 )
 
 // SSOSettings is the OIDC provider a system admin connected.
@@ -66,11 +69,12 @@ func (s *Store) SetSSOSettings(ctx context.Context, v SSOSettings, endSessions b
 	}
 	defer tx.Rollback()
 	for k, val := range map[string]string{ssoIssuerKey: v.Issuer, ssoClientIDKey: v.ClientID, ssoSecretKey: enc} {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO settings (key, value) VALUES (?, ?)
-			 ON CONFLICT(key) DO UPDATE SET value = excluded.value`, k, val); err != nil {
+		if err := upsertSetting(ctx, tx, k, val); err != nil {
 			return err
 		}
+	}
+	if err := recordSSORun(ctx, tx, v); err != nil {
+		return err
 	}
 	if endSessions {
 		if err := endSSOSessions(ctx, tx); err != nil {
@@ -88,8 +92,8 @@ func (s *Store) ClearSSOSettings(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM settings WHERE key IN (?, ?, ?)`,
-		ssoIssuerKey, ssoClientIDKey, ssoSecretKey); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM settings WHERE key IN (?, ?, ?, ?, ?)`,
+		ssoIssuerKey, ssoClientIDKey, ssoSecretKey, ssoLastIssuerKey, ssoLastClientIDKey); err != nil {
 		return err
 	}
 	if err := endSSOSessions(ctx, tx); err != nil {
@@ -113,4 +117,81 @@ func endSSOSessions(ctx context.Context, q execer) error {
 		return err
 	}
 	return deleteGateSessionsOfKind(ctx, q, core.SignInSSO)
+}
+
+func upsertSetting(ctx context.Context, q execer, key, value string) error {
+	_, err := q.ExecContext(ctx,
+		`INSERT INTO settings (key, value) VALUES (?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	return err
+}
+
+// recordSSORun writes the issuer and client ID the next start compares with.
+func recordSSORun(ctx context.Context, q execer, v SSOSettings) error {
+	if err := upsertSetting(ctx, q, ssoLastIssuerKey, v.Issuer); err != nil {
+		return err
+	}
+	return upsertSetting(ctx, q, ssoLastClientIDKey, v.ClientID)
+}
+
+// SyncSSOStartup records the issuer and client ID this run uses and, when they
+// differ from the last run's, ends every SSO sign-in in the same transaction.
+// With no record yet, the stored settings are the baseline. set is true when
+// the environment gave the provider; when it is false the stored settings are
+// the ones in force, if any. With neither, the record is removed. The result
+// is true when a previous run existed and its settings differ; sessions are
+// ended whenever they differ, but a first-ever run has nothing to report.
+func (s *Store) SyncSSOStartup(ctx context.Context, v SSOSettings, set bool) (bool, error) {
+	lastIssuer, hasRecord, err := s.GetSetting(ctx, ssoLastIssuerKey)
+	if err != nil {
+		return false, err
+	}
+	lastClientID, _, err := s.GetSetting(ctx, ssoLastClientIDKey)
+	if err != nil {
+		return false, err
+	}
+	storedIssuer, hasStored, err := s.GetSetting(ctx, ssoIssuerKey)
+	if err != nil {
+		return false, err
+	}
+	var storedClientID string
+	if hasStored {
+		if storedClientID, _, err = s.GetSetting(ctx, ssoClientIDKey); err != nil {
+			return false, err
+		}
+	}
+
+	inForce := set
+	if !set && hasStored {
+		v = SSOSettings{Issuer: storedIssuer, ClientID: storedClientID}
+		inForce = true
+	}
+	baselineSet := hasRecord
+	if !hasRecord && hasStored {
+		lastIssuer, lastClientID, baselineSet = storedIssuer, storedClientID, true
+	}
+	changed := baselineSet != inForce || (inForce && (lastIssuer != v.Issuer || lastClientID != v.ClientID))
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if inForce {
+		if err := recordSSORun(ctx, tx, v); err != nil {
+			return false, err
+		}
+	} else if _, err := tx.ExecContext(ctx, `DELETE FROM settings WHERE key IN (?, ?)`,
+		ssoLastIssuerKey, ssoLastClientIDKey); err != nil {
+		return false, err
+	}
+	if changed {
+		if err := endSSOSessions(ctx, tx); err != nil {
+			return false, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return changed && baselineSet, nil
 }

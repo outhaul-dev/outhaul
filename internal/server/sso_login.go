@@ -210,7 +210,7 @@ func (s *Server) ssoConnected(ctx context.Context) bool {
 	if !s.publicURLSet() {
 		return false
 	}
-	_, ok, err := s.store.GetSSOSettings(ctx)
+	_, ok, err := s.ssoSettings(ctx)
 	if err != nil {
 		log.Printf("sso: reading the settings for the login page: %v", err)
 		return false
@@ -429,11 +429,17 @@ func (s *Server) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		s.finishRouteSSO(w, r, p, flow, id)
 		return
 	}
-	user, err := s.store.FindOrCreateSSOUser(r.Context(), id.Issuer, id.Subject, id.Email)
+	role := core.RoleForGroups(id.Groups, s.ssoEnv.RoleGroups)
+	mapped := len(s.ssoEnv.RoleGroups) > 0
+	user, previous, err := s.store.FindOrCreateSSOUser(r.Context(), id.Issuer, id.Subject, id.Email, role, mapped)
 	if err != nil {
 		log.Printf("sso: finding the account for a sign-in: %v", err)
 		ssoRefused(w, r, "sso_failed")
 		return
+	}
+	if mapped && user.Role != previous {
+		log.Printf("sso: account %d (%s): role changed from %q to %q at sign-in; the groups claim held %d group(s)",
+			user.ID, user.Display(), previous, user.Role, len(id.Groups))
 	}
 	token, expires, err := s.createSession(r.Context(), user)
 	if err != nil {

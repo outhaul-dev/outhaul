@@ -437,3 +437,22 @@ func TestRefuseAnswersARaceWithoutA500(t *testing.T) {
 		}
 	}
 }
+
+func TestUsersPageMarksARoleFromGroups(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	id := insertSSOUser(t, e, "dana@example.com", core.RoleProjectMember)
+	if _, err := e.rawDB(t).Exec(`UPDATE users SET role_from_groups = 1 WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	const note = "From an SSO group. A change here lasts until they next sign in."
+	page := body(t, e.get(t, "/users"))
+	if strings.Contains(page, note) {
+		t.Error("a marked account shows the note although no mapping is configured")
+	}
+	e.srv.ssoEnv.RoleGroups = []core.GroupRole{{Group: "outhaul-admins", Role: core.RoleSystemAdmin}}
+	page = body(t, e.get(t, "/users"))
+	if !strings.Contains(page, note) {
+		t.Error("the role of a group-given account is not marked")
+	}
+}

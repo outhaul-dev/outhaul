@@ -1397,3 +1397,50 @@ func TestSSOExchangesAreCapped(t *testing.T) {
 		t.Errorf("a callback after the others finished = %d to %q, want 303 to /", rec.Code, rec.Header().Get("Location"))
 	}
 }
+
+func TestSSOSignInTakesTheRoleFromGroups(t *testing.T) {
+	fake := fakeIdentity("sub-1", "dana@example.com")
+	fake.Identity.Groups = []string{"eng", "admins"}
+	e := ssoLoginEnv(t, fake)
+	e.srv.ssoEnv.RoleGroups = []core.GroupRole{
+		{Group: "eng", Role: core.RoleProjectMember},
+		{Group: "admins", Role: core.RoleSystemAdmin},
+	}
+
+	newBrowser(e).signIn(t)
+
+	accounts := ssoAccounts(t, e)
+	if len(accounts) != 1 || accounts[0].Role != core.RoleSystemAdmin || !accounts[0].RoleFromGroups {
+		t.Fatalf("accounts = %+v, want a system admin marked from groups", accounts)
+	}
+}
+
+func TestSSOSignInLogsARoleChangeWithoutGroupNames(t *testing.T) {
+	var logged bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	fake := fakeIdentity("sub-1", "dana@example.com")
+	fake.Identity.Groups = []string{"outhaul-admins"}
+	e := ssoLoginEnv(t, fake)
+	e.srv.ssoEnv.RoleGroups = []core.GroupRole{{Group: "outhaul-admins", Role: core.RoleSystemAdmin}}
+	newBrowser(e).signIn(t) // creates the account with its role
+	first := logged.String()
+	if !strings.Contains(first, `role changed from "none" to "system_admin"`) || !strings.Contains(first, "1 group(s)") {
+		t.Errorf("first log = %q, want the role change with the group count", first)
+	}
+	if strings.Contains(first, "outhaul-admins") {
+		t.Errorf("first log names a group: %q", first)
+	}
+	logged.Reset()
+	fake.Identity.Groups = nil
+	newBrowser(e).signIn(t) // the group is gone
+	out := logged.String()
+	if !strings.Contains(out, `role changed from "system_admin" to "none"`) || !strings.Contains(out, "0 group(s)") {
+		t.Errorf("log = %q, want one role-change line with the group count", out)
+	}
+	if strings.Contains(out, "outhaul-admins") {
+		t.Errorf("log names a group: %q", out)
+	}
+}

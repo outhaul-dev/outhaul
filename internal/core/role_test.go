@@ -45,3 +45,31 @@ func TestRoleLabelsAndParse(t *testing.T) {
 		t.Fatalf("AssignableRoles = %v, want four, highest last", core.AssignableRoles)
 	}
 }
+
+func TestRoleForGroups(t *testing.T) {
+	mapping := []core.GroupRole{
+		{Group: "eng", Role: core.RoleProjectMember},
+		{Group: "admins", Role: core.RoleSystemAdmin},
+		{Group: "all", Role: core.RoleProjectViewer},
+	}
+	cases := []struct {
+		groups []string
+		want   core.Role
+	}{
+		{nil, core.RoleNone},
+		{[]string{}, core.RoleNone},
+		{[]string{"eng"}, core.RoleProjectMember},
+		{[]string{"eng", "admins"}, core.RoleSystemAdmin},
+		{[]string{"admins", "all"}, core.RoleSystemAdmin},
+		{[]string{"ENG"}, core.RoleNone}, // exact comparison
+		{[]string{"nobody"}, core.RoleNone},
+	}
+	for _, c := range cases {
+		if got := core.RoleForGroups(c.groups, mapping); got != c.want {
+			t.Errorf("RoleForGroups(%v) = %q, want %q", c.groups, got, c.want)
+		}
+	}
+	if got := core.RoleForGroups([]string{"eng"}, nil); got != core.RoleNone {
+		t.Errorf("no mapping = %q, want none", got)
+	}
+}
