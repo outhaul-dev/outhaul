@@ -258,6 +258,7 @@ No config files — defaults with `OUTHAUL_*` environment overrides:
 | `OUTHAUL_HTTPS_PORT`    | `443`                | Host port for HTTPS                        |
 | `OUTHAUL_HTTP_PORT`     | `80`                 | `80`, or `off` for HTTPS only (no plain-HTTP entrypoint); `off` needs HTTPS and can't be combined with a Cloudflare Tunnel — see docs/BEHIND-A-PROXY.md |
 | `OUTHAUL_ADMIN_DIRECT`  | `on`                 | `off` makes the admin UI listen only on loopback and Outhaul's Docker gateway, so it is reachable only through Traefik; needs `OUTHAUL_PUBLIC_URL` and HTTPS or a tunnel — see docs/BEHIND-A-PROXY.md |
+| `OUTHAUL_SIGNIN_BACKOFF` | `off` | `on` locks a username after repeated failed password sign-ins: 30 seconds, then 1, 2, 4 and 8 minutes, then 15; in memory. The way back in is `outhaul admin create` |
 | `OUTHAUL_HEALTH_TIMEOUT`| `60s`                | Deploy health-check deadline               |
 | `OUTHAUL_IMAGE_KEEP`    | `5`                  | Built images kept per app for rollback (`0` keeps all) |
 | `OUTHAUL_PRUNE_BUILD_CACHE` | `yes`            | Nightly prune of build cache unused for 7 days; it is daemon-wide, so set `no` on a host shared with other builds |

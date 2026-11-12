@@ -963,3 +963,42 @@ func TestAdminDirectSetting(t *testing.T) {
 		t.Errorf("a port-only listen address: %v", err)
 	}
 }
+
+func TestLoadSignInBackoff(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want bool
+	}{
+		{"", false},
+		{"on", true},
+		{"off", false},
+		{"TRUE", true},
+		{"yes", true},
+		{"no", false},
+	} {
+		c := Load(func(k string) string {
+			if k == "OUTHAUL_SIGNIN_BACKOFF" {
+				return tc.in
+			}
+			return ""
+		})
+		if c.SignInBackoff != tc.want {
+			t.Errorf("OUTHAUL_SIGNIN_BACKOFF=%q -> %v, want %v", tc.in, c.SignInBackoff, tc.want)
+		}
+		if err := c.Validate(); err != nil {
+			t.Errorf("OUTHAUL_SIGNIN_BACKOFF=%q: Validate: %v", tc.in, err)
+		}
+	}
+}
+
+func TestValidateRejectsMalformedSignInBackoff(t *testing.T) {
+	c := Load(func(k string) string {
+		if k == "OUTHAUL_SIGNIN_BACKOFF" {
+			return "maybe"
+		}
+		return ""
+	})
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "OUTHAUL_SIGNIN_BACKOFF") {
+		t.Errorf("Validate = %v, want an error naming OUTHAUL_SIGNIN_BACKOFF", err)
+	}
+}

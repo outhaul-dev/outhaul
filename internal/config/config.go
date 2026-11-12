@@ -51,6 +51,7 @@ type Config struct {
 	ImageKeep          int           // built images kept per app; 0 disables pruning
 	PruneBuildCache    bool          // nightly prune of the daemon-wide build cache; off for a shared host
 	AdminDirect        bool          // the admin UI listens on every interface (default); false: loopback + the Docker gateway
+	SignInBackoff      bool          // OUTHAUL_SIGNIN_BACKOFF: lock a username after repeated failed password sign-ins
 
 	PublicURL string // externally reachable base URL of the admin UI (for GitHub callbacks/webhooks); empty disables GitHub App setup
 	ServerIP  string // public IP used in generated sslip.io template domains; empty means auto-detect
@@ -101,6 +102,7 @@ func Load(getenv Getenv) Config {
 		ImageKeep:          p.count("OUTHAUL_IMAGE_KEEP", 5),
 		PruneBuildCache:    p.boolDefault("OUTHAUL_PRUNE_BUILD_CACHE", true),
 		AdminDirect:        p.boolDefault("OUTHAUL_ADMIN_DIRECT", true),
+		SignInBackoff:      p.bool("OUTHAUL_SIGNIN_BACKOFF"),
 
 		PublicURL: p.url("OUTHAUL_PUBLIC_URL"),
 		ServerIP:  p.ip("OUTHAUL_SERVER_IP"),
