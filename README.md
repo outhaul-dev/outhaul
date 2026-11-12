@@ -255,6 +255,9 @@ No config files — defaults with `OUTHAUL_*` environment overrides:
 | `OUTHAUL_TRAEFIK_IMAGE` | `traefik:v3.3`       | Managed Traefik image                     |
 | `OUTHAUL_NETWORK`       | `outhaul`            | Shared Docker network for app containers  |
 | `OUTHAUL_CONTAINER_POLICY` | unset (off)       | Refuse Compose files that reach the host or another app — see [docs/GUARD-RAILS.md](docs/GUARD-RAILS.md) |
+| `OUTHAUL_DEFAULT_CPUS`  | unset (no limit)     | Per-container CPU limit: `1`, `0.5`, `1.5`; at most the server's CPUs — see [docs/GUARD-RAILS.md](docs/GUARD-RAILS.md) |
+| `OUTHAUL_DEFAULT_MEMORY` | unset (no limit)    | Per-container memory limit: `512m`, `1g`, `1.5g`, or bytes, at least `6m` |
+| `OUTHAUL_DEFAULT_PIDS`  | unset (no limit)     | Per-container process limit: a whole number, 1 or more |
 | `OUTHAUL_ACME_EMAIL`    | (empty)              | Let's Encrypt email; set to enable HTTPS   |
 | `OUTHAUL_ACME_STAGING`  | `false`              | Use the LE staging CA (testing)            |
 | `OUTHAUL_ACME_DNS_PROVIDER` | (empty)          | A [lego DNS provider](https://go-acme.github.io/lego/dns/) code, such as `azuredns`; empty uses the HTTP-01 challenge, which needs port 80 |
