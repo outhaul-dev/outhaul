@@ -1,0 +1,16 @@
+name: policy
+services:
+  web:
+    image: nginx:1.27
+    post_start:
+      - command: echo started
+        user: root
+        environment:
+          APP_ENV: production
+        working_dir: /app
+    pre_stop:
+      - command: echo stopping
+        user: root
+        environment:
+          APP_ENV: production
+        working_dir: /app

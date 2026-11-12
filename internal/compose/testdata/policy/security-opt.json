@@ -1,0 +1,77 @@
+{
+  "name": "policy",
+  "networks": {
+    "default": {
+      "name": "policy_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "apparmor": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "networks": {
+        "default": null
+      },
+      "security_opt": [
+        "apparmor=unconfined"
+      ]
+    },
+    "bare": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "networks": {
+        "default": null
+      },
+      "security_opt": [
+        "no-new-privileges"
+      ]
+    },
+    "enabled": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "networks": {
+        "default": null
+      },
+      "security_opt": [
+        "no-new-privileges:true"
+      ]
+    },
+    "label": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "networks": {
+        "default": null
+      },
+      "security_opt": [
+        "label=disable"
+      ]
+    },
+    "seccomp": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "networks": {
+        "default": null
+      },
+      "security_opt": [
+        "seccomp=unconfined"
+      ]
+    },
+    "systempaths": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "networks": {
+        "default": null
+      },
+      "security_opt": [
+        "systempaths=unconfined"
+      ]
+    }
+  }
+}

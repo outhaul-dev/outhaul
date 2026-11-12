@@ -1,0 +1,29 @@
+{
+  "name": "policy",
+  "networks": {
+    "default": {
+      "name": "policy_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "host": {
+      "cgroup": "host",
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "networks": {
+        "default": null
+      }
+    },
+    "private": {
+      "cgroup": "private",
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "networks": {
+        "default": null
+      }
+    }
+  }
+}

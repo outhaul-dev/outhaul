@@ -1,0 +1,41 @@
+{
+  "name": "policy",
+  "networks": {
+    "default": {
+      "name": "policy_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "web": {
+      "command": null,
+      "entrypoint": null,
+      "env_file": [
+        {
+          "path": "/work/app.env"
+        },
+        {
+          "path": "/outside.env"
+        }
+      ],
+      "image": "example/web:1.2",
+      "labels": {
+        "team": "platform"
+      },
+      "label_file": [
+        "/work/labels.labels"
+      ],
+      "networks": {
+        "default": null
+      },
+      "build": {
+        "context": "/work",
+        "dockerfile": "Dockerfile",
+        "additional_contexts": {
+          "inside": "/work/data",
+          "outside": "/data"
+        }
+      }
+    }
+  }
+}

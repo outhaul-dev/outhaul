@@ -1,0 +1,37 @@
+{
+  "name": "policy",
+  "networks": {
+    "default": {
+      "name": "policy_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "web": {
+      "command": null,
+      "entrypoint": null,
+      "image": "example/web:1.2",
+      "networks": {
+        "default": null
+      },
+      "build": {
+        "context": "/work",
+        "dockerfile": "Dockerfile",
+        "entitlements": [
+          "security.insecure"
+        ],
+        "ssh": [
+          "default"
+        ],
+        "cache_from": [
+          "example/cache:1"
+        ],
+        "cache_to": [
+          "example/cache:1"
+        ],
+        "isolation": "default",
+        "privileged": true
+      }
+    }
+  }
+}

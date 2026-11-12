@@ -1,0 +1,5 @@
+name: policy
+services:
+  web:
+    image: nginx:1.27
+    container_name: example-web

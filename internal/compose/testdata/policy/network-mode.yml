@@ -1,0 +1,16 @@
+name: policy
+services:
+  db:
+    image: postgres:16
+  none:
+    image: nginx:1.27
+    network_mode: none
+  service:
+    image: nginx:1.27
+    network_mode: "service:db"
+  host:
+    image: nginx:1.27
+    network_mode: host
+  container:
+    image: nginx:1.27
+    network_mode: "container:db"

@@ -1,0 +1,26 @@
+name: policy
+services:
+  web:
+    image: nginx:1.27
+    volumes:
+      - data:/data
+      - other:/other
+      - opts:/opts
+      - extra:/extra
+      - host:/host
+      - custom:/custom
+volumes:
+  data:
+    labels:
+      team: example
+  other:
+    driver: local
+  opts:
+    driver_opts:
+      type: none
+  extra:
+    external: true
+  host:
+    driver: flocker
+  custom:
+    name: my-volume

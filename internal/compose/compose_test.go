@@ -1,8 +1,11 @@
 package compose
 
 import (
+	"bytes"
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -39,6 +42,113 @@ func TestDockerMissingBinary(t *testing.T) {
 	err := d.Stop(context.Background(), "outhaul-web", io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "compose v2 plugin") {
 		t.Fatalf("expected an actionable docker-not-found error, got %v", err)
+	}
+}
+
+func TestConfigArgs(t *testing.T) {
+	got := configArgs([]string{"docker-compose.yml"}, "outhaul-shop")
+	want := []string{"compose", "-p", "outhaul-shop", "-f", "docker-compose.yml",
+		"config", "--format", "json", "--no-env-resolution"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("configArgs = %v, want %v", got, want)
+	}
+}
+
+// Pull fetches only images the server does not already have, and skips a
+// service it builds, whose image has no registry tag to fetch.
+func TestPullArgs(t *testing.T) {
+	got := pullArgs([]string{"docker-compose.yml", "outhaul.override.yml"}, "outhaul-shop")
+	want := []string{"compose", "-p", "outhaul-shop", "-f", "docker-compose.yml", "-f", "outhaul.override.yml",
+		"pull", "--policy", "missing", "--ignore-buildable"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("pullArgs = %v, want %v", got, want)
+	}
+}
+
+// tempScript writes an executable shell script to a temp dir and returns its
+// path, so Docker can be pointed at a stub in place of the real CLI.
+func tempScript(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "docker")
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// --no-env-resolution arrived in Docker Compose 2.35. An older Compose rejects
+// the flag; the error must name the version that works, not just the flag.
+func TestDockerConfigNeedsCompose235(t *testing.T) {
+	for _, stderr := range []string{
+		"unknown flag: --no-env-resolution",
+		"unknown shorthand flag: 'n' in --no-env-resolution",
+	} {
+		d := &Docker{Bin: tempScript(t, "#!/bin/sh\necho '"+stderr+"' >&2\nexit 1\n")}
+		_, err := d.Config(context.Background(), "", []string{"docker-compose.yml"}, "outhaul-demo", io.Discard)
+		if err == nil || !strings.Contains(err.Error(), "Docker Compose 2.35 or newer") {
+			t.Errorf("stderr %q: error = %v, want the Docker Compose 2.35 message", stderr, err)
+		}
+	}
+}
+
+func TestDockerConfig(t *testing.T) {
+	d := &Docker{Bin: tempScript(t, `#!/bin/sh
+printf '{"name":"demo"}\n'
+echo 'warn: example.com is not resolvable' >&2
+`)}
+	var warn bytes.Buffer
+	got, err := d.Config(context.Background(), "", []string{"docker-compose.yml"}, "outhaul-demo", &warn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "{\"name\":\"demo\"}\n" {
+		t.Errorf("Config stdout = %q", got)
+	}
+	if !strings.Contains(warn.String(), "example.com is not resolvable") {
+		t.Errorf("Config warn = %q, want the script's stderr", warn.String())
+	}
+	if strings.Contains(warn.String(), `"name"`) {
+		t.Errorf("Config warn = %q, want the JSON kept out of it", warn.String())
+	}
+}
+
+// Any other failure keeps the ordinary compose error, so a broken compose file
+// is not blamed on an old Compose.
+func TestDockerConfigOtherFailure(t *testing.T) {
+	d := &Docker{Bin: tempScript(t, "#!/bin/sh\necho 'unknown flag: --not-ours' >&2\nexit 1\n")}
+	_, err := d.Config(context.Background(), "", []string{"docker-compose.yml"}, "outhaul-demo", io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "docker compose config failed") {
+		t.Fatalf("error = %v, want docker compose config failed", err)
+	}
+	if strings.Contains(err.Error(), "2.35") {
+		t.Errorf("error = %v, want no version hint for an unrelated failure", err)
+	}
+}
+
+// Compose's own reason for a load failure goes to stderr and the deploy log.
+// The returned error carries its last line so the deployment's reason says
+// what is wrong with the file. stdout, where a successful model would go, is
+// never included.
+func TestDockerConfigCarriesComposesMessage(t *testing.T) {
+	d := &Docker{Bin: tempScript(t, `#!/bin/sh
+printf '{"name":"model-must-not-leak"}\n'
+echo 'warning: first line' >&2
+echo 'validating /srv/app/docker-compose.yml: services.web.ports must be a list' >&2
+exit 1
+`)}
+	_, err := d.Config(context.Background(), "", []string{"docker-compose.yml"}, "outhaul-demo", io.Discard)
+	if err == nil {
+		t.Fatal("Config returned no error")
+	}
+	for _, want := range []string{"docker compose config failed", "services.web.ports must be a list"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %v, want it to contain %q", err, want)
+		}
+	}
+	for _, unwanted := range []string{"warning: first line", "model-must-not-leak"} {
+		if strings.Contains(err.Error(), unwanted) {
+			t.Errorf("error = %v, want it without %q", err, unwanted)
+		}
 	}
 }
 

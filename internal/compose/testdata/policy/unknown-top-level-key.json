@@ -1,0 +1,11 @@
+{
+  "name": "policy",
+  "future_section": {
+    "example": true
+  },
+  "services": {
+    "web": {
+      "image": "nginx:1.27"
+    }
+  }
+}

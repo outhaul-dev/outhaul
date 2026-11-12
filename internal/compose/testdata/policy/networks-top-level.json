@@ -1,0 +1,82 @@
+{
+  "name": "policy",
+  "networks": {
+    "custom": {
+      "name": "my-network",
+      "ipam": {}
+    },
+    "default": {
+      "name": "policy_default",
+      "driver": "bridge",
+      "ipam": {},
+      "internal": true,
+      "attachable": true,
+      "labels": {
+        "team": "example"
+      },
+      "enable_ipv4": true,
+      "enable_ipv6": true
+    },
+    "driver": {
+      "name": "policy_driver",
+      "driver": "overlay",
+      "ipam": {}
+    },
+    "extra": {
+      "name": "elsewhere",
+      "ipam": {},
+      "external": true
+    },
+    "ipamdriver": {
+      "name": "policy_ipamdriver",
+      "ipam": {
+        "driver": "default"
+      }
+    },
+    "opts": {
+      "name": "policy_opts",
+      "driver_opts": {
+        "foo": "bar"
+      },
+      "ipam": {}
+    },
+    "other": {
+      "name": "host",
+      "ipam": {},
+      "external": true
+    },
+    "shared": {
+      "name": "outhaul",
+      "ipam": {},
+      "external": true
+    },
+    "subnet": {
+      "name": "policy_subnet",
+      "ipam": {
+        "config": [
+          {
+            "subnet": "10.0.0.0/24"
+          }
+        ]
+      }
+    }
+  },
+  "services": {
+    "web": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "networks": {
+        "custom": null,
+        "default": null,
+        "driver": null,
+        "extra": null,
+        "ipamdriver": null,
+        "opts": null,
+        "other": null,
+        "shared": null,
+        "subnet": null
+      }
+    }
+  }
+}

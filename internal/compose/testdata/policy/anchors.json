@@ -1,0 +1,28 @@
+{
+  "name": "policy",
+  "networks": {
+    "default": {
+      "name": "policy_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "web": {
+      "command": null,
+      "entrypoint": null,
+      "environment": {
+        "MODE": "example"
+      },
+      "image": "nginx:1.27",
+      "networks": {
+        "default": null
+      }
+    }
+  },
+  "x-common": {
+    "environment": {
+      "MODE": "example"
+    },
+    "image": "nginx:1.27"
+  }
+}

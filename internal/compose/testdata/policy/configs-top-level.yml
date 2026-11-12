@@ -1,0 +1,19 @@
+name: policy
+services:
+  web:
+    image: nginx:1.27
+    configs:
+      - labelsgood
+      - namegood
+      - tmplbad
+configs:
+  labelsgood:
+    content: example
+    labels:
+      team: example
+  namegood:
+    content: example
+    name: custom-name
+  tmplbad:
+    file: ./missing.txt
+    template_driver: golang

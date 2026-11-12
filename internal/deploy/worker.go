@@ -94,6 +94,13 @@ func NewWorker(st *store.Store, dc docker.Client, b Builders, cp compose.Runner,
 	}
 }
 
+// needsModel reports whether any setting needs the normalised Compose model:
+// the strict container policy or a required request header. R7 adds the app's
+// effective limit; R10 adds its restart setting.
+func (w *Worker) needsModel(app core.App) bool {
+	return w.cfg.StrictContainerPolicy() || w.cfg.HeaderRequired()
+}
+
 // routing builds the server-wide routing settings for a deploy. A Cloudflare
 // Tunnel terminates TLS at Cloudflare's edge and Traefik serves plain HTTP
 // behind it, so an enabled tunnel forces HTTPS routers off even when ACME is

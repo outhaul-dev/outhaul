@@ -10,7 +10,7 @@ import (
 
 // Call records one Runner invocation on the Fake.
 type Call struct {
-	Verb    string // "build", "up", "stop", "restart", "down"
+	Verb    string // "config", "build", "pull", "up", "stop", "restart", "down"
 	Dir     string
 	Files   []string
 	Project string
@@ -26,15 +26,30 @@ type Fake struct {
 
 	Hook func(c Call)
 
+	ConfigJSON []byte
+	FailConfig error
+
 	FailBuild   error
+	FailPull    error
 	FailUp      error
 	FailStop    error
 	FailRestart error
 	FailDown    error
 }
 
+func (f *Fake) Config(_ context.Context, dir string, files []string, project string, out io.Writer) ([]byte, error) {
+	if err := f.record(Call{Verb: "config", Dir: dir, Files: files, Project: project}, f.FailConfig, out); err != nil {
+		return nil, err
+	}
+	return f.ConfigJSON, nil
+}
+
 func (f *Fake) Build(_ context.Context, dir string, files []string, project string, out io.Writer) error {
 	return f.record(Call{Verb: "build", Dir: dir, Files: files, Project: project}, f.FailBuild, out)
+}
+
+func (f *Fake) Pull(_ context.Context, dir string, files []string, project string, out io.Writer) error {
+	return f.record(Call{Verb: "pull", Dir: dir, Files: files, Project: project}, f.FailPull, out)
 }
 
 func (f *Fake) Up(_ context.Context, dir string, files []string, project string, _ time.Duration, out io.Writer) error {

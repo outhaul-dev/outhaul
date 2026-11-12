@@ -154,6 +154,8 @@ type Server struct {
 
 	httpsPort string // the host port Traefik's HTTPS entrypoint is published on; see appPort
 
+	strictPolicy bool // OUTHAUL_CONTAINER_POLICY=strict: databases publish no host port
+
 	formKey []byte // keys the opaque values a form names other apps by; see hiddenAppKey
 
 	gateNoPublicURLLog onceAMinute // the gate's "no public URL" line; see gateSignIn

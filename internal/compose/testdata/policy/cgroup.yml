@@ -1,0 +1,8 @@
+name: policy
+services:
+  private:
+    image: nginx:1.27
+    cgroup: private
+  host:
+    image: nginx:1.27
+    cgroup: host

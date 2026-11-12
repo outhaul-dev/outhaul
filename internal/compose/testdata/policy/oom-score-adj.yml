@@ -1,0 +1,11 @@
+name: policy
+services:
+  zero:
+    image: nginx:1.27
+    oom_score_adj: 0
+  positive:
+    image: nginx:1.27
+    oom_score_adj: 100
+  negative:
+    image: nginx:1.27
+    oom_score_adj: -100

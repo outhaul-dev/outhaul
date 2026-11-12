@@ -1,0 +1,48 @@
+{
+  "configs": {
+    "labelsgood": {
+      "name": "policy_labelsgood",
+      "content": "example",
+      "labels": {
+        "team": "example"
+      }
+    },
+    "namegood": {
+      "name": "custom-name",
+      "content": "example"
+    },
+    "tmplbad": {
+      "name": "policy_tmplbad",
+      "file": "/work/missing.txt",
+      "template_driver": "golang"
+    }
+  },
+  "name": "policy",
+  "networks": {
+    "default": {
+      "name": "policy_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "web": {
+      "command": null,
+      "configs": [
+        {
+          "source": "labelsgood"
+        },
+        {
+          "source": "namegood"
+        },
+        {
+          "source": "tmplbad"
+        }
+      ],
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "networks": {
+        "default": null
+      }
+    }
+  }
+}

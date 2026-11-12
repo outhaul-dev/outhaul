@@ -142,6 +142,14 @@ func serve() error {
 		return err
 	}
 
+	// A strict container policy or a required request header hides Outhaul's
+	// own environment from Compose files: every `docker compose` call gets only
+	// a small keep-list, so a file's ${NAME} cannot read OUTHAUL_* settings or
+	// secrets, including the header's own value. Off in both, the slice is nil
+	// and every run inherits the environment exactly as before. The stack's own
+	// .env still supplies the app's variables.
+	composeEnv := composeEnvFor(cfg)
+
 	// Data directories.
 	if err := os.MkdirAll(cfg.WorkDir(), 0o755); err != nil {
 		return fmt.Errorf("create data dir %s: %w", cfg.DataDir, err)
@@ -245,7 +253,7 @@ func serve() error {
 	broker := logstream.New()
 	worker := deploy.NewWorker(st, dc,
 		deploy.Builders{Nixpacks: builder.NewNixpacks(), Dockerfile: builder.NewDocker()},
-		compose.NewDocker(), deploy.NewGit(), broker, sources, cfg)
+		newComposeRunner(composeEnv), deploy.NewGit(), broker, sources, cfg)
 
 	// Image pruner: after-deploy retention hook + daily sweep.
 	pruner := prune.New(st, dc, cfg.ImageKeep, cfg.WorkDir(), cfg.PruneBuildCache)
@@ -269,6 +277,8 @@ func serve() error {
 
 	// Database manager (databases-as-a-service).
 	dbm := dbaas.NewManager(st, dc, cfg.Network, cfg.DatabasesDir())
+	dbm.SetPolicy(cfg.StrictContainerPolicy())
+	warnPublishedDatabasePorts(context.Background(), st, cfg.StrictContainerPolicy(), log.Printf)
 
 	// Backup scheduler (dumps + volume tarballs to S3-compatible storage).
 	// Runs a dead process left "running" are failed before any can start.
@@ -324,7 +334,7 @@ func serve() error {
 	}
 	previews := previewmgr.New(st, worker,
 		&previewDBProvisioner{st: st, dbm: dbm},
-		&previewDocker{st: st, runtime: dc, compose: compose.NewDocker()},
+		&previewDocker{st: st, runtime: dc, compose: newComposeRunner(composeEnv)},
 		ghClient, tokenSource, serverIP)
 	worker.SetDeployHook(previews.OnDeployFinished) // update a preview's PR comment + status on deploy completion
 	// A preview of a route that requires sign-in requires it too: the spawn
@@ -350,7 +360,7 @@ func serve() error {
 	go previews.Run(workerCtx)
 
 	setupToken := server.NewToken()
-	srv, err := server.New(st, worker, dc, compose.NewDocker(), dbm, backups, broker, ghClient,
+	srv, err := server.New(st, worker, dc, newComposeRunner(composeEnv), dbm, backups, broker, ghClient,
 		sources, previews,
 		cfg.PublicURL, serverIP, cfg.TLSEnabled(), setupToken)
 	if err != nil {
@@ -391,6 +401,7 @@ func serve() error {
 	})
 	srv.SetHTTPSPort(cfg.HTTPSPort)
 	go srv.RunRestorePass(workerCtx)
+	srv.SetContainerPolicy(cfg.StrictContainerPolicy())
 	srv.SetBuild(update.Current())
 	if updatesOff {
 		srv.SetUpdatesOff()
@@ -438,6 +449,26 @@ func newUpdates(cfg config.Config) (d *update.Dir, k *update.Checker, off bool) 
 	k = update.NewChecker(update.Current(),
 		&update.Comparer{Client: &http.Client{Timeout: 15 * time.Second}}, time.Now)
 	return d, k, false
+}
+
+// newComposeRunner returns the runner shared by the deploy worker, the preview
+// manager and the HTTP server. env is nil unless the strict container policy
+// is on, so a default install inherits the environment exactly as before.
+func newComposeRunner(env []string) *compose.Docker {
+	d := compose.NewDocker()
+	d.Env = env
+	return d
+}
+
+// composeEnvFor returns the environment every `docker compose` call gets. A
+// strict container policy or a required request header hides Outhaul's own
+// environment, including the header's value, behind compose.RestrictedEnv; in
+// neither case nil inherits it exactly as before.
+func composeEnvFor(cfg config.Config) []string {
+	if cfg.StrictContainerPolicy() || cfg.HeaderRequired() {
+		return compose.RestrictedEnv(os.Environ())
+	}
+	return nil
 }
 
 // infraController reconciles the managed Traefik proxy and cloudflared connector
@@ -773,6 +804,26 @@ func reserveAdminHost(ctx context.Context, st *store.Store, host string, logf fu
 		logf("WARNING: app %q has the domain %s%s, which is Outhaul's own address (OUTHAUL_PUBLIC_URL). "+
 			"An app there shares the admin UI's origin and cookies. Delete that domain on the app's page; Outhaul leaves it in place.",
 			d.AppName, d.Host, d.Path)
+	}
+}
+
+// warnPublishedDatabasePorts names every database whose row still asks for a
+// host port while the strict container policy forbids one. The mapping lasts
+// until the container is next replaced, so nothing is restarted or
+// reprovisioned at startup: the operator clears it from the database's page.
+func warnPublishedDatabasePorts(ctx context.Context, st *store.Store, strict bool, logf func(string, ...any)) {
+	if !strict {
+		return
+	}
+	dbs, err := st.ListDatabases(ctx)
+	if err != nil {
+		logf("WARNING: could not check databases for published ports: %v", err)
+		return
+	}
+	for _, d := range dbs {
+		if d.ExtPort > 0 {
+			logf("WARNING: database %q publishes port %d, which OUTHAUL_CONTAINER_POLICY=strict does not allow; open its page and stop publishing it", d.Name, d.ExtPort)
+		}
 	}
 }
 

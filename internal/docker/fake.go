@@ -33,9 +33,12 @@ type Fake struct {
 	Images           map[string]bool              // local image tags (test-settable)
 	Gateways         map[string]string            // network name -> IPv4 gateway (test-settable)
 	ImageLabelsByRef map[string]map[string]string // image ref -> labels baked into it (test-settable)
-	RemovedImages    []string                     // refs passed to RemoveImage, in order
-	ImagePrunes      int                          // PruneImages invocations
-	BuildCachePrunes []time.Duration              // olderThan values passed to PruneBuildCache
+	// FailImageLabels, when set, makes ImageLabels return an error for matching
+	// refs (models "no such image"; the fake never infers it from a nil map).
+	FailImageLabels  func(ref string) error
+	RemovedImages    []string        // refs passed to RemoveImage, in order
+	ImagePrunes      int             // PruneImages invocations
+	BuildCachePrunes []time.Duration // olderThan values passed to PruneBuildCache
 
 	// OnExec, when set, supplies ExecContainer's output and exit code.
 	OnExec func(id string, cmd, env []string) (stdout, stderr string, exit int, err error)
@@ -427,6 +430,11 @@ func (f *Fake) RemoveImage(_ context.Context, ref string) error {
 func (f *Fake) ImageLabels(_ context.Context, ref string) (map[string]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.FailImageLabels != nil {
+		if err := f.FailImageLabels(ref); err != nil {
+			return nil, err
+		}
+	}
 	return f.ImageLabelsByRef[ref], nil
 }
 

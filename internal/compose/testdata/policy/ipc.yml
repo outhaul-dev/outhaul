@@ -1,0 +1,22 @@
+name: policy
+services:
+  db:
+    image: postgres:16
+  private:
+    image: nginx:1.27
+    ipc: private
+  shareable:
+    image: nginx:1.27
+    ipc: shareable
+  none:
+    image: nginx:1.27
+    ipc: none
+  service:
+    image: nginx:1.27
+    ipc: "service:db"
+  host:
+    image: nginx:1.27
+    ipc: host
+  container:
+    image: nginx:1.27
+    ipc: "container:db"

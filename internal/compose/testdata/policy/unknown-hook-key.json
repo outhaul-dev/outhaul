@@ -1,0 +1,19 @@
+{
+  "name": "policy",
+  "services": {
+    "web": {
+      "post_start": [
+        {
+          "command": [
+            "echo",
+            "started"
+          ],
+          "devices": [
+            "/dev/kvm"
+          ]
+        }
+      ],
+      "image": "nginx:1.27"
+    }
+  }
+}

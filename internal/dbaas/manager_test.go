@@ -132,6 +132,42 @@ func TestProvisionPublishesExternalPort(t *testing.T) {
 	}
 }
 
+// Under the strict container policy a database asks Docker for no host port,
+// whatever its row says: the setting is the server's, not the row's.
+func TestStrictPolicyOmitsADatabasePort(t *testing.T) {
+	h := newHarness(t)
+	h.m.SetPolicy(true)
+	d := h.database(t, "shop", core.EnginePostgres)
+	d.ExtPort = 5433
+
+	if err := h.m.provision(context.Background(), d); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	if ports := h.docker.Created[0].Ports; len(ports) != 0 {
+		t.Errorf("ports = %v, want none under the strict policy", ports)
+	}
+}
+
+// A row that still has a port keeps publishing it until its container is next
+// replaced; the replacement asks for none.
+func TestStrictPolicyOmitsThePortOnReprovision(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	d := h.database(t, "shop", core.EnginePostgres)
+	d.ExtPort = 5433
+	if err := h.m.provision(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+
+	h.m.SetPolicy(true)
+	if err := h.m.provision(ctx, d); err != nil {
+		t.Fatalf("reprovision: %v", err)
+	}
+	if ports := h.docker.Created[1].Ports; len(ports) != 0 {
+		t.Errorf("replacement ports = %v, want none under the strict policy", ports)
+	}
+}
+
 func TestProvisionRedisUsesRequirepass(t *testing.T) {
 	h := newHarness(t)
 	d := h.database(t, "cache", core.EngineRedis)

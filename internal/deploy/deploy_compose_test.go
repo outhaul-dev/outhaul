@@ -294,3 +294,360 @@ func TestComposePipelineOverrideCarriesTheGate(t *testing.T) {
 		}
 	}
 }
+
+// A server that has not opted into the container policy never asks Compose to
+// normalise the stack, so its deploys are unchanged. ConfigJSON is left unset:
+// a config call would fail the parse too, but the call count is the direct
+// check.
+func TestComposePipelineWithoutPolicyNeverReadsModel(t *testing.T) {
+	h := newHarness(t)
+	app := h.composeApp(t, "shop", "docker-compose.yml", "shop.example.com")
+	inspected := false
+	h.docker.FailImageLabels = func(string) error {
+		inspected = true
+		return nil
+	}
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	if got := h.status(t, dep.ID); got.Status != core.StatusRunning {
+		t.Fatalf("status = %q (%q), want running", got.Status, got.Reason)
+	}
+	if calls := h.compose.CallsFor("config"); len(calls) != 0 {
+		t.Errorf("compose config ran without the policy: %+v", calls)
+	}
+	if calls := h.compose.CallsFor("pull"); len(calls) != 0 {
+		t.Errorf("compose pull ran without the policy: %+v", calls)
+	}
+	if inspected {
+		t.Error("an image was inspected without the policy")
+	}
+}
+
+// While a request header is required, a Compose file may not add routing of
+// its own: its router would lack the header term. The check runs before the
+// build, even though the policy is not strict.
+func TestComposePipelineChecksLabelsWhenAHeaderIsRequired(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.RequireHeaderName = "X-Azure-FDID"
+	h.worker.cfg.RequireHeaderValue = "abc-123"
+	h.compose.ConfigJSON = []byte(`{
+		"name": "outhaul-shop",
+		"services": {
+			"web": {
+				"image": "nginx:1",
+				"labels": {"traefik.http.routers.evil.rule": "Host(evil.example.com)"}
+			}
+		}
+	}`)
+	app := h.composeApp(t, "shop", "docker-compose.yml", "")
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed {
+		t.Fatalf("status = %q (%q), want failed", got.Status, got.Reason)
+	}
+	for _, want := range []string{`service "web"`, "labels.traefik.http.routers.evil.rule", "traefik.*"} {
+		if !strings.Contains(got.Reason, want) {
+			t.Errorf("reason = %q, want it to mention %q", got.Reason, want)
+		}
+	}
+	if n := len(h.compose.CallsFor("build")); n != 0 {
+		t.Errorf("build calls = %d, want 0", n)
+	}
+	if n := len(h.compose.CallsFor("up")); n != 0 {
+		t.Errorf("up calls = %d, want 0", n)
+	}
+	log := h.logOf(dep)
+	want := "This server refuses a Compose file that adds its own routing while a request header is required:"
+	if !strings.Contains(log, want) {
+		t.Errorf("log missing %q; got:\n%s", want, log)
+	}
+	if strings.Contains(log, "OUTHAUL_CONTAINER_POLICY=strict") {
+		t.Errorf("the log names strict mode, which is off; got:\n%s", log)
+	}
+}
+
+func TestComposePipelineRefusesAHostPathBeforeBuilding(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.ContainerPolicy = "strict"
+	h.compose.ConfigJSON = []byte(`{
+		"name": "outhaul-shop",
+		"services": {
+			"web": {
+				"image": "nginx",
+				"volumes": [{"type": "bind", "source": "/srv/data", "target": "/data"}]
+			}
+		}
+	}`)
+	app := h.composeApp(t, "shop", "docker-compose.yml", "")
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed {
+		t.Fatalf("status = %q, want failed", got.Status)
+	}
+	for _, want := range []string{`service "web"`, "volumes", "bind mount"} {
+		if !strings.Contains(got.Reason, want) {
+			t.Errorf("reason = %q, want it to mention %q", got.Reason, want)
+		}
+	}
+	if n := len(h.compose.CallsFor("build")); n != 0 {
+		t.Errorf("build calls = %d, want 0", n)
+	}
+	if n := len(h.compose.CallsFor("up")); n != 0 {
+		t.Errorf("up calls = %d, want 0", n)
+	}
+	want := `service "web": volumes: a bind mount of /srv/data is a host path. Use a named volume.`
+	if log := h.logOf(dep); !strings.Contains(log, want) {
+		t.Errorf("log missing %q; got:\n%s", want, log)
+	}
+}
+
+func TestComposePipelineLogsEveryViolationAndKeepsTheJSONOut(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.ContainerPolicy = "strict"
+	h.compose.ConfigJSON = []byte(`{
+		"name": "outhaul-shop",
+		"services": {
+			"web": {
+				"image": "nginx",
+				"environment": {"TOKEN": "super-secret"},
+				"ports": ["8080:80"],
+				"privileged": true
+			}
+		}
+	}`)
+	app := h.composeApp(t, "shop", "docker-compose.yml", "")
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed {
+		t.Fatalf("status = %q, want failed", got.Status)
+	}
+	log := h.logOf(dep)
+	for _, want := range []string{
+		`service "web": ports: publishing a host port is not allowed.`,
+		`service "web": privileged: a privileged container is not allowed.`,
+	} {
+		if !strings.Contains(log, want) {
+			t.Errorf("log missing %q; got:\n%s", want, log)
+		}
+	}
+	if !strings.Contains(got.Reason, "(and 1 more)") {
+		t.Errorf("reason = %q, want it to count the other violation", got.Reason)
+	}
+	for _, text := range []string{log, got.Reason} {
+		if strings.Contains(text, "super-secret") {
+			t.Errorf("the model's values leaked: %q", text)
+		}
+	}
+}
+
+func TestComposePipelineReportsAFileComposeCannotLoad(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.ContainerPolicy = "strict"
+	h.compose.FailConfig = errors.New("services.web.ports must be a list")
+	app := h.composeApp(t, "shop", "docker-compose.yml", "")
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed {
+		t.Fatalf("status = %q, want failed", got.Status)
+	}
+	if !strings.Contains(got.Reason, "read Compose file: services.web.ports must be a list") {
+		t.Errorf("reason = %q, want the compose error", got.Reason)
+	}
+	if n := len(h.compose.CallsFor("build")); n != 0 {
+		t.Errorf("build calls = %d, want 0", n)
+	}
+	if n := len(h.compose.CallsFor("up")); n != 0 {
+		t.Errorf("up calls = %d, want 0", n)
+	}
+}
+
+// Strict mode pulls every image `up` will use, then refuses a service whose
+// image routes itself. Docker copies the image's labels onto the container and
+// Traefik reads them.
+func TestComposePolicyPullsAndRefusesATraefikImage(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.ContainerPolicy = "strict"
+	h.compose.ConfigJSON = []byte(`{
+		"name": "outhaul-shop",
+		"services": {
+			"web": {"image": "nginx:1"},
+			"db": {"image": "postgres:16"}
+		}
+	}`)
+	h.docker.ImageLabelsByRef = map[string]map[string]string{
+		"nginx:1": {"traefik.http.routers.evil.rule": "Host(`shop.example.com`)"},
+	}
+	app := h.composeApp(t, "shop", "docker-compose.yml", "")
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed {
+		t.Fatalf("status = %q (%q), want failed", got.Status, got.Reason)
+	}
+	for _, want := range []string{`service "web"`, "nginx:1", "traefik labels", "traefik.http.routers.evil.rule"} {
+		if !strings.Contains(got.Reason, want) {
+			t.Errorf("reason = %q, want it to mention %q", got.Reason, want)
+		}
+	}
+	if pulls := h.compose.CallsFor("pull"); len(pulls) != 1 {
+		t.Errorf("pull calls = %d, want 1", len(pulls))
+	}
+	if n := len(h.compose.CallsFor("up")); n != 0 {
+		t.Errorf("up calls = %d, want 0", n)
+	}
+}
+
+// While a request header is required, a Compose service's image is pulled and
+// checked as well: Docker copies its labels onto the container, and the router
+// they add would lack the header term.
+func TestHeaderRequiredRefusesAComposeImageWithTraefikLabels(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.RequireHeaderName = "X-Azure-FDID"
+	h.worker.cfg.RequireHeaderValue = "abc-123"
+	h.compose.ConfigJSON = []byte(`{
+		"name": "outhaul-shop",
+		"services": {
+			"web": {"image": "nginx:1"}
+		}
+	}`)
+	h.docker.ImageLabelsByRef = map[string]map[string]string{
+		"nginx:1": {"traefik.http.routers.evil.rule": "Host(`shop.example.com`)"},
+	}
+	app := h.composeApp(t, "shop", "docker-compose.yml", "")
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed {
+		t.Fatalf("status = %q (%q), want failed", got.Status, got.Reason)
+	}
+	for _, want := range []string{`service "web"`, "nginx:1", "traefik labels", "checked at pull time"} {
+		if !strings.Contains(got.Reason, want) {
+			t.Errorf("reason = %q, want it to mention %q", got.Reason, want)
+		}
+	}
+	if pulls := h.compose.CallsFor("pull"); len(pulls) != 1 {
+		t.Errorf("pull calls = %d, want 1", len(pulls))
+	}
+	if n := len(h.compose.CallsFor("up")); n != 0 {
+		t.Errorf("up calls = %d, want 0", n)
+	}
+}
+
+// A service with a build section gets its image from `compose build`, so the
+// label check runs after that, not at pull time; the message says which.
+func TestComposeImageRefusalNamesTheCheckPoint(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.ContainerPolicy = "strict"
+	h.compose.ConfigJSON = []byte(`{
+		"name": "outhaul-shop",
+		"services": {
+			"web": {"image": "outhaul-shop-web", "build": {"context": "."}}
+		}
+	}`)
+	h.docker.ImageLabelsByRef = map[string]map[string]string{
+		"outhaul-shop-web": {"traefik.http.routers.evil.rule": "Host(`shop.example.com`)"},
+	}
+	app := h.composeApp(t, "shop", "docker-compose.yml", "")
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed {
+		t.Fatalf("status = %q (%q), want failed", got.Status, got.Reason)
+	}
+	if !strings.Contains(got.Reason, "checked after build") {
+		t.Errorf("reason = %q, want it to say the image was checked after build", got.Reason)
+	}
+	if strings.Contains(got.Reason, "checked at pull time") {
+		t.Errorf("reason = %q, want no pull-time claim for a built image", got.Reason)
+	}
+}
+
+// A service image can still be missing after pull (pull_policy: never, say).
+// That fails the deploy naming the service and image rather than surfacing
+// late at `up`.
+func TestComposePolicyRefusesAnImageThatIsNotOnTheServer(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.ContainerPolicy = "strict"
+	h.compose.ConfigJSON = []byte(`{
+		"name": "outhaul-shop",
+		"services": {
+			"web": {"image": "nginx:1"}
+		}
+	}`)
+	h.docker.FailImageLabels = func(ref string) error {
+		if ref == "nginx:1" {
+			return errors.New("no such image")
+		}
+		return nil
+	}
+	app := h.composeApp(t, "shop", "docker-compose.yml", "")
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed {
+		t.Fatalf("status = %q (%q), want failed", got.Status, got.Reason)
+	}
+	for _, want := range []string{`service "web"`, "nginx:1", "no such image"} {
+		if !strings.Contains(got.Reason, want) {
+			t.Errorf("reason = %q, want it to mention %q", got.Reason, want)
+		}
+	}
+	if n := len(h.compose.CallsFor("up")); n != 0 {
+		t.Errorf("up calls = %d, want 0", n)
+	}
+}
+
+// A failed pull fails the deploy before any image is inspected.
+func TestComposePolicyReportsAPullFailure(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.ContainerPolicy = "strict"
+	h.compose.ConfigJSON = []byte(`{
+		"name": "outhaul-shop",
+		"services": {
+			"web": {"image": "nginx:1"}
+		}
+	}`)
+	h.compose.FailPull = errors.New("registry unreachable")
+	inspected := false
+	h.docker.FailImageLabels = func(string) error {
+		inspected = true
+		return nil
+	}
+	app := h.composeApp(t, "shop", "docker-compose.yml", "")
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed || !strings.Contains(got.Reason, "registry unreachable") {
+		t.Fatalf("status = %q (%q), want failed with the pull error", got.Status, got.Reason)
+	}
+	if inspected {
+		t.Error("an image was inspected after a failed pull")
+	}
+	if n := len(h.compose.CallsFor("up")); n != 0 {
+		t.Errorf("up calls = %d, want 0", n)
+	}
+}

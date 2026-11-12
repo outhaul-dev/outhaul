@@ -1,0 +1,87 @@
+{
+  "name": "policy",
+  "networks": {
+    "default": {
+      "name": "policy_default",
+      "ipam": {}
+    }
+  },
+  "secrets": {
+    "token": {
+      "name": "policy_token",
+      "environment": "TOKEN"
+    }
+  },
+  "services": {
+    "db": {
+      "command": null,
+      "entrypoint": null,
+      "image": "example/db:1.0",
+      "networks": {
+        "default": null
+      },
+      "build": {
+        "context": "/work",
+        "dockerfile": "Dockerfile"
+      }
+    },
+    "inline": {
+      "command": null,
+      "entrypoint": null,
+      "image": "example/inline:1",
+      "networks": {
+        "default": null
+      },
+      "build": {
+        "context": "/work",
+        "dockerfile_inline": "FROM alpine\n",
+        "network": "default"
+      }
+    },
+    "web": {
+      "command": null,
+      "entrypoint": null,
+      "image": "example/web:1.2",
+      "networks": {
+        "default": null
+      },
+      "build": {
+        "context": "/work",
+        "dockerfile": "docker/Dockerfile",
+        "args": {
+          "A": "one"
+        },
+        "labels": {
+          "team": "example"
+        },
+        "no_cache": true,
+        "additional_contexts": {
+          "giturl": "https://example.com/repo.git",
+          "image": "docker-image://alpine:3.20",
+          "svc": "service:db"
+        },
+        "pull": true,
+        "extra_hosts": [
+          "example.com=127.0.0.1"
+        ],
+        "network": "none",
+        "target": "prod",
+        "secrets": [
+          {
+            "source": "token"
+          }
+        ],
+        "shm_size": "67108864",
+        "tags": [
+          "example/web:1.2"
+        ],
+        "ulimits": {
+          "nofile": 1024
+        },
+        "platforms": [
+          "linux/amd64"
+        ]
+      }
+    }
+  }
+}

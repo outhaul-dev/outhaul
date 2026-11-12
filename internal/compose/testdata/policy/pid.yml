@@ -1,0 +1,13 @@
+name: policy
+services:
+  db:
+    image: postgres:16
+  service:
+    image: nginx:1.27
+    pid: "service:db"
+  host:
+    image: nginx:1.27
+    pid: host
+  container:
+    image: nginx:1.27
+    pid: "container:db"

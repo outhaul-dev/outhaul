@@ -1,0 +1,1 @@
+traefik.http.routers.evil.rule=Host(`evil.example.com`)

@@ -1,0 +1,67 @@
+{
+  "configs": {
+    "settings": {
+      "name": "policy_settings",
+      "content": "example"
+    }
+  },
+  "name": "policy",
+  "networks": {
+    "default": {
+      "name": "policy_default",
+      "ipam": {}
+    },
+    "shared": {
+      "name": "outhaul",
+      "ipam": {},
+      "external": true
+    }
+  },
+  "secrets": {
+    "token": {
+      "name": "policy_token",
+      "environment": "TOKEN"
+    }
+  },
+  "services": {
+    "web": {
+      "command": null,
+      "configs": [
+        {
+          "source": "settings"
+        }
+      ],
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "networks": {
+        "default": null,
+        "shared": null
+      },
+      "secrets": [
+        {
+          "source": "token",
+          "target": "/run/secrets/token"
+        }
+      ],
+      "volumes": [
+        {
+          "type": "volume",
+          "source": "data",
+          "target": "/data",
+          "volume": {}
+        }
+      ]
+    }
+  },
+  "volumes": {
+    "data": {
+      "name": "policy_data",
+      "labels": {
+        "team": "example"
+      }
+    }
+  },
+  "x-common": {
+    "image": "nginx:1.27"
+  }
+}

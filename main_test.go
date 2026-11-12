@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -891,5 +892,100 @@ func TestNewUpdatesOff(t *testing.T) {
 	d, k, off = newUpdates(config.Config{Updates: "main", DataDir: t.TempDir()})
 	if off || d == nil || k == nil {
 		t.Fatalf("main: got (%v, %v, %v), want a Dir and a Checker", d, k, off)
+	}
+}
+
+// The strict container policy forbids a published database port, but a row
+// that still has one keeps publishing it until its container is replaced.
+// Startup names each such row and changes nothing.
+func TestStrictPolicyWarnsAboutPublishedDatabasePorts(t *testing.T) {
+	ctx := context.Background()
+	st, err := openStore(config.Config{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	for _, d := range []core.Database{
+		{Name: "shop", Engine: core.EnginePostgres, Image: "postgres:17", Password: "pw", ExtPort: 5433},
+		{Name: "stock", Engine: core.EnginePostgres, Image: "postgres:17", Password: "pw"},
+	} {
+		if _, err := st.CreateDatabase(ctx, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var warnings []string
+	logf := func(format string, args ...any) { warnings = append(warnings, fmt.Sprintf(format, args...)) }
+	warnPublishedDatabasePorts(ctx, st, true, logf)
+
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %q, want one, for the database that publishes a port", warnings)
+	}
+	if !strings.Contains(warnings[0], `"shop"`) || !strings.Contains(warnings[0], "5433") {
+		t.Errorf("warning = %q, want it to name the database and its port", warnings[0])
+	}
+	dbs, err := st.ListDatabases(ctx)
+	if err != nil || len(dbs) != 2 {
+		t.Fatalf("databases after the warning = %+v (err %v), want both rows", dbs, err)
+	}
+	for _, d := range dbs {
+		if d.Status != core.DBCreating {
+			t.Errorf("database %q status = %q, want it left as it was (nothing is provisioned at startup)", d.Name, d.Status)
+		}
+	}
+
+	warnings = nil
+	warnPublishedDatabasePorts(ctx, st, false, logf)
+	if len(warnings) != 0 {
+		t.Errorf("warnings with the strict policy off = %q", warnings)
+	}
+}
+
+// Every Compose runner shares one environment. Strict mode, or a required
+// request header on its own, reduces it to the keep-list: no OUTHAUL_* setting
+// and not the header's value reaches a Compose file's ${NAME}. With both off
+// it is nil, so runs inherit exactly as before.
+func TestComposeEnvironmentFollowsStrictAndHeader(t *testing.T) {
+	t.Setenv("OUTHAUL_CONTAINER_POLICY", "strict")
+	t.Setenv("OUTHAUL_REQUIRE_HEADER_NAME", "X-Azure-FDID")
+	t.Setenv("OUTHAUL_REQUIRE_HEADER_VALUE", "header-secret")
+	t.Setenv("PATH", "/usr/local/bin:/usr/bin")
+
+	cases := []struct {
+		name    string
+		cfg     config.Config
+		reduced bool
+	}{
+		{"strict container policy", config.Config{ContainerPolicy: "strict"}, true},
+		{"header required without strict mode", config.Config{
+			RequireHeaderName: "X-Azure-FDID", RequireHeaderValue: "header-secret",
+		}, true},
+		{"neither", config.Config{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := composeEnvFor(tc.cfg)
+			if !tc.reduced {
+				if env != nil {
+					t.Fatalf("composeEnvFor = %q, want nil (inherit)", env)
+				}
+				if r := newComposeRunner(env); r.Env != nil {
+					t.Fatalf("runner Env = %q, want nil (inherit)", r.Env)
+				}
+				return
+			}
+			if env == nil {
+				t.Fatal("composeEnvFor = nil, want the restricted environment")
+			}
+			if want := "PATH=" + os.Getenv("PATH"); !slices.Contains(env, want) {
+				t.Errorf("composeEnvFor = %q, want it to contain %q", env, want)
+			}
+			for _, kv := range env {
+				if strings.HasPrefix(kv, "OUTHAUL_") {
+					t.Errorf("composeEnvFor = %q, want no OUTHAUL_* setting in it", env)
+					break
+				}
+			}
+		})
 	}
 }

@@ -539,6 +539,60 @@ func TestStateBackupSettings(t *testing.T) {
 	}
 }
 
+// Strict mode is the only accepted value, in any case; unset means off.
+// A typo used to read as off everywhere, so Validate names it instead.
+func TestContainerPolicySetting(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", ""},
+		{"strict", "strict"},
+		{"STRICT", "strict"},
+		{"Strict", "strict"},
+		{"lenient", ""},
+	}
+	for _, tc := range cases {
+		c := Load(func(k string) string {
+			if k == "OUTHAUL_CONTAINER_POLICY" {
+				return tc.in
+			}
+			return ""
+		})
+		if c.ContainerPolicy != tc.want {
+			t.Errorf("OUTHAUL_CONTAINER_POLICY=%q -> %q, want %q", tc.in, c.ContainerPolicy, tc.want)
+		}
+		wantStrict := tc.want == "strict"
+		if got := c.StrictContainerPolicy(); got != wantStrict {
+			t.Errorf("OUTHAUL_CONTAINER_POLICY=%q -> StrictContainerPolicy() = %v, want %v", tc.in, got, wantStrict)
+		}
+	}
+
+	bad := Load(func(k string) string {
+		if k == "OUTHAUL_CONTAINER_POLICY" {
+			return "lenient"
+		}
+		return ""
+	})
+	err := bad.Validate()
+	if err == nil {
+		t.Fatal("Validate accepted OUTHAUL_CONTAINER_POLICY=lenient")
+	}
+	if !strings.Contains(err.Error(), "OUTHAUL_CONTAINER_POLICY") {
+		t.Errorf("Validate error %q does not name OUTHAUL_CONTAINER_POLICY", err)
+	}
+
+	good := Load(func(k string) string {
+		if k == "OUTHAUL_CONTAINER_POLICY" {
+			return "STRICT"
+		}
+		return ""
+	})
+	if err := good.Validate(); err != nil {
+		t.Errorf("Validate rejected STRICT: %v", err)
+	}
+}
+
 func TestPruneBuildCacheDefaultsOn(t *testing.T) {
 	cfg := Load(func(string) string { return "" })
 	if !cfg.PruneBuildCache {

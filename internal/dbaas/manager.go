@@ -48,6 +48,10 @@ type Manager struct {
 	// unprivileged-user fallback path in removeData.
 	removeAll func(string) error
 
+	// strict is the server's container policy (OUTHAUL_CONTAINER_POLICY): under
+	// it a database publishes no host port, whatever its row says.
+	strict bool
+
 	// provisionDone, when non-nil, is signalled after each async provision
 	// attempt finishes (tests use it to wait deterministically).
 	provisionDone chan struct{}
@@ -60,6 +64,11 @@ func NewManager(st *store.Store, dc docker.Client, network, dataDir string) *Man
 
 // DataPath is the host directory holding a database's persistent data.
 func (m *Manager) DataPath(dbName string) string { return filepath.Join(m.dataDir, dbName) }
+
+// SetPolicy records whether the strict container policy is on. Under it a
+// database publishes no host port; a row that still has one keeps publishing it
+// until its container is next replaced. Call before Provision.
+func (m *Manager) SetPolicy(strict bool) { m.strict = strict }
 
 // Provision (re)creates the database container in the background: pull the
 // image, create and start a container. The row moves creating → running/failed.
@@ -115,7 +124,7 @@ func (m *Manager) provision(ctx context.Context, d core.Database) error {
 		// Docker owns reboots/crashes, same as app containers.
 		RestartPolicy: "unless-stopped",
 	}
-	if d.ExtPort > 0 {
+	if d.ExtPort > 0 && !m.strict {
 		spec.Ports = []docker.PortMapping{{
 			HostPort:      strconv.Itoa(d.ExtPort),
 			ContainerPort: strconv.Itoa(eng.Port),

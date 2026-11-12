@@ -1,0 +1,5 @@
+name: policy
+services:
+  web:
+    image: nginx:1.27
+    isolation: default

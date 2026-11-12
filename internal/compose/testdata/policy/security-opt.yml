@@ -1,0 +1,26 @@
+name: policy
+services:
+  bare:
+    image: nginx:1.27
+    security_opt:
+      - no-new-privileges
+  enabled:
+    image: nginx:1.27
+    security_opt:
+      - no-new-privileges:true
+  seccomp:
+    image: nginx:1.27
+    security_opt:
+      - seccomp=unconfined
+  apparmor:
+    image: nginx:1.27
+    security_opt:
+      - apparmor=unconfined
+  label:
+    image: nginx:1.27
+    security_opt:
+      - label=disable
+  systempaths:
+    image: nginx:1.27
+    security_opt:
+      - systempaths=unconfined

@@ -829,9 +829,50 @@ func TestHeaderRequiredRefusesAnImageThatRoutesItself(t *testing.T) {
 			if got.Status != core.StatusFailed || !strings.Contains(got.Reason, "traefik.http.routers.x.rule") {
 				t.Fatalf("status = %q (%q), want failed naming the label", got.Status, got.Reason)
 			}
+			if !strings.Contains(got.Reason, "while a request header is required") {
+				t.Errorf("reason = %q, want the reason the image was inspected", got.Reason)
+			}
 			for _, spec := range h.docker.Created {
 				if spec.Labels["traefik.enable"] == "true" {
 					t.Errorf("a routed container was created from the refused image: %s", spec.Name)
+				}
+			}
+		})
+	}
+}
+
+// Under strict, an image that carries traefik.* labels would route itself
+// through the container Docker copies those labels onto, so it never runs.
+// Docker's label matching is case-insensitive for Traefik's keys.
+func TestStrictPolicyRefusesAnImageWithTraefikLabels(t *testing.T) {
+	for name, key := range map[string]string{
+		"lowercase key":  "traefik.enable",
+		"mixed-case key": "Traefik.HTTP.Routers.Evil.Rule",
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			h.worker.cfg.ContainerPolicy = "strict"
+			app := h.app(t, "web")
+			dep := h.claimedDeployment(t, app.ID)
+			h.docker.ImageLabelsByRef = map[string]map[string]string{
+				fmt.Sprintf("outhaul/%s:%d", app.Name, dep.ID): {key: "true"},
+			}
+
+			h.worker.runPipeline(context.Background(), dep)
+
+			got := h.status(t, dep.ID)
+			if got.Status != core.StatusFailed || !strings.Contains(got.Reason, "traefik labels") {
+				t.Fatalf("status = %q (%q), want failed naming the traefik labels", got.Status, got.Reason)
+			}
+			if !strings.Contains(got.Reason, key) {
+				t.Errorf("reason = %q, want it to name the label %q", got.Reason, key)
+			}
+			if !strings.Contains(got.Reason, "strict container policy") {
+				t.Errorf("reason = %q, want the reason the image was inspected", got.Reason)
+			}
+			for _, spec := range h.docker.Created {
+				if spec.Name == "outhaul-app-"+app.Name || strings.HasPrefix(spec.Name, "outhaul-deploy-") {
+					t.Errorf("a container was created from the refused image: %s", spec.Name)
 				}
 			}
 		})
@@ -850,5 +891,65 @@ func TestNoHeaderAllowsAnImageWithTraefikLabels(t *testing.T) {
 	h.worker.runPipeline(ctx, dep)
 	if got := h.status(t, dep.ID); got.Status != core.StatusRunning {
 		t.Fatalf("status = %q (%q), want running", got.Status, got.Reason)
+	}
+}
+
+// A rollback arrives with an image and builds nothing, so the check runs once
+// before the building -> deploying transition and leaves the live container
+// alone.
+func TestStrictPolicyRefusesARollbackImageWithTraefikLabels(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.ContainerPolicy = "strict"
+	ctx := context.Background()
+	app := h.app(t, "web")
+
+	oldID, err := h.docker.CreateContainer(ctx, docker.ContainerSpec{Name: "outhaul-app-web", Image: "outhaul/web:9"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.docker.StartContainer(ctx, oldID); err != nil {
+		t.Fatal(err)
+	}
+	h.docker.ImageLabelsByRef = map[string]map[string]string{
+		"outhaul/web:7": {"traefik.enable": "true"},
+	}
+	createdBefore := len(h.docker.Created)
+
+	dep := h.claimedRollback(t, app.ID, "outhaul/web:7", 7)
+	h.worker.runPipeline(ctx, dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed || !strings.Contains(got.Reason, "traefik labels") {
+		t.Fatalf("status = %q (%q), want failed naming the traefik labels", got.Status, got.Reason)
+	}
+	if !strings.Contains(got.Reason, "strict container policy") {
+		t.Errorf("reason = %q, want the reason the image was inspected", got.Reason)
+	}
+	if len(h.docker.Created) != createdBefore {
+		t.Errorf("a container was created from the refused image: %v", h.docker.Created[createdBefore:])
+	}
+	if c, _ := h.docker.FindContainer(ctx, "outhaul-app-web"); c == nil || c.Image != "outhaul/web:9" {
+		t.Errorf("the live container should survive a refused rollback, got %+v", c)
+	}
+}
+
+// A server without the policy inspects no image: its deploys are unchanged.
+func TestPipelineWithoutPolicyNeverInspectsTheImage(t *testing.T) {
+	h := newHarness(t)
+	app := h.app(t, "web")
+	dep := h.claimedDeployment(t, app.ID)
+	inspected := false
+	h.docker.FailImageLabels = func(string) error {
+		inspected = true
+		return nil
+	}
+
+	h.worker.runPipeline(context.Background(), dep)
+
+	if got := h.status(t, dep.ID); got.Status != core.StatusRunning {
+		t.Fatalf("status = %q (%q), want running", got.Status, got.Reason)
+	}
+	if inspected {
+		t.Error("the image was inspected without the policy")
 	}
 }

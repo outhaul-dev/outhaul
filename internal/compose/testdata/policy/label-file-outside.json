@@ -1,0 +1,11 @@
+{
+  "name": "policy",
+  "services": {
+    "web": {
+      "image": "nginx:1.27",
+      "label_file": [
+        "/outside.labels"
+      ]
+    }
+  }
+}

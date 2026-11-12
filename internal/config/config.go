@@ -36,6 +36,7 @@ type Config struct {
 	CloudflaredImage string // image used for the managed cloudflared connector
 	Network          string // shared Docker network app containers + Traefik join
 	Updates          string // "main" updates from main; "off" never updates
+	ContainerPolicy  string // "strict" or ""; strict refuses host-reaching Compose keys
 
 	ACMEEmail          string        // Let's Encrypt account email; empty disables TLS
 	ACMEStaging        bool          // use the LE staging CA (avoid rate limits)
@@ -86,6 +87,7 @@ func Load(getenv Getenv) Config {
 		CloudflaredImage: or(getenv("OUTHAUL_CLOUDFLARED_IMAGE"), DefaultCloudflaredImage),
 		Network:          or(getenv("OUTHAUL_NETWORK"), "outhaul"),
 		Updates:          p.word("OUTHAUL_UPDATES", "main", "main", "off"),
+		ContainerPolicy:  p.policy("OUTHAUL_CONTAINER_POLICY"),
 
 		ACMEEmail:          firstField(getenv("OUTHAUL_ACME_EMAIL")),
 		ACMEStaging:        p.bool("OUTHAUL_ACME_STAGING"),
@@ -266,6 +268,9 @@ func (c Config) Validate() error {
 // PublicURLSet reports whether an externally reachable base URL is configured.
 func (c Config) PublicURLSet() bool { return c.PublicURL != "" }
 
+// StrictContainerPolicy reports whether the strict container policy is on.
+func (c Config) StrictContainerPolicy() bool { return c.ContainerPolicy == "strict" }
+
 // SecretKeyPath is the env-encryption key file.
 func (c Config) SecretKeyPath() string { return filepath.Join(c.DataDir, "secret.key") }
 
@@ -379,6 +384,19 @@ func (p *parser) word(key, fallback string, allowed ...string) string {
 	}
 	p.reject(key, v, strings.Join(allowed, " or "))
 	return fallback
+}
+
+// policy accepts only "strict", in any case; empty means off.
+func (p *parser) policy(key string) string {
+	v := p.getenv(key)
+	switch strings.ToLower(v) {
+	case "":
+		return ""
+	case "strict":
+		return "strict"
+	}
+	p.reject(key, v, "strict")
+	return ""
 }
 
 // count parses a non-negative integer.

@@ -1,0 +1,80 @@
+{
+  "name": "policy",
+  "networks": {
+    "default": {
+      "name": "policy_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "container": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "ipc": "container:db",
+      "networks": {
+        "default": null
+      }
+    },
+    "db": {
+      "command": null,
+      "entrypoint": null,
+      "image": "postgres:16",
+      "networks": {
+        "default": null
+      }
+    },
+    "host": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "ipc": "host",
+      "networks": {
+        "default": null
+      }
+    },
+    "none": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "ipc": "none",
+      "networks": {
+        "default": null
+      }
+    },
+    "private": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "ipc": "private",
+      "networks": {
+        "default": null
+      }
+    },
+    "service": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "ipc": "service:db",
+      "networks": {
+        "default": null
+      },
+      "depends_on": {
+        "db": {
+          "condition": "service_started",
+          "restart": true,
+          "required": true
+        }
+      }
+    },
+    "shareable": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "ipc": "shareable",
+      "networks": {
+        "default": null
+      }
+    }
+  }
+}

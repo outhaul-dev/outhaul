@@ -1,0 +1,9 @@
+name: policy
+services:
+  web:
+    image: nginx:1.27
+    models:
+      - example
+models:
+  example:
+    model: ai/example

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -259,6 +260,141 @@ func TestDatabasesListAcrossProjects(t *testing.T) {
 	}
 	if strings.Contains(page, "coming soon") {
 		t.Error("databases page still renders as a placeholder")
+	}
+}
+
+// Under the strict container policy the database forms refuse a host port
+// outright: nothing is stored and nothing is provisioned.
+func TestStrictPolicyRefusesAPortFromTheForms(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	e.srv.SetContainerPolicy(true)
+
+	resp := e.postForm(t, "/projects/1/databases", url.Values{
+		"name": {"shop"}, "engine": {"postgres"}, "external_port": {"5433"},
+	})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("create status = %d, want 400", resp.StatusCode)
+	}
+	if got := body(t, resp); !strings.Contains(got, "container policy") || !strings.Contains(got, "published port") {
+		t.Errorf("create refusal does not name the container policy and published ports")
+	}
+	if len(e.databases.provisioned) != 0 {
+		t.Errorf("refused create provisioned %+v", e.databases.provisioned)
+	}
+	if dbs, err := e.store.ListDatabases(context.Background()); err != nil || len(dbs) != 0 {
+		t.Errorf("refused create stored %+v (err %v), want no row", dbs, err)
+	}
+
+	d := seedDatabase(t, e, "stock", core.EnginePostgres)
+	if err := e.store.SetDatabaseExtPort(context.Background(), d.ID, 5434); err != nil {
+		t.Fatal(err)
+	}
+	resp = e.postForm(t, "/databases/"+itoa(d.ID)+"/settings", url.Values{"external_port": {"5433"}})
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("settings status = %d, want 400", resp.StatusCode)
+	}
+	if got := body(t, resp); !strings.Contains(got, "container policy") || !strings.Contains(got, "published port") {
+		t.Errorf("settings refusal does not name the container policy and published ports")
+	}
+	after, err := e.store.GetDatabase(context.Background(), d.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.ExtPort != 5434 {
+		t.Errorf("refused settings stored port = %d, want the existing 5434 kept", after.ExtPort)
+	}
+	if len(e.databases.provisioned) != 0 {
+		t.Errorf("refused settings provisioned %+v", e.databases.provisioned)
+	}
+}
+
+// The strict policy takes the external-port field off both database forms; it
+// is the setting, not the page, that decides.
+func TestStrictPolicyHidesThePortField(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	d := seedDatabase(t, e, "shop", core.EnginePostgres)
+	dbPath := "/databases/" + itoa(d.ID)
+
+	for _, path := range []string{dbPath, "/projects/1"} {
+		if page := body(t, e.get(t, path)); !strings.Contains(page, `name="external_port"`) {
+			t.Fatalf("%s has no external-port field before the strict policy", path)
+		}
+	}
+
+	e.srv.SetContainerPolicy(true)
+	for _, path := range []string{dbPath, "/projects/1"} {
+		if page := body(t, e.get(t, path)); strings.Contains(page, `name="external_port"`) {
+			t.Errorf("%s still offers an external-port field under the strict policy", path)
+		}
+	}
+}
+
+// A row that still publishes a port under the strict policy gets a notice and
+// one button that posts an empty port to the settings route, which clears it.
+func TestStrictPolicyOffersToStopAnExistingPort(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	d := seedDatabase(t, e, "shop", core.EnginePostgres)
+	if err := e.store.SetDatabaseExtPort(context.Background(), d.ID, 5433); err != nil {
+		t.Fatal(err)
+	}
+	e.srv.SetContainerPolicy(true)
+	dbPath := "/databases/" + itoa(d.ID)
+
+	page := body(t, e.get(t, dbPath))
+	if !strings.Contains(page, "Stop publishing port 5433") {
+		t.Error("page does not offer to stop publishing the port")
+	}
+	if strings.Contains(page, `<input type="text" name="external_port"`) {
+		t.Error("page still offers a text field for the port")
+	}
+	form := regexp.MustCompile(`(?s)<form[^>]*action="` + dbPath + `/settings"[^>]*>.*?</form>`)
+	offered := false
+	for _, f := range form.FindAllString(page, -1) {
+		offered = offered || strings.Contains(f, `name="external_port"`) && strings.Contains(f, `value=""`)
+	}
+	if !offered {
+		t.Error("no form posts an empty external_port to the settings route")
+	}
+
+	resp := e.postForm(t, dbPath+"/settings", url.Values{"external_port": {""}})
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("stop-publishing status = %d, want 303", resp.StatusCode)
+	}
+	got, err := e.store.GetDatabase(context.Background(), d.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExtPort != 0 {
+		t.Errorf("stored port = %d, want 0", got.ExtPort)
+	}
+	if len(e.databases.provisioned) != 1 || e.databases.provisioned[0].ExtPort != 0 {
+		t.Errorf("provisioned = %+v, want a reprovision with no port", e.databases.provisioned)
+	}
+}
+
+// A read-only viewer sees the warning about a database that still publishes a
+// port under the strict policy, but gets no form to change it.
+func TestViewerSeesTheStrictPortWarningWithoutTheForm(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	d := seedDatabase(t, e, "shop", core.EnginePostgres)
+	if err := e.store.SetDatabaseExtPort(context.Background(), d.ID, 5433); err != nil {
+		t.Fatal(err)
+	}
+	e.srv.SetContainerPolicy(true)
+	viewer := e.signInAs(t, "vera", core.RoleProjectViewer, d.ProjectID)
+
+	page := body(t, e.getAs(t, viewer, "/databases/"+itoa(d.ID)))
+	if !strings.Contains(page, "still publishes port 5433") {
+		t.Error("viewer page does not warn that the database still publishes its port")
+	}
+	for _, unwanted := range []string{"Stop publishing port", `name="external_port"`} {
+		if strings.Contains(page, unwanted) {
+			t.Errorf("viewer page offers %q, want the warning only", unwanted)
+		}
 	}
 }
 

@@ -63,6 +63,39 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 		return
 	}
 
+	project := compose.ProjectName(app.Name)
+
+	// The model is compose's own normalised view of the user's file (never the
+	// override Outhaul writes). Read it only when a setting needs it, so an
+	// install that sets none of them runs no extra command.
+	var model compose.Model
+	if w.needsModel(app) {
+		model, err = compose.ReadModel(ctx, w.compose, workDir, []string{app.ComposePath}, project, out)
+		if err != nil {
+			w.fail(dep, core.StatusBuilding, "read Compose file: "+err.Error(), out)
+			return
+		}
+		policy := compose.Policy{
+			Strict:        w.cfg.StrictContainerPolicy(),
+			RoutingLabels: w.cfg.StrictContainerPolicy() || w.cfg.HeaderRequired(),
+			WorkDir:       workDir,
+			Network:       w.cfg.Network,
+		}
+		if vs := compose.Check(model, policy); len(vs) > 0 {
+			reason, lines := policyViolationReason(vs)
+			if w.cfg.StrictContainerPolicy() {
+				logf(out, "This server's container policy refuses this Compose file (OUTHAUL_CONTAINER_POLICY=strict):")
+			} else {
+				logf(out, "This server refuses a Compose file that adds its own routing while a request header is required:")
+			}
+			for _, line := range lines {
+				logf(out, "%s", line)
+			}
+			w.fail(dep, core.StatusBuilding, reason, out)
+			return
+		}
+	}
+
 	// files are work-dir-relative (the runner runs in workDir); the override
 	// sits beside the user's compose file and layers domain exposure over it.
 	files := []string{app.ComposePath}
@@ -75,11 +108,26 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 		files = append(files, path.Join(path.Dir(app.ComposePath), compose.OverrideFile))
 	}
 
-	project := compose.ProjectName(app.Name)
 	logf(out, "Building stack %s...", project)
 	if err := w.compose.Build(ctx, workDir, files, project, out); err != nil {
 		w.fail(dep, core.StatusBuilding, "build failed: "+err.Error(), out)
 		return
+	}
+
+	// Strict mode, or a required request header, refuses a service image that
+	// routes itself: Docker copies its labels onto the container and Traefik
+	// reads them. Pull first, so every image `up` will use is on the server.
+	// The check runs at pull time; a service with pull_policy: always can
+	// change its tag before `up`.
+	if w.cfg.StrictContainerPolicy() || w.cfg.HeaderRequired() {
+		if err := w.compose.Pull(ctx, workDir, files, project, out); err != nil {
+			w.fail(dep, core.StatusBuilding, "pull failed: "+err.Error(), out)
+			return
+		}
+		if err := w.checkComposeImages(ctx, model); err != nil {
+			w.fail(dep, core.StatusBuilding, err.Error(), out)
+			return
+		}
 	}
 
 	// --- building -> deploying (the cancel window closes here) ---
@@ -129,6 +177,29 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 	}
 }
 
+// checkComposeImages refuses a stack whose service images carry traefik.*
+// labels. Docker copies an image's labels onto its containers and Traefik reads
+// them, so such an image could route itself. An image that is missing after the
+// pull fails the deploy naming the service, rather than surfacing late at `up`.
+// The message quotes no value from the model except the service's own image.
+func (w *Worker) checkComposeImages(ctx context.Context, model compose.Model) error {
+	for _, svc := range model.Services {
+		labels, err := w.docker.ImageLabels(ctx, svc.Image)
+		if err != nil {
+			return fmt.Errorf("service %q: image %s is not on the server after pull: %w", svc.Name, svc.Image, err)
+		}
+		if bad := routingLabelKeys(labels); len(bad) > 0 {
+			checked := "checked at pull time"
+			if _, builds := svc.Raw["build"]; builds {
+				checked = "checked after build"
+			}
+			return fmt.Errorf("refusing service %q: image %s carries traefik labels (%s): %s",
+				svc.Name, svc.Image, checked, strings.Join(bad, ", "))
+		}
+	}
+	return nil
+}
+
 // composeWorkDir obtains the work dir holding the stack's compose file:
 // cloned from the app's repo, or — for template apps, which have no repo —
 // created fresh with the app's compose snapshot written into it.
@@ -158,6 +229,26 @@ func composeSource(app core.App) string {
 		return "template " + app.TemplateID
 	}
 	return app.RepoURL
+}
+
+// policyViolationReason formats a Compose check's violations for the deploy log
+// and the deployment's reason. The log gets every violation, indented to sit
+// under the header line; the reason is the first without that indent, plus a
+// count of the rest. No field of a Violation quotes the model's values except
+// a refused path.
+func policyViolationReason(vs []compose.Violation) (reason string, lines []string) {
+	lines = make([]string, len(vs))
+	for i, v := range vs {
+		lines[i] = fmt.Sprintf("  %s: %s: %s", v.Where, v.Option, v.Reason)
+	}
+	if len(vs) == 0 {
+		return "", lines
+	}
+	reason = strings.TrimPrefix(lines[0], "  ")
+	if n := len(vs) - 1; n > 0 {
+		reason += fmt.Sprintf(" (and %d more)", n)
+	}
+	return reason, lines
 }
 
 // envFile renders env vars in dotenv format. Values are double-quoted with

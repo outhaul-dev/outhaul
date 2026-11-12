@@ -1,0 +1,15 @@
+name: policy
+services:
+  web:
+    image: nginx:1.27
+    volumes:
+      - ./host:/host
+      - type: image
+        source: docker.io/library/nginx:1.27
+        target: /image
+      - type: npipe
+        source: '\\\\.\\pipe\\example'
+        target: /npipe
+      - type: cluster
+        source: example
+        target: /cluster

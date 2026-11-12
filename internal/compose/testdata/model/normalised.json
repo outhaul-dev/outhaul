@@ -1,0 +1,55 @@
+{
+  "name": "demo",
+  "networks": {
+    "default": {
+      "name": "demo_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "db": {
+      "deploy": {
+        "resources": {},
+        "restart_policy": {
+          "condition": "on-failure"
+        },
+        "placement": {}
+      },
+      "restart": "always",
+      "command": null,
+      "entrypoint": null,
+      "environment": {
+        "POSTGRES_PASSWORD": "example"
+      },
+      "image": "postgres:16",
+      "labels": {
+        "com.example.site": "db.example.com"
+      },
+      "networks": {
+        "default": null
+      }
+    },
+    "web": {
+      "command": null,
+      "entrypoint": null,
+      "labels": {
+        "com.example.site": "web.example.com"
+      },
+      "networks": {
+        "default": null
+      },
+      "build": {
+        "context": "./app",
+        "dockerfile": "Dockerfile"
+      },
+      "ports": [
+        {
+          "mode": "ingress",
+          "target": 3000,
+          "published": "3000",
+          "protocol": "tcp"
+        }
+      ]
+    }
+  }
+}

@@ -73,17 +73,29 @@
 
 {{if ne .Database.Engine "redis"}}{{template "backups" .}}{{end}}
 
+{{if and .StrictPolicy .Database.ExtPort}}
+<div class="alert alert-warn">This server's container policy doesn't allow published ports, but this database still publishes port {{.Database.ExtPort}} until its container is next replaced.</div>
+{{end}}
+
 {{if .CanChange}}
 <section class="panel">
   <h2 class="panel-title">Settings</h2>
+  {{if and .StrictPolicy .Database.ExtPort}}
+  <form method="post" action="/databases/{{.Database.ID}}/settings" class="inline">
+    <input type="hidden" name="external_port" value="">
+    <button type="submit" class="btn">Stop publishing port {{.Database.ExtPort}}</button>
+  </form>
+  {{end}}
   <form method="post" action="/databases/{{.Database.ID}}/settings" class="grid-form">
+    {{if not .StrictPolicy}}
     <label class="field">
       <span>External port</span>
       <input type="text" name="external_port" value="{{if .Database.ExtPort}}{{.Database.ExtPort}}{{end}}" placeholder="empty = internal only" inputmode="numeric">
     </label>
+    {{end}}
     <button type="submit" class="btn">Apply</button>
   </form>
-  <p class="muted env-note">Applying recreates the container with the new port mapping — data is kept (it lives outside the container). This is also how to retry after a failed provision.</p>
+  <p class="muted env-note">Applying recreates the container{{if not .StrictPolicy}} with the new port mapping{{end}} — data is kept (it lives outside the container). This is also how to retry after a failed provision.</p>
 </section>
 {{end}}
 {{end}}

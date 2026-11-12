@@ -1,0 +1,86 @@
+{
+  "name": "policy",
+  "networks": {
+    "default": {
+      "name": "policy_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "web": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "networks": {
+        "default": null
+      },
+      "volumes": [
+        {
+          "type": "volume",
+          "source": "data",
+          "target": "/data",
+          "volume": {}
+        },
+        {
+          "type": "volume",
+          "source": "other",
+          "target": "/other",
+          "volume": {}
+        },
+        {
+          "type": "volume",
+          "source": "opts",
+          "target": "/opts",
+          "volume": {}
+        },
+        {
+          "type": "volume",
+          "source": "extra",
+          "target": "/extra",
+          "volume": {}
+        },
+        {
+          "type": "volume",
+          "source": "host",
+          "target": "/host",
+          "volume": {}
+        },
+        {
+          "type": "volume",
+          "source": "custom",
+          "target": "/custom",
+          "volume": {}
+        }
+      ]
+    }
+  },
+  "volumes": {
+    "custom": {
+      "name": "my-volume"
+    },
+    "data": {
+      "name": "policy_data",
+      "labels": {
+        "team": "example"
+      }
+    },
+    "extra": {
+      "name": "extra",
+      "external": true
+    },
+    "host": {
+      "name": "policy_host",
+      "driver": "flocker"
+    },
+    "opts": {
+      "name": "policy_opts",
+      "driver_opts": {
+        "type": "none"
+      }
+    },
+    "other": {
+      "name": "policy_other",
+      "driver": "local"
+    }
+  }
+}

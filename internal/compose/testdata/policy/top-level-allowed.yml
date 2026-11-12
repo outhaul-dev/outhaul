@@ -1,0 +1,29 @@
+name: policy
+x-common:
+  image: nginx:1.27
+services:
+  web:
+    image: nginx:1.27
+    volumes:
+      - data:/data
+    networks:
+      - default
+      - shared
+    secrets:
+      - token
+    configs:
+      - settings
+volumes:
+  data:
+    labels:
+      team: example
+networks:
+  shared:
+    external: true
+    name: outhaul
+secrets:
+  token:
+    environment: TOKEN
+configs:
+  settings:
+    content: example

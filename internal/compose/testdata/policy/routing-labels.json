@@ -1,0 +1,28 @@
+{
+  "name": "policy",
+  "networks": {
+    "default": {
+      "name": "policy_default",
+      "ipam": {}
+    }
+  },
+  "services": {
+    "web": {
+      "command": null,
+      "entrypoint": null,
+      "image": "nginx:1.27",
+      "labels": {
+        "Outhaul.App": "example",
+        "TRAEFIK.ENABLE": "true",
+        "example.com/team": "platform",
+        "traefik.http.routers.evil.rule": "Host(`evil.example.com`)"
+      },
+      "label_file": [
+        "/work/routing.labels"
+      ],
+      "networks": {
+        "default": null
+      }
+    }
+  }
+}
