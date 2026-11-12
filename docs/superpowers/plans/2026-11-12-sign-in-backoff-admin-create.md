@@ -949,11 +949,13 @@ func TestSignInLimiterLockTable(t *testing.T) {
 	} {
 		l, now := newTestLimiter()
 		for i := 0; i < tc.failures; i++ {
+			// Move past the wait the previous failure set. The last
+			// failure's wait must still be live for the check below.
+			*now = now.Add(lockFor(i))
 			wait, ok := l.allow("admin", true)
 			if !ok {
 				t.Fatalf("%d failures: attempt %d was refused for %v", tc.failures, i+1, wait)
 			}
-			*now = now.Add(lockFor(i + 1))
 		}
 		wait, ok := l.allow("admin", true)
 		if tc.wait == 0 {
@@ -985,7 +987,7 @@ func TestSignInLimiterHourClearsAName(t *testing.T) {
 }
 
 func TestSignInLimiterSuccessClearsAName(t *testing.T) {
-	l, now := newTestLimiter()
+	l, _ := newTestLimiter()
 	for i := 0; i < 5; i++ {
 		l.allow("admin", true)
 	}
