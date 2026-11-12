@@ -815,3 +815,153 @@ func TestHeaderRequiredReportsAStopFailure(t *testing.T) {
 		t.Fatalf("EnsureProxy = %v, want an error naming the failed stop", err)
 	}
 }
+
+func TestProxySpecCarriesTheAddress(t *testing.T) {
+	pc := testProxyConfig()
+	pc.Subnet, pc.IPv4 = "172.30.0.0/24", "172.30.0.2"
+	spec := proxySpec(pc)
+	if spec.IPv4 != "172.30.0.2" {
+		t.Errorf("spec IPv4 = %q, want %q", spec.IPv4, "172.30.0.2")
+	}
+	if len(spec.Networks) != 1 || spec.Networks[0] != pc.Network {
+		t.Errorf("spec networks = %v, want just %q", spec.Networks, pc.Network)
+	}
+	if got := proxySpec(testProxyConfig()).IPv4; got != "" {
+		t.Errorf("spec IPv4 with no address = %q, want it left to Docker", got)
+	}
+}
+
+// The hash decides whether Traefik is recreated. The address is part of the
+// container, so changing it must recreate. The subnet is not: the network is
+// checked on its own, and hashing it would recreate Traefik unnecessarily.
+func TestProxyHashChangesWithTheAddress(t *testing.T) {
+	hash := func(subnet, ipv4 string) string {
+		pc := testProxyConfig()
+		pc.Subnet, pc.IPv4 = subnet, ipv4
+		return proxySpec(pc).Labels["outhaul.config-hash"]
+	}
+	plain := hash("", "")
+	if got := hash("", "172.30.0.2"); got == plain {
+		t.Errorf("config hash with an address = %s, want it to differ from %s", got, plain)
+	}
+	if got := hash("172.30.0.0/24", ""); got != plain {
+		t.Errorf("config hash with only a subnet = %s, want %s (a subnet alone must not recreate Traefik)", got, plain)
+	}
+	if got, want := hash("172.30.0.0/24", "172.30.0.2"), hash("", "172.30.0.2"); got != want {
+		t.Errorf("config hash with a subnet and an address = %s, want %s (the subnet is not part of it)", got, want)
+	}
+	if hash("", "172.30.0.3") == hash("", "172.30.0.2") {
+		t.Error("a different address must change the config hash")
+	}
+}
+
+func TestEnsureProxyUsesTheNetworkSpec(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+	pc := testProxyConfig()
+	pc.Subnet, pc.IPv4 = "172.30.0.0/24", "172.30.0.2"
+
+	if err := EnsureProxy(ctx, f, pc, nil); err != nil {
+		t.Fatalf("EnsureProxy: %v", err)
+	}
+
+	want := docker.NetworkSpec{Name: "outhaul", Subnet: "172.30.0.0/24", Gateway: "172.30.0.1", IPRange: "172.30.0.128/25"}
+	if len(f.NetworkSpecs) != 1 || f.NetworkSpecs[0] != want {
+		t.Fatalf("network specs = %+v, want [%+v]", f.NetworkSpecs, want)
+	}
+	if len(f.Created) != 1 || f.Created[0].IPv4 != "172.30.0.2" {
+		t.Fatalf("created specs = %+v, want one with IPv4 %q", f.Created, "172.30.0.2")
+	}
+}
+
+func TestEnsureProxyRefusesAnAddressAnotherContainerHolds(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+	pc := testProxyConfig()
+	pc.Subnet, pc.IPv4 = "172.30.0.0/24", "172.30.0.2"
+	f.NetworkDetails["outhaul"] = docker.NetworkInfo{
+		Subnet:  "172.30.0.0/24",
+		Gateway: "172.30.0.1",
+		IPRange: "172.30.0.128/25",
+		IPv4s:   map[string]string{"other": "172.30.0.2"},
+	}
+
+	err := EnsureProxy(ctx, f, pc, nil)
+	if err == nil || !strings.Contains(err.Error(), "172.30.0.2") || !strings.Contains(err.Error(), "other") {
+		t.Fatalf("EnsureProxy = %v, want an error naming the address and its holder", err)
+	}
+	if len(f.Created) != 0 {
+		t.Errorf("containers created = %+v, want none", f.Created)
+	}
+	if len(f.Pulled) != 0 {
+		t.Errorf("images pulled = %v, want the address checked before any pull", f.Pulled)
+	}
+}
+
+// Docker can report an attached container that has no address on the network
+// yet. That must not count as holding Traefik's address.
+func TestEnsureProxyIgnoresAContainerWithNoAddress(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+	pc := testProxyConfig()
+	pc.Subnet, pc.IPv4 = "172.30.0.0/24", "172.30.0.2"
+	f.NetworkDetails["outhaul"] = docker.NetworkInfo{
+		Subnet:  "172.30.0.0/24",
+		Gateway: "172.30.0.1",
+		IPRange: "172.30.0.128/25",
+		IPv4s:   map[string]string{"starting": ""},
+	}
+
+	if err := EnsureProxy(ctx, f, pc, nil); err != nil {
+		t.Fatalf("EnsureProxy: %v", err)
+	}
+	if len(f.Created) != 1 || f.Created[0].IPv4 != "172.30.0.2" {
+		t.Fatalf("created specs = %+v, want one with IPv4 %q", f.Created, "172.30.0.2")
+	}
+}
+
+func TestEnsureProxyKeepsTheOldTraefikWhenTheAddressIsHeld(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+	pc := testProxyConfig()
+	pc.Subnet = "172.30.0.0/24"
+	if err := EnsureProxy(ctx, f, pc, nil); err != nil {
+		t.Fatalf("initial EnsureProxy: %v", err)
+	}
+
+	info := f.NetworkDetails["outhaul"]
+	info.IPv4s["other"] = "172.30.0.2"
+	f.NetworkDetails["outhaul"] = info
+
+	pc.IPv4 = "172.30.0.2"
+	if err := EnsureProxy(ctx, f, pc, nil); err == nil {
+		t.Fatal("EnsureProxy with a held address: want an error")
+	}
+	old, _ := f.FindContainer(ctx, pc.ContainerName)
+	if old == nil || !old.Running() {
+		t.Errorf("the old Traefik was stopped although the address is held: %+v", old)
+	}
+	if len(f.Created) != 1 {
+		t.Errorf("containers created = %+v, want just the original Traefik", f.Created)
+	}
+}
+
+// Recreating Traefik is not a conflict with itself: the address the old
+// container holds under its own name belongs to the replacement.
+func TestEnsureProxyKeepsItsOwnAddress(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+	pc := testProxyConfig()
+	pc.Subnet, pc.IPv4 = "172.30.0.0/24", "172.30.0.2"
+	if err := EnsureProxy(ctx, f, pc, nil); err != nil {
+		t.Fatalf("initial EnsureProxy: %v", err)
+	}
+
+	pc.Image = "traefik:v3.4" // a change that needs a recreate
+	if err := EnsureProxy(ctx, f, pc, nil); err != nil {
+		t.Fatalf("EnsureProxy with its own address still attached: %v", err)
+	}
+	if len(f.Created) != 2 || f.Created[1].IPv4 != "172.30.0.2" {
+		t.Fatalf("created specs = %+v, want the replacement with IPv4 %q", f.Created, "172.30.0.2")
+	}
+}
