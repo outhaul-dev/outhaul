@@ -38,6 +38,25 @@ func (r Role) rank() int {
 	return -1
 }
 
+// RoleForGroups returns the highest role any of groups maps to, or RoleNone
+// when none does. Names are compared exactly. Several entries may give the same
+// role; one group appears at most once, which Config.Validate enforces.
+func RoleForGroups(groups []string, mapping []GroupRole) Role {
+	best := RoleNone
+	for _, m := range mapping {
+		if m.Role.rank() <= best.rank() {
+			continue
+		}
+		for _, g := range groups {
+			if g == m.Group {
+				best = m.Role
+				break
+			}
+		}
+	}
+	return best
+}
+
 // AtLeast reports whether r ranks at or above min. An unknown role ranks
 // below everything, so it is never at least anything.
 func (r Role) AtLeast(min Role) bool {

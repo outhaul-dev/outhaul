@@ -719,7 +719,7 @@ func TestRestoreStateMigratesAnOlderCopy(t *testing.T) {
 	}
 	st := openTarget(t, dir, src.keyPath)
 	rows, err := st.AppliedMigrations(context.Background())
-	if err != nil || len(rows) == 0 || rows[len(rows)-1] != "migrations/0030_destination_kind.sql" {
+	if err != nil || len(rows) == 0 || rows[len(rows)-1] != "migrations/0031_role_from_groups.sql" {
 		t.Fatalf("migrations = %v, %v", rows, err)
 	}
 }

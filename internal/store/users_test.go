@@ -556,7 +556,7 @@ const testIssuer = "https://idp.example.com"
 func TestSSOFirstSignInCreatesAccount(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	u, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "dana@example.com")
+	u, _, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "dana@example.com", core.RoleNone, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -573,14 +573,14 @@ func TestSSOFirstSignInCreatesAccount(t *testing.T) {
 func TestSSOSecondSignInKeepsRoleAndRefreshesEmail(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	first, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "old@example.com")
+	first, _, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "old@example.com", core.RoleNone, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetUserRole(ctx, first.ID, core.RoleProjectMember); err != nil {
 		t.Fatal(err)
 	}
-	again, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "new@example.com")
+	again, _, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "new@example.com", core.RoleNone, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -589,7 +589,7 @@ func TestSSOSecondSignInKeepsRoleAndRefreshesEmail(t *testing.T) {
 	}
 	// The account is the issuer and subject: either one differing is someone else.
 	for _, c := range [][2]string{{testIssuer, "sub-2"}, {"https://other.example.com", "sub-1"}} {
-		other, err := s.FindOrCreateSSOUser(ctx, c[0], c[1], "new@example.com")
+		other, _, err := s.FindOrCreateSSOUser(ctx, c[0], c[1], "new@example.com", core.RoleNone, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -609,7 +609,7 @@ func TestSSOSignInFindsTheAccountByIssuerAndSubject(t *testing.T) {
 		t.Fatal(err)
 	}
 	id, _ := res.LastInsertId()
-	u, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "new@example.com")
+	u, _, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "new@example.com", core.RoleNone, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -625,7 +625,7 @@ func TestSSOSignInNeverLinksByEmail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	u, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "dana@example.com")
+	u, _, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "dana@example.com", core.RoleNone, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -649,11 +649,11 @@ func ssoTestUsername(issuer, subject string) string {
 func TestSSOUsernamesDontCollide(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	a, err := s.FindOrCreateSSOUser(ctx, "https://idp.example.com/a|b", "c", "one@example.com")
+	a, _, err := s.FindOrCreateSSOUser(ctx, "https://idp.example.com/a|b", "c", "one@example.com", core.RoleNone, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := s.FindOrCreateSSOUser(ctx, "https://idp.example.com/a", "b|c", "two@example.com")
+	b, _, err := s.FindOrCreateSSOUser(ctx, "https://idp.example.com/a", "b|c", "two@example.com", core.RoleNone, false)
 	if err != nil {
 		t.Fatalf("second account: %v", err)
 	}
@@ -674,7 +674,7 @@ func TestSSOSignInNeverReachesAPasswordAccountByUsername(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if u, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "dana@example.com"); err == nil {
+	if u, _, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "dana@example.com", core.RoleNone, false); err == nil {
 		t.Fatalf("signed in as %+v", u)
 	} else if strings.Contains(err.Error(), "password") {
 		t.Errorf("error %q names a cause the store doesn't know", err)
@@ -688,7 +688,7 @@ func TestSSOSignInRefusesAnEmptyIdentity(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
 	for _, c := range [][3]string{{"", "sub", "a@example.com"}, {testIssuer, "", "a@example.com"}, {testIssuer, "sub", ""}} {
-		if u, err := s.FindOrCreateSSOUser(ctx, c[0], c[1], c[2]); err == nil {
+		if u, _, err := s.FindOrCreateSSOUser(ctx, c[0], c[1], c[2], core.RoleNone, false); err == nil {
 			t.Errorf("%q made %+v", c, u)
 		}
 	}
@@ -708,7 +708,7 @@ func TestSSOFirstSignInsRacingMakeOneAccount(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			u, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "dana@example.com")
+			u, _, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "dana@example.com", core.RoleNone, false)
 			ids[i], errs[i] = u.ID, err
 		}()
 	}
@@ -721,5 +721,71 @@ func TestSSOFirstSignInsRacingMakeOneAccount(t *testing.T) {
 	var count int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE sign_in = 'sso'`).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("SSO accounts = %d, %v; want 1", count, err)
+	}
+}
+
+func TestSSOSignInAppliesAndRemovesAGroupRole(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	u, prev, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "dana@example.com", core.RoleProjectMember, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Role != core.RoleProjectMember || !u.RoleFromGroups || prev != core.RoleNone {
+		t.Fatalf("first sign-in = %+v, previous %q", u, prev)
+	}
+	again, prev, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "dana@example.com", core.RoleProjectMember, true)
+	if err != nil || again.Role != core.RoleProjectMember || prev != core.RoleProjectMember {
+		t.Fatalf("second sign-in = %+v, previous %q, %v", again, prev, err)
+	}
+	// The provider stops sending the group: a group-given role goes.
+	none, prev, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "dana@example.com", core.RoleNone, true)
+	if err != nil || none.Role != core.RoleNone || none.RoleFromGroups || prev != core.RoleProjectMember {
+		t.Fatalf("after leaving the group = %+v, previous %q, %v", none, prev, err)
+	}
+}
+
+func TestSSOSignInKeepsAHandGivenRoleWhenNoGroupMaps(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	u, _, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "dana@example.com", core.RoleNone, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetUserRole(ctx, u.ID, core.RoleProjectAdmin); err != nil {
+		t.Fatal(err)
+	}
+	again, prev, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "dana@example.com", core.RoleNone, true)
+	if err != nil || again.Role != core.RoleProjectAdmin || prev != core.RoleProjectAdmin || again.RoleFromGroups {
+		t.Fatalf("hand-given role = %+v, previous %q, %v", again, prev, err)
+	}
+}
+
+func TestSetUserRoleClearsTheGroupMark(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	u, _, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "dana@example.com", core.RoleProjectMember, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetUserRole(ctx, u.ID, core.RoleProjectViewer); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetUser(ctx, u.ID)
+	if err != nil || got.Role != core.RoleProjectViewer || got.RoleFromGroups {
+		t.Fatalf("after a hand-set role = %+v, %v", got, err)
+	}
+}
+
+// With the mapping off, a group-given role stays as it is.
+func TestSSOSignInLeavesTheRoleAloneWithNoMapping(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if _, _, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "dana@example.com", core.RoleProjectMember, true); err != nil {
+		t.Fatal(err)
+	}
+	u, _, err := s.FindOrCreateSSOUser(ctx, testIssuer, "sub-1", "dana@example.com", core.RoleNone, false)
+	if err != nil || u.Role != core.RoleProjectMember || !u.RoleFromGroups {
+		t.Fatalf("with no mapping = %+v, %v", u, err)
 	}
 }

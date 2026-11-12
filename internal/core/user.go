@@ -26,6 +26,8 @@ type User struct {
 	SSOSubject   string
 	Email        string
 	LastSignInAt *time.Time
+
+	RoleFromGroups bool // Role came from the provider's groups at the last sign-in
 }
 
 // Display is the name shown for the account: the email for SSO accounts,

@@ -1,0 +1,1 @@
+ALTER TABLE users ADD COLUMN role_from_groups INTEGER NOT NULL DEFAULT 0;

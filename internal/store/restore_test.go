@@ -155,8 +155,14 @@ func TestCheckStateCopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := len(data) / 2; i < len(data)/2+64 && i < len(data); i++ {
-		data[i] ^= 0xFF
+	// Spoil the start of every page after the first: each is a b-tree page
+	// with a type byte, so whichever pages are in use fail the integrity check,
+	// whatever the schema's size puts in the middle of the file.
+	const pageSize = 4096
+	for off := pageSize; off+16 <= len(data); off += pageSize {
+		for i := off; i < off+16; i++ {
+			data[i] ^= 0xFF
+		}
 	}
 	if err := os.WriteFile(corrupt, data, 0o600); err != nil {
 		t.Fatal(err)
@@ -183,7 +189,7 @@ func TestAppliedMigrationsAndStateCounts(t *testing.T) {
 		t.Fatalf("StateCounts = %d, %d, %d, %v", accounts, apps, databases, err)
 	}
 	applied, err := s.AppliedMigrations(ctx)
-	if err != nil || len(applied) == 0 || applied[len(applied)-1] != "migrations/0030_destination_kind.sql" {
+	if err != nil || len(applied) == 0 || applied[len(applied)-1] != "migrations/0031_role_from_groups.sql" {
 		t.Fatalf("AppliedMigrations = %v, %v", applied, err)
 	}
 }
