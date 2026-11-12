@@ -632,6 +632,7 @@ func (w *Worker) removeContainerByName(ctx context.Context, name string) error {
 // failure is not forced over the existing terminal state.
 func (w *Worker) fail(dep core.Deployment, from core.DeployStatus, reason string, out io.Writer) {
 	logf(out, "ERROR: %s", reason)
+	w.releaseBuild(dep.ID) // a failed build no longer needs its slot
 	ok, err := w.store.SetStatus(context.Background(), dep.ID, from, core.StatusFailed, reason)
 	if err != nil {
 		logf(out, "WARNING: could not record failure: %v", err)

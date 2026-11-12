@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"errors"
+	"io"
 	"sync"
 	"testing"
 	"time"
@@ -215,5 +216,20 @@ func TestBuildSlotIsReleasedWhenTheClaimLosesTheRace(t *testing.T) {
 	}
 	if n := len(h.worker.sem); n != 0 {
 		t.Errorf("pipeline slots held = %d, want 0 after a lost claim", n)
+	}
+}
+
+// A build that fails gives its slot back as soon as fail records it; the
+// pipeline goroutine's defer is only the safety net.
+func TestFailReleasesTheBuildSlot(t *testing.T) {
+	h := newBuildCapHarness(t, 1)
+	d := core.Deployment{ID: 7}
+	h.worker.buildSlots <- struct{}{}
+	h.worker.holdBuild(d.ID)
+
+	h.worker.fail(d, core.StatusBuilding, "build failed", io.Discard)
+
+	if n := len(h.worker.buildSlots); n != 0 {
+		t.Fatalf("build slots held = %d, want 0 after fail", n)
 	}
 }
