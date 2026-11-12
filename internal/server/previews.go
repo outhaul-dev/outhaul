@@ -34,9 +34,10 @@ func (s *Server) handleSavePreviewConfig(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "Preview base domain must be a bare hostname (e.g. preview.example.com).", http.StatusBadRequest)
 		return
 	}
-	// An empty base domain means sslip.io names, which is the default: the rule
-	// leaves it alone here. Such a preview's host is outside the suffix, so the
-	// store refuses to create it, and the PR comment says why.
+	// An empty base domain falls back to one label under the suffix, so it is
+	// already inside it: the rule leaves it alone here. A base domain saved
+	// before this rule is what the store refuses when the preview is created,
+	// and the PR comment says why.
 	if s.naming.SuffixOnly && cfg.BaseDomain != "" && !strings.EqualFold(cfg.BaseDomain, s.naming.Suffix) {
 		http.Error(w, "Preview base domain must be "+s.naming.Suffix+": under OUTHAUL_DOMAIN_SUFFIX_ONLY every name has to be one label under it.", http.StatusBadRequest)
 		return

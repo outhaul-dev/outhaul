@@ -217,11 +217,32 @@ func TestStartupWarnsAboutRowsOutsideTheSuffix(t *testing.T) {
 		t.Errorf("rows = %+v, want both kept", rows)
 	}
 
-	warnings = nil
-	constrainDomains(ctx, st, core.Naming{Suffix: "shared.demo.example.com"}, logf) // suffix only off
-	if len(warnings) != 0 {
-		t.Errorf("warnings with the rule off = %q", warnings)
-	}
+	// Off is not just quiet: nothing is restricted. Its own store, because
+	// `serve` sets a store's suffix once at startup, and the call above set it.
+	t.Run("rule off", func(t *testing.T) {
+		st, err := store.Open(filepath.Join(t.TempDir(), "test.db"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer st.Close()
+		old, err := st.CreateApp(ctx, core.App{Name: "old", RepoURL: "https://x/y.git", Domain: "old.example.com"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.AddDomain(ctx, core.Domain{AppID: old.ID, Host: "OLD.example.com", Path: "/api", Port: 8080}); err != nil {
+			t.Fatal(err)
+		}
+
+		var warnings []string
+		logf := func(format string, args ...any) { warnings = append(warnings, fmt.Sprintf(format, args...)) }
+		constrainDomains(ctx, st, core.Naming{Suffix: "shared.demo.example.com"}, logf)
+		if len(warnings) != 0 {
+			t.Errorf("warnings with the rule off = %q", warnings)
+		}
+		if _, err := st.AddDomain(ctx, core.Domain{AppID: old.ID, Host: "other.example.com", Path: "/other", Port: 8080}); err != nil {
+			t.Errorf("AddDomain outside the suffix with the rule off: %v", err)
+		}
+	})
 }
 
 // The first-boot hint is how an installer (or a person reading the journal)

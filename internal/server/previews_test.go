@@ -149,9 +149,10 @@ func TestPreviewBaseDomainMustBeTheSuffix(t *testing.T) {
 	inside.Body.Close()
 }
 
-// An empty base domain is the default (sslip.io names), so the suffix rule
-// leaves it alone: the save works. Such a preview's host is outside the
-// suffix, so creating the preview is refused and the PR comment says why.
+// An empty base domain falls back to one label under the suffix, so it is
+// already inside it, and the suffix rule leaves the save alone. Only a base
+// domain saved before the rule puts a preview's host outside the suffix; then
+// creating the preview is refused and the PR comment says why.
 func TestPreviewSettingsSaveWithoutABaseDomain(t *testing.T) {
 	e := newTestEnv(t)
 	e.srv.naming = core.Naming{Suffix: "shared.demo.example.com", SuffixOnly: true}
