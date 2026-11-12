@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -135,5 +136,5 @@ func checkDatabaseOwner(path, name string, euid int) error {
 	if u, err := user.LookupId(owner); err == nil {
 		owner = u.Username
 	}
-	return fmt.Errorf("run it as %s, the account that owns the database: sudo -u %s outhaul admin create %s", owner, owner, name)
+	return fmt.Errorf("run it as %s, the account that owns the database: sudo -u %s env OUTHAUL_DATA_DIR=%s outhaul admin create %s", owner, owner, filepath.Dir(path), name)
 }

@@ -120,6 +120,10 @@ database:
 sudo -u outhaul outhaul admin create NAME
 ```
 
+If the data directory isn't `/var/lib/outhaul`, use
+`sudo -u outhaul env OUTHAUL_DATA_DIR=/path/to/data outhaul admin create NAME`,
+because `sudo` drops `OUTHAUL_DATA_DIR`.
+
 That creates a new password system admin who can sign in at once. It doesn't
 reset an existing password or clear a sign-in lock; a lock ends by itself within
 15 minutes.

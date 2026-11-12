@@ -182,4 +182,7 @@ func TestCheckDatabaseOwnerRefusesAnotherUser(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "sudo -u") || !strings.Contains(err.Error(), "admin create alice") {
 		t.Errorf("another user = %v, want a refusal with the sudo -u line", err)
 	}
+	if err != nil && (!strings.Contains(err.Error(), "OUTHAUL_DATA_DIR="+filepath.Dir(path)) || !strings.Contains(err.Error(), " env ")) {
+		t.Errorf("another user = %v, want the line to pass OUTHAUL_DATA_DIR=%s through env", err, filepath.Dir(path))
+	}
 }

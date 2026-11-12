@@ -193,6 +193,7 @@ func TestStoreFailureCountsAsAnUnknownName(t *testing.T) {
 }
 
 func TestPasswordAccountWithoutAPasswordIsKnown(t *testing.T) {
+	captureLog(t)
 	e, _ := backoffEnv(t)
 	if _, err := e.store.CreatePasswordAccount(context.Background(), "bob", core.RoleProjectMember); err != nil {
 		t.Fatal(err)
@@ -209,7 +210,7 @@ func TestPasswordAccountWithoutAPasswordIsKnown(t *testing.T) {
 	for i := 0; i < maxUnknownSignInNames+1; i++ {
 		e.srv.signIn.allow("made-up-"+strconv.Itoa(i), false)
 	}
-	if _, ok := e.srv.signIn.allow("bob", true); ok {
+	if _, ok, _ := e.srv.signIn.allow("bob", true); ok {
 		t.Error("a flood of unknown names released bob's lock")
 	}
 }
@@ -242,6 +243,7 @@ func TestGateSignInIsLockedToo(t *testing.T) {
 }
 
 func TestSetupLinkClearsTheLock(t *testing.T) {
+	captureLog(t)
 	e, _ := backoffEnv(t)
 	ctx := context.Background()
 	u, err := e.store.CreatePasswordAccount(ctx, "bob", core.RoleProjectMember)
@@ -274,8 +276,9 @@ func TestSetupLinkClearsTheLock(t *testing.T) {
 // logged name must not tell a reader which names have no account.
 func TestLockedSignInLogsOnceAMinuteAndOnlyForAccounts(t *testing.T) {
 	logged := captureLog(t)
-	e, _ := backoffEnv(t)
+	e, now := backoffEnv(t)
 	passwordAdmin(t, e, "admin", "supersecret")
+	const lockedLine = "is locked after repeated failures"
 
 	// The unknown name goes first: the once-a-minute limiter is shared, so a
 	// line wrongly written for it would otherwise be hidden behind admin's.
@@ -292,20 +295,52 @@ func TestLockedSignInLogsOnceAMinuteAndOnlyForAccounts(t *testing.T) {
 		t.Errorf("a name with no account was logged:\n%s", logged.String())
 	}
 
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 4; i++ {
 		postLogin(t, e, "admin", "wrong")
 	}
+	if strings.Contains(logged.String(), lockedLine) {
+		t.Fatalf("a line was logged before the lock was set:\n%s", logged.String())
+	}
+	postLogin(t, e, "admin", "wrong")
+	out := logged.String()
+	if n := strings.Count(out, lockedLine); n != 1 {
+		t.Fatalf("the fifth wrong attempt logged %d lines, want 1:\n%s", n, out)
+	}
+	if !strings.Contains(out, `"admin"`) {
+		t.Errorf("the log doesn't name the locked account:\n%s", out)
+	}
+
 	for i := 0; i < 3; i++ {
 		resp, _ := postLogin(t, e, "admin", "wrong")
 		if resp.StatusCode != http.StatusTooManyRequests {
 			t.Fatalf("locked attempt %d = %d, want 429", i+1, resp.StatusCode)
 		}
 	}
-	out := logged.String()
-	if n := strings.Count(out, "is locked after repeated failures"); n != 1 {
-		t.Errorf("the lock was logged %d times for four refused attempts, want 1:\n%s", n, out)
+	if n := strings.Count(logged.String(), lockedLine); n != 1 {
+		t.Errorf("the lock was logged %d times at one instant, want 1:\n%s", n, logged.String())
 	}
-	if !strings.Contains(out, `"admin"`) {
-		t.Errorf("the log doesn't name the locked account:\n%s", out)
+
+	*now = now.Add(61 * time.Second)
+	postLogin(t, e, "admin", "wrong")
+	if n := strings.Count(logged.String(), lockedLine); n != 2 {
+		t.Errorf("a minute later the lock was logged %d times in all, want 2:\n%s", n, logged.String())
+	}
+}
+
+// A right password ends the lock it was counted toward, so it logs nothing.
+func TestRightPasswordAfterTheLockWasSetLogsNothing(t *testing.T) {
+	logged := captureLog(t)
+	e, _ := backoffEnv(t)
+	passwordAdmin(t, e, "admin", "supersecret")
+	for i := 0; i < 4; i++ {
+		postLogin(t, e, "admin", "wrong")
+	}
+	// The fifth attempt is the one that would set a 30 second wait, but it is right.
+	resp, _ := postLogin(t, e, "admin", "supersecret")
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("the right fifth attempt = %d, want 303", resp.StatusCode)
+	}
+	if strings.Contains(logged.String(), "is locked") {
+		t.Errorf("a lock that did not survive was logged:\n%s", logged.String())
 	}
 }

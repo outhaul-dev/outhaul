@@ -31,12 +31,12 @@ func TestSignInLimiterLockTable(t *testing.T) {
 		l, now := newTestLimiter()
 		for i := 0; i < tc.failures; i++ {
 			*now = now.Add(lockFor(i))
-			wait, ok := l.allow("admin", true)
+			wait, ok, _ := l.allow("admin", true)
 			if !ok {
 				t.Fatalf("%d failures: attempt %d was refused for %v", tc.failures, i+1, wait)
 			}
 		}
-		wait, ok := l.allow("admin", true)
+		wait, ok, _ := l.allow("admin", true)
 		if tc.wait == 0 {
 			if !ok {
 				t.Errorf("%d failures: the next attempt was refused; want it checked", tc.failures)
@@ -53,7 +53,7 @@ func TestSignInLimiterHourClearsAName(t *testing.T) {
 		l.allow("admin", true)
 	}
 	*now = now.Add(time.Hour + time.Second)
-	if _, ok := l.allow("admin", true); !ok {
+	if _, ok, _ := l.allow("admin", true); !ok {
 		t.Error("the first attempt after an hour was refused; the count should start again")
 	}
 	if f := l.known[sha256.Sum256([]byte("admin"))]; f == nil || f.count != 1 {
@@ -67,7 +67,7 @@ func TestSignInLimiterSuccessClearsAName(t *testing.T) {
 		l.allow("admin", true)
 	}
 	l.clear("admin")
-	if wait, ok := l.allow("admin", true); !ok {
+	if wait, ok, _ := l.allow("admin", true); !ok {
 		t.Errorf("after a success the next attempt was refused for %v", wait)
 	}
 }
@@ -77,11 +77,11 @@ func TestSignInLimiterGiveBack(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		l.allow("admin", true)
 	}
-	if wait, ok := l.allow("admin", true); !ok || wait != 0 {
+	if wait, ok, _ := l.allow("admin", true); !ok || wait != 0 {
 		t.Fatalf("the fifth attempt = (%v, %v), want it counted and checked", wait, ok)
 	}
 	l.giveBack("admin", true)
-	if wait, ok := l.allow("admin", true); !ok {
+	if wait, ok, _ := l.allow("admin", true); !ok {
 		t.Errorf("after a give-back the next attempt was refused for %v; the attempt that never ran was still counted", wait)
 	}
 }
@@ -92,12 +92,12 @@ func TestRefusedAttemptsDoNotExtendTheLock(t *testing.T) {
 		l.allow("admin", true)
 	}
 	for i := 0; i < 20; i++ {
-		if _, ok := l.allow("admin", true); ok {
+		if _, ok, _ := l.allow("admin", true); ok {
 			t.Fatal("a refused attempt was allowed")
 		}
 	}
 	*now = now.Add(31 * time.Second)
-	if wait, ok := l.allow("admin", true); !ok {
+	if wait, ok, _ := l.allow("admin", true); !ok {
 		t.Errorf("after the 30-second wait a burst of refused attempts still locked the name for %v", wait)
 	}
 }
@@ -113,7 +113,7 @@ func TestConcurrentAttemptsAfterFourFailuresCheckOnlyOne(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, ok := l.allow("admin", true); ok {
+			if _, ok, _ := l.allow("admin", true); ok {
 				allowed <- struct{}{}
 			}
 		}()
@@ -151,7 +151,7 @@ func TestAFloodOfUnknownNamesLeavesARealAccountLocked(t *testing.T) {
 	for i := 0; i < maxUnknownSignInNames+1; i++ {
 		l.allow(fmt.Sprintf("name-%d", i), false)
 	}
-	if wait, ok := l.allow("admin", true); ok {
+	if wait, ok, _ := l.allow("admin", true); ok {
 		t.Errorf("a flood of made-up names unlocked a real account (wait %v)", wait)
 	}
 }
@@ -181,5 +181,24 @@ func TestSignInLockedErrorCopy(t *testing.T) {
 		if got := e.retryAfter(); got != tc.retry {
 			t.Errorf("wait %v: retryAfter() = %d, want %d", tc.wait, got, tc.retry)
 		}
+	}
+}
+
+func TestSignInLimiterReportsWhenAnAttemptSetsAWait(t *testing.T) {
+	l, now := newTestLimiter()
+	for i := 1; i <= 4; i++ {
+		if _, ok, lockedNow := l.allow("admin", true); !ok || lockedNow {
+			t.Fatalf("attempt %d = ok %v, lockedNow %v; want allowed and no wait", i, ok, lockedNow)
+		}
+	}
+	if _, ok, lockedNow := l.allow("admin", true); !ok || !lockedNow {
+		t.Fatalf("attempt 5 = ok %v, lockedNow %v; want allowed and a wait set", ok, lockedNow)
+	}
+	if _, ok, lockedNow := l.allow("admin", true); ok || lockedNow {
+		t.Errorf("a refused attempt = ok %v, lockedNow %v; want refused and not lockedNow", ok, lockedNow)
+	}
+	*now = now.Add(31 * time.Second)
+	if _, ok, lockedNow := l.allow("admin", true); !ok || !lockedNow {
+		t.Errorf("attempt 6 = ok %v, lockedNow %v; want allowed and a wait set", ok, lockedNow)
 	}
 }

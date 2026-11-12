@@ -61,8 +61,8 @@ func lockFor(failures int) time.Duration {
 
 // allow counts one attempt for name. ok false means it is refused for wait and
 // is not counted. An allowed attempt is counted before its password is
-// checked, and sets any wait the table gives it.
-func (l *signInLimiter) allow(name string, known bool) (wait time.Duration, ok bool) {
+// checked, and sets any wait the table gives it; lockedNow reports that it did.
+func (l *signInLimiter) allow(name string, known bool) (wait time.Duration, ok, lockedNow bool) {
 	key := sha256.Sum256([]byte(name))
 	now := l.now()
 	l.mu.Lock()
@@ -77,7 +77,7 @@ func (l *signInLimiter) allow(name string, known bool) (wait time.Duration, ok b
 		case now.Sub(f.last) >= time.Hour:
 			delete(m, key)
 		case now.Before(f.until):
-			return f.until.Sub(now), false
+			return f.until.Sub(now), false, false
 		}
 	}
 	if !known && len(l.unknown) >= maxUnknownSignInNames {
@@ -93,7 +93,7 @@ func (l *signInLimiter) allow(name string, known bool) (wait time.Duration, ok b
 	f.count++
 	f.last = now
 	f.until = now.Add(lockFor(f.count))
-	return 0, true
+	return 0, true, lockFor(f.count) > 0
 }
 
 // clear forgets name, after a successful sign-in or a completed setup link.
