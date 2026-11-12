@@ -186,6 +186,33 @@ func TestBridgeColdPushRefusesOuthaulsOwnAddress(t *testing.T) {
 	}
 }
 
+// A cold push whose generated host another app serves is refused, naming the
+// host, and creates nothing.
+func TestBridgeColdPushRefusesATakenName(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	b, st, _ := bridgeEnv(t)
+	b.naming = core.Naming{Suffix: "shared.demo.example.com"}
+	other, err := st.CreateApp(context.Background(), core.App{Name: "other", RepoURL: "https://x/y.git"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AddDomain(context.Background(), core.Domain{
+		AppID: other.ID, Host: "web.shared.demo.example.com", Port: 8080,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	out := runHandle(t, b, request{App: "web", Refs: []RefUpdate{{"0", pushedCommit(t, b, "web"), "refs/heads/main"}}})
+	if !strings.Contains(out, "web.shared.demo.example.com") || !strings.Contains(out, "push under another name") || !strings.Contains(out, "exit 1") {
+		t.Fatalf("want a refusal naming the host, exit 1:\n%s", out)
+	}
+	if _, err := st.GetAppByName(context.Background(), "web"); err == nil {
+		t.Error("an app was created although its route was refused")
+	}
+}
+
 // --- helpers ---
 
 // pushedCommit creates app's bare repo holding one commit with an empty tree,

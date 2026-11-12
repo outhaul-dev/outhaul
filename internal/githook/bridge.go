@@ -207,6 +207,11 @@ func (b *Bridge) coldCreate(ctx context.Context, req request) (core.App, error) 
 		return core.App{}, fmt.Errorf("an app named '%s' would get %s, which is Outhaul's own address; push under another name",
 			req.App, app.Domain)
 	}
+	var taken *store.DomainTakenError
+	if errors.As(err, &taken) {
+		return core.App{}, fmt.Errorf("an app named '%s' would get %s, which another app serves; push under another name",
+			req.App, app.Domain)
+	}
 	if err != nil {
 		return core.App{}, fmt.Errorf("create app: %w", err)
 	}

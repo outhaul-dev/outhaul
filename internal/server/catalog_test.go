@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -121,6 +123,72 @@ func TestDeployTemplateValidation(t *testing.T) {
 	}
 	if !strings.Contains(body(t, resp), "Could not create app") {
 		t.Error("duplicate-name error not shown on the gallery")
+	}
+}
+
+// A template deploy whose generated host another app already serves leaves no
+// app behind: the app and its rows are one transaction.
+func TestDeployTemplateLeavesNothingOnATakenHost(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	// The template "wordpress" under no suffix gives a random sslip name, so
+	// the collision is forced with the app name and a suffix instead.
+	e.srv.naming = core.Naming{Suffix: "shared.demo.example.com"}
+	squat, _ := e.store.CreateApp(context.Background(), core.App{
+		Name: "squat", RepoURL: "https://x/y.git", Kind: core.KindCompose, ComposePath: "docker-compose.yml",
+	})
+	if _, err := e.store.AddDomain(context.Background(), core.Domain{
+		AppID: squat.ID, Host: "blog.shared.demo.example.com", Service: "wordpress", Port: 80,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	r := e.postForm(t, "/templates/wordpress", url.Values{"name": {"blog"}})
+	if r.StatusCode < 400 {
+		t.Fatalf("a taken host was accepted: %d", r.StatusCode)
+	}
+	r.Body.Close()
+	if _, err := e.store.GetAppByName(context.Background(), "blog"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("app survived a refused route: %v", err)
+	}
+}
+
+// A template deploy on a host where another project's app requires sign-in is
+// refused for anyone but a system admin, before anything is written.
+func TestDeployTemplateRefusesAnotherProjectsHost(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	e.srv.naming = core.Naming{Suffix: "shared.demo.example.com"}
+
+	other, err := e.store.CreateProject(context.Background(), core.Project{Name: "Other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	theirs, err := e.store.CreateApp(context.Background(), core.App{
+		Name: "theirs", ProjectID: other.ID, RepoURL: "https://x/y.git", Domain: "blog.shared.demo.example.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := e.store.ListDomains(context.Background(), theirs.ID)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("theirs' rows = %v (%v)", rows, err)
+	}
+	if err := e.store.SetDomainProtected(context.Background(), theirs.ID, rows[0].ID, true); err != nil {
+		t.Fatal(err)
+	}
+
+	// A project member on the default project, not a system admin: only an
+	// admin may put a route where another project's app requires sign-in.
+	tok := e.signInAs(t, "member", core.RoleProjectMember, core.DefaultProjectID)
+	r := e.postAs(t, tok, "/templates/wordpress", url.Values{
+		"name": {"blog"}, "project_id": {itoa(core.DefaultProjectID)},
+	})
+	if r.StatusCode < 400 || !strings.Contains(body(t, r), "Another project") {
+		t.Fatalf("another project's protected host: status %d, want the shared-host refusal", r.StatusCode)
+	}
+	if _, err := e.store.GetAppByName(context.Background(), "blog"); !errors.Is(err, sql.ErrNoRows) {
+		t.Errorf("app survived a refused host: %v", err)
 	}
 }
 

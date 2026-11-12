@@ -1,12 +1,14 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/outhaul-dev/outhaul/internal/catalog"
 	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/store"
 )
 
 // handleTemplatesList renders the one-click template gallery.
@@ -70,26 +72,46 @@ func (s *Server) handleDeployTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	app, err := s.store.CreateApp(r.Context(), core.App{
+	// Every host is checked before the app exists, as the new-app form does.
+	hosts := map[string]bool{}
+	for _, d := range rendered.Domains {
+		hosts[strings.ToLower(d.Host)] = true
+	}
+	for host := range hosts {
+		if s.isOwnHost(host) {
+			s.renderTemplates(w, r, http.StatusBadRequest, ownHostRefusal)
+			return
+		}
+		refused, err := s.sharedHostRefused(r, projectID, host, true, false)
+		if err != nil {
+			s.renderTemplates(w, r, http.StatusInternalServerError, "Could not create app: "+err.Error())
+			return
+		}
+		if refused {
+			s.renderTemplates(w, r, http.StatusBadRequest, sharedHostRefusal)
+			return
+		}
+	}
+
+	rows := make([]core.Domain, 0, len(rendered.Domains))
+	for _, d := range rendered.Domains {
+		rows = append(rows, core.Domain{Host: d.Host, Service: d.Service, Port: d.Port, TLS: true})
+	}
+	app, err := s.store.CreateAppWithDomains(r.Context(), core.App{
 		Name: name, ProjectID: projectID,
 		Source: core.SourceTemplate, Kind: core.KindCompose,
 		ComposePath: "docker-compose.yml",
 		TemplateID:  tmpl.ID, ComposeRaw: tmpl.Compose,
 		WebhookToken:  newSecret(),
 		WebhookSecret: newSecret(),
-	})
+	}, rows)
 	if err != nil {
-		// Most likely a duplicate name (UNIQUE constraint).
-		s.renderTemplates(w, r, http.StatusBadRequest, "Could not create app: "+err.Error())
-		return
-	}
-	for _, d := range rendered.Domains {
-		if _, err := s.store.AddDomain(r.Context(),
-			core.Domain{AppID: app.ID, Host: d.Host, Service: d.Service, Port: d.Port, TLS: true}); err != nil {
-			s.renderTemplates(w, r, http.StatusInternalServerError,
-				"App created, but a domain could not be added: "+s.takenText(r, err))
+		if errors.Is(err, store.ErrHostReserved) {
+			s.renderTemplates(w, r, http.StatusBadRequest, ownHostRefusal)
 			return
 		}
+		s.renderTemplates(w, r, http.StatusBadRequest, "Could not create app: "+s.takenText(r, err))
+		return
 	}
 	for _, e := range rendered.Env {
 		if err := s.store.SetEnv(r.Context(), app.ID, e.Key, e.Value, e.Secret); err != nil {
