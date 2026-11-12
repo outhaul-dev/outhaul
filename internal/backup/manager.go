@@ -64,6 +64,10 @@ type Manager struct {
 
 	hold func() bool // when it returns true, Tick starts nothing
 
+	// limits is the server's per-container default, applied to backup and
+	// restore helper containers.
+	limits core.Limits
+
 	state StateBackup // Outhaul's own state copy settings; empty schedule disables it
 
 	timeout time.Duration      // bounds one run; runTimeout outside tests
@@ -95,6 +99,10 @@ func NewManager(st *store.Store, dc docker.Client, workDir string,
 		cancel:   cancel,
 	}
 }
+
+// SetLimits records the server's per-container default limits, applied to the
+// helper containers a backup or restore runs. Call before Run.
+func (m *Manager) SetLimits(l core.Limits) { m.limits = l }
 
 // Stop cancels in-flight backups and restores and waits, until ctx ends, for
 // each to record its outcome (a restore also restarts the containers it
@@ -528,7 +536,10 @@ func (m *Manager) backupAppVolumes(ctx context.Context, b core.Backup, blob blob
 					"outhaul.managed": "true",
 					"outhaul.role":    "backup",
 				},
-				Mounts: []docker.Mount{{Source: vol, Target: "/src", ReadOnly: true, Volume: true}},
+				Mounts:    []docker.Mount{{Source: vol, Target: "/src", ReadOnly: true, Volume: true}},
+				NanoCPUs:  m.limits.MilliCPUs * 1_000_000,
+				Memory:    m.limits.Memory,
+				PidsLimit: m.limits.Pids,
 			}, w, limitWriter(&stderr))
 			if err != nil {
 				return fmt.Errorf("tar %s: %w", vol, err)

@@ -179,3 +179,12 @@ func hasEnv(items []string, want string) bool {
 	}
 	return false
 }
+
+// The cloudflared connector is Outhaul's own infrastructure, not an app: it
+// never gets the server's per-container default limits.
+func TestCloudflaredCarriesNoLimits(t *testing.T) {
+	spec := connectorSpec(testConfig())
+	if spec.NanoCPUs != 0 || spec.Memory != 0 || spec.PidsLimit != 0 {
+		t.Errorf("cloudflared limits = (%d, %d, %d), want none", spec.NanoCPUs, spec.Memory, spec.PidsLimit)
+	}
+}

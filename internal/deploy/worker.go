@@ -94,6 +94,13 @@ func NewWorker(st *store.Store, dc docker.Client, b Builders, cp compose.Runner,
 	}
 }
 
+// limits is the app's effective limit: its stored values over the server
+// defaults, field by field. R7's store change fills in the stored part; a
+// preview reads its parent at each deploy.
+func (w *Worker) limits(_ context.Context, _ core.App) core.Limits {
+	return w.cfg.DefaultLimits
+}
+
 // needsModel reports whether any setting needs the normalised Compose model:
 // the strict container policy or a required request header. R7 adds the app's
 // effective limit; R10 adds its restart setting.

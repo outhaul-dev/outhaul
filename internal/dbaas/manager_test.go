@@ -475,3 +475,64 @@ func TestRemoveRefusesAttachedDatabaseWithoutTouchingIt(t *testing.T) {
 		t.Errorf("row gone: %v", err)
 	}
 }
+
+func wantDBLimits(t *testing.T, spec docker.ContainerSpec, want core.Limits) {
+	t.Helper()
+	if spec.NanoCPUs != want.MilliCPUs*1_000_000 || spec.Memory != want.Memory || spec.PidsLimit != want.Pids {
+		t.Errorf("%s limits = (%d, %d, %d), want (%d, %d, %d)",
+			spec.Name, spec.NanoCPUs, spec.Memory, spec.PidsLimit,
+			want.MilliCPUs*1_000_000, want.Memory, want.Pids)
+	}
+}
+
+func TestDatabaseCarriesDefaultLimits(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	want := core.Limits{MilliCPUs: 1000, Memory: 1 << 30, Pids: 512}
+	h.m.SetLimits(want)
+	d := h.database(t, "shop", core.EnginePostgres)
+
+	if err := h.m.provision(ctx, d); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	wantDBLimits(t, h.docker.Created[0], want)
+
+	// A reprovisioned database is a new container, and carries them too.
+	if err := h.m.provision(ctx, d); err != nil {
+		t.Fatalf("reprovision: %v", err)
+	}
+	if len(h.docker.Created) < 2 {
+		t.Fatalf("created = %d, want the replacement too", len(h.docker.Created))
+	}
+	wantDBLimits(t, h.docker.Created[1], want)
+}
+
+func TestDatabaseWithoutLimitsIsUnchanged(t *testing.T) {
+	h := newHarness(t)
+	d := h.database(t, "shop", core.EnginePostgres)
+
+	if err := h.m.provision(context.Background(), d); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	wantDBLimits(t, h.docker.Created[0], core.Limits{})
+}
+
+func TestRemoveDataHelperCarriesDefaultLimits(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	want := core.Limits{MilliCPUs: 1000, Memory: 1 << 30, Pids: 512}
+	h.m.SetLimits(want)
+	d := h.database(t, "shop", core.EnginePostgres)
+	if err := h.m.provision(ctx, d); err != nil {
+		t.Fatal(err)
+	}
+	h.m.removeAll = func(string) error { return errors.New("permission denied") }
+
+	if err := h.m.Remove(ctx, d); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if len(h.docker.Runs) != 1 {
+		t.Fatalf("helper runs = %d, want 1", len(h.docker.Runs))
+	}
+	wantDBLimits(t, h.docker.Runs[0], want)
+}

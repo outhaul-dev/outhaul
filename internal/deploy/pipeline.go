@@ -587,6 +587,7 @@ func (w *Worker) createContainer(ctx context.Context, app core.App, image, name 
 	if traefikOn {
 		restart = "unless-stopped"
 	}
+	l := w.limits(ctx, app)
 	spec := docker.ContainerSpec{
 		Name:          name,
 		Image:         image,
@@ -595,6 +596,9 @@ func (w *Worker) createContainer(ctx context.Context, app core.App, image, name 
 		Networks:      []string{w.cfg.Network},
 		RestartPolicy: restart,
 		Mounts:        mounts,
+		NanoCPUs:      l.MilliCPUs * 1_000_000,
+		Memory:        l.Memory,
+		PidsLimit:     l.Pids,
 	}
 	id, err := w.docker.CreateContainer(ctx, spec)
 	if err != nil {

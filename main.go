@@ -294,12 +294,14 @@ func serve() error {
 	// Database manager (databases-as-a-service).
 	dbm := dbaas.NewManager(st, dc, cfg.Network, cfg.DatabasesDir())
 	dbm.SetPolicy(cfg.StrictContainerPolicy())
+	dbm.SetLimits(cfg.DefaultLimits)
 	warnPublishedDatabasePorts(context.Background(), st, cfg.StrictContainerPolicy(), log.Printf)
 
 	// Backup scheduler (dumps + volume tarballs to S3-compatible storage).
 	// Runs a dead process left "running" are failed before any can start.
 	opener := blobstore.NewOpener(cfg.AzureClientID)
 	backups := backup.NewManager(st, dc, cfg.WorkDir(), opener.Open)
+	backups.SetLimits(cfg.DefaultLimits)
 	if n, err := backups.RecoverInterrupted(context.Background()); err != nil {
 		stopWorker()
 		return fmt.Errorf("crash recovery: %w", err)
