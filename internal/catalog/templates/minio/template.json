@@ -10,7 +10,7 @@
   },
   "variables": {
     "console_domain": "${domain}",
-    "api_domain": "${domain}"
+    "api_domain": "${domain:api}"
   },
   "env": [
     { "key": "MINIO_ROOT_USER", "value": "${username}" },

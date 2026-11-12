@@ -323,12 +323,13 @@ func serve() error {
 	go pruner.Run(workerCtx)
 
 	// HTTP server. Generated template domains embed the server's public IP
-	// (sslip.io), configurable for hosts whose outbound and public IPs differ.
+	// (sslip.io), configurable for hosts whose outbound and public IPs differ;
+	// with OUTHAUL_DOMAIN_SUFFIX they are one label under that domain instead.
 	serverIP := cfg.ServerIP
 	if serverIP == "" {
 		serverIP = catalog.DetectServerIP()
 	}
-	naming := core.Naming{ServerIP: serverIP}
+	naming := core.Naming{ServerIP: serverIP, Suffix: cfg.DomainSuffix}
 	// git-push-to-deploy: bare-repo manager, deploy bridge, and SSH server. All
 	// startup failures are non-fatal — the admin UI still comes up, and git-push
 	// is simply unavailable until the cause is fixed.

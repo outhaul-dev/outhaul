@@ -273,6 +273,7 @@ No config files — defaults with `OUTHAUL_*` environment overrides:
 | `OUTHAUL_PRUNE_BUILD_CACHE` | `yes`            | Nightly prune of build cache unused for 7 days; it is daemon-wide, so set `no` on a host shared with other builds |
 | `OUTHAUL_PUBLIC_URL`    | (empty)              | Public base URL of the admin UI; enables GitHub App + webhook URLs, SSO and protected routes |
 | `OUTHAUL_SERVER_IP`     | (auto-detected)      | Public IP embedded in generated `sslip.io` template domains |
+| `OUTHAUL_DOMAIN_SUFFIX` | (empty)             | A domain such as `shared.demo.example.com`; every generated name becomes one label under it — see docs/SHARED-HOST.md |
 | `OUTHAUL_UPDATES`       | `main`               | `main` follows the newest commit on `main`; `off` stops the panel's update actions, the background check and the root updater (`releases` is not built) |
 | `OUTHAUL_SSH_ADDR`      | `:2222`              | git-push SSH listen address; `off` opens no listener (the repositories and hook socket stay) |
 | `OUTHAUL_BACKUP_AZURE_ACCOUNT` | (empty)      | Storage account for the Azure Blob backup destination; set with `OUTHAUL_BACKUP_AZURE_CONTAINER` — see docs/STATE-BACKUP.md |

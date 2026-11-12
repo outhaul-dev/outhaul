@@ -54,8 +54,9 @@ type Config struct {
 	AdminDirect        bool          // the admin UI listens on every interface (default); false: loopback + the Docker gateway
 	SignInBackoff      bool          // OUTHAUL_SIGNIN_BACKOFF: lock a username after repeated failed password sign-ins
 
-	PublicURL string // externally reachable base URL of the admin UI (for GitHub callbacks/webhooks); empty disables GitHub App setup
-	ServerIP  string // public IP used in generated sslip.io template domains; empty means auto-detect
+	PublicURL    string // externally reachable base URL of the admin UI (for GitHub callbacks/webhooks); empty disables GitHub App setup
+	ServerIP     string // public IP used in generated sslip.io template domains; empty means auto-detect
+	DomainSuffix string // OUTHAUL_DOMAIN_SUFFIX, lower-cased, one trailing dot dropped; "" keeps sslip.io names
 
 	TrustedProxies  []string // OUTHAUL_TRUSTED_PROXIES: addresses and CIDRs trimmed; nil when unset
 	TrustAllProxies bool     // OUTHAUL_TRUSTED_PROXIES=all
@@ -109,8 +110,9 @@ func Load(getenv Getenv) Config {
 		AdminDirect:        p.boolDefault("OUTHAUL_ADMIN_DIRECT", true),
 		SignInBackoff:      p.bool("OUTHAUL_SIGNIN_BACKOFF"),
 
-		PublicURL: p.url("OUTHAUL_PUBLIC_URL"),
-		ServerIP:  p.ip("OUTHAUL_SERVER_IP"),
+		PublicURL:    p.url("OUTHAUL_PUBLIC_URL"),
+		ServerIP:     p.ip("OUTHAUL_SERVER_IP"),
+		DomainSuffix: p.domainSuffix("OUTHAUL_DOMAIN_SUFFIX"),
 
 		BackupAzureAccount:   getenv("OUTHAUL_BACKUP_AZURE_ACCOUNT"),
 		BackupAzureContainer: getenv("OUTHAUL_BACKUP_AZURE_CONTAINER"),
@@ -216,6 +218,9 @@ func (c Config) Validate() error {
 	}
 	if c.TLSWildcard != "" && c.ACMEDNSProvider == "" {
 		errs = append(errs, errors.New("OUTHAUL_TLS_WILDCARD needs OUTHAUL_ACME_DNS_PROVIDER: a wildcard certificate can only be validated by DNS-01"))
+	}
+	if c.TLSWildcard != "" && c.DomainSuffix != "" && !strings.EqualFold(c.TLSWildcard, "*."+c.DomainSuffix) {
+		errs = append(errs, fmt.Errorf("OUTHAUL_DOMAIN_SUFFIX=%q and OUTHAUL_TLS_WILDCARD=%q must name the same domain: the wildcard has to be *.%s", c.DomainSuffix, c.TLSWildcard, c.DomainSuffix))
 	}
 	if c.RequireHeaderName != "" && c.RequireHeaderValue == "" {
 		errs = append(errs, errors.New("OUTHAUL_REQUIRE_HEADER_NAME needs OUTHAUL_REQUIRE_HEADER_VALUE"))
@@ -558,6 +563,30 @@ func validWildcard(v string) bool {
 		}
 	}
 	return true
+}
+
+// maxSuffixLen is the longest OUTHAUL_DOMAIN_SUFFIX accepted: room for a
+// 63-character label under a 253-character name.
+const maxSuffixLen = 253 - 63 - 1
+
+// domainNameRe matches a bare, lowercase hostname (dot-separated DNS labels),
+// the shape of the store's own host checks.
+var domainNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$`)
+
+// domainSuffix reads OUTHAUL_DOMAIN_SUFFIX: the domain every generated name
+// becomes one label under, stored lower-cased with one trailing dot dropped.
+// Empty keeps sslip.io names.
+func (p *parser) domainSuffix(key string) string {
+	raw := p.getenv(key)
+	if raw == "" {
+		return ""
+	}
+	v := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(raw)), ".")
+	if len(v) > maxSuffixLen || !domainNameRe.MatchString(v) {
+		p.reject(key, raw, "a domain such as shared.demo.example.com, at most 189 characters")
+		return ""
+	}
+	return v
 }
 
 // httpPort reads OUTHAUL_HTTP_PORT: "80" keeps the plain-HTTP entrypoint,

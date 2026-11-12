@@ -16,7 +16,10 @@ import (
 // The variable engine is Dokploy's (packages/server/src/templates/
 // processors.ts), reduced to the helpers the curated catalog needs:
 //
-//	${domain}       generated <app>-<hash>-<ip-dashed>.sslip.io name
+//	${domain}       under a suffix, <app>.<suffix>; else a generated
+//	                <app>-<hash>-<ip-dashed>.sslip.io name
+//	${domain:<label>} under a suffix, <app>-<label>.<suffix>, for a second
+//	                name; else the same generated name ${domain} gives
 //	${password[:n]} random lowercase-alphanumeric password (default 16)
 //	${base64[:n]}   base64 of n random bytes (default 32)
 //	${hash[:n]}     random hex string (default 8)
@@ -38,8 +41,9 @@ type Rendered struct {
 }
 
 // Render expands a template's variables, domains, and env for a new app.
-// appName seeds generated domains; naming's server IP (may be empty) makes them
-// resolve via sslip.io without DNS setup.
+// appName seeds generated domains: under naming's suffix they become one label
+// under it, else naming's server IP (may be empty) makes them resolve via
+// sslip.io without DNS setup.
 func Render(t Template, appName string, naming core.Naming) (Rendered, error) {
 	// First pass: generate helper values inside variable definitions.
 	// Second pass: resolve variables referencing other variables — one level,
@@ -92,6 +96,13 @@ func generate(name, appName string, naming core.Naming) (string, bool) {
 	n, _ := strconv.Atoi(arg)
 	switch helper {
 	case "domain":
+		if naming.Suffix != "" {
+			label := appName
+			if arg != "" {
+				label += "-" + arg
+			}
+			return naming.HostUnderSuffix(label), true
+		}
 		return sslipDomain(appName, naming.ServerIP), true
 	case "password":
 		if n <= 0 {
@@ -115,7 +126,11 @@ func generate(name, appName string, naming core.Naming) (string, bool) {
 		h := hex.EncodeToString(b)
 		return h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:], true
 	case "email":
-		return randomString(8, "abcdefghijklmnopqrstuvwxyz") + "@" + sslipHost(appName, naming.ServerIP), true
+		host := naming.HostUnderSuffix(appName)
+		if host == "" {
+			host = sslipHost(appName, naming.ServerIP)
+		}
+		return randomString(8, "abcdefghijklmnopqrstuvwxyz") + "@" + host, true
 	case "username":
 		return randomString(10, "abcdefghijklmnopqrstuvwxyz"), true
 	}

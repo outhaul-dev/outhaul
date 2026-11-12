@@ -1,5 +1,7 @@
 package core
 
+import "strings"
+
 // Naming is where generated names get their host from: one value carries the
 // server's public IP and the shared domain suffix, so every constructor that
 // mints a name takes the same argument.
@@ -15,6 +17,18 @@ func (n Naming) HostUnderSuffix(label string) string {
 		return ""
 	}
 	return label + "." + n.Suffix
+}
+
+// OneLabelUnder reports whether host is exactly one non-empty label under
+// suffix, the name a certificate for *.<suffix> covers. Case and one trailing
+// dot on either are ignored; the bare suffix and a deeper name are not.
+func OneLabelUnder(host, suffix string) bool {
+	suffix = strings.TrimSuffix(strings.ToLower(suffix), ".")
+	if suffix == "" {
+		return false
+	}
+	label, ok := strings.CutSuffix(strings.TrimSuffix(strings.ToLower(host), "."), "."+suffix)
+	return ok && label != "" && !strings.Contains(label, ".")
 }
 
 // AppHost is the host an app's first row gets, and whether one can be made.

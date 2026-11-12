@@ -482,3 +482,29 @@ func TestBridgeClaimTimeSkipExitsZero(t *testing.T) {
 		t.Fatalf("a skip must not read as a failure:\n%s", out)
 	}
 }
+
+// A cold push under a suffix gives <app>.<suffix>, not an sslip.io name.
+func TestBridgeColdPushUsesTheSuffix(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	b, st, br := bridgeEnv(t)
+	b.naming = core.Naming{Suffix: "shared.demo.example.com"}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		app := waitForApp(t, st, "web")
+		if app.ID == 0 {
+			return
+		}
+		dep := waitForDeployment(t, st, app.ID)
+		markTerminal(t, st, dep, core.StatusRunning)
+		br.Close(dep.ID)
+	}()
+	out := runHandle(t, b, request{App: "web", Refs: []RefUpdate{{"0", pushedCommit(t, b, "web"), "refs/heads/main"}}})
+	<-done
+	if !strings.Contains(out, "✓ deployed web.shared.demo.example.com") {
+		t.Fatalf("a cold push under a suffix:\n%s", out)
+	}
+}

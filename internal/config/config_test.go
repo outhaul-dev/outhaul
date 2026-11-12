@@ -1103,3 +1103,60 @@ func TestValidateRejectsMalformedSignInBackoff(t *testing.T) {
 		t.Errorf("Validate = %v, want an error naming OUTHAUL_SIGNIN_BACKOFF", err)
 	}
 }
+
+func TestDomainSuffixSetting(t *testing.T) {
+	long := strings.Repeat("a", 63) + "." + strings.Repeat("b", 63) + "." + strings.Repeat("c", 61) // 189
+	tooLong := strings.Repeat("a", 63) + "." + strings.Repeat("b", 63) + "." + strings.Repeat("c", 62)
+	cases := []struct {
+		name, in, want string
+		bad            bool
+	}{
+		{"unset", "", "", false},
+		{"suffix", "shared.demo.example.com", "shared.demo.example.com", false},
+		{"case and a trailing dot", "Shared.Demo.Example.COM.", "shared.demo.example.com", false},
+		{"two labels", "example.com", "example.com", false},
+		{"189 characters", long, long, false},
+		{"190 characters", tooLong, "", true},
+		{"one dot", ".", "", true},
+		{"underscore", "shared_host.example.com", "", true},
+		{"a path", "shared.demo.example.com/app", "", true},
+		{"a wildcard", "*.shared.demo.example.com", "", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			env := map[string]string{}
+			if c.in != "" {
+				env["OUTHAUL_DOMAIN_SUFFIX"] = c.in
+			}
+			cfg := Load(func(k string) string { return env[k] })
+			err := cfg.Validate()
+			if c.bad {
+				if err == nil || !strings.Contains(err.Error(), "OUTHAUL_DOMAIN_SUFFIX") {
+					t.Fatalf("Validate = %v, want one naming OUTHAUL_DOMAIN_SUFFIX", err)
+				}
+			} else if err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+			if cfg.DomainSuffix != c.want {
+				t.Errorf("DomainSuffix = %q, want %q", cfg.DomainSuffix, c.want)
+			}
+		})
+	}
+}
+
+func TestDomainSuffixMustMatchTheWildcard(t *testing.T) {
+	both := map[string]string{
+		"OUTHAUL_DOMAIN_SUFFIX":     "shared.demo.example.com",
+		"OUTHAUL_TLS_WILDCARD":      "*.shared.demo.example.com",
+		"OUTHAUL_ACME_EMAIL":        "ops@example.com",
+		"OUTHAUL_ACME_DNS_PROVIDER": "azuredns",
+	}
+	if err := Load(func(k string) string { return both[k] }).Validate(); err != nil {
+		t.Fatalf("agreeing wildcard and suffix: %v", err)
+	}
+	both["OUTHAUL_TLS_WILDCARD"] = "*.other.example.com"
+	err := Load(func(k string) string { return both[k] }).Validate()
+	if err == nil || !strings.Contains(err.Error(), "OUTHAUL_TLS_WILDCARD") || !strings.Contains(err.Error(), "OUTHAUL_DOMAIN_SUFFIX") {
+		t.Fatalf("disagreeing wildcard and suffix: %v, want one naming both", err)
+	}
+}

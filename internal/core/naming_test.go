@@ -24,3 +24,37 @@ func TestHostUnderSuffix(t *testing.T) {
 		t.Errorf("HostUnderSuffix = %q", got)
 	}
 }
+
+func TestNamesUnderASuffix(t *testing.T) {
+	n := Naming{ServerIP: "203.0.113.7", Suffix: "shared.demo.example.com"}
+	if got := n.HostUnderSuffix("web-api"); got != "web-api.shared.demo.example.com" {
+		t.Errorf("HostUnderSuffix = %q", got)
+	}
+	if got := n.PreviewHost(PreviewConfig{}, "web", 42, ""); got != "web-pr-42.shared.demo.example.com" {
+		t.Errorf("preview host = %q", got)
+	}
+}
+
+func TestOneLabelUnder(t *testing.T) {
+	const suffix = "shared.demo.example.com"
+	cases := []struct {
+		host string
+		want bool
+	}{
+		{"web.shared.demo.example.com", true},
+		{"WEB.Shared.Demo.Example.COM", true},
+		{"web.shared.demo.example.com.", true},
+		{"shared.demo.example.com", false},
+		{"a.b.shared.demo.example.com", false},
+		{"xshared.demo.example.com", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := OneLabelUnder(c.host, suffix); got != c.want {
+			t.Errorf("OneLabelUnder(%q) = %v, want %v", c.host, got, c.want)
+		}
+	}
+	if OneLabelUnder("web.example.com", "") {
+		t.Error("an empty suffix covers nothing")
+	}
+}

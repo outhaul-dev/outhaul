@@ -156,3 +156,48 @@ func TestGetUnknownTemplate(t *testing.T) {
 		t.Fatal("Get(no-such-template) should fail")
 	}
 }
+
+// Under a suffix every template's rows are one label under it and distinct, so
+// a manifest that uses ${domain} twice can't have its second row refused.
+func TestTemplateRowsUnderASuffix(t *testing.T) {
+	all, err := All()
+	if err != nil {
+		t.Fatal(err)
+	}
+	naming := core.Naming{Suffix: "shared.demo.example.com"}
+	for _, tmpl := range all {
+		r, err := Render(tmpl, "demo", naming)
+		if err != nil {
+			t.Errorf("%s: Render: %v", tmpl.ID, err)
+			continue
+		}
+		seen := map[string]bool{}
+		for _, d := range r.Domains {
+			if !core.OneLabelUnder(d.Host, naming.Suffix) {
+				t.Errorf("%s: host %q is not one label under the suffix", tmpl.ID, d.Host)
+			}
+			if seen[d.Host] {
+				t.Errorf("%s: two rows on %q", tmpl.ID, d.Host)
+			}
+			seen[d.Host] = true
+		}
+	}
+}
+
+func TestMinioAPIDomainUnderASuffix(t *testing.T) {
+	tmpl, err := Get("minio")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := Render(tmpl, "minio", core.Naming{Suffix: "shared.demo.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hosts []string
+	for _, d := range r.Domains {
+		hosts = append(hosts, d.Host)
+	}
+	if len(hosts) != 2 || hosts[0] != "minio.shared.demo.example.com" || hosts[1] != "minio-api.shared.demo.example.com" {
+		t.Errorf("MinIO hosts = %q, want minio.… (console) and minio-api.… (api)", hosts)
+	}
+}
