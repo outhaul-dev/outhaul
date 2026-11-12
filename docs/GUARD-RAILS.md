@@ -64,6 +64,16 @@ These are refused in the same way:
 - `models:`, `gpus:`, `runtime:`, `provider:`, `pre_start:`, and a
   `post_start` or `pre_stop` hook that runs privileged.
 
+With a CPU limit in force — `OUTHAUL_DEFAULT_CPUS`, or the app's own — strict
+mode also refuses:
+
+- `cpu_quota:` and `cpu_period:`, because there must be one `cpus` figure to
+  compare with the limit. Write `cpus:` instead.
+- `pids_limit: -1` (unlimited), and any `cpus`, `mem_limit` or `pids_limit`
+  above the app's limit, in either spelling (`cpus` or
+  `deploy.resources.limits.cpus`, and so on). The message names both figures;
+  a system admin can raise the app's limit on its page.
+
 The allow-list is in `internal/compose/policy.go`. If you need a key that
 isn't on it and you think it is safe, ask the maintainer before working around
 it.
@@ -133,9 +143,9 @@ the Compose file on each deploy, still supplies the app's variables.
 
 ## Docker Compose 2.35 or newer
 
-Strict mode, or a required request header even without strict mode, reads a
-Compose file by asking `docker compose` for its normalised JSON, with
-`--no-env-resolution`. That flag arrived in Docker Compose 2.35, and it keeps
+Strict mode, a required request header even without strict mode, or a limit on
+a Compose app, reads a Compose file by asking `docker compose` for its
+normalised JSON, with `--no-env-resolution`. That flag arrived in Docker Compose 2.35, and it keeps
 the contents of an `env_file` reference from being expanded into the model. On
 an older host a Compose deploy fails before it starts, with a message that
 includes:
@@ -169,9 +179,11 @@ need it.
 ## Limits (opt-in)
 
 Limits are separate from strict mode: each setting works alone, and an install
-that sets none creates exactly the containers and override it did before. The
-ceiling is per container, not per stack, and Outhaul does not change a running
-container when a limit changes.
+that sets none creates exactly the containers and override it did before. On a
+Compose app, however, any limit makes the deploy read the Compose model, which
+needs Docker Compose 2.35 or newer (see [Docker Compose 2.35 or
+newer](#docker-compose-235-or-newer)). The ceiling is per container, not per
+stack, and Outhaul does not change a running container when a limit changes.
 
 | Variable | Values | Default |
 |---|---|---|
