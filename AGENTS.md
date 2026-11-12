@@ -292,6 +292,17 @@ fixed in five batches. All five are on `main`.
   that names a missing file-provider middleware is dropped and its requests fall
   to an open router. So the gate stays in each app's own labels, with
   `trustforwardheader=false`. See `docs/BEHIND-A-PROXY.md`.
+- **Generated names sit under one suffix.** Every name Outhaul mints comes from
+  `core.Naming` (the server IP, `OUTHAUL_DOMAIN_SUFFIX` and the "only" flag),
+  never from a bare server IP: a template's `${domain}` is `<app>.<suffix>`, a
+  preview `[<service>-]<app>-pr-<n>.<suffix>`, a first `git push`
+  `<app>.<suffix>`, and a manifest that wants two names writes
+  `${domain:<label>}`, which is `<app>-<label>.<suffix>`. The suffix rule is
+  checked once, in `store.checkRouteFreeTx`, so every writer is refused a host
+  outside it, system admins included; a row already outside is kept, still
+  editable in place (only a move is checked) and deletable, and startup warns
+  about each. `OUTHAUL_DOMAIN_SUFFIX` and `OUTHAUL_TLS_WILDCARD` must name the
+  same domain. See `docs/SHARED-HOST.md`.
 
 ### Open: reliability and UX
 

@@ -394,11 +394,13 @@ domain override, `up --wait` health gating, runtime logs, metrics,
 stop/restart/delete, volume backups) is the existing compose machinery,
 unbranched. Generated domains use Dokploy's zero-DNS shape
 `<app>-<hash>-<ip-dashed>.sslip.io` (server IP from `OUTHAUL_SERVER_IP` or
-auto-detected via the outbound-UDP local-address trick); generated
-credentials land in the app's ordinary env vars, encrypted at rest and
-editable on the app page. The catalog test cross-checks each entry both
-ways: every manifest env key must be consumed by its compose file, and every
-`${VAR}` the compose file reads must be fed by the manifest. Deliberate
+auto-detected via the outbound-UDP local-address trick). The zero-DNS
+`sslip.io` shape stays the default; `OUTHAUL_DOMAIN_SUFFIX` replaces it, one
+label under the suffix, and `${domain:<label>}` is the second name a manifest
+needs. Generated credentials land in the app's ordinary env vars, encrypted at
+rest and editable on the app page. The catalog test cross-checks each entry
+both ways: every manifest env key must be consumed by its compose file, and
+every `${VAR}` the compose file reads must be fed by the manifest. Deliberate
 seams: file mounts, template upgrades, user-pasted compose, a remote
 catalog URL, and the jwt/timestamp/randomPort helpers.
 
@@ -668,6 +670,28 @@ loopback and on the host's address on its Docker network, and maps Traefik's
 `server.served` filters the containers Traefik is ignoring out of the Access
 column, the Domains page and the "other app on this host" checks; the live
 state and mismatch checks still see every container.
+
+### Default domains under one suffix (opt-in)
+
+With `OUTHAUL_DOMAIN_SUFFIX`, every name Outhaul generates is one label under
+it, the shape a wildcard for `*.<suffix>` covers: a template's `${domain}` is
+`<app>.<suffix>`, a preview `[<service>-]<app>-pr-<n>.<suffix>`, and a first
+`git push` `<app>.<suffix>`. Unset, nothing changes and `sslip.io` names are
+generated as before. The user guide is `docs/SHARED-HOST.md`.
+
+**One value for naming.** `core.Naming` carries the server's IP, the suffix and
+the "only" flag, and every minter takes it (`catalog.Render`,
+`core.Naming.PreviewHost`, the first push in `githook`, the new-app form and
+`parseDomainForm`), so no name is built from a bare server IP. A manifest that
+needs a second name writes `${domain:<label>}`.
+
+**The rule is in the writing transaction.** `store.checkRouteFreeTx` refuses a
+host outside the suffix with `ErrHostOutsideSuffix`, beside the reserved admin
+host, so `AddDomain`, `CreateAppWithDomains` and a move in `UpdateDomain` all
+check it. It refuses a system admin too, because the name is routed nowhere.
+Nothing renames a row: one already outside is left in place, still editable in
+place and deletable, and startup warns about each. The forms ask
+`core.Naming.SuffixRefusal` first, so the page says why.
 
 ### Container guard rails (opt-in)
 
