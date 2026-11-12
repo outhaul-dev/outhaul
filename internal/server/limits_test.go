@@ -244,3 +244,38 @@ func TestPreviewPanelShowsTheParentsLimits(t *testing.T) {
 		t.Error("a preview is shown the limits form")
 	}
 }
+
+// While the build cap is set, a deployment that has to build and is still
+// queued says so; a rollback (which has an image) and a server with no cap do
+// not.
+func TestQueuedBuildNote(t *testing.T) {
+	e := newTestEnv(t)
+	e.login(t)
+	app := seedLimitApp(t, e, "shop")
+	ctx := context.Background()
+
+	build, err := e.store.CreateDeployment(ctx, app.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.srv.SetBuildCap(2)
+	b := body(t, e.get(t, "/deployments/"+itoa(build.ID)))
+	if !strings.Contains(b, "Waiting its turn") || !strings.Contains(b, "2 builds at a time") {
+		t.Errorf("queued build page does not say it is waiting for a slot:\n%s", b)
+	}
+
+	rollback, err := e.store.CreateRollback(ctx, app.ID, "img:old", build.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b = body(t, e.get(t, "/deployments/"+itoa(rollback.ID)))
+	if strings.Contains(b, "Waiting its turn") {
+		t.Error("a queued rollback says it is waiting for a build slot")
+	}
+
+	e.srv.SetBuildCap(0)
+	b = body(t, e.get(t, "/deployments/"+itoa(build.ID)))
+	if strings.Contains(b, "Waiting its turn") {
+		t.Error("the note appears with no cap set")
+	}
+}

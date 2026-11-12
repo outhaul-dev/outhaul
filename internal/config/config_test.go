@@ -1194,3 +1194,40 @@ func TestValidateDefaultLimits(t *testing.T) {
 		t.Errorf("Validate rejected a CPU count above this host's with OUTHAUL_DOCKER_HOST set: %v", err)
 	}
 }
+
+func TestMaxConcurrentBuildsSetting(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"", 0},
+		{"1", 1},
+		{"4", 4},
+		{"0", 0},   // refused
+		{"5", 0},   // refused
+		{"two", 0}, // refused
+	}
+	for _, tc := range cases {
+		c := Load(func(k string) string {
+			if k == "OUTHAUL_MAX_CONCURRENT_BUILDS" {
+				return tc.in
+			}
+			return ""
+		})
+		if c.MaxConcurrentBuilds != tc.want {
+			t.Errorf("OUTHAUL_MAX_CONCURRENT_BUILDS=%q -> %d, want %d", tc.in, c.MaxConcurrentBuilds, tc.want)
+		}
+	}
+	for _, in := range []string{"0", "5", "two"} {
+		c := Load(func(k string) string {
+			if k == "OUTHAUL_MAX_CONCURRENT_BUILDS" {
+				return in
+			}
+			return ""
+		})
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), "OUTHAUL_MAX_CONCURRENT_BUILDS") {
+			t.Errorf("OUTHAUL_MAX_CONCURRENT_BUILDS=%q: Validate = %v, want one naming the variable", in, err)
+		}
+	}
+}

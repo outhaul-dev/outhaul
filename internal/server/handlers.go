@@ -2058,6 +2058,7 @@ func (s *Server) handleDeploymentDetail(w http.ResponseWriter, r *http.Request) 
 		"Project":    project,
 		"Deployment": dep,
 		"Live":       !dep.Status.IsTerminal(),
+		"BuildCap":   s.buildCap,
 	})
 }
 

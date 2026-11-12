@@ -41,6 +41,8 @@ type Config struct {
 	ContainerPolicy  string      // "strict" or ""; strict refuses host-reaching Compose keys
 	DefaultLimits    core.Limits // per-container defaults; a zero field means no limit
 
+	MaxConcurrentBuilds int // OUTHAUL_MAX_CONCURRENT_BUILDS; 0 = unset (as today)
+
 	ACMEEmail          string        // Let's Encrypt account email; empty disables TLS
 	ACMEStaging        bool          // use the LE staging CA (avoid rate limits)
 	ACMEDNSProvider    string        // lego DNS-01 provider code; empty = HTTP-01
@@ -100,6 +102,7 @@ func Load(getenv Getenv) Config {
 			Memory:    p.memory("OUTHAUL_DEFAULT_MEMORY"),
 			Pids:      p.pids("OUTHAUL_DEFAULT_PIDS"),
 		},
+		MaxConcurrentBuilds: p.builds("OUTHAUL_MAX_CONCURRENT_BUILDS"),
 
 		ACMEEmail:          firstField(getenv("OUTHAUL_ACME_EMAIL")),
 		ACMEStaging:        p.bool("OUTHAUL_ACME_STAGING"),
@@ -457,6 +460,21 @@ func (p *parser) pids(key string) int64 {
 	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil || n < 1 {
 		p.reject(key, v, "a whole number of processes, 1 or more")
+		return 0
+	}
+	return n
+}
+
+// builds reads OUTHAUL_MAX_CONCURRENT_BUILDS: 1 to core.MaxPipelines, the
+// pipeline count. Empty means unset, which is today's behaviour.
+func (p *parser) builds(key string) int {
+	v := p.getenv(key)
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 || n > core.MaxPipelines {
+		p.reject(key, v, "a whole number from 1 to 4")
 		return 0
 	}
 	return n

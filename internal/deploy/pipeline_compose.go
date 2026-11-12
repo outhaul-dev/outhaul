@@ -151,9 +151,11 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 		return
 	}
 	if !ok {
+		w.releaseBuild(dep.ID)
 		logf(out, "Deployment is no longer building (cancelled); aborting.")
 		return
 	}
+	w.releaseBuild(dep.ID) // it is deploying now; the build slot is free
 
 	// The app may have been deleted while we were building (a deploying
 	// deployment is not cancellable); don't bring up a stack for a gone app.

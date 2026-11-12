@@ -28,9 +28,6 @@ import (
 // pollInterval is a safety-net re-check even if no Notify arrives.
 const pollInterval = 3 * time.Second
 
-// maxConcurrent bounds how many app deployments build/deploy at once.
-const maxConcurrent = 4
-
 // AppPruner is the optional after-deploy image-retention hook (implemented by
 // internal/prune, which stays out of the pipeline's dependency graph).
 type AppPruner interface {
@@ -70,13 +67,22 @@ type Worker struct {
 	sem    chan struct{}
 	wg     sync.WaitGroup
 
+	// buildSlots caps how many deployments that must build are in building at
+	// once; nil means no cap. buildHeld names the deployments that hold a slot
+	// (a claimed image deployment gives it straight back).
+	buildSlots chan struct{}
+	buildHeld  map[int64]bool
+
+	// claim is store.ClaimDeployment, replaceable in tests.
+	claim func(ctx context.Context, id int64) (bool, error)
+
 	mu      sync.Mutex
 	cancels map[int64]context.CancelFunc // per-deployment pipeline cancels
 }
 
 // NewWorker wires the worker's dependencies.
 func NewWorker(st *store.Store, dc docker.Client, b Builders, cp compose.Runner, cl Cloner, br *logstream.Broker, sources *gitsource.Registry, cfg config.Config) *Worker {
-	return &Worker{
+	w := &Worker{
 		store:    st,
 		docker:   dc,
 		builders: b,
@@ -88,10 +94,41 @@ func NewWorker(st *store.Store, dc docker.Client, b Builders, cp compose.Runner,
 
 		healthCheck: httpPoll,
 
-		notify:  make(chan struct{}, 1),
-		sem:     make(chan struct{}, maxConcurrent),
-		cancels: map[int64]context.CancelFunc{},
+		notify:    make(chan struct{}, 1),
+		sem:       make(chan struct{}, core.MaxPipelines),
+		buildHeld: map[int64]bool{},
+		claim:     st.ClaimDeployment,
+		cancels:   map[int64]context.CancelFunc{},
 	}
+	if cfg.MaxConcurrentBuilds > 0 {
+		w.buildSlots = make(chan struct{}, cfg.MaxConcurrentBuilds)
+	}
+	return w
+}
+
+// holdBuild records that a claimed build holds a slot.
+func (w *Worker) holdBuild(id int64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.buildHeld[id] = true
+}
+
+// releaseBuild gives back the build slot a deployment holds, if any. It is
+// idempotent: a deployment that never built (a rollback) is a no-op, and the
+// safety-net calls at the end of a pipeline cannot double-release.
+func (w *Worker) releaseBuild(id int64) {
+	if w.buildSlots == nil {
+		return
+	}
+	w.mu.Lock()
+	held := w.buildHeld[id]
+	delete(w.buildHeld, id)
+	w.mu.Unlock()
+	if !held {
+		return
+	}
+	<-w.buildSlots
+	w.Notify()
 }
 
 // limits is the app's effective limit: its stored values over the server
@@ -187,30 +224,65 @@ func (w *Worker) dispatch(ctx context.Context) {
 			return
 		}
 
-		dep, err := w.store.NextClaimable(ctx)
+		// Take a build slot when one is free; otherwise offer the queue only
+		// deployments that already have an image. The slot is held by the
+		// deployment until it leaves building, not just until this claims.
+		canBuild := w.buildSlots == nil
+		buildTaken := false
+		if !canBuild {
+			select {
+			case w.buildSlots <- struct{}{}:
+				canBuild, buildTaken = true, true
+			default:
+			}
+		}
+		releaseSlots := func() {
+			<-w.sem
+			if buildTaken {
+				<-w.buildSlots
+			}
+		}
+
+		dep, err := w.store.NextClaimable(ctx, canBuild)
 		if err != nil {
 			log.Printf("deploy: NextClaimable: %v", err)
-			<-w.sem
+			releaseSlots()
 			return
 		}
 		if dep == nil {
-			<-w.sem
+			releaseSlots()
+			return
+		}
+		if !canBuild && dep.Image == "" {
+			// The query never offers a build without a slot; claiming it would
+			// leave the row building with no pipeline.
+			log.Printf("deploy: NextClaimable offered build %d with no build slot; skipping", dep.ID)
+			releaseSlots()
 			return
 		}
 
-		ok, err := w.store.ClaimDeployment(ctx, dep.ID)
+		ok, err := w.claim(ctx, dep.ID)
 		if err != nil {
 			log.Printf("deploy: ClaimDeployment(%d): %v", dep.ID, err)
-			<-w.sem
+			releaseSlots()
 			return
 		}
 		if !ok {
 			// Lost the race (shouldn't happen with a single dispatcher, but be
 			// safe); release and try the next claimable.
-			<-w.sem
+			releaseSlots()
 			continue
 		}
 		dep.Status = core.StatusBuilding
+		if dep.Image != "" {
+			// Nothing to build: give the slot back now.
+			if buildTaken {
+				<-w.buildSlots
+			}
+		} else {
+			w.holdBuild(dep.ID)
+		}
+		buildTaken = false // owned by the deployment (or already given back)
 
 		pctx, cancel := context.WithCancel(ctx)
 		w.register(dep.ID, cancel)
@@ -221,6 +293,7 @@ func (w *Worker) dispatch(ctx context.Context) {
 			defer func() { <-w.sem }()
 			defer w.unregister(d.ID)
 			defer cancel()
+			defer w.releaseBuild(d.ID) // safety net; the pipelines release on leaving building
 
 			w.runPipeline(pctx, d)
 			w.notifyDeployHook(d.ID) // update a preview's PR comment + status

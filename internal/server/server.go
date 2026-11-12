@@ -115,6 +115,7 @@ type Server struct {
 	stateBackup         *StateBackupPanel // nil or no schedule: no State backup panel
 
 	defaultLimits core.Limits // per-container server default; zero fields mean no limit
+	buildCap      int         // OUTHAUL_MAX_CONCURRENT_BUILDS; 0 = unset (no note)
 
 	repos      *gitrepo.Manager // push-app bare repos; nil disables push-repo cleanup
 	sshControl SSHControl       // git-push SSH server; nil disables the port setting
@@ -215,6 +216,10 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 // SetDefaultLimits records the server's per-container default limits. The
 // Limits panel and its route exist only when at least one field is set.
 func (s *Server) SetDefaultLimits(l core.Limits) { s.defaultLimits = l }
+
+// SetBuildCap records how many builds run at once, for the queued
+// deployment's "waiting its turn" note. 0 means the setting is unset.
+func (s *Server) SetBuildCap(n int) { s.buildCap = n }
 
 // hasDefaultLimits reports whether a server default is set at all.
 func (s *Server) hasDefaultLimits() bool { return s.defaultLimits != (core.Limits{}) }

@@ -419,6 +419,7 @@ func serve() error {
 	})
 	srv.SetHTTPSPort(cfg.HTTPSPort)
 	srv.SetDefaultLimits(cfg.DefaultLimits)
+	srv.SetBuildCap(cfg.MaxConcurrentBuilds)
 	srv.SetSignInBackoff(cfg.SignInBackoff)
 	go srv.RunRestorePass(workerCtx)
 	srv.SetContainerPolicy(cfg.StrictContainerPolicy())

@@ -138,9 +138,11 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 	if !ok {
 		// The row is no longer building — an operator cancelled during the
 		// build. Stop here without touching the live container.
+		w.releaseBuild(dep.ID)
 		logf(out, "Deployment is no longer building (cancelled); aborting.")
 		return
 	}
+	w.releaseBuild(dep.ID) // it is deploying now; the build slot is free
 
 	// Choose a deploy strategy. Apps with a persistent volume cannot overlap two
 	// containers on the volume (single writer), so they stop-first (brief

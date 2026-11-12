@@ -298,7 +298,7 @@ func TestNextClaimableSerializesPerApp(t *testing.T) {
 	dapi, _ := s.CreateDeployment(ctx, api.ID)
 
 	// First claimable: oldest queued overall (d1).
-	got, err := s.NextClaimable(ctx)
+	got, err := s.NextClaimable(ctx, true)
 	if err != nil {
 		t.Fatalf("NextClaimable: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestNextClaimableSerializesPerApp(t *testing.T) {
 	s.ClaimDeployment(ctx, d1.ID)
 
 	// Next claimable must skip web's d2 (app busy) and return api's deployment.
-	got, err = s.NextClaimable(ctx)
+	got, err = s.NextClaimable(ctx, true)
 	if err != nil {
 		t.Fatalf("NextClaimable (2): %v", err)
 	}
@@ -326,7 +326,7 @@ func TestNextClaimableEmptyWhenAllBusyOrDone(t *testing.T) {
 	d, _ := s.CreateDeployment(ctx, web.ID)
 	s.ClaimDeployment(ctx, d.ID) // building; web busy, no other queued
 
-	got, err := s.NextClaimable(ctx)
+	got, err := s.NextClaimable(ctx, true)
 	if err != nil {
 		t.Fatalf("NextClaimable: %v", err)
 	}

@@ -22,6 +22,10 @@
 
 {{if .Deployment.Reason}}<div class="alert alert-error">{{.Deployment.Reason}}</div>{{end}}
 
+{{if and .BuildCap (eq .Deployment.Status "queued") (not .Deployment.Image)}}
+<div class="alert">Waiting its turn. This server runs {{.BuildCap}} builds at a time.</div>
+{{end}}
+
 <section class="panel">
   <div class="log-head">
     <h2 class="panel-title">Build &amp; deploy log</h2>
