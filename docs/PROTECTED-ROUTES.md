@@ -341,6 +341,11 @@ that ignores them, keep caching off for the routes to this host. Otherwise a
 protected page could be served from the CDN's store to someone who never signed
 in.
 
+With `OUTHAUL_TRUSTED_PROXIES` set, nothing in the labels or the gate changes.
+The gate still receives the `X-Forwarded-*` headers Traefik writes for its call
+and never the client's `X-Real-Ip` or `X-Forwarded-Prefix`, which Traefik
+removes while proxies are trusted. See `docs/BEHIND-A-PROXY.md`.
+
 ## When Outhaul is down or restarting
 
 Traefik asks Outhaul about every request to a protected route. While Outhaul is stopped

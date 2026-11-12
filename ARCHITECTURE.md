@@ -668,6 +668,38 @@ loopback and on the host's address on its Docker network, and maps Traefik's
 column, the Domains page and the "other app on this host" checks; the live
 state and mismatch checks still see every container.
 
+### Trusted proxies (opt-in)
+
+`OUTHAUL_TRUSTED_PROXIES` (IP addresses and CIDRs, or `all`) makes Traefik
+believe the forwarded headers of the proxies in front of it, so an app can see
+the visitor's address. Unset, nothing changes. The user guide is the "Trusted
+proxies" section of `docs/BEHIND-A-PROXY.md`.
+
+**Opt-in, per entrypoint, all or nothing per address.** `proxySpec` gives every
+entrypoint it declares (`web`, `websecure`, whichever exist) the same trust: a
+peer whose address is in the list is trusted on all of them, and one that isn't
+is trusted on none. There is no per-app or per-route trust.
+
+**Flags and one file, never a label.** The setting lives in `ProxyConfig`
+(`TrustedProxies`, `TrustAllProxies`), not in `traefik.Routing`. It adds
+`forwardedheaders.trustedips` (or `.insecure=true` for `all`) and
+`http.middlewares=outhaul-forwarded@file` to each entrypoint, turns on the file
+provider, and `EnsureProxy` writes `outhaul-forwarded.yml`, a middleware that
+blanks `X-Real-Ip`, `X-Forwarded-Uri`, `-Method` and `-Prefix`. No router label
+and no ingress stamp changes, so no app redeploys; Traefik is recreated once, as
+for any flag change. The file is written before Traefik is created and removed
+only once a replacement has started, so a failed image pull leaves the old
+Traefik and its file alone. `all` is paired with the required header, and
+`serve` warns when it isn't.
+
+**The gate is untouched.** Its forward-auth keeps `trustforwardheader=false`, so
+a client can't choose what it is told. The middleware sits on the entrypoint, not
+on any router, and a missing file closes the entrypoint rather than opening a
+route (see `AGENTS.md`).
+
+`deploy/test/integration_gate.sh` checks the headers, the removed four, the gate
+and the fail-closed case on a real Traefik (not in CI).
+
 ---
 
 ## Package layout
