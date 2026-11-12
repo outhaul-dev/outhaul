@@ -210,7 +210,7 @@ func (s *Server) ssoConnected(ctx context.Context) bool {
 	if !s.publicURLSet() {
 		return false
 	}
-	_, ok, err := s.store.GetSSOSettings(ctx)
+	_, ok, err := s.ssoSettings(ctx)
 	if err != nil {
 		log.Printf("sso: reading the settings for the login page: %v", err)
 		return false

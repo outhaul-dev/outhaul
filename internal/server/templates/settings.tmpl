@@ -222,7 +222,9 @@
   <h2 class="panel-title">Single sign-on (SSO)</h2>
   {{if .NeedsPublicURL}}
   <p class="env-note">Single sign-on needs <code>OUTHAUL_PUBLIC_URL</code> to be set to your admin UI's public HTTPS URL. Set it, then connect a provider here.</p>
-  {{if .SSO.Configured}}
+  {{if .SSO.FromEnvironment}}
+  <p class="muted env-note">Single sign-on is set from the environment, but nobody can sign in with SSO until <code>OUTHAUL_PUBLIC_URL</code> is set.</p>
+  {{else if .SSO.Configured}}
   <p class="muted env-note">Single sign-on settings are still saved, but nobody can sign in with SSO until <code>OUTHAUL_PUBLIC_URL</code> is set again.</p>
   <form method="post" action="/settings/sso/delete" class="grid-form" onsubmit="return confirm('Remove single sign-on? Everyone signed in with SSO is signed out. Password sign-in keeps working.');">
     <button type="submit" class="btn btn-danger">Remove SSO</button>
@@ -232,6 +234,16 @@
   {{with .SSO}}
   <p class="muted env-note">Let people sign in to Outhaul through your identity provider (any OpenID Connect provider). Register this redirect URI at the provider: <code>{{.RedirectURI}}</code></p>
   <div class="alert alert-warn">Everyone the provider lets sign in can reach every protected route, so limit who is assigned to this application at the provider. A provider where anyone can sign in, such as public Google accounts, is not safe to use.</div>
+  {{if .FromEnvironment}}
+  <dl class="env-note">
+    <dt>Issuer URL</dt><dd><code>{{.Issuer}}</code></dd>
+    <dt>Client ID</dt><dd><code>{{.ClientID}}</code></dd>
+    <dt>Redirect URI</dt><dd><code>{{.RedirectURI}}</code></dd>
+  </dl>
+  <p class="muted env-note">These settings come from the environment (<code>OUTHAUL_SSO_ISSUER</code>, <code>OUTHAUL_SSO_CLIENT_ID</code>, <code>OUTHAUL_SSO_CLIENT_SECRET_FILE</code>). Change them there and restart Outhaul.</p>
+  <p class="muted env-note">The client secret was read from a file when Outhaul started.</p>
+  {{if .StoredAlso}}<p class="muted env-note">Settings saved here are kept, but not used while the environment sets them.</p>{{end}}
+  {{else}}
   {{if .NeedsConfirm}}
   <div class="alert alert-warn">Changing the issuer ends every SSO sign-in, and everyone will come back as a new account with no role. The old accounts keep their roles and push keys until they are removed.</div>
   {{end}}
@@ -250,6 +262,7 @@
   <form method="post" action="/settings/sso/delete" class="grid-form" onsubmit="return confirm('Remove single sign-on? Everyone signed in with SSO is signed out. Password sign-in keeps working.');">
     <button type="submit" class="btn btn-danger">Remove SSO</button>
   </form>
+  {{end}}
   {{end}}
   {{end}}
   {{end}}

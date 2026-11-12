@@ -138,6 +138,7 @@ type Server struct {
 	stopStreams context.CancelFunc
 
 	discover  func(ctx context.Context, cfg sso.Config) (sso.Provider, error) // sso.Discover; tests replace it
+	ssoEnv    SSOEnvironment                                                  // set once before Handler; the zero value means "not from the environment"
 	ssoMu     sync.Mutex
 	ssoCached *ssoConn // nil until discovery succeeds; dropped when the settings change
 	ssoGen    int      // bumped by dropSSOProvider, so a stale discovery isn't cached

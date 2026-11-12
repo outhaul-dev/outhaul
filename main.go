@@ -142,7 +142,8 @@ func serve() error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	if _, err := readSSOSecret(cfg.SSOClientSecretFile, os.Getenv("CREDENTIALS_DIRECTORY")); err != nil {
+	ssoClientSecret, err := readSSOSecret(cfg.SSOClientSecretFile, os.Getenv("CREDENTIALS_DIRECTORY"))
+	if err != nil {
 		return err
 	}
 
@@ -159,6 +160,17 @@ func serve() error {
 		return err
 	}
 	defer st.Close()
+	ssoSet := cfg.SSOIssuer != ""
+	ended, err := st.SyncSSOStartup(context.Background(), store.SSOSettings{Issuer: cfg.SSOIssuer, ClientID: cfg.SSOClientID}, ssoSet)
+	if err != nil {
+		return fmt.Errorf("record the SSO settings this run uses: %w", err)
+	}
+	if ended {
+		log.Printf("sso: the issuer or client ID changed since the last run, so every SSO sign-in has ended; if the issuer changed, everyone returns as a new account")
+	}
+	if ssoSet {
+		log.Printf("sso: using the provider from the environment: %s", cfg.SSOIssuer)
+	}
 	reserveAdminHost(context.Background(), st, cfg.AdminHost(), log.Printf)
 	if err := st.SyncAzureDestination(context.Background(), cfg.BackupAzureAccount, cfg.BackupAzureContainer); err != nil {
 		return fmt.Errorf("sync the Azure backup destination: %w", err)
@@ -394,6 +406,15 @@ func serve() error {
 		Prefix:      cfg.StateBackupPrefix,
 	})
 	srv.SetHTTPSPort(cfg.HTTPSPort)
+	srv.SetSSOEnvironment(server.SSOEnvironment{
+		FromEnvironment: ssoSet,
+		Issuer:          cfg.SSOIssuer,
+		ClientID:        cfg.SSOClientID,
+		ClientSecret:    ssoClientSecret,
+		GroupsClaim:     cfg.SSOGroupsClaim,
+		Scopes:          cfg.SSOScopes,
+		RoleGroups:      cfg.SSORoleGroups,
+	})
 	go srv.RunRestorePass(workerCtx)
 	srv.SetBuild(update.Current())
 	if updatesOff {
@@ -406,6 +427,7 @@ func serve() error {
 		srv.SetLocalCAFile(localca.RootPath(cfg.CADir()))
 	}
 	printSetupHint(srv, cfg, setupToken)
+	go srv.ProbeSSO(workerCtx)
 
 	httpServer := newHTTPServer(cfg.ListenAddr, srv.Handler(), srv.CloseStreams)
 

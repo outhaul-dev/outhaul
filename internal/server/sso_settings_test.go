@@ -394,3 +394,86 @@ func TestSaveSSOHidesStoreErrors(t *testing.T) {
 		t.Errorf("the store's error wasn't logged:\n%s", logged.String())
 	}
 }
+
+func TestSSOFromTheEnvironmentWins(t *testing.T) {
+	e, seen := ssoEnv(t)
+	saveSSO(t, e, "https://stored.example.com", "stored", "sec").Body.Close()
+	e.srv.ssoEnv = SSOEnvironment{
+		FromEnvironment: true,
+		Issuer:          "https://env.example.com",
+		ClientID:        "env-id",
+		ClientSecret:    "env-secret",
+	}
+
+	page := body(t, e.get(t, "/settings"))
+	for _, want := range []string{
+		"https://env.example.com",
+		"env-id",
+		"The client secret was read from a file when Outhaul started.",
+		"kept, but not used",
+		"https://slip.example.com/auth/sso/callback",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the settings page lacks %q", want)
+		}
+	}
+	if strings.Contains(page, `action="/settings/sso"`) {
+		t.Error("the environment's settings still get an editable form")
+	}
+
+	*seen = nil // the save above ran its own discovery
+	p, err := e.srv.ssoProvider(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.issuer != "https://env.example.com" || p.clientID != "env-id" || len(*seen) != 1 ||
+		(*seen)[0].Issuer != "https://env.example.com" || (*seen)[0].ClientSecret != "env-secret" {
+		t.Fatalf("discovery saw %+v, want the environment's settings", *seen)
+	}
+}
+
+func TestSaveAndDeleteRefusedWhenTheEnvironmentSetsSSO(t *testing.T) {
+	e, _ := ssoEnv(t)
+	saveSSO(t, e, "https://stored.example.com", "stored", "sec").Body.Close()
+	e.srv.ssoEnv = SSOEnvironment{FromEnvironment: true, Issuer: "https://env.example.com", ClientID: "env-id", ClientSecret: "env-secret"}
+
+	resp := saveSSO(t, e, "https://other.example.com", "other", "sec")
+	body := body(t, resp)
+	if resp.StatusCode != http.StatusConflict || !strings.Contains(body, "OUTHAUL_SSO_ISSUER") {
+		t.Errorf("save = %d %s, want 409 naming the variables", resp.StatusCode, body)
+	}
+	resp = e.postForm(t, "/settings/sso/delete", url.Values{})
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("delete = %d, want 409", resp.StatusCode)
+	}
+	resp.Body.Close()
+	if got, ok, _ := e.store.GetSSOSettings(context.Background()); !ok || got.Issuer != "https://stored.example.com" {
+		t.Errorf("the stored settings changed: %+v, %v", got, ok)
+	}
+}
+
+func TestSignInWorksWithTheEnvironmentAlone(t *testing.T) {
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	e.srv.publicURL = e.http.URL
+	e.srv.ssoEnv = SSOEnvironment{FromEnvironment: true, Issuer: testIssuer, ClientID: "cid", ClientSecret: "sec"}
+	fake := fakeIdentity("sub-1", "dana@example.com")
+	e.srv.discover = func(context.Context, sso.Config) (sso.Provider, error) { return fake, nil }
+
+	b := newBrowser(e)
+	b.signIn(t)
+	accounts := ssoAccounts(t, e)
+	if len(accounts) != 1 || accounts[0].Email != "dana@example.com" {
+		t.Fatalf("accounts = %+v", accounts)
+	}
+}
+
+func TestProbeSSOUsesTheEnvironmentSettings(t *testing.T) {
+	e, seen := ssoEnv(t)
+	e.srv.ssoEnv = SSOEnvironment{FromEnvironment: true, Issuer: testIssuer, ClientID: "cid", ClientSecret: "sec",
+		GroupsClaim: "groups", Scopes: []string{"groups"}}
+	e.srv.ProbeSSO(context.Background())
+	if len(*seen) != 1 || (*seen)[0].GroupsClaim != "groups" || len((*seen)[0].Scopes) != 1 {
+		t.Fatalf("discovery saw %+v", *seen)
+	}
+}
