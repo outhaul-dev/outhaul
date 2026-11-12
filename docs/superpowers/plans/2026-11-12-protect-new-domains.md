@@ -1158,7 +1158,7 @@ func TestBridgeColdPushRefusesAnotherProjectsHost(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
-	b, st, br := bridgeEnv(t)
+	b, st, _ := bridgeEnv(t)
 	b.naming = core.Naming{Suffix: "shared.demo.example.com"}
 	b.protectNew = true
 	other, err := st.CreateProject(context.Background(), core.Project{Name: "Other"})
