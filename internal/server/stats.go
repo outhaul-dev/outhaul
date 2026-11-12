@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,11 +21,14 @@ import (
 // template script stays a dumb poller.
 type appStatsResponse struct {
 	Running    bool   `json:"running"`
-	CPU        string `json:"cpu,omitempty"`    // percent, 100 = one core
-	Mem        string `json:"mem,omitempty"`    // e.g. "118 MiB"
-	MemSub     string `json:"memSub,omitempty"` // e.g. "of 1.9 GiB"
-	Net        string `json:"net,omitempty"`    // cumulative "rx ↓ · tx ↑"
-	Uptime     string `json:"uptime,omitempty"` // e.g. "2d 4h"
+	CPU        string `json:"cpu,omitempty"`     // percent, 100 = one core
+	CPUSub     string `json:"cpuSub,omitempty"`  // "limit 1 CPU" or "limits differ"
+	Mem        string `json:"mem,omitempty"`     // e.g. "118 MiB"
+	MemSub     string `json:"memSub,omitempty"`  // e.g. "of 1.9 GiB"
+	Pids       string `json:"pids,omitempty"`    // e.g. "12"
+	PidsSub    string `json:"pidsSub,omitempty"` // "of 512" or "limits differ"
+	Net        string `json:"net,omitempty"`     // cumulative "rx ↓ · tx ↑"
+	Uptime     string `json:"uptime,omitempty"`  // e.g. "2d 4h"
 	Containers int    `json:"containers,omitempty"`
 }
 
@@ -70,6 +76,8 @@ func (s *Server) appStats(ctx context.Context, app core.App) appStatsResponse {
 	wg.Wait()
 
 	var agg docker.Stats
+	var cpuLimits, memLimits, pidLimits []int64
+	var totalPids uint64
 	sampled := 0
 	for _, st := range samples {
 		if st == nil {
@@ -89,6 +97,16 @@ func (s *Server) appStats(ctx context.Context, app core.App) appStatsResponse {
 		if !st.StartedAt.IsZero() && (agg.StartedAt.IsZero() || st.StartedAt.Before(agg.StartedAt)) {
 			agg.StartedAt = st.StartedAt
 		}
+		if st.CPULimit > 0 {
+			cpuLimits = append(cpuLimits, int64(math.Round(st.CPULimit*1000)))
+		}
+		if st.MemLimited {
+			memLimits = append(memLimits, int64(st.MemLimit))
+		}
+		totalPids += st.Pids
+		if st.PidsLimit > 0 {
+			pidLimits = append(pidLimits, int64(st.PidsLimit))
+		}
 	}
 	if sampled == 0 {
 		return appStatsResponse{Running: false}
@@ -101,8 +119,31 @@ func (s *Server) appStats(ctx context.Context, app core.App) appStatsResponse {
 		Net:        fmtBytes(agg.NetRx) + " ↓ · " + fmtBytes(agg.NetTx) + " ↑",
 		Containers: sampled,
 	}
-	if agg.MemLimit > 0 {
-		resp.MemSub = "of " + fmtBytes(agg.MemLimit)
+	if v, same, any := commonLimit(cpuLimits); any {
+		if same && len(cpuLimits) == sampled {
+			resp.CPUSub = "limit " + fmtCPU(v) + " CPU"
+		} else {
+			resp.CPUSub = "limits differ"
+		}
+	}
+	switch {
+	case len(memLimits) == 0:
+		// No container has its own limit: today's host-total text.
+		if agg.MemLimit > 0 {
+			resp.MemSub = "of " + fmtBytes(agg.MemLimit)
+		}
+	case len(memLimits) == sampled && allSame(memLimits):
+		resp.MemSub = "of " + fmtBytes(uint64(memLimits[0]))
+	default:
+		resp.MemSub = "limits differ"
+	}
+	if len(pidLimits) > 0 {
+		resp.Pids = strconv.FormatUint(totalPids, 10)
+		if v, same, _ := commonLimit(pidLimits); same && len(pidLimits) == sampled {
+			resp.PidsSub = "of " + strconv.FormatInt(v, 10)
+		} else {
+			resp.PidsSub = "limits differ"
+		}
 	}
 	if !agg.StartedAt.IsZero() {
 		resp.Uptime = fmtUptime(time.Since(agg.StartedAt))
@@ -133,6 +174,35 @@ func (s *Server) runningContainers(ctx context.Context, app core.App) ([]docker.
 		return nil, err
 	}
 	return []docker.Container{*c}, nil
+}
+
+// commonLimit reports the value every entry has, whether they all agree, and
+// whether there was one at all.
+func commonLimit(values []int64) (value int64, same, any bool) {
+	if len(values) == 0 {
+		return 0, false, false
+	}
+	return values[0], allSame(values), true
+}
+
+// allSame reports whether every entry equals the first.
+func allSame(values []int64) bool {
+	for _, v := range values[1:] {
+		if v != values[0] {
+			return false
+		}
+	}
+	return true
+}
+
+// fmtCPU renders thousandths of a CPU as Compose and the panel write it: 1,
+// 0.5, 1.5.
+func fmtCPU(milli int64) string {
+	whole, frac := milli/1000, milli%1000
+	if frac == 0 {
+		return strconv.FormatInt(whole, 10)
+	}
+	return strconv.FormatInt(whole, 10) + "." + strings.TrimRight(fmt.Sprintf("%03d", frac), "0")
 }
 
 // fmtBytes renders a byte count in IEC units the way docker stats does.

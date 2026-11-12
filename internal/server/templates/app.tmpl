@@ -51,12 +51,33 @@
     <span class="log-status" id="metrics-indicator">connecting…</span>
   </div>
   <div class="stats">
-    <div class="stat"><div class="stat-label">CPU</div><div class="stat-value" id="metric-cpu">—<span class="unit">%</span></div><div class="stat-sub">100% = one core</div></div>
+    <div class="stat"><div class="stat-label">CPU</div><div class="stat-value" id="metric-cpu">—<span class="unit">%</span></div><div class="stat-sub" id="metric-cpu-sub">100% = one core</div></div>
     <div class="stat"><div class="stat-label">Memory</div><div class="stat-value" id="metric-mem">—</div><div class="stat-sub" id="metric-mem-sub">usage</div></div>
     <div class="stat"><div class="stat-label">Net I/O</div><div class="stat-value" id="metric-net">—</div><div class="stat-sub">received · sent, total</div></div>
     <div class="stat"><div class="stat-label">Uptime</div><div class="stat-value" id="metric-uptime">—</div><div class="stat-sub">since container start</div></div>
+    <div class="stat" id="metric-pids-stat" hidden><div class="stat-label">Processes</div><div class="stat-value" id="metric-pids">—</div><div class="stat-sub" id="metric-pids-sub">processes</div></div>
   </div>
 </section>
+
+{{if .LimitsAvailable}}
+<section class="panel" id="limits">
+  <h2 class="panel-title">Limits</h2>
+  <p class="muted">The ceiling each container is created with. A change applies on the app's next deploy.</p>
+  <dl class="meta">
+    <div><dt>CPU</dt><dd><span class="mono">{{if .Limits.MilliCPUs}}{{fmtCPU .Limits.MilliCPUs}} CPU{{else}}no limit{{end}}</span> <span class="muted">· {{.LimitSources.CPU}}</span></dd></div>
+    <div><dt>Memory</dt><dd><span class="mono">{{fmtSize .Limits.Memory}}</span> <span class="muted">· {{.LimitSources.Memory}}</span></dd></div>
+    <div><dt>Processes</dt><dd><span class="mono">{{if .Limits.Pids}}{{.Limits.Pids}}{{else}}no limit{{end}}</span> <span class="muted">· {{.LimitSources.Pids}}</span></dd></div>
+  </dl>
+  {{if and .IsSystemAdmin (not .App.Ephemeral)}}
+  <form method="post" action="/apps/{{.App.ID}}/limits" class="grid-form">
+    <label class="field"><span>CPU {{template "hint" "Leave blank for the server default."}}</span><input type="text" name="limit_cpus" value="{{if .App.Limits.MilliCPUs}}{{fmtCPU .App.Limits.MilliCPUs}}{{end}}" placeholder="{{if .DefaultLimits.MilliCPUs}}{{fmtCPU .DefaultLimits.MilliCPUs}}{{else}}no limit{{end}}"></label>
+    <label class="field"><span>Memory {{template "hint" "Bytes or 512m, 1g, 1.5g; leave blank for the server default."}}</span><input type="text" name="limit_memory" value="{{if .App.Limits.Memory}}{{.App.Limits.Memory}}{{end}}" placeholder="{{if .DefaultLimits.Memory}}{{.DefaultLimits.Memory}}{{else}}no limit{{end}}"></label>
+    <label class="field"><span>Processes {{template "hint" "A whole number; leave blank for the server default."}}</span><input type="number" name="limit_pids" min="1" value="{{if .App.Limits.Pids}}{{.App.Limits.Pids}}{{end}}" placeholder="{{if .DefaultLimits.Pids}}{{.DefaultLimits.Pids}}{{else}}no limit{{end}}"></label>
+    <button type="submit" class="btn btn-primary">Save limits</button>
+  </form>
+  {{end}}
+</section>
+{{end}}
 
 <script>
 (function () {
@@ -64,15 +85,23 @@
   var cpu = document.getElementById('metric-cpu');
   var mem = document.getElementById('metric-mem');
   var memSub = document.getElementById('metric-mem-sub');
+  var cpuSub = document.getElementById('metric-cpu-sub');
   var net = document.getElementById('metric-net');
   var uptime = document.getElementById('metric-uptime');
+  var pidsStat = document.getElementById('metric-pids-stat');
+  var pids = document.getElementById('metric-pids');
+  var pidsSub = document.getElementById('metric-pids-sub');
 
   function dashes() {
     cpu.innerHTML = '—<span class="unit">%</span>';
+    cpuSub.textContent = '100% = one core';
     mem.textContent = '—';
     memSub.textContent = 'usage';
     net.textContent = '—';
     uptime.textContent = '—';
+    pidsStat.hidden = true;
+    pids.textContent = '—';
+    pidsSub.textContent = 'processes';
   }
 
   function poll() {
@@ -84,10 +113,14 @@
         cpu.appendChild(document.createTextNode(s.cpu));
         var u = document.createElement('span'); u.className = 'unit'; u.textContent = '%';
         cpu.appendChild(u);
+        cpuSub.textContent = s.cpuSub || '100% = one core';
         mem.textContent = s.mem;
         memSub.textContent = s.memSub || 'usage';
         net.textContent = s.net;
         uptime.textContent = s.uptime || '—';
+        pidsStat.hidden = !s.pids;
+        pids.textContent = s.pids || '—';
+        pidsSub.textContent = s.pidsSub || 'processes';
         indicator.textContent = s.containers > 1 ? 'live · ' + s.containers + ' containers' : 'live';
       })
       .catch(function () { dashes(); indicator.textContent = 'unavailable'; });

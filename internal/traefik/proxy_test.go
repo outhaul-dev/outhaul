@@ -1070,6 +1070,17 @@ func TestEnsureProxyTrustedNeedsDynamicDir(t *testing.T) {
 	}
 }
 
+// Traefik is Outhaul's own infrastructure, not an app: it never gets the
+// server's per-container default limits.
+func TestTraefikCarriesNoLimits(t *testing.T) {
+	for name, pc := range goldenProxyConfigs() {
+		spec := proxySpec(pc)
+		if spec.NanoCPUs != 0 || spec.Memory != 0 || spec.PidsLimit != 0 {
+			t.Errorf("%s: traefik limits = (%d, %d, %d), want none", name, spec.NanoCPUs, spec.Memory, spec.PidsLimit)
+		}
+	}
+}
+
 func TestProxySpecCarriesTheAddress(t *testing.T) {
 	pc := testProxyConfig()
 	pc.Subnet, pc.IPv4 = "172.30.0.0/24", "172.30.0.2"

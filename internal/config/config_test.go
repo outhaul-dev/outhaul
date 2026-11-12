@@ -3,9 +3,13 @@ package config
 import (
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 func TestLoadDefaults(t *testing.T) {
@@ -1092,6 +1096,142 @@ func TestLoadSignInBackoff(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsMalformedSignInBackoff(t *testing.T) {
+	c := Load(func(k string) string {
+		if k == "OUTHAUL_SIGNIN_BACKOFF" {
+			return "maybe"
+		}
+		return ""
+	})
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "OUTHAUL_SIGNIN_BACKOFF") {
+		t.Errorf("Validate = %v, want an error naming OUTHAUL_SIGNIN_BACKOFF", err)
+	}
+}
+
+func TestLoadDefaultLimits(t *testing.T) {
+	none := Load(func(string) string { return "" })
+	if none.DefaultLimits != (core.Limits{}) {
+		t.Errorf("unset DefaultLimits = %+v, want zero", none.DefaultLimits)
+	}
+	if none.HasDefaultLimits() {
+		t.Error("HasDefaultLimits() is true with nothing set")
+	}
+
+	env := map[string]string{
+		"OUTHAUL_DEFAULT_CPUS":   "1",
+		"OUTHAUL_DEFAULT_MEMORY": "1g",
+		"OUTHAUL_DEFAULT_PIDS":   "512",
+	}
+	c := Load(func(k string) string { return env[k] })
+	want := core.Limits{MilliCPUs: 1000, Memory: 1 << 30, Pids: 512}
+	if c.DefaultLimits != want {
+		t.Errorf("DefaultLimits = %+v, want %+v", c.DefaultLimits, want)
+	}
+	if !c.HasDefaultLimits() {
+		t.Error("HasDefaultLimits() is false with all three set")
+	}
+
+	for k, v := range env {
+		one := Load(func(q string) string {
+			if q == k {
+				return v
+			}
+			return ""
+		})
+		if !one.HasDefaultLimits() {
+			t.Errorf("%s alone does not count as a default limit", k)
+		}
+	}
+}
+
+func TestValidateDefaultLimits(t *testing.T) {
+	cases := []struct{ key, val string }{
+		{"OUTHAUL_DEFAULT_CPUS", "50%"},
+		{"OUTHAUL_DEFAULT_MEMORY", "5m"},
+		{"OUTHAUL_DEFAULT_PIDS", "0"},
+	}
+	for _, tc := range cases {
+		c := Load(func(k string) string {
+			if k == tc.key {
+				return tc.val
+			}
+			return ""
+		})
+		err := c.Validate()
+		if err == nil {
+			t.Errorf("%s=%q was accepted", tc.key, tc.val)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.key) {
+			t.Errorf("%s=%q error %q does not name the variable", tc.key, tc.val, err)
+		}
+	}
+
+	// More CPUs than the server has would make every deploy fail; docker
+	// refuses it. With a remote daemon the count is unknown and not checked.
+	tooMany := strconv.Itoa(runtime.NumCPU()+1) + ".0"
+	c := Load(func(k string) string {
+		if k == "OUTHAUL_DEFAULT_CPUS" {
+			return tooMany
+		}
+		return ""
+	})
+	err := c.Validate()
+	if err == nil || !strings.Contains(err.Error(), "OUTHAUL_DEFAULT_CPUS") {
+		t.Errorf("OUTHAUL_DEFAULT_CPUS=%s with no Docker host: error = %v, want one naming it", tooMany, err)
+	}
+
+	remote := Load(func(k string) string {
+		switch k {
+		case "OUTHAUL_DEFAULT_CPUS":
+			return tooMany
+		case "OUTHAUL_DOCKER_HOST":
+			return "tcp://docker.example.com:2376"
+		}
+		return ""
+	})
+	if err := remote.Validate(); err != nil {
+		t.Errorf("Validate rejected a CPU count above this host's with OUTHAUL_DOCKER_HOST set: %v", err)
+	}
+}
+
+func TestMaxConcurrentBuildsSetting(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int
+	}{
+		{"", 0},
+		{"1", 1},
+		{"4", 4},
+		{"0", 0},   // refused
+		{"5", 0},   // refused
+		{"two", 0}, // refused
+	}
+	for _, tc := range cases {
+		c := Load(func(k string) string {
+			if k == "OUTHAUL_MAX_CONCURRENT_BUILDS" {
+				return tc.in
+			}
+			return ""
+		})
+		if c.MaxConcurrentBuilds != tc.want {
+			t.Errorf("OUTHAUL_MAX_CONCURRENT_BUILDS=%q -> %d, want %d", tc.in, c.MaxConcurrentBuilds, tc.want)
+		}
+	}
+	for _, in := range []string{"0", "5", "two"} {
+		c := Load(func(k string) string {
+			if k == "OUTHAUL_MAX_CONCURRENT_BUILDS" {
+				return in
+			}
+			return ""
+		})
+		err := c.Validate()
+		if err == nil || !strings.Contains(err.Error(), "OUTHAUL_MAX_CONCURRENT_BUILDS") {
+			t.Errorf("OUTHAUL_MAX_CONCURRENT_BUILDS=%q: Validate = %v, want one naming the variable", in, err)
+		}
+	}
+}
+
 func TestNetworkSubnetSetting(t *testing.T) {
 	load := func(v string) Config {
 		return Load(func(k string) string {
@@ -1119,18 +1259,6 @@ func TestNetworkSubnetSetting(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "OUTHAUL_NETWORK_SUBNET") {
 			t.Errorf("OUTHAUL_NETWORK_SUBNET=%q: error %v does not name the variable", v, err)
 		}
-	}
-}
-
-func TestValidateRejectsMalformedSignInBackoff(t *testing.T) {
-	c := Load(func(k string) string {
-		if k == "OUTHAUL_SIGNIN_BACKOFF" {
-			return "maybe"
-		}
-		return ""
-	})
-	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "OUTHAUL_SIGNIN_BACKOFF") {
-		t.Errorf("Validate = %v, want an error naming OUTHAUL_SIGNIN_BACKOFF", err)
 	}
 }
 

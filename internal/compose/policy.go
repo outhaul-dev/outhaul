@@ -3,6 +3,7 @@ package compose
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -74,7 +75,82 @@ func checkService(m Model, s Service, p Policy) []Violation {
 	if _, builds := s.Raw["build"]; builds && reservedImage(s.Image) {
 		add("image", "an image under outhaul/ is reserved for Outhaul's rollback images.")
 	}
+	if p.Strict {
+		checkLimits(s, p, add)
+	}
 	return out
+}
+
+// checkLimits refuses a service asking for more than the app's own limit. The
+// comparison uses the app's effective limit (stored over server default); a
+// zero field is not compared.
+func checkLimits(s Service, p Policy, add func(option, reason string)) {
+	var lim map[string]json.RawMessage
+	if deploy, ok := object(s.Raw["deploy"]); ok {
+		if res, ok := object(deploy["resources"]); ok {
+			lim, _ = object(res["limits"])
+		}
+	}
+
+	if p.Max.MilliCPUs > 0 {
+		_, quota := s.Raw["cpu_quota"]
+		_, period := s.Raw["cpu_period"]
+		if quota || period {
+			// One figure to compare, not a quota and a period.
+			add("cpu_quota", "set cpus instead of cpu_quota and cpu_period, so there is one figure to compare with the app's limit.")
+		} else if raw, ok := s.Raw["cpus"]; ok {
+			checkCPUs(raw, "cpus", p.Max, add)
+		} else if raw, ok := lim["cpus"]; ok {
+			checkCPUs(raw, "deploy.resources.limits.cpus", p.Max, add)
+		}
+	}
+
+	if p.Max.Memory > 0 {
+		if raw, ok := s.Raw["mem_limit"]; ok {
+			checkMemory(raw, "mem_limit", p.Max, add)
+		} else if raw, ok := lim["memory"]; ok {
+			checkMemory(raw, "deploy.resources.limits.memory", p.Max, add)
+		}
+	}
+
+	if p.Max.Pids > 0 {
+		if raw, ok := s.Raw["pids_limit"]; ok {
+			checkPids(raw, "pids_limit", p.Max, add)
+		} else if raw, ok := lim["pids"]; ok {
+			checkPids(raw, "deploy.resources.limits.pids", p.Max, add)
+		}
+	}
+}
+
+func checkCPUs(raw json.RawMessage, option string, max core.Limits, add func(option, reason string)) {
+	var f float64
+	if json.Unmarshal(raw, &f) != nil {
+		return
+	}
+	if milli := int64(math.Round(f * 1000)); milli > max.MilliCPUs {
+		add(option, fmt.Sprintf("%s CPUs is above the app's limit, %s CPU; a system admin can raise the app's limit.",
+			milliCPUs(milli), milliCPUs(max.MilliCPUs)))
+	}
+}
+
+func checkMemory(raw json.RawMessage, option string, max core.Limits, add func(option, reason string)) {
+	if n, ok := byteValue(raw); ok && n > max.Memory {
+		add(option, fmt.Sprintf("%d bytes is above the app's limit, %d bytes; a system admin can raise the app's limit.", n, max.Memory))
+	}
+}
+
+func checkPids(raw json.RawMessage, option string, max core.Limits, add func(option, reason string)) {
+	var n int64
+	if json.Unmarshal(raw, &n) != nil {
+		return
+	}
+	if n < 0 {
+		add(option, fmt.Sprintf("an unlimited process count is not allowed; the app's limit is %d, and a system admin can raise the app's limit.", max.Pids))
+		return
+	}
+	if n > max.Pids {
+		add(option, fmt.Sprintf("%d processes is above the app's limit, %d; a system admin can raise the app's limit.", n, max.Pids))
+	}
 }
 
 const (

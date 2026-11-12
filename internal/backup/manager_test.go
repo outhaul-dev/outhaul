@@ -581,3 +581,42 @@ func TestRetentionIgnoresArchivesInSubdirectories(t *testing.T) {
 		t.Errorf("the fresh dump was pruned (dumps = %d): %v", dumps, keys)
 	}
 }
+
+func wantHelperLimits(t *testing.T, spec docker.ContainerSpec, want core.Limits) {
+	t.Helper()
+	if spec.NanoCPUs != want.MilliCPUs*1_000_000 || spec.Memory != want.Memory || spec.PidsLimit != want.Pids {
+		t.Errorf("%s limits = (%d, %d, %d), want (%d, %d, %d)",
+			spec.Name, spec.NanoCPUs, spec.Memory, spec.PidsLimit,
+			want.MilliCPUs*1_000_000, want.Memory, want.Pids)
+	}
+}
+
+func TestBackupHelperCarriesDefaultLimits(t *testing.T) {
+	h := newHarness(t)
+	want := core.Limits{MilliCPUs: 1000, Memory: 1 << 30, Pids: 512}
+	h.m.SetLimits(want)
+	dest := h.destination(t)
+	app, err := h.store.CreateApp(context.Background(), core.App{
+		Name: "web", RepoURL: "https://example.com/web.git", Kind: core.KindNixpacks,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.store.AddVolume(context.Background(), app.ID, "/data"); err != nil {
+		t.Fatalf("AddVolume: %v", err)
+	}
+	h.docker.Volumes["outhaul-web-data"] = core.VolumeLabels("web")
+	h.docker.OnRun = func(spec docker.ContainerSpec) (string, int, error) { return "tarball", 0, nil }
+	b := h.backup(t, core.BackupTargetApp, app.ID, dest.ID, 0)
+
+	h.m.RunNow(b)
+	h.waitRun(t)
+
+	if run := h.lastRun(t, b.ID); run.Status != core.RunOK {
+		t.Fatalf("run = %q (%s)", run.Status, run.Reason)
+	}
+	if len(h.docker.Runs) != 1 {
+		t.Fatalf("helper runs = %d, want 1", len(h.docker.Runs))
+	}
+	wantHelperLimits(t, h.docker.Runs[0], want)
+}

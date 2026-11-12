@@ -351,6 +351,9 @@ func (m *Manager) restoreVolume(ctx context.Context, b core.Backup, blob blobsto
 			{Source: vol, Target: "/dst", Volume: true},
 			{Source: f.file.Name(), Target: "/restore.tar.gz", ReadOnly: true},
 		},
+		NanoCPUs:  m.limits.MilliCPUs * 1_000_000,
+		Memory:    m.limits.Memory,
+		PidsLimit: m.limits.Pids,
 	}, nil, limitWriter(&stderr))
 	if err != nil {
 		return f.size, fmt.Errorf("untar into %s: %w; %s", vol, err, partlyRestored("volume"))

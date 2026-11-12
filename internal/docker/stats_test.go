@@ -2,9 +2,13 @@ package docker
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/client"
 )
 
 func TestStatsFromAPICPU(t *testing.T) {
@@ -87,5 +91,65 @@ func TestFakeContainerStats(t *testing.T) {
 	}
 	if _, err := f.ContainerStats(ctx, "missing"); err == nil {
 		t.Error("expected error for unknown container, mirroring the daemon")
+	}
+}
+
+// statsFromDaemon runs ContainerStats against a fake daemon answering one
+// stats sample and one inspect, as the real client asks for both.
+func statsFromDaemon(t *testing.T, inspect, sample string) Stats {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/stats"):
+			w.Write([]byte(sample))
+		case strings.HasSuffix(r.URL.Path, "/json"):
+			w.Write([]byte(inspect))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer ts.Close()
+	cli, err := client.NewClientWithOpts(client.WithHost("tcp://"+ts.Listener.Addr().String()), client.WithVersion("1.47"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := (&real{cli: cli}).ContainerStats(context.Background(), "c1")
+	if err != nil {
+		t.Fatalf("ContainerStats: %v", err)
+	}
+	return s
+}
+
+func TestContainerStatsReadsLimits(t *testing.T) {
+	s := statsFromDaemon(t,
+		`{"State":{"StartedAt":"2026-11-11T00:00:00Z"},"HostConfig":{"NanoCpus":500000000,"Memory":1073741824,"PidsLimit":512}}`,
+		`{"pids_stats":{"current":12}}`)
+	if s.CPULimit != 0.5 {
+		t.Errorf("CPULimit = %v, want 0.5", s.CPULimit)
+	}
+	if !s.MemLimited {
+		t.Error("MemLimited = false, want true")
+	}
+	if s.Pids != 12 {
+		t.Errorf("Pids = %d, want 12", s.Pids)
+	}
+	if s.PidsLimit != 512 {
+		t.Errorf("PidsLimit = %d, want 512", s.PidsLimit)
+	}
+}
+
+func TestContainerStatsReadsLegacyCPUQuota(t *testing.T) {
+	s := statsFromDaemon(t,
+		`{"State":{"StartedAt":"2026-11-11T00:00:00Z"},"HostConfig":{"CpuQuota":50000,"CpuPeriod":100000}}`,
+		`{}`)
+	if s.CPULimit != 0.5 {
+		t.Errorf("CPULimit from quota/period = %v, want 0.5", s.CPULimit)
+	}
+	if s.MemLimited {
+		t.Error("MemLimited = true with no memory limit")
+	}
+	if s.PidsLimit != 0 {
+		t.Errorf("PidsLimit = %d, want 0", s.PidsLimit)
 	}
 }

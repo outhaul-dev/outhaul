@@ -86,6 +86,9 @@ type ContainerSpec struct {
 	Cmd           []string
 	RestartPolicy string   // e.g. "unless-stopped"; empty means Docker default
 	ExtraHosts    []string // extra /etc/hosts entries, e.g. "host.docker.internal:host-gateway"
+	NanoCPUs      int64    // billionths of a CPU (1 CPU = 1e9); 0 = none
+	Memory        int64    // bytes; 0 = none
+	PidsLimit     int64    // processes; 0 = none
 }
 
 // Stats is a point-in-time sample of a running container's resource usage,
@@ -97,6 +100,10 @@ type Stats struct {
 	NetRx      uint64    // cumulative bytes received across interfaces
 	NetTx      uint64    // cumulative bytes sent
 	StartedAt  time.Time // when the container last started (zero if unknown)
+	CPULimit   float64   // HostConfig.NanoCPUs/1e9, else CPUQuota/CPUPeriod; 0 = none
+	MemLimited bool      // HostConfig.Memory > 0: MemLimit is the container's own
+	Pids       uint64    // pids_stats.current
+	PidsLimit  uint64    // HostConfig.PidsLimit when above 0; 0 = none
 }
 
 // Container is a minimal view of an existing container.

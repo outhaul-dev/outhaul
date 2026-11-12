@@ -31,7 +31,7 @@ func TestCreateRollbackPresetsImage(t *testing.T) {
 	}
 
 	// A rollback is an ordinary queued attempt: the dispatcher must see it.
-	next, err := s.NextClaimable(ctx)
+	next, err := s.NextClaimable(ctx, true)
 	if err != nil {
 		t.Fatalf("NextClaimable: %v", err)
 	}

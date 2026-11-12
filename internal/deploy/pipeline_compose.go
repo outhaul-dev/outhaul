@@ -68,8 +68,10 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 	// The model is compose's own normalised view of the user's file (never the
 	// override Outhaul writes). Read it only when a setting needs it, so an
 	// install that sets none of them runs no extra command.
+	needs := w.needsModel(ctx, app)
+	limit := w.limits(ctx, app)
 	var model compose.Model
-	if w.needsModel(app) {
+	if needs {
 		model, err = compose.ReadModel(ctx, w.compose, workDir, []string{app.ComposePath}, project, out)
 		if err != nil {
 			w.fail(dep, core.StatusBuilding, "read Compose file: "+err.Error(), out)
@@ -80,6 +82,7 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 			RoutingLabels: w.cfg.StrictContainerPolicy() || w.cfg.HeaderRequired(),
 			WorkDir:       workDir,
 			Network:       w.cfg.Network,
+			Max:           limit,
 		}
 		if vs := compose.Check(model, policy); len(vs) > 0 {
 			reason, lines := policyViolationReason(vs)
@@ -96,11 +99,23 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 		}
 	}
 
+	// The app's limit is applied to each service for the resources it does not
+	// set itself. The reservation check happens here, before anything builds.
+	var extra map[string]compose.Extra
+	if needs {
+		extra, err = compose.LimitExtras(model, limit)
+		if err != nil {
+			w.fail(dep, core.StatusBuilding, err.Error(), out)
+			return
+		}
+	}
+
 	// files are work-dir-relative (the runner runs in workDir); the override
-	// sits beside the user's compose file and layers domain exposure over it.
+	// sits beside the user's compose file and layers domain exposure and the
+	// limits over it.
 	files := []string{app.ComposePath}
-	if len(domains) > 0 {
-		ov := compose.Override(app, domains, w.cfg.Network, w.routing(ctx))
+	if len(domains) > 0 || len(extra) > 0 {
+		ov := compose.Override(app, domains, w.cfg.Network, w.routing(ctx), extra)
 		if err := os.WriteFile(filepath.Join(stackDir, compose.OverrideFile), ov, 0o644); err != nil {
 			w.fail(dep, core.StatusBuilding, "write override: "+err.Error(), out)
 			return
@@ -137,9 +152,11 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 		return
 	}
 	if !ok {
+		w.releaseBuild(dep.ID)
 		logf(out, "Deployment is no longer building (cancelled); aborting.")
 		return
 	}
+	w.releaseBuild(dep.ID) // it is deploying now; the build slot is free
 
 	// The app may have been deleted while we were building (a deploying
 	// deployment is not cancellable); don't bring up a stack for a gone app.

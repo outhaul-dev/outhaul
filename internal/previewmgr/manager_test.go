@@ -1357,3 +1357,34 @@ func TestLinkSchemeHTTPSOnly(t *testing.T) {
 		t.Errorf("linkScheme = %q, want http://", got)
 	}
 }
+
+// A preview carries no stored limits: it is created from a copy of its parent
+// struct, but the row starts at zero and the parent's values are read at each
+// deploy instead.
+func TestPreviewStartsWithNoLimits(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	repo := "acme/web"
+	parent := h.seedGithubApp(t, "web", repo, nil)
+	if err := h.st.SetAppLimits(ctx, parent.ID, core.Limits{MilliCPUs: 1000, Memory: 1 << 30, Pids: 512}); err != nil {
+		t.Fatalf("SetAppLimits: %v", err)
+	}
+
+	if err := h.mgr.Handle(ctx, h.sourceID, prEvent("opened", 42, "feature-x", repo, false)); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	child, err := h.st.GetPreviewByPR(ctx, parent.ID, 42)
+	if err != nil {
+		t.Fatalf("GetPreviewByPR: %v", err)
+	}
+	if child.Limits != (core.Limits{}) {
+		t.Errorf("returned child limits = %+v, want zero", child.Limits)
+	}
+	fresh, err := h.st.GetApp(ctx, child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Limits != (core.Limits{}) {
+		t.Errorf("stored child limits = %+v, want zero", fresh.Limits)
+	}
+}

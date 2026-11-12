@@ -12,7 +12,7 @@ import (
 
 // appCols is the column list read into core.App by scanApp (excludes the
 // write-only ssh_private_key, which is fetched separately and decrypted).
-const appCols = `id, project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_token, webhook_secret, ssh_public_key, github_repo, git_source_id, kind, compose_path, dockerfile_path, watch_paths, template_id, compose_raw, parent_id, pr_number, ephemeral, preview_status, deploy_trigger, tag_pattern, tag_prereleases`
+const appCols = `id, project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_token, webhook_secret, ssh_public_key, github_repo, git_source_id, kind, compose_path, dockerfile_path, watch_paths, template_id, compose_raw, parent_id, pr_number, ephemeral, preview_status, deploy_trigger, tag_pattern, tag_prereleases, limit_cpus_milli, limit_memory_bytes, limit_pids`
 
 // CreateApp inserts an app and returns it with ID and CreatedAt populated. The
 // SSH private key (if any) is encrypted at rest.
@@ -71,6 +71,10 @@ func (s *Store) CreateAppWithDomains(ctx context.Context, app core.App, domains 
 	}
 	app.ID = id
 	app.SSHPrivateKey = "" // never keep the plaintext around
+	// The INSERT does not carry the limit columns, so every new row starts at
+	// zero. A preview is built from a copy of its parent's struct, and the copy
+	// must not carry the parent's limits in memory either.
+	app.Limits = core.Limits{}
 
 	// Single-container apps route via a domain row like everything else; seed it
 	// from the submitted primary domain in the same transaction as the app insert
@@ -367,7 +371,8 @@ func scanApp(row scanner) (core.App, error) {
 		&app.GitSourceID,
 		&app.Kind, &app.ComposePath, &app.DockerfilePath, &watchPaths, &app.TemplateID, &app.ComposeRaw,
 		&app.ParentID, &app.PRNumber, &ephemeral, &app.PreviewStatus,
-		&app.DeployTrigger, &app.TagPattern, &tagPre); err != nil {
+		&app.DeployTrigger, &app.TagPattern, &tagPre,
+		&app.Limits.MilliCPUs, &app.Limits.Memory, &app.Limits.Pids); err != nil {
 		return core.App{}, err
 	}
 	t, err := parseTime(createdAt)
@@ -396,4 +401,16 @@ func splitWatchPaths(s string) []string {
 		}
 	}
 	return out
+}
+
+// SetAppLimits stores one app's own ceiling. A zero field means the server
+// default, so an empty Limits clears the override.
+func (s *Store) SetAppLimits(ctx context.Context, id int64, l core.Limits) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE apps SET limit_cpus_milli = ?, limit_memory_bytes = ?, limit_pids = ? WHERE id = ?`,
+		l.MilliCPUs, l.Memory, l.Pids, id)
+	if err != nil {
+		return fmt.Errorf("set app limits: %w", err)
+	}
+	return nil
 }

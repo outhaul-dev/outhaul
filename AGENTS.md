@@ -244,6 +244,20 @@ fixed in five batches. All five are on `main`.
   change.
 - **Database ports.** Under strict mode a database publishes no host port: the
   form refuses one and provisioning omits it. See `docs/GUARD-RAILS.md`.
+- **Limits.** Every path that creates a container Outhaul owns sets its limits:
+  a single-container app and its health-check container use the app's, a
+  Compose service gets what it didn't set itself through the override, a
+  preview uses its parent's, and a database or helper uses the server default.
+  Traefik and cloudflared get none. `app.Limits.Or(cfg.DefaultLimits)` fills
+  each zero field; a changed limit applies when the container is next created,
+  and a changed default redeploys nothing. A preview stores no limits. The
+  Compose model is never logged, and the limits route and panel exist only
+  when a default is set.
+- **Build cap.** `OUTHAUL_MAX_CONCURRENT_BUILDS` (1 to 4) counts only
+  deployments that have to build. A deployment that arrives with an image never
+  waits for a slot, and with none free the queue offers only such a deployment,
+  never one that jumps an older queued build of its own app. A slot is released
+  when the deployment leaves `building`, not when its pipeline ends.
 - **Protected routes.** The gate is defined in each app's own labels, never in
   the file provider: Traefik drops a router that names a middleware the file
   provider doesn't define, and its requests fall to an open router. Every open

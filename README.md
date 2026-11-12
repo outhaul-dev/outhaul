@@ -257,6 +257,10 @@ No config files — defaults with `OUTHAUL_*` environment overrides:
 | `OUTHAUL_CONTAINER_POLICY` | unset (off)       | Refuse Compose files that reach the host or another app — see [docs/GUARD-RAILS.md](docs/GUARD-RAILS.md) |
 | `OUTHAUL_NETWORK_SUBNET` | (unset: Docker picks) | Fixed IPv4 subnet for the shared network, `/28` or larger — see docs/SHARED-HOST.md |
 | `OUTHAUL_TRAEFIK_IP`    | (unset: Docker picks) | Traefik's fixed address in the subnet's lower half — see docs/SHARED-HOST.md |
+| `OUTHAUL_DEFAULT_CPUS`  | unset (no limit)     | Per-container CPU limit: `1`, `0.5`, `1.5`; at most the server's CPUs — see [docs/GUARD-RAILS.md](docs/GUARD-RAILS.md) |
+| `OUTHAUL_DEFAULT_MEMORY` | unset (no limit)    | Per-container memory limit: `512m`, `1g`, `1.5g`, or bytes, at least `6m` |
+| `OUTHAUL_DEFAULT_PIDS`  | unset (no limit)     | Per-container process limit: a whole number, 1 or more |
+| `OUTHAUL_MAX_CONCURRENT_BUILDS` | unset (up to four) | How many deployments that have to build may be building at once: 1 to 4. A rollback never waits for a build slot |
 | `OUTHAUL_ACME_EMAIL`    | (empty)              | Let's Encrypt email; set to enable HTTPS   |
 | `OUTHAUL_ACME_STAGING`  | `false`              | Use the LE staging CA (testing)            |
 | `OUTHAUL_ACME_DNS_PROVIDER` | (empty)          | A [lego DNS provider](https://go-acme.github.io/lego/dns/) code, such as `azuredns`; empty uses the HTTP-01 challenge, which needs port 80 |

@@ -405,17 +405,32 @@ func (s *Store) RetainedImages(ctx context.Context) ([]string, error) {
 // NextClaimable returns the oldest queued deployment whose app has no active
 // (building/deploying) deployment, or nil if none is claimable. This enforces
 // per-app serialization while allowing different apps to run concurrently.
-func (s *Store) NextClaimable(ctx context.Context) (*core.Deployment, error) {
-	row := s.db.QueryRowContext(ctx,
-		`SELECT `+deploymentCols+` FROM deployments d
+// NextClaimable returns the oldest queued deployment that can run now. With
+// canBuild false, only a deployment that already has an image is offered, and
+// only when no older queued deployment of its app is still waiting: nothing
+// jumps ahead within one app while the build cap is full.
+func (s *Store) NextClaimable(ctx context.Context, canBuild bool) (*core.Deployment, error) {
+	query := `SELECT ` + deploymentCols + ` FROM deployments d
 		 WHERE d.status = ?
 		   AND NOT EXISTS (
 		       SELECT 1 FROM deployments a
 		       WHERE a.app_id = d.app_id AND a.status IN (?, ?)
-		   )
+		   )`
+	args := []any{core.StatusQueued, core.StatusBuilding, core.StatusDeploying}
+	if !canBuild {
+		query += `
+		   AND d.image <> ''
+		   AND NOT EXISTS (
+		       SELECT 1 FROM deployments q
+		       WHERE q.app_id = d.app_id AND q.status = ?
+		         AND (q.created_at < d.created_at OR (q.created_at = d.created_at AND q.id < d.id))
+		   )`
+		args = append(args, core.StatusQueued)
+	}
+	query += `
 		 ORDER BY d.created_at ASC, d.id ASC
-		 LIMIT 1`,
-		core.StatusQueued, core.StatusBuilding, core.StatusDeploying)
+		 LIMIT 1`
+	row := s.db.QueryRowContext(ctx, query, args...)
 
 	d, err := scanDeployment(row)
 	if err == sql.ErrNoRows {

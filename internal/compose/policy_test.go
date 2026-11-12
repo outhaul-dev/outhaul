@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 // strictPolicy is the policy for Outhaul's strict mode. The recorded path
@@ -690,5 +692,91 @@ func TestInsideResolved(t *testing.T) {
 				t.Errorf("insideResolved(%q, %q) = %v, want %v", work, tc.path, got, tc.want)
 			}
 		})
+	}
+}
+
+// checkJSON parses a hand-written model and runs Check.
+func checkJSON(t *testing.T, model string, p Policy) []Violation {
+	t.Helper()
+	m, err := ParseModel([]byte(model))
+	if err != nil {
+		t.Fatalf("ParseModel: %v", err)
+	}
+	return Check(m, p)
+}
+
+func limitPolicy() Policy {
+	return Policy{Strict: true, WorkDir: "/work",
+		Max: core.Limits{MilliCPUs: 1000, Memory: 1 << 30, Pids: 512}}
+}
+
+func TestCheckRefusesAServiceAboveTheAppLimit(t *testing.T) {
+	vs := checkJSON(t, `{"name":"outhaul-shop","services":{"web":{"image":"nginx","cpus":2,"mem_limit":"2147483648","pids_limit":1024}}}`, limitPolicy())
+	if len(vs) != 3 {
+		t.Fatalf("violations = %+v, want one for each resource", vs)
+	}
+	wantFigures := map[string][2]string{
+		"cpus":       {"2", "1"},
+		"mem_limit":  {"2147483648", "1073741824"},
+		"pids_limit": {"1024", "512"},
+	}
+	for _, v := range vs {
+		figures, ok := wantFigures[v.Option]
+		if !ok {
+			t.Errorf("unexpected violation %+v", v)
+			continue
+		}
+		for _, f := range figures {
+			if !strings.Contains(v.Reason, f) {
+				t.Errorf("%s reason %q does not name %s", v.Option, v.Reason, f)
+			}
+		}
+		if !strings.Contains(v.Reason, "a system admin can raise the app's limit") {
+			t.Errorf("%s reason %q does not say the limit can be raised", v.Option, v.Reason)
+		}
+		delete(wantFigures, v.Option)
+	}
+	if len(wantFigures) > 0 {
+		t.Errorf("missing violations for %v", wantFigures)
+	}
+}
+
+func TestCheckAllowsEqualAndLowerValues(t *testing.T) {
+	for _, model := range []string{
+		`{"name":"outhaul-shop","services":{"web":{"image":"nginx","cpus":1,"mem_limit":"1073741824","pids_limit":512}}}`,
+		`{"name":"outhaul-shop","services":{"web":{"image":"nginx","cpus":0.5,"mem_limit":"536870912","pids_limit":64}}}`,
+		`{"name":"outhaul-shop","services":{"web":{"image":"nginx","deploy":{"resources":{"limits":{"cpus":1,"memory":"1073741824","pids":512}}}}}}`,
+	} {
+		if vs := checkJSON(t, model, limitPolicy()); len(vs) != 0 {
+			t.Errorf("checkJSON(%s) = %+v, want no violations", model, vs)
+		}
+	}
+}
+
+func TestCheckRefusesUnlimitedPids(t *testing.T) {
+	vs := checkJSON(t, `{"name":"outhaul-shop","services":{"web":{"image":"nginx","pids_limit":-1}}}`, limitPolicy())
+	if len(vs) != 1 {
+		t.Fatalf("violations = %+v, want one", vs)
+	}
+	if !strings.Contains(vs[0].Reason, "unlimited") || !strings.Contains(vs[0].Reason, "512") {
+		t.Errorf("reason = %q, want it to say the count is unlimited and name the limit", vs[0].Reason)
+	}
+}
+
+func TestCheckRefusesCPUQuotaAndAsksForCpus(t *testing.T) {
+	vs := checkJSON(t, `{"name":"outhaul-shop","services":{"web":{"image":"nginx","cpu_quota":50000,"cpu_period":100000}}}`, limitPolicy())
+	if len(vs) != 1 {
+		t.Fatalf("violations = %+v, want one", vs)
+	}
+	if !strings.Contains(vs[0].Reason, "set cpus instead") {
+		t.Errorf("reason = %q, want it to ask for cpus instead", vs[0].Reason)
+	}
+}
+
+func TestCheckLeavesLimitsAloneWithoutStrictMode(t *testing.T) {
+	p := Policy{WorkDir: "/work", Max: core.Limits{MilliCPUs: 1000, Memory: 1 << 30, Pids: 512}}
+	vs := checkJSON(t, `{"name":"outhaul-shop","services":{"web":{"image":"nginx","cpus":2,"mem_limit":"2147483648","pids_limit":1024}}}`, p)
+	if len(vs) != 0 {
+		t.Errorf("violations without strict mode = %+v, want none", vs)
 	}
 }

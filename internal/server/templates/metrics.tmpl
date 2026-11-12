@@ -51,7 +51,7 @@
   <h2 class="panel-title">Containers</h2>
   <div class="table-wrap">
     <table class="table">
-      <thead><tr><th>Name</th><th>Kind</th><th>CPU</th><th>Memory</th><th>Net I/O</th></tr></thead>
+      <thead><tr><th>Name</th><th>Kind</th><th>CPU</th><th>Memory</th><th id="pids-head" hidden>Processes</th><th>Net I/O</th></tr></thead>
       <tbody id="container-rows">
         <tr><td colspan="5" class="empty">Loading…</td></tr>
       </tbody>
@@ -71,23 +71,26 @@
   function bar(id, pct) {
     var el = document.getElementById(id); if (el) el.style.width = Math.max(0, Math.min(100, pct || 0)) + '%';
   }
+  var showPids = false;
   function rows(list) {
     var tb = document.getElementById('container-rows');
     tb.textContent = '';
     if (!list || !list.length) {
       var tr = document.createElement('tr'), td = document.createElement('td');
-      td.colSpan = 5; td.className = 'empty'; td.textContent = 'No running containers.';
+      td.colSpan = showPids ? 6 : 5; td.className = 'empty'; td.textContent = 'No running containers.';
       tr.appendChild(td); tb.appendChild(tr); return;
     }
     list.forEach(function (c) {
       var tr = document.createElement('tr');
-      [[c.name, 'mono'], [c.kind, ''], [c.cpu + '%', 'mono'], [c.mem, 'mono'], [c.net, 'mono muted']]
-        .forEach(function (cell) {
-          var td = document.createElement('td');
-          if (cell[1]) td.className = cell[1];
-          td.textContent = cell[0];
-          tr.appendChild(td);
-        });
+      var cells = [[c.name, 'mono'], [c.kind, ''], [c.cpu, 'mono'], [c.mem, 'mono']];
+      if (showPids) { cells.push([c.pids, 'mono']); }
+      cells.push([c.net, 'mono muted']);
+      cells.forEach(function (cell) {
+        var td = document.createElement('td');
+        if (cell[1]) td.className = cell[1];
+        td.textContent = cell[0];
+        tr.appendChild(td);
+      });
       tb.appendChild(tr);
     });
   }
@@ -103,6 +106,8 @@
         set('host-mem', m.host.mem); set('host-mem-sub', m.host.memSub || 'usage'); bar('host-mem-bar', m.host.memPct);
         set('host-disk', m.host.disk); set('host-disk-sub', m.host.diskSub || 'root filesystem'); bar('host-disk-bar', m.host.diskPct);
         set('host-load', m.host.load);
+        showPids = !!m.processes;
+        document.getElementById('pids-head').hidden = !showPids;
         rows(m.containers);
         ind.textContent = 'live';
       })

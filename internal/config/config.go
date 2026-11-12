@@ -10,10 +10,12 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/cron"
 	"github.com/outhaul-dev/outhaul/internal/docker"
 )
@@ -29,17 +31,20 @@ const DefaultCloudflaredImage = "cloudflare/cloudflared:2026.7.0"
 
 // Config holds resolved runtime settings.
 type Config struct {
-	DataDir          string // root data dir; holds the SQLite DB and work dirs
-	ListenAddr       string // address the admin UI/API listens on
-	SSHAddr          string // default listen address for the git-push SSH server; "off" disables it
-	DockerHost       string // Docker endpoint; empty means "use the SDK's env default"
-	TraefikImage     string // image used for the managed Traefik container
-	CloudflaredImage string // image used for the managed cloudflared connector
-	Network          string // shared Docker network app containers + Traefik join
-	NetworkSubnet    string // OUTHAUL_NETWORK_SUBNET; "" lets Docker pick
-	TraefikIP        string // OUTHAUL_TRAEFIK_IP; "" lets Docker pick
-	Updates          string // "main" updates from main; "off" never updates
-	ContainerPolicy  string // "strict" or ""; strict refuses host-reaching Compose keys
+	DataDir          string      // root data dir; holds the SQLite DB and work dirs
+	ListenAddr       string      // address the admin UI/API listens on
+	SSHAddr          string      // default listen address for the git-push SSH server; "off" disables it
+	DockerHost       string      // Docker endpoint; empty means "use the SDK's env default"
+	TraefikImage     string      // image used for the managed Traefik container
+	CloudflaredImage string      // image used for the managed cloudflared connector
+	Network          string      // shared Docker network app containers + Traefik join
+	NetworkSubnet    string      // OUTHAUL_NETWORK_SUBNET; "" lets Docker pick
+	TraefikIP        string      // OUTHAUL_TRAEFIK_IP; "" lets Docker pick
+	Updates          string      // "main" updates from main; "off" never updates
+	ContainerPolicy  string      // "strict" or ""; strict refuses host-reaching Compose keys
+	DefaultLimits    core.Limits // per-container defaults; a zero field means no limit
+
+	MaxConcurrentBuilds int // OUTHAUL_MAX_CONCURRENT_BUILDS; 0 = unset (as today)
 
 	ACMEEmail          string        // Let's Encrypt account email; empty disables TLS
 	ACMEStaging        bool          // use the LE staging CA (avoid rate limits)
@@ -97,6 +102,12 @@ func Load(getenv Getenv) Config {
 		TraefikIP:        p.ipv4("OUTHAUL_TRAEFIK_IP"),
 		Updates:          p.word("OUTHAUL_UPDATES", "main", "main", "off"),
 		ContainerPolicy:  p.policy("OUTHAUL_CONTAINER_POLICY"),
+		DefaultLimits: core.Limits{
+			MilliCPUs: p.cpus("OUTHAUL_DEFAULT_CPUS"),
+			Memory:    p.memory("OUTHAUL_DEFAULT_MEMORY"),
+			Pids:      p.pids("OUTHAUL_DEFAULT_PIDS"),
+		},
+		MaxConcurrentBuilds: p.builds("OUTHAUL_MAX_CONCURRENT_BUILDS"),
 
 		ACMEEmail:          firstField(getenv("OUTHAUL_ACME_EMAIL")),
 		ACMEStaging:        p.bool("OUTHAUL_ACME_STAGING"),
@@ -222,6 +233,9 @@ func (c Config) Validate() error {
 	if c.TLSWildcard != "" && c.ACMEDNSProvider == "" {
 		errs = append(errs, errors.New("OUTHAUL_TLS_WILDCARD needs OUTHAUL_ACME_DNS_PROVIDER: a wildcard certificate can only be validated by DNS-01"))
 	}
+	if c.DefaultLimits.MilliCPUs > int64(runtime.NumCPU())*1000 && c.DockerHost == "" {
+		errs = append(errs, fmt.Errorf("OUTHAUL_DEFAULT_CPUS=%.3g: this server has %d CPUs, and Docker refuses a container asking for more; lower it, or set OUTHAUL_DOCKER_HOST if the daemon is elsewhere", float64(c.DefaultLimits.MilliCPUs)/1000, runtime.NumCPU()))
+	}
 	if c.RequireHeaderName != "" && c.RequireHeaderValue == "" {
 		errs = append(errs, errors.New("OUTHAUL_REQUIRE_HEADER_NAME needs OUTHAUL_REQUIRE_HEADER_VALUE"))
 	}
@@ -288,6 +302,10 @@ func (c Config) PublicURLSet() bool { return c.PublicURL != "" }
 
 // StrictContainerPolicy reports whether the strict container policy is on.
 func (c Config) StrictContainerPolicy() bool { return c.ContainerPolicy == "strict" }
+
+// HasDefaultLimits reports whether any default limit is set, which is also when
+// the per-app Limits panel and its route exist.
+func (c Config) HasDefaultLimits() bool { return c.DefaultLimits != core.Limits{} }
 
 // SecretKeyPath is the env-encryption key file.
 func (c Config) SecretKeyPath() string { return filepath.Join(c.DataDir, "secret.key") }
@@ -415,6 +433,63 @@ func (p *parser) policy(key string) string {
 	}
 	p.reject(key, v, "strict")
 	return ""
+}
+
+// cpus reads OUTHAUL_DEFAULT_CPUS into thousandths of a CPU.
+func (p *parser) cpus(key string) int64 {
+	v := p.getenv(key)
+	if v == "" {
+		return 0
+	}
+	milli, err := core.ParseCPUs(v)
+	if err != nil {
+		p.reject(key, v, err.Error())
+		return 0
+	}
+	return milli
+}
+
+// memory reads OUTHAUL_DEFAULT_MEMORY into bytes.
+func (p *parser) memory(key string) int64 {
+	v := p.getenv(key)
+	if v == "" {
+		return 0
+	}
+	b, err := core.ParseMemory(v)
+	if err != nil {
+		p.reject(key, v, err.Error())
+		return 0
+	}
+	return b
+}
+
+// pids reads OUTHAUL_DEFAULT_PIDS: a whole number, 1 or more.
+func (p *parser) pids(key string) int64 {
+	v := p.getenv(key)
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n < 1 {
+		p.reject(key, v, "a whole number of processes, 1 or more")
+		return 0
+	}
+	return n
+}
+
+// builds reads OUTHAUL_MAX_CONCURRENT_BUILDS: 1 to core.MaxPipelines, the
+// pipeline count. Empty means unset, which is today's behaviour.
+func (p *parser) builds(key string) int {
+	v := p.getenv(key)
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 || n > core.MaxPipelines {
+		p.reject(key, v, "a whole number from 1 to 4")
+		return 0
+	}
+	return n
 }
 
 // count parses a non-negative integer.

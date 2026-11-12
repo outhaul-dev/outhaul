@@ -833,6 +833,34 @@ func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, status in
 		"PreviewConfig":     previewCfg,
 		"Previews":          previewRows,
 	}
+	// The Limits panel: the values in force and where each came from. A preview
+	// stores none, so it shows its parent's values; the preview's own columns
+	// are never read.
+	data["LimitsAvailable"] = s.hasDefaultLimits()
+	data["DefaultLimits"] = s.defaultLimits
+	if s.hasDefaultLimits() {
+		stored, source := app.Limits, "set for this app"
+		if app.ParentID != 0 {
+			stored, source = core.Limits{}, "set for the parent app"
+			if parent, err := s.store.GetApp(r.Context(), app.ParentID); err == nil {
+				stored = parent.Limits
+			} else {
+				log.Printf("app page: read preview parent %d: %v", app.ParentID, err)
+			}
+		}
+		sources := limitSources{CPU: "server default", Memory: "server default", Pids: "server default"}
+		if stored.MilliCPUs != 0 {
+			sources.CPU = source
+		}
+		if stored.Memory != 0 {
+			sources.Memory = source
+		}
+		if stored.Pids != 0 {
+			sources.Pids = source
+		}
+		data["Limits"] = stored.Or(s.defaultLimits)
+		data["LimitSources"] = sources
+	}
 	// Breadcrumb context; tolerate a missing project rather than 500 the page.
 	if p, err := s.store.GetProject(r.Context(), app.ProjectID); err == nil {
 		data["Project"] = p
@@ -2030,6 +2058,7 @@ func (s *Server) handleDeploymentDetail(w http.ResponseWriter, r *http.Request) 
 		"Project":    project,
 		"Deployment": dep,
 		"Live":       !dep.Status.IsTerminal(),
+		"BuildCap":   s.buildCap,
 	})
 }
 

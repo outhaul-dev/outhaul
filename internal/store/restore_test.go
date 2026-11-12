@@ -155,7 +155,14 @@ func TestCheckStateCopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := len(data) / 2; i < len(data)/2+64 && i < len(data); i++ {
+	// Corrupt the second page's b-tree header. Flipping bytes in a page's
+	// payload can leave a structurally valid database, so integrity_check
+	// would not notice; the page type byte is structural.
+	const page = 4096
+	if len(data) < page+64 {
+		t.Fatalf("snapshot is %d bytes, too short for the corruption check", len(data))
+	}
+	for i := page; i < page+64; i++ {
 		data[i] ^= 0xFF
 	}
 	if err := os.WriteFile(corrupt, data, 0o600); err != nil {
@@ -183,7 +190,7 @@ func TestAppliedMigrationsAndStateCounts(t *testing.T) {
 		t.Fatalf("StateCounts = %d, %d, %d, %v", accounts, apps, databases, err)
 	}
 	applied, err := s.AppliedMigrations(ctx)
-	if err != nil || len(applied) == 0 || applied[len(applied)-1] != "migrations/0030_destination_kind.sql" {
+	if err != nil || len(applied) == 0 || applied[len(applied)-1] != "migrations/0032_app_limits.sql" {
 		t.Fatalf("AppliedMigrations = %v, %v", applied, err)
 	}
 }

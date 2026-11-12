@@ -64,6 +64,16 @@ These are refused in the same way:
 - `models:`, `gpus:`, `runtime:`, `provider:`, `pre_start:`, and a
   `post_start` or `pre_stop` hook that runs privileged.
 
+With a CPU limit in force — `OUTHAUL_DEFAULT_CPUS`, or the app's own — strict
+mode also refuses:
+
+- `cpu_quota:` and `cpu_period:`, because there must be one `cpus` figure to
+  compare with the limit. Write `cpus:` instead.
+- `pids_limit: -1` (unlimited), and any `cpus`, `mem_limit` or `pids_limit`
+  above the app's limit, in either spelling (`cpus` or
+  `deploy.resources.limits.cpus`, and so on). The message names both figures;
+  a system admin can raise the app's limit on its page.
+
 The allow-list is in `internal/compose/policy.go`. If you need a key that
 isn't on it and you think it is safe, ask the maintainer before working around
 it.
@@ -133,9 +143,9 @@ the Compose file on each deploy, still supplies the app's variables.
 
 ## Docker Compose 2.35 or newer
 
-Strict mode, or a required request header even without strict mode, reads a
-Compose file by asking `docker compose` for its normalised JSON, with
-`--no-env-resolution`. That flag arrived in Docker Compose 2.35, and it keeps
+Strict mode, a required request header even without strict mode, or a limit on
+a Compose app, reads a Compose file by asking `docker compose` for its
+normalised JSON, with `--no-env-resolution`. That flag arrived in Docker Compose 2.35, and it keeps
 the contents of an `env_file` reference from being expanded into the model. On
 an older host a Compose deploy fails before it starts, with a message that
 includes:
@@ -166,6 +176,96 @@ need it.
   app the message is "refusing an image that carries traefik labels", and the
   labels come from the Dockerfile or its base image.
 
+## Limits (opt-in)
+
+Limits are separate from strict mode: each setting works alone, and an install
+that sets none creates exactly the containers and override it did before. On a
+Compose app, however, any limit makes the deploy read the Compose model, which
+needs Docker Compose 2.35 or newer (see [Docker Compose 2.35 or
+newer](#docker-compose-235-or-newer)). The ceiling is per container, not per
+stack, and Outhaul does not change a running container when a limit changes.
+
+| Variable | Values | Default |
+|---|---|---|
+| `OUTHAUL_DEFAULT_CPUS` | `1`, `0.5`, `1.5`; at least `0.01`, at most the server's CPUs | unset (no CPU limit) |
+| `OUTHAUL_DEFAULT_MEMORY` | `512m`, `1g`, `1.5g`, or bytes; at least `6m` | unset (no memory limit) |
+| `OUTHAUL_DEFAULT_PIDS` | a whole number, 1 or more | unset (no process limit) |
+| `OUTHAUL_MAX_CONCURRENT_BUILDS` | a whole number, 1 to 4 | unset (up to four) |
+
+A CPU value above this host's CPU count, with no `OUTHAUL_DOCKER_HOST`, stops
+`serve` from starting: Docker would refuse every container that asked for it.
+
+### Which container gets which limit
+
+| Container | Limit |
+|---|---|
+| A Nixpacks or Dockerfile app, and its `outhaul-deploy-<id>` health-check container | the app's |
+| A preview | its parent's, read at each deploy |
+| A Compose service | the app's, for each resource the service does not set itself |
+| A managed database, a preview's included | the server default |
+| A backup, restore or data-removal helper | the server default |
+| Traefik, cloudflared | none |
+| A build step | none; `OUTHAUL_MAX_CONCURRENT_BUILDS` bounds how many run |
+
+There is no swap limit, no limit for one database alone, and no way to give one
+app "no limit" while a server default is set. A large value does that.
+
+### One app's limit
+
+A system admin can give one app its own values from the **Limits** panel on its
+page. The panel appears only when at least one `OUTHAUL_DEFAULT_*` is set, and
+then everyone who can see the app sees the three values in force and whether
+each is the server default or set for this app. Only a system admin gets the
+form. An empty field means the server default. A preview shows its parent's
+values and has no form: a preview uses its parent's limits.
+
+A value may be above or below the server default. A change applies when the
+app's container is next created — its next deploy. Changing a server default
+redeploys nothing; a database takes the new default when its container is next
+replaced.
+
+### Compose services
+
+A Compose service keeps any resource it sets itself: `cpus`, `mem_limit` and
+`pids_limit`, or the same under `deploy.resources.limits`. Outhaul adds only
+the missing ones, through its override:
+
+- a service with no `deploy.resources.limits` block gets `cpus`, `mem_limit`
+  (bytes) and `pids_limit` at the service level;
+- a service with one gets the missing keys inside it, with `memory` as a quoted
+  string of bytes — Compose refuses a service whose own key and `deploy` limit
+  disagree.
+
+A service that reserves more memory than the limit Outhaul would add fails the
+deploy in `building`, naming both figures, rather than at `up` with Docker's
+less clear message.
+
+In strict mode a service may also not ask for more than the app's own limit:
+that check is described above under the strict policy.
+
+### The build cap
+
+`OUTHAUL_MAX_CONCURRENT_BUILDS` limits how many deployments **that have to
+build** are in `building` at once. A deployment has to build when it arrives
+with no image: new code, and every Compose deploy. A rollback, or a redeploy
+that carries an image, never waits for a build slot.
+
+While every slot is taken, the queue offers only a deployment that already has
+an image, and it never jumps an older queued build of its own app. A waiting
+deployment stays `queued`, keeps its place, can be cancelled as usual, and
+survives a restart that way. With the cap set, its page says "Waiting its turn.
+This server runs N builds at a time."
+
+### Live figures
+
+The app page's Metrics panel names the limit beside live CPU and memory, and
+adds a Processes figure ("12" and "of 512") when the container has a process
+limit. For a stack the value appears when every running container has the same
+one; "limits differ" appears when they don't. The Metrics page shows the same
+beside each container. These are the live containers' limits, so a value set
+but not yet deployed differs from the Limits panel. A container with no limit
+shows exactly what it showed before.
+
 ## Testing so far
 
 The real-Compose tests have been run on a development host with Docker Compose
@@ -185,3 +285,21 @@ Not yet run:
       when strict mode or the required header reduces the environment.
 
 When they have been run, this list records the results.
+
+### Not yet run: the limits
+
+These need a staging host and have not been run yet. When they have been, this
+list records the results.
+
+- [ ] `docker inspect` on a Nixpacks app, a Compose service, a database and a
+      preview shows `NanoCpus`, `Memory` and `PidsLimit`.
+- [ ] A container that allocates past its memory limit is killed with 137, and
+      the other apps keep answering.
+- [ ] Each of the nine templates deploys in strict mode with the default limits
+      and stays up for a day. So does each database engine.
+- [ ] With a cap of 1, two apps deployed together build one after the other, and
+      a rollback of a third starts at once.
+- [ ] `docker inspect` on a service that sets its own limit shows that value,
+      not the server default.
+- [ ] A service that reserves more memory than its limit fails before `up`,
+      naming both figures.

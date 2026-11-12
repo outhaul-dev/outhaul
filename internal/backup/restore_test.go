@@ -539,3 +539,26 @@ func TestVolumeRestoreRestartsContainerWhoseStopFailed(t *testing.T) {
 		t.Error("the container whose stop failed was left stopped")
 	}
 }
+
+func TestRestoreHelperCarriesDefaultLimits(t *testing.T) {
+	h := newHarness(t)
+	want := core.Limits{MilliCPUs: 1000, Memory: 1 << 30, Pids: 512}
+	h.m.SetLimits(want)
+	dest := h.destination(t)
+	app := h.seedComposeWithVolume(t)
+	b := h.backup(t, core.BackupTargetApp, app.ID, dest.ID, 0)
+
+	const key = "prod/wiki/outhaul-wiki_data/20260101T000000Z.tar.gz"
+	h.blob.objects[key] = targz(t, map[string]string{"index.html": "wiki"})
+
+	h.m.RestoreNow(b, key)
+	h.waitRun(t)
+
+	if run := h.lastRun(t, b.ID); run.Status != core.RunOK {
+		t.Fatalf("run = %q (%s)", run.Status, run.Reason)
+	}
+	if len(h.docker.Runs) != 1 {
+		t.Fatalf("helper runs = %d, want 1", len(h.docker.Runs))
+	}
+	wantHelperLimits(t, h.docker.Runs[0], want)
+}

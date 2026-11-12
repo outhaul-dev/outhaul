@@ -31,7 +31,8 @@ right here before writing the worker.
   SSE for log/build streaming, not websockets.
 - **Background jobs.** In-process worker with the `deployments` table as the
   queue. No external queue. Deploys for the same app serialize; different apps
-  run concurrently.
+  run concurrently. (The opt-in build cap is under "Queue and concurrency
+  semantics".)
 - **Auth.** Several accounts, with a role per person managed in Outhaul
   (system admin, project admin, project member, project viewer, or no role).
   argon2id password hash, session cookie. The first account, a system admin, is
@@ -725,6 +726,53 @@ separating apps on the Docker network"
 (`2026-11-02-sso-roles-protected-routes-design.md`) no longer holds for its
 first half, and only while strict mode is set.
 
+### Resource limits (opt-in)
+
+`OUTHAUL_DEFAULT_CPUS`, `OUTHAUL_DEFAULT_MEMORY` and `OUTHAUL_DEFAULT_PIDS` set
+a per-container ceiling. Unset, every container specification is exactly what it
+was before. The value rules are `core.ParseCPUs`, `core.ParseMemory` and the
+`pids` parser in `config`, so the per-app form shows the same words as a
+refused setting. A CPU default above this host's count with no
+`OUTHAUL_DOCKER_HOST` stops `serve`: Docker would refuse every container.
+
+`core.Limits` holds thousandths of a CPU, bytes and processes; a zero field
+means none, and `Limits.Or(fallback)` fills each zero field from the fallback.
+An app's effective limit is `app.Limits.Or(cfg.DefaultLimits)`, read by
+`Worker.limits`: a preview stores none, so it reads its parent's at each
+deploy. `docker.ContainerSpec` carries `NanoCPUs`, `Memory` and `PidsLimit` into
+`HostConfig.Resources`, set only when one is non-zero.
+
+| Container | Limit |
+|---|---|
+| A single-container app and its health-check container | the app's |
+| A Compose service | the app's, for each resource the service didn't set (through the override) |
+| A preview | its parent's |
+| A database and the backup, restore and data-removal helpers | the server default |
+| Traefik, cloudflared | none |
+| A build step | none |
+
+`compose.LimitExtras` reads `compose.Model` and returns only the resources a
+service left unset; `compose.Override` writes them at the service level, or
+inside an existing `deploy.resources.limits` block. A reservation above the
+memory limit Outhaul would add fails the deployment in `building`, naming both
+figures. In strict mode `Policy.Max` is the app's limit, and `Check` refuses a
+service above it. A changed limit applies when the container is next created;
+nothing redeploys at startup. The user guide is `docs/GUARD-RAILS.md`.
+
+### Queue and concurrency semantics
+
+The worker runs at most `core.MaxPipelines` (four) deployments at once. With
+`OUTHAUL_MAX_CONCURRENT_BUILDS` set, a second semaphore, `buildSlots`, caps the
+deployments that have to build; a rollback or any deployment arriving with an
+image never takes one. `NextClaimable(canBuild)` offers, when no build slot is
+free, only a deployment that already has an image and has no older queued
+deployment of its own app — nothing jumps ahead within one app. A claimed
+image deployment gives its slot straight back; a build holds it until the
+deployment leaves `building`, which is when the slot is released, not when the
+whole pipeline ends. A build that waits stays `queued` and its page says so.
+The locked "Background jobs" line above is unchanged: the cap is opt-in and
+counts only builds.
+
 ### Trusted proxies (opt-in)
 
 `OUTHAUL_TRUSTED_PROXIES` (IP addresses and CIDRs, or `all`) makes Traefik
@@ -822,6 +870,7 @@ outhaul/
         env.go                # EnvVar model + ResolveEnv (${{project.KEY}} references)
         project.go            # Project model (workspace grouping apps)
         deployment.go         # Deployment model, DeployStatus enum
+        limits.go             # Limits (CPU, memory, processes), ParseCPUs/ParseMemory, MinMemory, MaxPipelines
         statemachine.go       # legal transitions, terminal/active predicates
         statemachine_test.go  # table-driven
 
@@ -857,7 +906,8 @@ outhaul/
     compose/                  # docker compose stacks behind a Runner interface (fake for tests)
         compose.go            # Runner: Config/Pull/Build/Up (files) + Stop/Restart/Down (label-based, -p only)
         model.go              # Model: `docker compose config --format json` parsed for the checks
-        policy.go             # Check: the strict allow-list and routing-label refusal (the image check lives in deploy)
+        policy.go             # Check: the strict allow-list, routing-label refusal and the app-limit comparison (the image check lives in deploy)
+        limits.go             # LimitExtras: per-service limits for the resources a service doesn't set
         override.go           # Override: generated outhaul.override.yml publishing services on their domains
         fake.go               # in-memory fake for unit tests
 
@@ -926,6 +976,7 @@ outhaul/
         protection.go         # the "Require sign-in" switch: when it's available, the redeploy that applies it, the Access column
         ingress.go            # startup redeploy of containers labelled under earlier routing settings; what Traefik actually serves
         handlers.go           # apps list/create, deploy trigger, deployment detail, domain rows
+        limits.go             # the per-app Limits panel data and its route
         catalog.go            # template gallery + one-click deploy-from-template
         databases.go          # managed-database pages: cross-project list, create, detail, lifecycle, settings
         backups.go            # backup schedules + destinations (create/test/delete, run-now)

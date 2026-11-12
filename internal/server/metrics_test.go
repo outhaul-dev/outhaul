@@ -84,9 +84,9 @@ func TestMetricsSampleJSON(t *testing.T) {
 	}
 }
 
-// TestMetricsSampleSkipsUnsampledContainer exercises the out/ok two-slice
-// design: a container that fails to sample (stopped mid-poll → ContainerStats
-// error) is dropped without misaligning the surviving rows.
+// TestMetricsSampleSkipsUnsampledContainer: a container that fails to sample
+// (stopped mid-poll → ContainerStats error) is dropped without misaligning the
+// surviving rows.
 func TestMetricsSampleSkipsUnsampledContainer(t *testing.T) {
 	const mib = 1024 * 1024
 	e := newTestEnv(t)
@@ -181,5 +181,75 @@ func TestMetricsPageRenders(t *testing.T) {
 	}
 	if strings.Contains(page, "coming soon") {
 		t.Error("metrics page still renders as a placeholder")
+	}
+}
+
+func TestMetricsSampleShowsLimitsAndProcesses(t *testing.T) {
+	const mib = 1024 * 1024
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	e.srv.metrics = stubSampler{}
+	e.runtime.stack = []docker.Container{
+		{ID: "a", Name: "outhaul-app-web", State: "running"},
+	}
+	e.runtime.stats = map[string]docker.Stats{"a": {
+		CPUPercent: 12.3, MemUsage: 118 * mib, MemLimit: 1 << 30, MemLimited: true,
+		CPULimit: 1, Pids: 12, PidsLimit: 512,
+	}}
+
+	var m metricsSample
+	resp := e.get(t, "/metrics/sample")
+	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	resp.Body.Close()
+	if !m.Processes {
+		t.Error("processes = false, want true when a row has a process limit")
+	}
+	if len(m.Containers) != 1 {
+		t.Fatalf("containers = %d, want 1", len(m.Containers))
+	}
+	row := m.Containers[0]
+	if !strings.Contains(row.CPU, "limit 1") {
+		t.Errorf("cpu = %q, want the limit beside the percentage", row.CPU)
+	}
+	if !strings.Contains(row.Mem, "of 1.0 GiB") {
+		t.Errorf("mem = %q, want the container's own limit", row.Mem)
+	}
+	if row.Pids != "12 · limit 512" {
+		t.Errorf("pids = %q, want 12 · limit 512", row.Pids)
+	}
+}
+
+func TestMetricsSampleWithoutLimits(t *testing.T) {
+	const mib = 1024 * 1024
+	e := newTestEnv(t)
+	e.completeSetup(t)
+	e.srv.metrics = stubSampler{}
+	e.runtime.stack = []docker.Container{
+		{ID: "a", Name: "outhaul-app-web", State: "running"},
+	}
+	e.runtime.stats = map[string]docker.Stats{"a": {
+		CPUPercent: 12.3, MemUsage: 118 * mib, MemLimit: 31 << 30,
+	}}
+
+	var m metricsSample
+	resp := e.get(t, "/metrics/sample")
+	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	resp.Body.Close()
+	if m.Processes {
+		t.Error("processes = true with no process limit")
+	}
+	row := m.Containers[0]
+	if strings.Contains(row.CPU, "limit") {
+		t.Errorf("cpu = %q, want today's percentage only", row.CPU)
+	}
+	if strings.Contains(row.Mem, "of") {
+		t.Errorf("mem = %q, want today's usage text with no limit", row.Mem)
+	}
+	if row.Pids != "" {
+		t.Errorf("pids = %q, want empty", row.Pids)
 	}
 }

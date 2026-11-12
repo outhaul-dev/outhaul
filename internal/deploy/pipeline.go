@@ -138,9 +138,11 @@ func (w *Worker) runPipeline(ctx context.Context, dep core.Deployment) {
 	if !ok {
 		// The row is no longer building — an operator cancelled during the
 		// build. Stop here without touching the live container.
+		w.releaseBuild(dep.ID)
 		logf(out, "Deployment is no longer building (cancelled); aborting.")
 		return
 	}
+	w.releaseBuild(dep.ID) // it is deploying now; the build slot is free
 
 	// Choose a deploy strategy. Apps with a persistent volume cannot overlap two
 	// containers on the volume (single writer), so they stop-first (brief
@@ -587,6 +589,7 @@ func (w *Worker) createContainer(ctx context.Context, app core.App, image, name 
 	if traefikOn {
 		restart = "unless-stopped"
 	}
+	l := w.limits(ctx, app)
 	spec := docker.ContainerSpec{
 		Name:          name,
 		Image:         image,
@@ -595,6 +598,9 @@ func (w *Worker) createContainer(ctx context.Context, app core.App, image, name 
 		Networks:      []string{w.cfg.Network},
 		RestartPolicy: restart,
 		Mounts:        mounts,
+		NanoCPUs:      l.MilliCPUs * 1_000_000,
+		Memory:        l.Memory,
+		PidsLimit:     l.Pids,
 	}
 	id, err := w.docker.CreateContainer(ctx, spec)
 	if err != nil {
@@ -626,6 +632,7 @@ func (w *Worker) removeContainerByName(ctx context.Context, name string) error {
 // failure is not forced over the existing terminal state.
 func (w *Worker) fail(dep core.Deployment, from core.DeployStatus, reason string, out io.Writer) {
 	logf(out, "ERROR: %s", reason)
+	w.releaseBuild(dep.ID) // a failed build no longer needs its slot
 	ok, err := w.store.SetStatus(context.Background(), dep.ID, from, core.StatusFailed, reason)
 	if err != nil {
 		logf(out, "WARNING: could not record failure: %v", err)

@@ -52,6 +52,10 @@ type Manager struct {
 	// it a database publishes no host port, whatever its row says.
 	strict bool
 
+	// limits is the server's per-container default, applied to every database
+	// container and to the data-removal helper.
+	limits core.Limits
+
 	// provisionDone, when non-nil, is signalled after each async provision
 	// attempt finishes (tests use it to wait deterministically).
 	provisionDone chan struct{}
@@ -64,6 +68,10 @@ func NewManager(st *store.Store, dc docker.Client, network, dataDir string) *Man
 
 // DataPath is the host directory holding a database's persistent data.
 func (m *Manager) DataPath(dbName string) string { return filepath.Join(m.dataDir, dbName) }
+
+// SetLimits records the server's per-container default limits. Call before
+// Provision.
+func (m *Manager) SetLimits(l core.Limits) { m.limits = l }
 
 // SetPolicy records whether the strict container policy is on. Under it a
 // database publishes no host port; a row that still has one keeps publishing it
@@ -123,6 +131,9 @@ func (m *Manager) provision(ctx context.Context, d core.Database) error {
 		Mounts:   []docker.Mount{{Source: m.DataPath(d.Name), Target: eng.DataDir}},
 		// Docker owns reboots/crashes, same as app containers.
 		RestartPolicy: "unless-stopped",
+		NanoCPUs:      m.limits.MilliCPUs * 1_000_000,
+		Memory:        m.limits.Memory,
+		PidsLimit:     m.limits.Pids,
 	}
 	if d.ExtPort > 0 && !m.strict {
 		spec.Ports = []docker.PortMapping{{
@@ -275,7 +286,10 @@ func (m *Manager) removeData(ctx context.Context, name string) error {
 			"outhaul.managed": "true",
 			"outhaul.role":    "helper",
 		},
-		Mounts: []docker.Mount{{Source: m.dataDir, Target: "/data"}},
+		Mounts:    []docker.Mount{{Source: m.dataDir, Target: "/data"}},
+		NanoCPUs:  m.limits.MilliCPUs * 1_000_000,
+		Memory:    m.limits.Memory,
+		PidsLimit: m.limits.Pids,
 	}
 	exit, rerr := m.docker.RunContainer(ctx, spec, io.Discard, &stderr)
 	if rerr != nil {

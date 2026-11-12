@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -30,11 +31,32 @@ import (
 type fakeBuilder struct {
 	err     error
 	lastReq builder.BuildRequest
+
+	// Blocking seams for the build-cap tests: started closes on the first
+	// Build; release, when non-nil, holds every Build until it closes.
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	builds  int
 }
 
 func (f *fakeBuilder) Name() string { return "fake" }
-func (f *fakeBuilder) Build(_ context.Context, req builder.BuildRequest, out io.Writer) error {
+func (f *fakeBuilder) Build(ctx context.Context, req builder.BuildRequest, out io.Writer) error {
+	f.mu.Lock()
 	f.lastReq = req
+	f.builds++
+	f.mu.Unlock()
+	if f.started != nil {
+		f.once.Do(func() { close(f.started) })
+	}
+	if f.release != nil {
+		select {
+		case <-f.release:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 	if f.err != nil {
 		return f.err
 	}
@@ -99,7 +121,11 @@ type harness struct {
 	worker     *Worker
 }
 
-func newHarness(t *testing.T) *harness {
+func newHarness(t *testing.T) *harness { return newHarnessWith(t, nil) }
+
+// newHarnessWith is newHarness with a chance to change the worker's config
+// before it is built (the build cap is read once, in NewWorker).
+func newHarnessWith(t *testing.T, tweak func(*config.Config)) *harness {
 	t.Helper()
 	box, err := secret.Load(filepath.Join(t.TempDir(), "key"))
 	if err != nil {
@@ -121,6 +147,9 @@ func newHarness(t *testing.T) *harness {
 		broker:     logstream.New(),
 	}
 	cfg := config.Config{DataDir: t.TempDir(), Network: "outhaul"}
+	if tweak != nil {
+		tweak(&cfg)
+	}
 	h.worker = NewWorker(st, h.docker, Builders{Nixpacks: h.builder, Dockerfile: h.dockerfile},
 		h.compose, h.cloner, h.broker,
 		gitsource.NewRegistry(gitsource.NewGithubApp(&github.Fake{Token: "ghs_test"})), cfg)

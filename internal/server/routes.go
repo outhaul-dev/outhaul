@@ -98,6 +98,7 @@ func (s *Server) routes() []route {
 
 		{"POST /apps/{id}/deploy", levelMember, s.projectOfApp, s.handleDeploy},
 		{"POST /apps/{id}/settings", levelMember, s.projectOfApp, s.handleAppSettings},
+		{"POST /apps/{id}/limits", levelSystemAdmin, nil, s.handleAppLimits},
 		{"POST /apps/{id}/kind", levelMember, s.projectOfApp, s.handleUpdateAppKind},
 		{"POST /apps/{id}/source", levelMember, s.projectOfApp, s.handleUpdateAppSource},
 		{"POST /apps/{id}/domains", levelMember, s.projectOfApp, s.handleAddDomain},

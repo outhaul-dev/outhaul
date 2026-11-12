@@ -106,7 +106,7 @@ func main() {
 			d.ID, d.Service, d.Port = int64(i+1), "web", *port
 			domains = append(domains, d)
 		}
-		os.Stdout.Write(compose.Override(core.App{Name: routes[0].router}, domains, "outhaul-gatetest-net", rt))
+		os.Stdout.Write(compose.Override(core.App{Name: routes[0].router}, domains, "outhaul-gatetest-net", rt, nil))
 		return
 	}
 

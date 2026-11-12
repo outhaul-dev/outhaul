@@ -70,6 +70,10 @@ type App struct {
 	PRNumber      int    // GitHub PR number when this is a preview; 0 otherwise
 	Ephemeral     bool   // true for preview apps (drives filtering + teardown)
 	PreviewStatus string // "" for normal apps; building|ready|failed|teardown_failed
+
+	// Limits is this app's own ceiling; a zero field uses the server default.
+	// A preview stores none and reads its parent's.
+	Limits Limits
 }
 
 // Domain publishes one app route: Traefik matches Host (and optionally a Path
