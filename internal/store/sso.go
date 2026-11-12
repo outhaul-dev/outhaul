@@ -136,8 +136,9 @@ func recordSSORun(ctx context.Context, q execer, v SSOSettings) error {
 
 // SyncSSOStartup records the issuer and client ID this run uses and, when they
 // differ from the last run's, ends every SSO sign-in in the same transaction.
-// With no record yet, the stored settings are the baseline. set is false when
-// neither source gives a provider; the record is then removed.
+// With no record yet, the stored settings are the baseline. set is true when
+// the environment gave the provider; when it is false the stored settings are
+// the ones in force, if any. With neither, the record is removed.
 func (s *Store) SyncSSOStartup(ctx context.Context, v SSOSettings, set bool) (bool, error) {
 	lastIssuer, hasRecord, err := s.GetSetting(ctx, ssoLastIssuerKey)
 	if err != nil {
@@ -147,26 +148,34 @@ func (s *Store) SyncSSOStartup(ctx context.Context, v SSOSettings, set bool) (bo
 	if err != nil {
 		return false, err
 	}
-	baselineSet := hasRecord
-	if !hasRecord {
-		lastIssuer, baselineSet, err = s.GetSetting(ctx, ssoIssuerKey)
-		if err != nil {
+	storedIssuer, hasStored, err := s.GetSetting(ctx, ssoIssuerKey)
+	if err != nil {
+		return false, err
+	}
+	var storedClientID string
+	if hasStored {
+		if storedClientID, _, err = s.GetSetting(ctx, ssoClientIDKey); err != nil {
 			return false, err
 		}
-		if baselineSet {
-			if lastClientID, _, err = s.GetSetting(ctx, ssoClientIDKey); err != nil {
-				return false, err
-			}
-		}
 	}
-	changed := baselineSet != set || (set && (lastIssuer != v.Issuer || lastClientID != v.ClientID))
+
+	inForce := set
+	if !set && hasStored {
+		v = SSOSettings{Issuer: storedIssuer, ClientID: storedClientID}
+		inForce = true
+	}
+	baselineSet := hasRecord
+	if !hasRecord && hasStored {
+		lastIssuer, lastClientID, baselineSet = storedIssuer, storedClientID, true
+	}
+	changed := baselineSet != inForce || (inForce && (lastIssuer != v.Issuer || lastClientID != v.ClientID))
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
 	defer tx.Rollback()
-	if set {
+	if inForce {
 		if err := recordSSORun(ctx, tx, v); err != nil {
 			return false, err
 		}

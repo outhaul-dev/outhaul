@@ -223,6 +223,48 @@ func TestSyncSSOStartupUsesStoredSettingsAsTheFirstBaseline(t *testing.T) {
 	}
 }
 
+// A Settings-connected install passes set=false at boot: the stored settings
+// are in force and nobody may be signed out.
+func TestSyncSSOStartupWithSettingsFromThePageKeepsSessions(t *testing.T) {
+	ctx := context.Background()
+	s := openWithBox(t)
+	const iss = "https://idp.example.com"
+	if err := s.SetSSOSettings(ctx, SSOSettings{Issuer: iss, ClientID: "cid", ClientSecret: "sec"}, false); err != nil {
+		t.Fatal(err)
+	}
+	_, tok := ssoSessionUser(t, s, "sub-1")
+	if ended, err := s.SyncSSOStartup(ctx, SSOSettings{}, false); err != nil || ended {
+		t.Fatalf("SyncSSOStartup = %v, %v; want the stored settings kept", ended, err)
+	}
+	if _, err := s.GetSession(ctx, tok); err != nil {
+		t.Error("a session ended although the stored settings were unchanged")
+	}
+}
+
+// An install from before this record, connected on Settings, upgrades with no
+// record and no environment: the stored settings are both in force and the
+// baseline.
+func TestSyncSSOStartupUpgradesSettingsFromThePageWithoutSigningAnyoneOut(t *testing.T) {
+	ctx := context.Background()
+	s := openWithBox(t)
+	const iss = "https://idp.example.com"
+	for k, v := range map[string]string{"sso_issuer": iss, "sso_client_id": "cid"} {
+		if err := s.SetSetting(ctx, k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, tok := ssoSessionUser(t, s, "sub-1")
+	if ended, err := s.SyncSSOStartup(ctx, SSOSettings{}, false); err != nil || ended {
+		t.Fatalf("SyncSSOStartup = %v, %v; want the stored settings kept", ended, err)
+	}
+	if _, err := s.GetSession(ctx, tok); err != nil {
+		t.Error("a session ended on the upgrade")
+	}
+	if got, ok, _ := s.GetSetting(ctx, "sso_last_issuer"); !ok || got != iss {
+		t.Errorf("record = %q, %v; want the stored issuer", got, ok)
+	}
+}
+
 func TestSyncSSOStartupWithNoSettingsEndsSessionsAndForgetsTheRecord(t *testing.T) {
 	ctx := context.Background()
 	s := openWithBox(t)
