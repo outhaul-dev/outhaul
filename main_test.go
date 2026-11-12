@@ -1468,3 +1468,30 @@ func TestReadSSOSecret(t *testing.T) {
 		t.Errorf("error repeats the file's content: %v", err)
 	}
 }
+
+func TestProxyConfigCarriesUploadTimeout(t *testing.T) {
+	cfg := config.Config{
+		Network: "outhaul", TraefikImage: config.DefaultTraefikImage,
+		UploadTimeout: 10 * time.Minute,
+	}
+	ic := &infraController{dc: docker.NewFake(), cfg: cfg}
+	for _, tunnelOn := range []bool{false, true} {
+		pc := ic.proxyConfig(context.Background(), tunnelOn, false)
+		if pc.UploadTimeout != cfg.UploadTimeout {
+			t.Errorf("tunnelOn=%v: UploadTimeout=%v, want %v", tunnelOn, pc.UploadTimeout, cfg.UploadTimeout)
+		}
+	}
+}
+
+func TestUploadTimeoutHint(t *testing.T) {
+	got := uploadTimeoutHint(true, 0)
+	if !strings.Contains(got, "OUTHAUL_UPLOAD_TIMEOUT") || !strings.Contains(got, "60 seconds") {
+		t.Errorf("hint %q should name OUTHAUL_UPLOAD_TIMEOUT and 60 seconds", got)
+	}
+	if got := uploadTimeoutHint(true, time.Minute); got != "" {
+		t.Errorf("with a timeout set: %q", got)
+	}
+	if got := uploadTimeoutHint(false, 0); got != "" {
+		t.Errorf("with HTTPS pushes off: %q", got)
+	}
+}

@@ -270,6 +270,7 @@ No config files — defaults with `OUTHAUL_*` environment overrides:
 | `OUTHAUL_REQUIRE_HEADER_NAME` | (empty)        | A request header every route requires, such as `X-Azure-FDID`; set with its value — see docs/BEHIND-A-PROXY.md |
 | `OUTHAUL_REQUIRE_HEADER_VALUE` | (empty)       | The required header's value: letters, digits and `-._~+/=:`, at most 256 characters |
 | `OUTHAUL_TRUSTED_PROXIES` | (empty)            | IPs/CIDRs Traefik trusts to supply forwarded headers, comma-separated, or `all`; pair `all` with a required header |
+| `OUTHAUL_UPLOAD_TIMEOUT` | (unset: 60 seconds) | How long Traefik waits for a whole request, body included. Set it when uploads through Outhaul take more than a minute, for every app and for git over HTTPS; changing it recreates Traefik once |
 | `OUTHAUL_LOCAL_CA`      | `false`              | serve HTTPS from the built-in local CA (LAN installs; excludes OUTHAUL_ACME_EMAIL) — see docs/LOCAL-CA.md |
 | `OUTHAUL_HTTPS_PORT`    | `443`                | Host port for HTTPS                        |
 | `OUTHAUL_HTTP_PORT`     | `80`                 | `80`, or `off` for HTTPS only (no plain-HTTP entrypoint); `off` needs HTTPS and can't be combined with a Cloudflare Tunnel — see docs/BEHIND-A-PROXY.md |

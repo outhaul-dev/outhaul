@@ -1661,3 +1661,38 @@ func TestProtectNewDomainsSetting(t *testing.T) {
 		})
 	}
 }
+
+func TestUploadTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  time.Duration
+		bad   bool
+	}{
+		{"", 0, false},
+		{"10m", 10 * time.Minute, false},
+		{"600s", 600 * time.Second, false},
+		{"1s", time.Second, false},
+		{"500ms", 0, true},
+		{"1500ms", 0, true}, // not whole seconds
+		{"0", 0, true},
+		{"-5s", 0, true},
+		{"ten", 0, true},
+	} {
+		c := Load(func(k string) string {
+			if k == "OUTHAUL_UPLOAD_TIMEOUT" {
+				return tc.value
+			}
+			return ""
+		})
+		err := c.Validate()
+		if tc.bad {
+			if err == nil || !strings.Contains(err.Error(), "OUTHAUL_UPLOAD_TIMEOUT") {
+				t.Errorf("%q: want a refusal naming the variable, got %v", tc.value, err)
+			}
+			continue
+		}
+		if err != nil || c.UploadTimeout != tc.want {
+			t.Errorf("%q: UploadTimeout=%v err=%v, want %v", tc.value, c.UploadTimeout, err, tc.want)
+		}
+	}
+}

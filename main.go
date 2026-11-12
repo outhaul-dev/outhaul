@@ -151,6 +151,15 @@ func trustedAllWarning(cfg config.Config) string {
 	return "WARNING: OUTHAUL_TRUSTED_PROXIES=all trusts any peer that can connect; set OUTHAUL_REQUIRE_HEADER_NAME and OUTHAUL_REQUIRE_HEADER_VALUE so a request without the header matches no router."
 }
 
+// uploadTimeoutHint says what lifts Traefik's 60-second read timeout when git
+// over HTTPS is on and OUTHAUL_UPLOAD_TIMEOUT isn't set; "" otherwise.
+func uploadTimeoutHint(gitHTTP bool, uploadTimeout time.Duration) string {
+	if !gitHTTP || uploadTimeout > 0 {
+		return ""
+	}
+	return "A push over HTTPS that takes more than 60 seconds to upload is cut off by Traefik; set OUTHAUL_UPLOAD_TIMEOUT, such as 10m, to lift that."
+}
+
 func serve() error {
 	cfg := config.Load(os.Getenv)
 	if err := cfg.Validate(); err != nil {
@@ -813,6 +822,7 @@ func (ic *infraController) proxyConfig(ctx context.Context, tunnelOn, protectedR
 		Routing:          traefik.RoutingFrom(ic.cfg, false),
 		TrustedProxies:   ic.cfg.TrustedProxies,
 		TrustAllProxies:  ic.cfg.TrustAllProxies,
+		UploadTimeout:    ic.cfg.UploadTimeout,
 	}
 	if !ic.cfg.AdminDirect {
 		pc.GateHost = ic.gateway

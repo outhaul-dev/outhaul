@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -104,6 +105,11 @@ type ProxyConfig struct {
 	// router is written from them, only Traefik's own flags and one file.
 	TrustedProxies  []string
 	TrustAllProxies bool
+
+	// UploadTimeout is Traefik's read timeout on every entrypoint, which
+	// covers the whole request, body included. 0 leaves Traefik's own 60
+	// seconds. Like trust, it is a flag only: no router label changes.
+	UploadTimeout time.Duration
 }
 
 // trustsProxy reports whether Traefik believes any proxy's forwarded headers.
@@ -356,6 +362,12 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 			)
 		}
 		ports = append(ports, docker.PortMapping{HostPort: pc.HTTPSPort, ContainerPort: "443", Proto: "tcp"})
+	}
+	if pc.UploadTimeout > 0 {
+		readTimeout := strconv.FormatInt(int64(pc.UploadTimeout/time.Second), 10) + "s"
+		for _, ep := range entrypoints {
+			cmd = append(cmd, "--entrypoints."+ep+".transport.respondingtimeouts.readtimeout="+readTimeout)
+		}
 	}
 	if pc.trustsProxy() {
 		for _, ep := range entrypoints {

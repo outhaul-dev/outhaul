@@ -75,6 +75,10 @@ type Config struct {
 	TrustedProxies  []string // OUTHAUL_TRUSTED_PROXIES: addresses and CIDRs trimmed; nil when unset
 	TrustAllProxies bool     // OUTHAUL_TRUSTED_PROXIES=all
 
+	// UploadTimeout is OUTHAUL_UPLOAD_TIMEOUT, whole seconds: Traefik's read
+	// timeout on every entrypoint. 0 leaves Traefik's own 60 seconds.
+	UploadTimeout time.Duration
+
 	BackupAzureAccount   string // OUTHAUL_BACKUP_AZURE_ACCOUNT; the storage account for the Azure destination
 	BackupAzureContainer string // OUTHAUL_BACKUP_AZURE_CONTAINER; its private container
 	AzureClientID        string // AZURE_CLIENT_ID; the managed identity, when the VM has more than one
@@ -171,6 +175,7 @@ func Load(getenv Getenv) Config {
 	}
 	c.stateBackupKeepSet = getenv("OUTHAUL_STATE_BACKUP_KEEP") != ""
 	c.TrustedProxies, c.TrustAllProxies = p.trustedProxies("OUTHAUL_TRUSTED_PROXIES")
+	c.UploadTimeout = p.uploadTimeout("OUTHAUL_UPLOAD_TIMEOUT")
 	c.problems = p.problems
 	return c
 }
@@ -820,6 +825,21 @@ func (p *parser) keyPrefix(key string) string {
 		p.reject(key, v, "letters, digits, '-', '_', '.' and '/', with no '/' at either end")
 	}
 	return v
+}
+
+// uploadTimeout reads OUTHAUL_UPLOAD_TIMEOUT: a duration of at least one
+// second and a whole number of seconds. Unset gives 0.
+func (p *parser) uploadTimeout(key string) time.Duration {
+	v := p.getenv(key)
+	if v == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < time.Second || d%time.Second != 0 {
+		p.reject(key, v, "a duration of whole seconds, such as 10m")
+		return 0
+	}
+	return d
 }
 
 // trustedProxies reads OUTHAUL_TRUSTED_PROXIES: comma-separated IP addresses

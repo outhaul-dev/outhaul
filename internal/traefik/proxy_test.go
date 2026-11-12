@@ -1308,3 +1308,67 @@ func TestEnsureProxyReportsAFailedAddressCheck(t *testing.T) {
 		t.Errorf("containers created = %+v, want none", f.Created)
 	}
 }
+
+func readTimeoutFlags(spec docker.ContainerSpec) []string {
+	var out []string
+	for _, f := range spec.Cmd {
+		if strings.Contains(f, "respondingtimeouts") {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+func TestProxySpecUploadTimeout(t *testing.T) {
+	tunnel := testProxyConfig()
+	tunnel.TunnelMode = true
+	httpOff := tlsProxyConfig()
+	httpOff.Routing.HTTPOff = true
+	cases := []struct {
+		name string
+		pc   ProxyConfig
+		want []string
+	}{
+		{"ACME", tlsProxyConfig(), []string{"web", "websecure"}},
+		{"tunnel", tunnel, []string{"web"}},
+		{"HTTP off", httpOff, []string{"websecure"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pc := tc.pc
+			pc.DynamicDir = t.TempDir()
+			pc.UploadTimeout = 10 * time.Minute
+			spec := proxySpec(pc)
+			for _, ep := range []string{"web", "websecure"} {
+				flag := "--entrypoints." + ep + ".transport.respondingtimeouts.readtimeout=600s"
+				if got := slices.Contains(spec.Cmd, flag); got != slices.Contains(tc.want, ep) {
+					t.Errorf("%s: flag present=%v, want %v: %v", ep, got, slices.Contains(tc.want, ep), spec.Cmd)
+				}
+			}
+			if got := readTimeoutFlags(spec); len(got) != len(tc.want) {
+				t.Errorf("want %d read-timeout flags, got %v", len(tc.want), got)
+			}
+		})
+	}
+}
+
+func TestProxySpecHashChangesWithUploadTimeout(t *testing.T) {
+	pc := tlsProxyConfig()
+	pc.DynamicDir = t.TempDir()
+	hash := func(d time.Duration) string {
+		pc.UploadTimeout = d
+		return proxySpec(pc).Labels["outhaul.config-hash"]
+	}
+	none, ten, twenty := hash(0), hash(10*time.Minute), hash(20*time.Minute)
+	if none == ten || ten == twenty || none == twenty {
+		t.Errorf("hashes should differ: none=%s ten=%s twenty=%s", none, ten, twenty)
+	}
+}
+
+func TestProxySpecNoUploadTimeoutFlag(t *testing.T) {
+	pc := tlsProxyConfig()
+	pc.DynamicDir = t.TempDir()
+	if got := readTimeoutFlags(proxySpec(pc)); len(got) != 0 {
+		t.Errorf("unexpected flags with no upload timeout: %v", got)
+	}
+}
