@@ -302,10 +302,11 @@ func TestBridgeColdPushWithoutTheSettingLeavesTheRowOpen(t *testing.T) {
 	<-done
 	app, _ := st.GetAppByName(context.Background(), "web")
 	rows, _ := st.ListDomains(context.Background(), app.ID)
-	for _, d := range rows {
-		if d.Protected {
-			t.Errorf("row %s is protected with the setting off", d.Host)
-		}
+	if len(rows) != 1 {
+		t.Fatalf("rows = %+v, want one row", rows)
+	}
+	if rows[0].Protected {
+		t.Errorf("row %s is protected with the setting off", rows[0].Host)
 	}
 }
 
