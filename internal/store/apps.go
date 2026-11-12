@@ -31,8 +31,8 @@ func (s *Store) CreateAppWithDomains(ctx context.Context, app core.App, domains 
 }
 
 // CreateAppProtected is CreateAppWithDomains for an install that requires
-// sign-in on new domains: the row seeded from app.Domain requires it too. An
-// explicit row in domains keeps its own Protected.
+// sign-in on new domains: the row seeded from app.Domain requires it too. Extra
+// routes go through CreateAppWithDomains, which keeps each one's own Protected.
 func (s *Store) CreateAppProtected(ctx context.Context, app core.App) (core.App, error) {
 	return s.createApp(ctx, app, nil, true)
 }

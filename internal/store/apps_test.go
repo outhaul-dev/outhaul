@@ -105,3 +105,30 @@ func TestCreateAppProtectedSeedsAProtectedPrimaryRow(t *testing.T) {
 		t.Errorf("compose rows = %v, want none", rows)
 	}
 }
+
+// Only the row seeded from app.Domain follows the caller; an extra route keeps
+// the Protected flag it was given.
+func TestCreateAppWithDomainsKeepsEachRowsProtection(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	app, err := st.CreateAppWithDomains(ctx,
+		core.App{Name: "shop", RepoURL: "https://example.com/s.git", Domain: "shop.example.com"},
+		[]core.Domain{{Host: "www.shop.example.com", Port: primaryDomainPort, TLS: true, Protected: true}})
+	if err != nil {
+		t.Fatalf("CreateAppWithDomains: %v", err)
+	}
+	rows, err := st.ListDomains(ctx, app.ID)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("rows = %+v (%v), want the primary row and the extra", rows, err)
+	}
+	if rows[0].Host != "shop.example.com" || rows[1].Host != "www.shop.example.com" {
+		t.Fatalf("rows = %+v, want shop.example.com then www.shop.example.com", rows)
+	}
+	if rows[0].Protected {
+		t.Errorf("primary row = %+v, want it open", rows[0])
+	}
+	if !rows[1].Protected {
+		t.Errorf("extra row = %+v, want it protected", rows[1])
+	}
+}
