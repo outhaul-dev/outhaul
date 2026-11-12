@@ -3,6 +3,7 @@ package compose
 import (
 	"bytes"
 	"context"
+	"flag"
 	"io"
 	"os"
 	"path/filepath"
@@ -386,5 +387,34 @@ func TestOverrideCarriesTheIngressStamp(t *testing.T) {
 	got := string(Override(app, domains, "outhaul", rt))
 	if !strings.Contains(got, `"`+traefik.IngressLabel+`": "`+rt.Stamp()+`"`) {
 		t.Errorf("the override does not carry %s=%s:\n%s", traefik.IngressLabel, rt.Stamp(), got)
+	}
+}
+
+var updateOverrideGolden = flag.Bool("update", false, "rewrite testdata/override.golden")
+
+// The override for a stack with routed services is pinned byte for byte: an
+// install that sets no limit and adds no extra must keep writing exactly this.
+func TestOverrideGolden(t *testing.T) {
+	app := core.App{Name: "shop"}
+	domains := []core.Domain{
+		{ID: 1, Host: "shop.example.com", Service: "web", Port: 3000, TLS: true, Protected: true},
+		{ID: 2, Host: "shop.example.com", Path: "/webhooks", Service: "web", Port: 3000, TLS: true},
+		{ID: 3, Host: "api.example.com", Service: "api", Port: 8080, TLS: true},
+	}
+	rt := traefik.Routing{TLS: true, CertResolver: "le", GateAddress: "http://host.docker.internal:8080/gate/check"}
+	got := Override(app, domains, "outhaul", rt)
+
+	path := filepath.Join("testdata", "override.golden")
+	if *updateOverrideGolden {
+		if err := os.WriteFile(path, got, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("override differs from %s (run with -update after an intended change):\n%s", path, got)
 	}
 }
