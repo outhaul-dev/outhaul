@@ -34,7 +34,7 @@
 #     as the byte.
 #   - a container Compose creates from the override gatelabels -compose
 #     prints, never started, whose labels are compared with the ones above.
-#   - four Traefiks (GATETEST_TRAEFIK_IMAGE, default traefik:v3.7.6), on
+#   - six Traefiks (GATETEST_TRAEFIK_IMAGE, default traefik:v3.7.6), on
 #     loopback ports only:
 #       main      web and websecure side by side, with no redirect, so each
 #                 row's HTTP and HTTPS routers are both checked. Outhaul runs
@@ -43,6 +43,9 @@
 #       trusting  like main, but its entrypoints trust a client's X-Forwarded-*
 #                 headers. Outhaul's don't, and that alone hides a gate that
 #                 trusts them, so the X-Forwarded-* checks also run here;
+#       trustedips   main, but its entrypoints trust the client's forwarded
+#                 headers and remove the four a proxy has no reason to send;
+#       untrustedips the same with a list that matches no peer;
 #       redirect  web redirecting to websecure, with the flags Outhaul's
 #                 Traefik uses under TLS;
 #       unmapped  like main, without the /etc/hosts entry: the control showing
@@ -171,6 +174,8 @@ root=$(cd "$(dirname "$0")/../.." && pwd)
 net=outhaul-gatetest-net
 traefik_c=outhaul-gatetest-traefik
 trusting_c=outhaul-gatetest-traefik-trusting
+trustedips_c=outhaul-gatetest-traefik-trustedips
+untrustedips_c=outhaul-gatetest-traefik-untrustedips
 redirect_c=outhaul-gatetest-traefik-redirect
 unmapped_c=outhaul-gatetest-traefik-unmapped
 app_c=outhaul-gatetest-app
@@ -200,7 +205,7 @@ fi
 
 work=$(mktemp -d)
 cleanup() {
-	docker rm -f "$traefik_c" "$trusting_c" "$redirect_c" "$unmapped_c" "$app_c" "$old_c" "$new_c" "$gate_c" "$alias_c" "$probe_c" "$compose_c" >/dev/null 2>&1 || true
+	docker rm -f "$traefik_c" "$trusting_c" "$redirect_c" "$unmapped_c" "$trustedips_c" "$untrustedips_c" "$app_c" "$old_c" "$new_c" "$gate_c" "$alias_c" "$probe_c" "$compose_c" >/dev/null 2>&1 || true
 	docker network rm outhaul-gatetest-compose_default >/dev/null 2>&1 || true
 	docker network rm "$net" >/dev/null 2>&1 || true
 	rm -rf "$work"
@@ -254,6 +259,9 @@ die() {
 
 echo "== setup"
 (cd "$root" && go build -o "$work/gatelabels" ./deploy/test/gatelabels) || die "go build gatelabels"
+mkdir -p "$work/dynamic"
+(cd "$root" && go build -o "$work/forwardedconfig" ./deploy/test/forwardedconfig) || die "go build forwardedconfig"
+"$work/forwardedconfig" >"$work/dynamic/outhaul-forwarded.yml" || die "write the forwarded-headers config"
 routes="gt-wiki,wiki.test,,,protected gt-hooks,wiki.test,/webhooks,,open gt-shop,shop.test,,,open gt-admin,shop.test,/admin,/,protected,notls"
 if [ "$mode" = outhaul ] && [ -n "$route_host" ]; then
 	routes="$routes gt-real,$route_host,,,protected"
@@ -435,7 +443,7 @@ start_traefik() { # name, mapped|unmapped, extra Traefik arguments...
 	# shellcheck disable=SC2086
 	docker run -d --name "$name" --network "$net" ${hosts:+--add-host "$hosts"} \
 		$web_publish -p 127.0.0.1::443 -p 127.0.0.1::8080 \
-		-v "$docker_sock:/var/run/docker.sock:ro" \
+		-v "$docker_sock:/var/run/docker.sock:ro" ${dynamic_mount:+-v "$dynamic_mount"} \
 		-e "DOCKER_API_VERSION=$api_version" \
 		"$traefik_image" \
 		--providers.docker=true \
@@ -447,6 +455,20 @@ start_traefik() { # name, mapped|unmapped, extra Traefik arguments...
 		--api.insecure=true \
 		--log.level=INFO --log.nocolor=true "$@" >/dev/null || die "start $name"
 }
+# start_trustedips_traefik NAME CIDR: like main, but its entrypoints trust the
+# forwarded headers of a client in CIDR and run the middleware that removes the
+# four a proxy has no reason to send, read from the mounted file.
+start_trustedips_traefik() {
+	dynamic_mount="$work/dynamic:/etc/traefik/dynamic:ro"
+	ips_args="--providers.file.directory=/etc/traefik/dynamic --providers.file.watch=true"
+	for ep in web websecure; do
+		if [ "$ep" = web ] && [ "$http_off" = 1 ]; then continue; fi
+		ips_args="$ips_args --entrypoints.$ep.forwardedheaders.trustedips=$2 --entrypoints.$ep.http.middlewares=outhaul-forwarded@file"
+	done
+	# shellcheck disable=SC2086 # one word per flag
+	start_traefik "$1" mapped $ips_args
+	dynamic_mount=
+}
 start_traefik "$traefik_c" mapped
 if [ "$mode" = stub ]; then
 	start_traefik "$trusting_c" mapped \
@@ -456,6 +478,10 @@ if [ "$mode" = stub ]; then
 		--entrypoints.web.http.redirections.entrypoint.to=websecure \
 		--entrypoints.web.http.redirections.entrypoint.scheme=https
 	start_traefik "$unmapped_c" unmapped
+	net_subnet=$(docker network inspect "$net" -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}')
+	[ -n "$net_subnet" ] || die "read the subnet of $net"
+	start_trustedips_traefik "$trustedips_c" "$net_subnet"
+	start_trustedips_traefik "$untrustedips_c" 203.0.113.0/24
 fi
 
 host_port() { # container, container port
@@ -478,16 +504,29 @@ if [ "$mode" = stub ]; then
 	redirect_https_port=$(host_port "$redirect_c" 443)
 	unmapped_http_port=$(host_port "$unmapped_c" 80)
 	unmapped_https_port=$(host_port "$unmapped_c" 443)
+	trustedips_http_port=$(host_port "$trustedips_c" 80)
+	trustedips_https_port=$(host_port "$trustedips_c" 443)
+	trustedips_api_port=$(host_port "$trustedips_c" 8080)
+	untrustedips_http_port=$(host_port "$untrustedips_c" 80)
+	untrustedips_https_port=$(host_port "$untrustedips_c" 443)
+	untrustedips_api_port=$(host_port "$untrustedips_c" 8080)
 	if [ "$http_off" = 1 ]; then
-		[ -n "$trusting_https_port" ] || die "find Traefik's loopback ports"
+		[ -n "$trusting_https_port" ] && [ -n "$trustedips_https_port" ] && [ -n "$trustedips_api_port" ] &&
+			[ -n "$untrustedips_https_port" ] && [ -n "$untrustedips_api_port" ] || die "find Traefik's loopback ports"
 		echo "Trusting Traefik on 127.0.0.1: websecure $trusting_https_port (no web entrypoint)"
+		echo "Trusted-IPs Traefik ($net_subnet) on 127.0.0.1: websecure $trustedips_https_port, api $trustedips_api_port"
+		echo "Untrusted-IPs Traefik (203.0.113.0/24) on 127.0.0.1: websecure $untrustedips_https_port, api $untrustedips_api_port"
 	else
 		[ -n "$trusting_http_port" ] && [ -n "$trusting_https_port" ] &&
 			[ -n "$redirect_http_port" ] && [ -n "$redirect_https_port" ] &&
-			[ -n "$unmapped_http_port" ] && [ -n "$unmapped_https_port" ] || die "find Traefik's loopback ports"
+			[ -n "$unmapped_http_port" ] && [ -n "$unmapped_https_port" ] &&
+			[ -n "$trustedips_http_port" ] && [ -n "$trustedips_https_port" ] && [ -n "$trustedips_api_port" ] &&
+			[ -n "$untrustedips_http_port" ] && [ -n "$untrustedips_https_port" ] && [ -n "$untrustedips_api_port" ] || die "find Traefik's loopback ports"
 		echo "Trusting Traefik on 127.0.0.1: web $trusting_http_port, websecure $trusting_https_port"
 		echo "Redirecting Traefik on 127.0.0.1: web $redirect_http_port, websecure $redirect_https_port"
 		echo "Unmapped Traefik on 127.0.0.1: web $unmapped_http_port, websecure $unmapped_https_port"
+		echo "Trusted-IPs Traefik ($net_subnet) on 127.0.0.1: web $trustedips_http_port, websecure $trustedips_https_port, api $trustedips_api_port"
+		echo "Untrusted-IPs Traefik (203.0.113.0/24) on 127.0.0.1: web $untrustedips_http_port, websecure $untrustedips_https_port, api $untrustedips_api_port"
 	fi
 	echo "Gate stub at $gate_ip, mapped as host.docker.internal in every Traefik but the unmapped one"
 else
@@ -496,7 +535,8 @@ fi
 
 # req SCHEME HOST PATH [curl args...]: prints the status code; the response
 # headers go to $work/h and the body to $work/b. It goes to the Traefik named
-# by $via: main (the default), trusting, redirect or unmapped.
+# by $via: main (the default), trusting, trustedips, untrustedips, redirect or
+# unmapped.
 via=main
 req() {
 	scheme=$1 host=$2 path=$3
@@ -508,6 +548,10 @@ req() {
 	redirect:*) port=$redirect_http_port ;;
 	unmapped:https) port=$unmapped_https_port ;;
 	unmapped:*) port=$unmapped_http_port ;;
+	trustedips:https) port=$trustedips_https_port ;;
+	trustedips:*) port=$trustedips_http_port ;;
+	untrustedips:https) port=$untrustedips_https_port ;;
+	untrustedips:*) port=$untrustedips_http_port ;;
 	*:https) port=$https_port ;;
 	*) port=$http_port ;;
 	esac
@@ -533,7 +577,7 @@ count_lines() { # how many lines of $1 equal $2
 	printf '%s\n' "$1" | grep -cFx -- "$2"
 }
 
-if [ "$mode" = stub ] && [ "$http_off" = 1 ]; then vias="main trusting"; elif [ "$mode" = stub ]; then vias="main trusting redirect unmapped"; else vias=main; fi
+if [ "$mode" = stub ] && [ "$http_off" = 1 ]; then vias="main trusting trustedips untrustedips"; elif [ "$mode" = stub ]; then vias="main trusting redirect unmapped trustedips untrustedips"; else vias=main; fi
 for via in $vias; do
 	if [ "$via" = redirect ] || [ "$http_off" = 1 ]; then first=https; else first=http; fi
 	ready=no
@@ -762,7 +806,7 @@ fi
 
 tid=0
 echo "== the labels as Docker and Traefik keep them"
-for c in "$traefik_c" "$trusting_c" "$redirect_c" "$unmapped_c" "$app_c" "$old_c" "$new_c" "$gate_c" "$alias_c"; do
+for c in "$traefik_c" "$trusting_c" "$redirect_c" "$unmapped_c" "$trustedips_c" "$untrustedips_c" "$app_c" "$old_c" "$new_c" "$gate_c" "$alias_c"; do
 	enable=$(docker inspect --format '{{range $k, $v := .Config.Labels}}{{if eq $k "traefik.enable"}}{{$k}}={{$v}}{{end}}{{end}}' "$c")
 	if [ -z "$enable" ]; then
 		pass "$c carries no traefik.enable label, so a Traefik that doesn't expose by default ignores it"
@@ -905,10 +949,14 @@ check_mapping() {
 }
 if [ "$http_off" = 1 ]; then
 	check_mapping "main https"
+	check_mapping "trustedips https"
+	check_mapping "untrustedips https"
 else
 	check_mapping "main http"
 	check_mapping "main https"
 	check_mapping "trusting http"
+	check_mapping "trustedips http"
+	check_mapping "untrustedips http"
 	check_mapping "redirect https"
 fi
 if [ "$http_off" = 0 ]; then
@@ -1090,7 +1138,7 @@ for scheme in $schemes; do
 	# What the stub receives: the browser's Cookie and Accept, and X-Forwarded-*
 	# set by Traefik, not by the client, even through entrypoints that trust a
 	# client's X-Forwarded-* (only the gate's own setting stops them there).
-	for via in main trusting; do
+	for via in main trusting trustedips untrustedips; do
 		if [ "$scheme" = https ]; then forged_proto=http; else forged_proto=https; fi
 		tid=$((tid + 1))
 		code=$(req "$scheme" wiki.test '/page?q=1' \
@@ -1123,6 +1171,66 @@ for scheme in $schemes; do
 	via=main
 	echo
 done
+
+echo "== what an app receives when Traefik trusts the client's proxy"
+# One request with every forged header, to an open row, through each Traefik.
+# lacks BODY HEADER...: whether BODY has none of the lines "h HEADER: ".
+lacks() {
+	body=$1
+	shift
+	for hname in "$@"; do
+		if printf '%s\n' "$body" | grep -q "^h $hname: "; then return 1; fi
+	done
+	return 0
+}
+for scheme in $schemes; do
+	for via in main trusting trustedips untrustedips; do
+		code=$(req "$scheme" shop.test /cart \
+			-H 'X-Forwarded-For: 203.0.113.9' -H 'X-Forwarded-Host: evil.test' -H 'X-Forwarded-Proto: https' \
+			-H 'X-Forwarded-Uri: /evil' -H 'X-Forwarded-Method: POST' -H 'X-Forwarded-Prefix: /evil' \
+			-H 'X-Real-Ip: 6.6.6.6' -H 'X-Outhaul-User: mallory')
+		body=$(cat "$work/b")
+		desc="$scheme shop.test/cart via the $via Traefik, with every header forged"
+		case $via in
+		trustedips) want="a trusted client: its X-Forwarded-For, -Host and -Proto reach the app, and X-Real-Ip, -Uri, -Method and -Prefix are removed" ;;
+		untrustedips) want="a client outside the list: its headers are replaced, and X-Real-Ip, -Uri, -Method and -Prefix are removed all the same" ;;
+		trusting) want="the control, which trusts every client and removes nothing: all forged headers arrive, except X-Outhaul-User" ;;
+		*) want="trusting nobody: the client's headers are replaced, and Traefik sets X-Real-Ip itself" ;;
+		esac
+		ok=no
+		if [ "$code" = 200 ] && ! has "$body" mallory && lacks "$body" x-outhaul-user; then
+			case $via in
+			trustedips)
+				if has "$body" 'h x-forwarded-for: 203.0.113.9, ' && has "$body" 'h x-forwarded-host: evil.test' &&
+					has "$body" 'h x-forwarded-proto: https' &&
+					lacks "$body" x-real-ip x-forwarded-uri x-forwarded-method x-forwarded-prefix; then ok=yes; fi
+				;;
+			untrustedips)
+				if ! has "$body" 203.0.113.9 && has "$body" 'h x-forwarded-host: shop.test' &&
+					lacks "$body" x-real-ip x-forwarded-uri x-forwarded-method x-forwarded-prefix; then ok=yes; fi
+				;;
+			trusting)
+				if has "$body" 'h x-real-ip: 6.6.6.6' && has "$body" 'h x-forwarded-uri: /evil' &&
+					has "$body" 'h x-forwarded-method: POST' && has "$body" 'h x-forwarded-prefix: /evil' &&
+					has "$body" 'h x-forwarded-host: evil.test' && has "$body" 'h x-forwarded-for: 203.0.113.9, '; then ok=yes; fi
+				;;
+			*)
+				realip=$(printf '%s\n' "$body" | sed -n 's/^h x-real-ip: //p')
+				if ! has "$body" 203.0.113.9 && has "$body" 'h x-forwarded-host: shop.test' &&
+					[ -n "$realip" ] && [ "$realip" != 6.6.6.6 ] &&
+					lacks "$body" x-forwarded-uri x-forwarded-method x-forwarded-prefix; then ok=yes; fi
+				;;
+			esac
+		fi
+		if [ "$ok" = yes ]; then
+			pass "$desc: $want"
+		else
+			fail "$desc: want $want" "status=$code" "$body"
+		fi
+	done
+done
+via=main
+echo
 
 # Paths sent exactly as written (--path-as-is), where a client, Traefik and an
 # app could read a path differently. probe SCHEME HOST PATH [curl args...]
@@ -1375,6 +1483,51 @@ else
 	fail "https shop.test/admin/x, gate says 200: want dana only, on path /x" "status=$code" "$body"
 fi
 
+fi
+via=main
+echo
+
+# Fail closed: a router that names a middleware Traefik can't find is dropped,
+# so while the file is gone every router on the trusting entrypoints answers
+# 404, the protected ones included. Run before the gate stops, so a protected
+# route's answer once the file is back is the gate's 302.
+echo "== the forwarded-headers middleware missing"
+via=trustedips
+rm -f "$work/dynamic/outhaul-forwarded.yml"
+trustedips_api() { curl -sS --max-time 5 "http://127.0.0.1:$trustedips_api_port/api/http/$1" 2>/dev/null; }
+# settle WANT_OPEN WANT_PROTECTED: polls up to 15 seconds until open shop.test/
+# answers WANT_OPEN, and protected wiki.test/page answers WANT_PROTECTED, on
+# every entrypoint. The last statuses are left in $last.
+settle() {
+	i=0
+	while [ $i -lt 15 ]; do
+		good=yes
+		last=
+		for scheme in $schemes; do
+			open_code=$(req "$scheme" shop.test /)
+			prot_code=$(req "$scheme" wiki.test /page -H 'Accept: text/html')
+			last="$last $scheme: shop.test/=$open_code wiki.test/page=$prot_code;"
+			[ "$open_code" = "$1" ] || good=no
+			[ "$prot_code" = "$2" ] || good=no
+		done
+		if [ $good = yes ]; then return 0; fi
+		sleep 1
+		i=$((i + 1))
+	done
+	return 1
+}
+if settle 404 404; then
+	pass "with the middleware file removed, the trustedips Traefik answers 404 for the open shop.test and the protected wiki.test/page, on every entrypoint"
+else
+	fail "with the middleware file removed, want 404 for shop.test/ and wiki.test/page on every entrypoint" \
+		"last statuses:$last" "routers: $(trustedips_api routers)"
+fi
+"$work/forwardedconfig" >"$work/dynamic/outhaul-forwarded.yml" || die "write the forwarded-headers config back"
+if settle 200 302; then
+	pass "with the middleware file back, the trustedips Traefik serves shop.test/ (200) and sends wiki.test/page to sign in (302) again"
+else
+	fail "with the middleware file back, want 200 for shop.test/ and the gate's 302 for wiki.test/page" \
+		"last statuses:$last" "routers: $(trustedips_api routers)"
 fi
 via=main
 echo
