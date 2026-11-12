@@ -1,6 +1,7 @@
 package compose
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -459,10 +460,52 @@ func composeAvailable(t *testing.T) bool {
 	return false
 }
 
+// composeUnknownKey matches Compose's own refusal of a key its schema doesn't
+// have. The wording differs between releases: "Additional property x is not
+// allowed" and "additional properties 'x' not allowed".
+var composeUnknownKey = regexp.MustCompile(`(?i)additional propert(?:y|ies) '?([A-Za-z0-9_.-]+)'? (?:is )?not allowed`)
+
+// unknownToCompose returns the key the installed Compose refused as unknown,
+// when it is one that want expects Check to refuse, and "" otherwise.
+func unknownToCompose(stderr []byte, want []Violation) string {
+	m := composeUnknownKey.FindSubmatch(stderr)
+	if m == nil {
+		return ""
+	}
+	for _, v := range want {
+		if v.Option == string(m[1]) {
+			return v.Option
+		}
+	}
+	return ""
+}
+
+// A fixture is set aside only when Compose refuses the very key the fixture
+// is there to show Outhaul refusing. Any other refusal is a broken fixture.
+func TestUnknownToCompose(t *testing.T) {
+	want := []Violation{{Where: `service "web"`, Option: "pre_start"}}
+	for _, tc := range []struct {
+		name, stderr, key string
+	}{
+		{"Compose 5.1 wording", "validating /x/pre-start.yml: services.web additional properties 'pre_start' not allowed\n", "pre_start"},
+		{"Compose 2 wording", "validating /x/pre-start.yml: services.web Additional property pre_start is not allowed\n", "pre_start"},
+		{"another key", "validating /x/pre-start.yml: services.web additional properties 'imagee' not allowed\n", ""},
+		{"another error", "yaml: line 4: did not find expected key\n", ""},
+		{"nothing printed", "", ""},
+	} {
+		if got := unknownToCompose([]byte(tc.stderr), want); got != tc.key {
+			t.Errorf("%s: unknownToCompose = %q, want %q", tc.name, got, tc.key)
+		}
+	}
+}
+
 // TestCheckAgainstRealCompose runs every fixture that Compose can load through
 // the installed `docker compose`, so the allow-list is compared with what
 // Compose really prints. Reasons may name the fixture's absolute path where
 // the pure test names /work, so only Where and Option are compared.
+//
+// A key newer than the installed Compose can't be loaded by it, so that
+// fixture is skipped there; the recorded model still covers it.
 func TestCheckAgainstRealCompose(t *testing.T) {
 	if !composeAvailable(t) {
 		t.Skip("docker compose 2.35 or newer is not installed")
@@ -483,7 +526,15 @@ func TestCheckAgainstRealCompose(t *testing.T) {
 			cmd.Dir = dir
 			b, err := cmd.Output()
 			if err != nil {
-				t.Fatalf("docker compose config %s: %v", yml, err)
+				var stderr []byte
+				var exit *exec.ExitError
+				if errors.As(err, &exit) {
+					stderr = exit.Stderr
+				}
+				if key := unknownToCompose(stderr, tc.want); key != "" {
+					t.Skipf("the installed Compose doesn't know %q", key)
+				}
+				t.Fatalf("docker compose config %s: %v\n%s", yml, err, stderr)
 			}
 			m, err := ParseModel(b)
 			if err != nil {
