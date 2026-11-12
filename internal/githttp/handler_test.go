@@ -55,16 +55,18 @@ func (c *countingStore) FindPushToken(ctx context.Context, raw string) (core.Pus
 // fakeWorker stands in for the deploy worker: told a deployment is queued, it
 // marks it running and closes its log, as a quick successful build would.
 type fakeWorker struct {
-	st *store.Store
-	br *logstream.Broker
-	mu sync.Mutex
-	wg sync.WaitGroup
+	st    *store.Store
+	br    *logstream.Broker
+	delay time.Duration // how long it stays silent before it starts
+	mu    sync.Mutex
+	wg    sync.WaitGroup
 }
 
 func (w *fakeWorker) Notify() {
 	w.wg.Add(1)
 	go func() {
 		defer w.wg.Done()
+		time.Sleep(w.delay)
 		w.mu.Lock()
 		defer w.mu.Unlock()
 		ctx := context.Background()
@@ -89,6 +91,9 @@ type harnessConfig struct {
 	naming     core.Naming
 	protectNew bool
 	keepAlive  int
+	// workerDelay keeps the fake worker silent that long after it is told
+	// of a deployment, so the hook waits on the bridge with nothing to say.
+	workerDelay time.Duration
 	// stamp, when set, is told when each handler starts, writes and returns.
 	stamp func(path, event string)
 	// after, when set, is called after each handler returns.
@@ -157,7 +162,7 @@ func newHarness(t *testing.T, opts ...func(*harnessConfig)) *harness {
 	repos := gitrepo.New(root, bin, sock)
 
 	br := logstream.New()
-	worker := &fakeWorker{st: st, br: br}
+	worker := &fakeWorker{st: st, br: br, delay: cfg.workerDelay}
 	t.Cleanup(worker.wg.Wait)
 
 	srv := httptest.NewUnstartedServer(nil)
@@ -451,6 +456,42 @@ func TestPushDeploys(t *testing.T) {
 	}
 }
 
+// A hook left stale (by a moved binary or socket) is rewritten by the next
+// push, as over SSH.
+func TestPushRepairsAStaleHook(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	tok := h.liveToken(h.account("root", core.RoleSystemAdmin))
+	app := h.pushApp("api")
+	work := workTree(t)
+	mustGit(t, work, tok, "push", h.remote("api"), "main")
+
+	dir, err := h.repos.Path("api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "hooks", "post-receive"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	before, err := h.st.ListDeploymentsForApp(ctx, app.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	commit(t, work, "second.txt", "again\n")
+	out := mustGit(t, work, tok, "push", h.remote("api"), "main")
+	if !strings.Contains(out, "→ build log: "+h.url+"/deployments/") {
+		t.Errorf("the second push's output lacks the build-log line:\n%s", out)
+	}
+	after, err := h.st.ListDeploymentsForApp(ctx, app.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before)+1 {
+		t.Errorf("deployments: %d before the second push, %d after; want one more", len(before), len(after))
+	}
+}
+
 // refusal is one request the handler must refuse.
 type refusal struct {
 	name      string
@@ -730,8 +771,11 @@ func TestProtocolV2Advertisement(t *testing.T) {
 func TestQuietHookKeepsTheResponseMoving(t *testing.T) {
 	var mu sync.Mutex
 	var stamps []time.Time
+	// The real hook waits on the bridge, and the worker says nothing for
+	// four seconds after the build-log line.
 	h := newHarness(t, func(c *harnessConfig) {
 		c.keepAlive = 1
+		c.workerDelay = 4 * time.Second
 		c.stamp = func(path, event string) {
 			if !strings.HasSuffix(path, "/git-receive-pack") {
 				return
@@ -743,15 +787,13 @@ func TestQuietHookKeepsTheResponseMoving(t *testing.T) {
 	})
 	tok := h.liveToken(h.account("root", core.RoleSystemAdmin))
 	h.pushApp("api")
-	if err := h.repos.Init("api"); err != nil {
-		t.Fatal(err)
-	}
-	dir, _ := h.repos.Path("api")
-	if err := os.WriteFile(filepath.Join(dir, "hooks", "post-receive"), []byte("#!/bin/sh\nsleep 4\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
 
-	mustGit(t, workTree(t), tok, "push", h.remote("api"), "main")
+	out := mustGit(t, workTree(t), tok, "push", h.remote("api"), "main")
+	for _, want := range []string{"→ build log: ", "✓ deployed"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("push output lacks %q:\n%s", want, out)
+		}
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -759,7 +801,7 @@ func TestQuietHookKeepsTheResponseMoving(t *testing.T) {
 		t.Fatalf("the push's POST made %d writes", len(stamps)-2)
 	}
 	if total := stamps[len(stamps)-1].Sub(stamps[0]); total < 4*time.Second {
-		t.Fatalf("the POST took %s; the hook sleeps 4s", total)
+		t.Fatalf("the POST took %s; the worker is silent for 4s", total)
 	}
 	for i := 1; i < len(stamps); i++ {
 		if gap := stamps[i].Sub(stamps[i-1]); gap > 2500*time.Millisecond {

@@ -248,11 +248,12 @@ func (h *Handler) serve(c *gitCall, advertise bool) {
 		h.failWith(c, "find the repository for "+c.name, err, "outhaul: could not prepare the repository for '"+c.name+"'")
 		return
 	}
-	if !h.o.Repos.Exists(c.name) {
-		if err := h.o.Repos.Init(c.name); err != nil {
-			h.failWith(c, "create the repository for "+c.name, err, "outhaul: could not prepare the repository for '"+c.name+"'")
-			return
-		}
+	// As over SSH, before every git run: Init creates a missing repository
+	// and always rewrites its hook, so one left stale by a moved binary or
+	// socket is repaired by the next request.
+	if err := h.o.Repos.Init(c.name); err != nil {
+		h.failWith(c, "prepare the repository for "+c.name, err, "outhaul: could not prepare the repository for '"+c.name+"'")
+		return
 	}
 
 	args := gitArgs(c.service, h.o.KeepAlive, advertise, dir)
