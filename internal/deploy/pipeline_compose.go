@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/outhaul-dev/outhaul/internal/compose"
@@ -110,6 +111,19 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 		}
 	}
 
+	// With OUTHAUL_COMPOSE_RESTART set, every service that states no restart
+	// policy of its own gets one, so Docker brings it back after a reboot. The
+	// log names every service either way.
+	if w.cfg.ComposeRestart != "" {
+		restart, left, err := compose.RestartExtras(model, w.cfg.ComposeRestart)
+		if err != nil {
+			w.fail(dep, core.StatusBuilding, err.Error(), out)
+			return
+		}
+		extra = compose.MergeExtras(extra, restart)
+		logRestartPolicy(out, w.cfg.ComposeRestart, restart, left)
+	}
+
 	// files are work-dir-relative (the runner runs in workDir); the override
 	// sits beside the user's compose file and layers domain exposure and the
 	// limits over it.
@@ -191,6 +205,26 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 		logf(out, "Done. %s is live at %s", app.Name, strings.Join(hosts, ", "))
 	} else {
 		logf(out, "Done. Stack %s is up.", project)
+	}
+}
+
+// logRestartPolicy names every service of the stack once: the ones that gain
+// the policy, and the ones the file or another service keeps as they are.
+func logRestartPolicy(out io.Writer, policy string, extra map[string]compose.Extra, left []compose.LeftAlone) {
+	if len(extra) == 0 && len(left) == 0 {
+		return
+	}
+	lines := make([]string, 0, len(extra)+len(left))
+	for name := range extra {
+		lines = append(lines, fmt.Sprintf("%s: restart: %s", name, policy))
+	}
+	for _, l := range left {
+		lines = append(lines, fmt.Sprintf("%s: left alone, %s", l.Service, l.Reason))
+	}
+	sort.Strings(lines)
+	logf(out, "Restart policy %q (OUTHAUL_COMPOSE_RESTART):", policy)
+	for _, line := range lines {
+		logf(out, "  %s", line)
 	}
 }
 
