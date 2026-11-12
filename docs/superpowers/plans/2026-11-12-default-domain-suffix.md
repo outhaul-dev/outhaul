@@ -760,7 +760,7 @@ func TestBridgeColdPushRefusesATakenName(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
-	b, st, br := bridgeEnv(t)
+	b, st, _ := bridgeEnv(t)
 	b.naming = core.Naming{Suffix: "shared.demo.example.com"}
 	other, err := st.CreateApp(context.Background(), core.App{Name: "other", RepoURL: "https://x/y.git"})
 	if err != nil {
@@ -1117,9 +1117,9 @@ func TestPreviewBaseDomainMustBeTheSuffix(t *testing.T) {
 	inside.Body.Close()
 }
 
-// An empty base domain is the default (sslip.io names), so the suffix rule
-// leaves it alone: the save works. Such a preview's host is outside the
-// suffix, so creating the preview is refused and the PR comment says why.
+// An empty base domain falls back to one label under the suffix, so it is
+// already inside it and the save works. A base domain saved before the rule is
+// what the store refuses when the preview is created, and the PR comment says why.
 func TestPreviewSettingsSaveWithoutABaseDomain(t *testing.T) {
 	e := newTestEnv(t)
 	e.srv.naming = core.Naming{Suffix: "shared.demo.example.com", SuffixOnly: true}
@@ -1184,7 +1184,7 @@ fmt.Sprintf("Only names one label under %s reach this server, such as demo.%s. %
   - `handleAddDomain`, after `d, verr := s.parseDomainForm(r, app)` and its error check: `if msg := s.naming.SuffixRefusal(d.Host); msg != "" { http.Error(w, msg, http.StatusBadRequest); return }`.
   - `handleUpdateDomain`: right after `moved := !strings.EqualFold(existing.Host, d.Host) || existing.Path != d.Path`, add `if moved { if msg := s.naming.SuffixRefusal(d.Host); msg != "" { http.Error(w, msg, http.StatusBadRequest); return } }`. An edit that leaves the host and path alone is never checked: that is what keeps a row already outside the suffix editable, which the store's move-only check already promises.
   - `handleCreateApp`, after the primary host and any compose first row are known and before `sharedHostRefused`: check `s.naming.SuffixRefusal` for each of `app.Domain` and `firstDomain.Host` and render the apps page with the message.
-- `internal/server/previews.go`: in `handleSavePreviewConfig`, after the bare-hostname check. An empty base domain means `sslip.io` names, which is the default, so it is not refused here; that preview's host is outside the suffix, so creating the preview is refused by the store and the PR comment says why (below):
+- `internal/server/previews.go`: in `handleSavePreviewConfig`, after the bare-hostname check. An empty base domain falls back to one label under the suffix (inside it), so it is not refused here; a base domain saved before the rule is what the store refuses when the preview is created, and the PR comment says why (below):
 
 ```go
 	if s.naming.SuffixOnly && cfg.BaseDomain != "" && !strings.EqualFold(cfg.BaseDomain, s.naming.Suffix) {
@@ -1224,13 +1224,13 @@ git commit -m "feat(store): OUTHAUL_DOMAIN_SUFFIX_ONLY refuses hosts outside the
 
 - [ ] **Step 1: Write the guide**
 
-`docs/SHARED-HOST.md` already exists: the R8 subnet plan creates it, titled `# A shared host`, with an intro saying the settings are off unless set, and one section, "A fixed subnet and Traefik address". Add a `## Default domains under one suffix` section after that one, and leave the rest of the file alone. It covers:
+`docs/SHARED-HOST.md` is created by the R8 subnet plan, titled `# A shared host`, with an intro saying the settings are off unless set, and one section, "A fixed subnet and Traefik address". If it already exists, add a `## Default domains under one suffix` section after that one and leave the rest of the file alone. If it does not (R8 has not landed on this branch), create it titled `# A shared host` with a two-line intro naming only this series' setting — these settings suit a host running many people's apps, they are off unless set, and an ordinary install generates `sslip.io` names — then this section. It covers:
 
 - Why: only a name one label under the host's wildcard reaches the host, so `sslip.io` names point at the server and are routed nowhere; the free-domain option generated exactly those.
 - `OUTHAUL_DOMAIN_SUFFIX=shared.demo.example.com` and what each place becomes: a template lands on `<name>.<suffix>` (`${domain}`), a second name on `<name>-<label>.<suffix>` (`${domain:<label>}`), a preview on `[<service>-]<app>-pr-<n>.<suffix>`, a first `git push` on `<app>.<suffix>`, and the new-app form offers and pre-fills `<name>.<suffix>`.
 - The domain dialog's first option becomes "Default domain", and `sslip` stops being offered (it is still accepted from an old page).
 - A preview base domain an app sets still wins over the suffix.
-- `OUTHAUL_DOMAIN_SUFFIX_ONLY=yes`: every writer is refused an outside host, including a system admin; the message says why; rows that already exist keep working and can still be edited in place and deleted; startup logs one warning per such row; a saved preview base domain other than the suffix is refused, while leaving it empty is left alone — it means sslip.io names, so it is creating such a preview that fails, with a comment saying why.
+- `OUTHAUL_DOMAIN_SUFFIX_ONLY=yes`: every writer is refused an outside host, including a system admin; the message says why; rows that already exist keep working and can still be edited in place and deleted; startup logs one warning per such row; a saved preview base domain other than the suffix is refused, while leaving it empty is left alone — it falls back to one label under the suffix — and a base domain saved before the rule fails when its preview is created, with a comment saying why.
 - Set it with `OUTHAUL_TLS_WILDCARD=*.<suffix>`; Outhaul refuses to start if the two disagree.
 - One warning: an app name is 2–40 characters, so `<app>-<label>` must fit in 63; that is why the suffix is capped at 189 characters.
 - At the end of the section, a `### What only the real host can show` subsection holding the design's item 5, the one this series adds:
