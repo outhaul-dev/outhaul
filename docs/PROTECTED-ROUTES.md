@@ -151,6 +151,104 @@ being met later, for example the public URL is removed, a domain that requires
 sign-in goes on requiring it, nobody can get through, and the app page warns about
 it.
 
+## Requiring sign-in on every new domain
+
+Open is the default for a new address, so a host whose people share one name can
+publish an app nobody meant to share. `OUTHAUL_PROTECT_NEW_DOMAINS=yes` turns that
+around: every domain row Outhaul creates starts with sign-in required, and opening
+one is a deliberate choice. It is off unless set; with it off nothing changes: the
+new-app form has no switch, the dialog's switch decides, and no row is protected
+that wasn't.
+
+Set it in `/etc/outhaul.env` and restart Outhaul.
+
+### What starts protected
+
+- **A row added in the dialog.** "Require sign-in" starts on, and the dialog says
+  how to make the address public.
+- **The new-app form.** It shows the same switch, on, for the app's domain. A
+  Compose app with no domain has no row to protect.
+- **A template deploy.** The template form has no switch, and every row the
+  template's manifest creates requires sign-in.
+- **A first `git push`.** The row the push creates requires sign-in.
+- **A preview's whole-host row**, whatever the parent's rows say. See
+  [A preview's own address](#a-previews-own-address).
+
+A page that offers no switch can't open a row, and neither can a request that never
+saw the dialog, such as a script or a page left open in a browser since before the
+setting was turned on: it is protected too. Nothing is left open because nobody
+chose. Only an explicit "off" on a page that offered the switch opens a row.
+
+### What it needs
+
+The same two things the switch needs (see [Before you start](#before-you-start)):
+`OUTHAUL_PUBLIC_URL`, where people are sent to sign in, and HTTPS or a Cloudflare
+tunnel. `outhaul serve` refuses to start without them, naming the setting, because
+otherwise it would create addresses nobody could get through. On a server with no
+HTTPS of its own the tunnel can't be turned off while the setting is on: with
+nowhere to sign in, nobody could get through, so Settings refuses.
+
+While the setting is on, Traefik's mapping for the gate's host is written from
+startup, so the first new row does not depend on a reconcile to be reachable.
+
+### Making a new address public
+
+Nothing new is needed to open an address on purpose:
+
+- **The whole host.** Turn "Require sign-in" off on the host's row.
+- **One path, such as a webhook.** Add a path row with the switch off under the
+  protected host, as in [Leaving a path open](#leaving-a-path-open).
+
+A project member or above on the app's project can do either, and either save
+redeploys a running app (see [The save redeploys the app](#the-save-redeploys-the-app)).
+
+### A preview's own address
+
+A preview's whole-host row requires sign-in whatever the parent's rows say, so a host
+with the setting on doesn't publish every pull request. A path row it copies from the
+parent stays as open as its parent's, so a path opened for a webhook is still reached
+without signing in. A parent row that gains sign-in is also written to the app's
+existing previews, as a protected row, and the running ones redeployed. The parent's
+dialog says what a new preview gets: "Existing previews stay protected. A new
+preview's own address will require sign-in too."
+
+A preview's own row is opened the same way as any other, by turning its switch off.
+
+### Another project, or an app still serving the address
+
+A protected row on a host another project uses needs a system admin (see
+[Requiring sign-in on a domain](#requiring-sign-in-on-a-domain)), and a protected row
+isn't created while another app's running container still serves that address without
+sign-in, because the address would stay open until that app deploys. With the setting
+on, the pages that create a row meet both rules before the app exists:
+
+- The new-app form and a template deploy refuse the host with "Another project already
+  uses this address, so a system admin has to set this up.", and refuse an address
+  another app still serves openly with "The app wasn't created: *app* still serves an
+  old route on *host* with no sign-in. Deploy it from its page, then try again."
+  Deploy that app and try again: these pages don't redeploy another app, where the
+  dialog warns and does.
+- A first `git push` refuses a host another project has a row on, naming the app and
+  saying to push under another name. It reads domain rows, not containers, so another
+  app still serving the host doesn't stop it.
+
+If the gate's host can't be mapped when the row is made, the new app or the template
+deploy is deleted again, and the page says why, rather than leaving a protected address
+nobody can get through. If that also fails, the app is kept and the page says to
+delete it.
+
+### What only the real host can show
+
+One check needs the real host, with the setting on. It is item 6 of the
+[design](superpowers/specs/2026-11-11-shared-host-defaults-design.md), so it keeps
+its number here:
+
+```text
+6. Each of them — a new app, a template deploy, a preview — and a first git push
+   starts with sign-in required. A path row opened for a webhook is reached
+   without signing in.
+```
+
 ## The Access column
 
 The Domains panel on the app page, and the Domains page, show each domain's Access.
@@ -377,6 +475,11 @@ says "Existing previews stay protected. New ones will be open." New previews fol
 the parent's domains as they are when the preview is made.
 
 The pull-request comment marks a protected link "(requires sign-in)".
+
+With `OUTHAUL_PROTECT_NEW_DOMAINS` on, a new preview's whole-host row requires sign-in
+whatever the parent's rows say, and the parent's dialog says so: "Existing previews
+stay protected. A new preview's own address will require sign-in too." See
+[A preview's own address](#a-previews-own-address).
 
 ## If it doesn't work
 

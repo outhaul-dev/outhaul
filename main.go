@@ -26,6 +26,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/catalog"
 	"github.com/outhaul-dev/outhaul/internal/compose"
 	"github.com/outhaul-dev/outhaul/internal/config"
+	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/dbaas"
 	"github.com/outhaul-dev/outhaul/internal/deploy"
 	"github.com/outhaul-dev/outhaul/internal/docker"
@@ -197,6 +198,9 @@ func serve() error {
 		log.Printf("sso: using the provider from the environment: %s", cfg.SSOIssuer)
 	}
 	reserveAdminHost(context.Background(), st, cfg.AdminHost(), log.Printf)
+	// The naming value with the detected IP is built below, once the HTTP server
+	// needs it; the suffix rule only needs the suffix.
+	constrainDomains(context.Background(), st, core.Naming{Suffix: cfg.DomainSuffix, SuffixOnly: cfg.DomainSuffixOnly}, log.Printf)
 	if err := st.SyncAzureDestination(context.Background(), cfg.BackupAzureAccount, cfg.BackupAzureContainer); err != nil {
 		return fmt.Errorf("sync the Azure backup destination: %w", err)
 	}
@@ -251,13 +255,17 @@ func serve() error {
 	// ingress postures), then mint certs before Traefik comes up so the file
 	// provider finds them on first watch.
 	var certMgr *localca.Manager
-	if on, err := st.TunnelEnabled(context.Background()); err == nil {
-		if err := httpOffTunnelError(cfg, on); err != nil {
+	tunnelOn, tunnelErr := st.TunnelEnabled(context.Background())
+	if tunnelErr == nil {
+		if err := httpOffTunnelError(cfg, tunnelOn); err != nil {
 			return err
 		}
-		if err := adminPublishError(cfg, on); err != nil {
+		if err := adminPublishError(cfg, tunnelOn); err != nil {
 			return err
 		}
+	}
+	if err := protectNewDomainsError(cfg, tunnelOn, tunnelErr); err != nil {
+		return err
 	}
 	if warning := adminPortWarning(cfg); warning != "" {
 		log.Print(warning)
@@ -351,11 +359,13 @@ func serve() error {
 	go pruner.Run(workerCtx)
 
 	// HTTP server. Generated template domains embed the server's public IP
-	// (sslip.io), configurable for hosts whose outbound and public IPs differ.
+	// (sslip.io), configurable for hosts whose outbound and public IPs differ;
+	// with OUTHAUL_DOMAIN_SUFFIX they are one label under that domain instead.
 	serverIP := cfg.ServerIP
 	if serverIP == "" {
 		serverIP = catalog.DetectServerIP()
 	}
+	naming := core.Naming{ServerIP: serverIP, Suffix: cfg.DomainSuffix, SuffixOnly: cfg.DomainSuffixOnly}
 	// git-push-to-deploy: bare-repo manager, deploy bridge, and SSH server. All
 	// startup failures are non-fatal — the admin UI still comes up, and git-push
 	// is simply unavailable until the cause is fixed.
@@ -365,7 +375,7 @@ func serve() error {
 		self = ""
 	}
 	repos := gitrepo.New(cfg.GitDir(), self, cfg.GitHookSocketPath())
-	sshSrv := startGitPush(workerCtx, cfg, st, worker, broker, serverIP, repos, self)
+	sshSrv := startGitPush(workerCtx, cfg, st, worker, broker, naming, repos, self)
 
 	// Preview environments: per-PR ephemeral child apps. They post PR comments
 	// as the app's own connected account.
@@ -380,13 +390,14 @@ func serve() error {
 	previews := previewmgr.New(st, worker,
 		&previewDBProvisioner{st: st, dbm: dbm},
 		&previewDocker{st: st, runtime: dc, compose: newComposeRunner(composeEnv)},
-		ghClient, tokenSource, serverIP)
+		ghClient, tokenSource, naming)
 	worker.SetDeployHook(previews.OnDeployFinished) // update a preview's PR comment + status on deploy completion
 	// A preview of a route that requires sign-in requires it too: the spawn
 	// reconciles the proxy, as turning sign-in on does, and links it over
 	// HTTPS when protected rows are served that way (as the pages do).
 	previews.SetProxyControl(infra)
 	previews.SetHTTPSOnly(cfg.HTTPOff)
+	previews.SetProtectNewDomains(cfg.ProtectNewDomains)
 	previews.SetProtectedHTTPS(func(ctx context.Context) bool {
 		if cfg.TLSEnabled() {
 			return true
@@ -407,7 +418,7 @@ func serve() error {
 	setupToken := server.NewToken()
 	srv, err := server.New(st, worker, dc, newComposeRunner(composeEnv), dbm, backups, broker, ghClient,
 		sources, previews,
-		cfg.PublicURL, serverIP, cfg.TLSEnabled(), setupToken)
+		cfg.PublicURL, naming, cfg.TLSEnabled(), setupToken)
 	if err != nil {
 		stopWorker()
 		return fmt.Errorf("build server: %w", err)
@@ -457,6 +468,8 @@ func serve() error {
 		Scopes:          cfg.SSOScopes,
 		RoleGroups:      cfg.SSORoleGroups,
 	})
+
+	srv.SetProtectNewDomains(cfg.ProtectNewDomains)
 	go srv.RunRestorePass(workerCtx)
 	srv.SetContainerPolicy(cfg.StrictContainerPolicy())
 	srv.SetBuild(update.Current())
@@ -707,7 +720,12 @@ func (ic *infraController) reconcile(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("read which routes require sign-in: %w", err)
 	}
-	if !protected {
+	if ic.cfg.ProtectNewDomains {
+		// Every row created from now on is protected, so the gate's host is
+		// mapped whatever the rows say. The admin route needs it anyway, so
+		// this usually recreates nothing.
+		protected = true
+	} else if !protected {
 		protected = ic.gatedContainersRemain(ctx, tunnelOn)
 	}
 	if !ic.cfg.AdminDirect {
@@ -845,6 +863,23 @@ func httpOffTunnelError(cfg config.Config, tunnelOn bool) error {
 	return nil
 }
 
+// protectNewDomainsError reports why an install that requires sign-in on every
+// new domain can't be served: people need somewhere to sign in, over HTTPS or
+// through a tunnel, and that has to be known, not guessed. An unreadable
+// tunnel setting is refused rather than skipped, as the two checks above do:
+// with no HTTPS nothing can be verified, and guessing "no tunnel" would start
+// a server that then creates rows nobody could get through. With HTTPS
+// configured the read is irrelevant, so its error is ignored.
+func protectNewDomainsError(cfg config.Config, tunnelOn bool, tunnelErr error) error {
+	if !cfg.ProtectNewDomains || cfg.TLSEnabled() || tunnelOn {
+		return nil
+	}
+	if tunnelErr != nil {
+		return fmt.Errorf("OUTHAUL_PROTECT_NEW_DOMAINS needs HTTPS or a Cloudflare Tunnel, and the tunnel setting couldn't be read: %w", tunnelErr)
+	}
+	return errors.New("OUTHAUL_PROTECT_NEW_DOMAINS needs HTTPS or a Cloudflare Tunnel: set OUTHAUL_ACME_EMAIL or OUTHAUL_LOCAL_CA, or enable the tunnel in Settings")
+}
+
 // Enable persists the connector token and brings the tunnel up live. The
 // reconcile is run on a detached context, not the caller's request context:
 // it recreates Traefik, which can drop the very connection driving the request
@@ -886,6 +921,9 @@ func (ic *infraController) ReconcileProxy(_ context.Context) error {
 // with Enable, this runs on a detached context (see Enable) so the reconcile
 // that recreates Traefik isn't cancelled by the request that triggered it.
 func (ic *infraController) Disable(_ context.Context) error {
+	if ic.cfg.ProtectNewDomains && !ic.cfg.TLSEnabled() {
+		return errors.New("cannot disable the Cloudflare Tunnel while OUTHAUL_PROTECT_NEW_DOMAINS is set: with no HTTPS, nobody could get through a protected row")
+	}
 	if err := adminPublishError(ic.cfg, false); err != nil {
 		return err
 	}
@@ -953,6 +991,28 @@ func reserveAdminHost(ctx context.Context, st *store.Store, host string, logf fu
 		logf("WARNING: app %q has the domain %s%s, which is Outhaul's own address (OUTHAUL_PUBLIC_URL). "+
 			"An app there shares the admin UI's origin and cookies. Delete that domain on the app's page; Outhaul leaves it in place.",
 			d.AppName, d.Host, d.Path)
+	}
+}
+
+// constrainDomains tells the store the one suffix new domain rows must sit
+// under, so no writer can route a name that nothing covers, whoever it is. Each
+// row already outside it gets a warning: Outhaul leaves it in place, and it can
+// still be edited in place or deleted. With the rule off, nothing is set and
+// every host is allowed.
+func constrainDomains(ctx context.Context, st *store.Store, n core.Naming, logf func(format string, args ...any)) {
+	if !n.SuffixOnly {
+		return
+	}
+	st.SetDomainSuffix(n.Suffix)
+	rows, err := st.DomainsOutsideSuffix(ctx)
+	if err != nil {
+		logf("WARNING: could not check for domains outside OUTHAUL_DOMAIN_SUFFIX: %v", err)
+		return
+	}
+	for _, d := range rows {
+		logf("WARNING: app %q has the domain %s%s, which is outside OUTHAUL_DOMAIN_SUFFIX (%s): only one label under it is covered by a certificate, so nothing routes this name. "+
+			"Outhaul leaves it in place; it can still be edited in place or deleted on the app's page.",
+			d.AppName, d.Host, d.Path, n.Suffix)
 	}
 }
 
@@ -1122,7 +1182,7 @@ func shutdown(httpServer *http.Server, stopWorker context.CancelFunc, workerDone
 // logged; it returns the SSH server (for live port rebinds from the UI) or nil
 // if the SSH server is off or could not start. The hook socket and the bare
 // repositories are set up either way.
-func startGitPush(ctx context.Context, cfg config.Config, st *store.Store, worker *deploy.Worker, broker *logstream.Broker, serverIP string, repos *gitrepo.Manager, self string) *gitssh.Server {
+func startGitPush(ctx context.Context, cfg config.Config, st *store.Store, worker *deploy.Worker, broker *logstream.Broker, naming core.Naming, repos *gitrepo.Manager, self string) *gitssh.Server {
 	if self == "" {
 		return nil
 	}
@@ -1137,7 +1197,7 @@ func startGitPush(ctx context.Context, cfg config.Config, st *store.Store, worke
 		log.Printf("WARNING: git-push disabled (hook socket): %v", err)
 		return nil
 	}
-	bridge := githook.NewBridge(st, broker, worker, repos, serverIP, cfg.HealthTimeout+5*time.Minute)
+	bridge := githook.NewBridge(st, broker, worker, repos, naming, cfg.ProtectNewDomains, cfg.HealthTimeout+5*time.Minute)
 	go bridge.Serve(ctx, hookLn)
 
 	// SSH server (public-key auth against push_keys).

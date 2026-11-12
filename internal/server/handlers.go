@@ -310,6 +310,11 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		Branch: branch, AutoDeploy: autoDeploy, GithubRepo: githubRepo, GitSourceID: gitSourceID,
 		WebhookToken: newSecret(), WebhookSecret: newSecret(), ProjectID: projectID,
 	}
+	// The form offers <name>.<suffix> and leaves the field optional: a
+	// single-container app with no domain takes that name.
+	if kind != core.KindCompose && app.Domain == "" && s.naming.Suffix != "" {
+		app.Domain = name + "." + s.naming.Suffix
+	}
 	// Compose domains live in their own table (a stack can have many); the
 	// form's optional domain/service/port trio seeds the first row after the
 	// app exists.
@@ -346,15 +351,60 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		s.renderAppsWithError(w, r, ownHostRefusal)
 		return
 	}
-	if host := app.Domain; host != "" || firstDomain != nil {
-		if firstDomain != nil {
-			host = firstDomain.Host
+	host := app.Domain
+	if firstDomain != nil {
+		host = firstDomain.Host
+	}
+	// A row created while the server requires sign-in on new domains is
+	// protected, unless the form turned it off. A request without the form's
+	// protected_offered (a script, an old page) didn't choose: protect it. A
+	// compose app with no domain has no row to protect.
+	protect := s.protectNew && host != "" &&
+		(r.FormValue("protected_offered") == "" || r.FormValue("protected") != "")
+	if protect {
+		if ok, reason := s.protectionAvailability(r.Context(), core.Domain{Host: host}); !ok {
+			s.renderAppsWithError(w, r, reason)
+			return
 		}
-		if refused, err := s.sharedHostRefused(r, projectID, host, true, false); err != nil {
+		if firstDomain != nil {
+			firstDomain.Protected = true
+		}
+	}
+	if host != "" {
+		if msg := s.naming.SuffixRefusal(host); msg != "" {
+			s.renderAppsWithError(w, r, msg)
+			return
+		}
+		if refused, err := s.sharedHostRefused(r, projectID, host, true, protect); err != nil {
 			s.renderAppsWithError(w, r, "Could not create app: "+err.Error())
 			return
 		} else if refused {
 			s.renderAppsWithError(w, r, sharedHostRefusal)
+			return
+		}
+	}
+	if protect {
+		// The row requires sign-in, so an app whose running container still
+		// serves an old open route on the host would stay reachable openly
+		// until it redeploys. Refuse and say which app: this form doesn't
+		// redeploy another app.
+		scope, err := s.scopeFor(r)
+		if err != nil {
+			log.Printf("create app: read the person's projects: %v", err)
+			scope = projectScope{}
+		}
+		// The app doesn't exist yet, so nothing is exempt: an orphan container a
+		// same-named app's failed teardown left behind still serves the host openly.
+		others, err := s.leftoverRoutes(r.Context(), core.App{},
+			map[string]bool{strings.ToLower(host): true}, scope)
+		if err != nil {
+			s.renderAppsWithError(w, r, fmt.Sprintf("The app wasn't created: Outhaul couldn't tell which other apps still serve old routes on %s (%v).", host, err))
+			return
+		}
+		if len(others) > 0 {
+			s.renderAppsWithError(w, r, fmt.Sprintf(
+				"The app wasn't created: %s still serves an old route on %s with no sign-in. Deploy it from its page, then try again.",
+				others[0].label(), host))
 			return
 		}
 	}
@@ -374,7 +424,14 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	if firstDomain != nil {
 		extra = []core.Domain{*firstDomain}
 	}
-	if _, err := s.store.CreateAppWithDomains(r.Context(), app, extra); err != nil {
+	var created core.App
+	var err error
+	if protect && firstDomain == nil {
+		created, err = s.store.CreateAppProtected(r.Context(), app)
+	} else {
+		created, err = s.store.CreateAppWithDomains(r.Context(), app, extra)
+	}
+	if err != nil {
 		if errors.Is(err, store.ErrHostReserved) {
 			s.renderAppsWithError(w, r, ownHostRefusal)
 			return
@@ -382,6 +439,20 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		// Most likely a duplicate name (UNIQUE constraint) or a taken host.
 		s.renderAppsWithError(w, r, "Could not create app: "+s.takenText(r, err))
 		return
+	}
+	if protect {
+		ctx := context.WithoutCancel(r.Context())
+		if err := s.ensureGateHost(ctx); err != nil {
+			if undo := s.store.DeleteApp(ctx, created.ID); undo != nil {
+				log.Printf("create app: remove %q after the proxy failed: %v", app.Name, undo)
+				s.renderAppsWithError(w, r, fmt.Sprintf(
+					"Sign-in couldn't be turned on: Outhaul couldn't map the gate (%v), and couldn't remove the app it had just created (%v). Delete it from the list before trying again.", err, undo))
+				return
+			}
+			s.renderAppsWithError(w, r, fmt.Sprintf(
+				"The app wasn't created: Outhaul couldn't map the sign-in gate before it deploys (%v).", err))
+			return
+		}
 	}
 	// CreateApp itself seeds a primary domain row for non-compose apps (see
 	// store.CreateApp); compose apps seed one just above via firstDomain. Either
@@ -824,7 +895,7 @@ func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, status in
 		"Volumes":       volumes,
 		"Attachments":   attachRows,
 		"ProjDatabases": projDatabases,
-		"ServerIP":      s.serverIP,
+		"ServerIP":      s.naming.ServerIP,
 		"TLSAvailable":  s.tlsEnabled,
 		"LocalCA":       s.caFile != "",
 		"HTTPSOnly":     s.routing.HTTPOff,
@@ -860,6 +931,10 @@ func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, status in
 		}
 		data["Limits"] = stored.Or(s.defaultLimits)
 		data["LimitSources"] = sources
+	}
+
+	if host := s.naming.HostUnderSuffix(app.Name); host != "" {
+		data["DefaultDomain"] = host
 	}
 	// Breadcrumb context; tolerate a missing project rather than 500 the page.
 	if p, err := s.store.GetProject(r.Context(), app.ProjectID); err == nil {
@@ -1068,6 +1143,10 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, verr, http.StatusBadRequest)
 		return
 	}
+	if msg := s.naming.SuffixRefusal(d.Host); msg != "" {
+		http.Error(w, msg, http.StatusBadRequest)
+		return
+	}
 	d.AppID = id
 	// An HTTPS-only server has no plain-HTTP router, so every row is served
 	// over HTTPS whatever its own box says.
@@ -1078,7 +1157,14 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 	// if the browser goes: the reconcile can recreate the Traefik it came through.
 	ctx := context.WithoutCancel(r.Context())
 	var others []otherRedeploy
-	if r.FormValue("protected") != "" {
+	// A new row requires sign-in while the server requires it on new domains,
+	// unless the dialog turned it off. A request without the dialog's
+	// protected_offered (a script, an old page) didn't choose, so protect it.
+	protect := r.FormValue("protected") != ""
+	if s.protectNew && r.FormValue("protected_offered") == "" {
+		protect = true
+	}
+	if protect {
 		if ok, reason := s.protectionAvailability(ctx, d); !ok {
 			http.Error(w, reason, http.StatusBadRequest)
 			return
@@ -1195,6 +1281,15 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 	// moving a protected row, or moving an open row off a route on a host that
 	// requires sign-in, which its old container would keep serving openly.
 	moved := !strings.EqualFold(existing.Host, d.Host) || existing.Path != d.Path
+	// Only a move is checked: a row already outside the suffix keeps working
+	// until it is moved, and stays editable in place until then, which is what
+	// the store's check promises too.
+	if moved {
+		if msg := s.naming.SuffixRefusal(d.Host); msg != "" {
+			http.Error(w, msg, http.StatusBadRequest)
+			return
+		}
+	}
 	redeploy := d.Protected != existing.Protected || existing.Protected && moved
 	if !redeploy && moved {
 		leaves, err := s.leavesOpenRoute(ctx, existing)
@@ -1521,15 +1616,24 @@ func parseVolumeForm(r *http.Request, app core.App) (string, string) {
 
 // parseDomainForm reads and validates the wizard's fields for one route. For a
 // compose app it requires a service + port; for a single-container app it forces
-// service="" and port=AppPort. host_kind=="sslip" mints a host under the
-// server's sslip.io wildcard instead of the custom field.
+// service="" and port=AppPort. host_kind=="default" mints the app's name under
+// the server's domain suffix, and host_kind=="sslip" its name under the server's
+// sslip.io wildcard, instead of the custom field.
 func (s *Server) parseDomainForm(r *http.Request, app core.App) (core.Domain, string) {
 	host := strings.TrimSpace(r.FormValue("host"))
-	if r.FormValue("host_kind") == "sslip" {
-		if s.serverIP == "" {
+	// An sslip.io kind stays accepted under a suffix, so a page rendered before
+	// the suffix was set still works.
+	switch r.FormValue("host_kind") {
+	case "default":
+		host = s.naming.HostUnderSuffix(app.Name)
+		if host == "" {
+			return core.Domain{}, "This server has no domain suffix configured, so a default domain can't be generated. Enter a custom domain."
+		}
+	case "sslip":
+		if s.naming.ServerIP == "" {
 			return core.Domain{}, "This server has no public IP configured, so a sslip.io domain can't be generated. Enter a custom domain."
 		}
-		host = app.Name + "." + s.serverIP + ".sslip.io"
+		host = app.Name + "." + s.naming.ServerIP + ".sslip.io"
 	}
 	host = strings.ToLower(host)
 	if !domainHostRe.MatchString(host) {

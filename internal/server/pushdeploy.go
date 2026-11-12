@@ -32,7 +32,7 @@ func (s *Server) sshAddr() string {
 // ssh://git@203.0.113.9:2222/api. Host falls back to a placeholder when the
 // server IP is unknown; port falls back to :2222.
 func (s *Server) pushRemote(app string) string {
-	host := s.serverIP
+	host := s.naming.ServerIP
 	if host == "" {
 		host = "<your-server>"
 	}

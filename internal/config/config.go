@@ -66,8 +66,11 @@ type Config struct {
 	AdminDirect        bool          // the admin UI listens on every interface (default); false: loopback + the Docker gateway
 	SignInBackoff      bool          // OUTHAUL_SIGNIN_BACKOFF: lock a username after repeated failed password sign-ins
 
-	PublicURL string // externally reachable base URL of the admin UI (for GitHub callbacks/webhooks); empty disables GitHub App setup
-	ServerIP  string // public IP used in generated sslip.io template domains; empty means auto-detect
+	PublicURL         string // externally reachable base URL of the admin UI (for GitHub callbacks/webhooks); empty disables GitHub App setup
+	ProtectNewDomains bool   // OUTHAUL_PROTECT_NEW_DOMAINS: a new domain row requires sign-in
+	ServerIP          string // public IP used in generated sslip.io template domains; empty means auto-detect
+	DomainSuffix      string // OUTHAUL_DOMAIN_SUFFIX, lower-cased, one trailing dot dropped; "" keeps sslip.io names
+	DomainSuffixOnly  bool   // OUTHAUL_DOMAIN_SUFFIX_ONLY; needs OUTHAUL_DOMAIN_SUFFIX
 
 	TrustedProxies  []string // OUTHAUL_TRUSTED_PROXIES: addresses and CIDRs trimmed; nil when unset
 	TrustAllProxies bool     // OUTHAUL_TRUSTED_PROXIES=all
@@ -137,8 +140,11 @@ func Load(getenv Getenv) Config {
 		AdminDirect:        p.boolDefault("OUTHAUL_ADMIN_DIRECT", true),
 		SignInBackoff:      p.bool("OUTHAUL_SIGNIN_BACKOFF"),
 
-		PublicURL: p.url("OUTHAUL_PUBLIC_URL"),
-		ServerIP:  p.ip("OUTHAUL_SERVER_IP"),
+		PublicURL:         p.url("OUTHAUL_PUBLIC_URL"),
+		ProtectNewDomains: p.bool("OUTHAUL_PROTECT_NEW_DOMAINS"),
+		ServerIP:          p.ip("OUTHAUL_SERVER_IP"),
+		DomainSuffix:      p.domainSuffix("OUTHAUL_DOMAIN_SUFFIX"),
+		DomainSuffixOnly:  p.bool("OUTHAUL_DOMAIN_SUFFIX_ONLY"),
 
 		BackupAzureAccount:   getenv("OUTHAUL_BACKUP_AZURE_ACCOUNT"),
 		BackupAzureContainer: getenv("OUTHAUL_BACKUP_AZURE_CONTAINER"),
@@ -259,6 +265,12 @@ func (c Config) Validate() error {
 	if c.TLSWildcard != "" && c.ACMEDNSProvider == "" {
 		errs = append(errs, errors.New("OUTHAUL_TLS_WILDCARD needs OUTHAUL_ACME_DNS_PROVIDER: a wildcard certificate can only be validated by DNS-01"))
 	}
+	if c.TLSWildcard != "" && c.DomainSuffix != "" && !strings.EqualFold(c.TLSWildcard, "*."+c.DomainSuffix) {
+		errs = append(errs, fmt.Errorf("OUTHAUL_DOMAIN_SUFFIX=%q and OUTHAUL_TLS_WILDCARD=%q must name the same domain: the wildcard has to be *.%s", c.DomainSuffix, c.TLSWildcard, c.DomainSuffix))
+	}
+	if c.DomainSuffixOnly && c.DomainSuffix == "" {
+		errs = append(errs, errors.New("OUTHAUL_DOMAIN_SUFFIX_ONLY needs OUTHAUL_DOMAIN_SUFFIX: it refuses every name that isn't one label under one"))
+	}
 	if c.DefaultLimits.MilliCPUs > int64(runtime.NumCPU())*1000 && c.DockerHost == "" {
 		errs = append(errs, fmt.Errorf("OUTHAUL_DEFAULT_CPUS=%.3g: this server has %d CPUs, and Docker refuses a container asking for more; lower it, or set OUTHAUL_DOCKER_HOST if the daemon is elsewhere", float64(c.DefaultLimits.MilliCPUs)/1000, runtime.NumCPU()))
 	}
@@ -274,6 +286,9 @@ func (c Config) Validate() error {
 		} else if plan, err := docker.PlanSubnet(c.NetworkSubnet); err == nil && !plan.Fixed(c.TraefikIP) {
 			errs = append(errs, fmt.Errorf("OUTHAUL_TRAEFIK_IP=%s: want an address from %s to %s in OUTHAUL_NETWORK_SUBNET=%s (the lower half, after the gateway)", c.TraefikIP, plan.First, plan.Last, plan.Subnet))
 		}
+	}
+	if c.ProtectNewDomains && !c.PublicURLSet() {
+		errs = append(errs, errors.New("OUTHAUL_PROTECT_NEW_DOMAINS needs OUTHAUL_PUBLIC_URL, where people are sent to sign in"))
 	}
 	if !c.AdminDirect {
 		if !c.PublicURLSet() {
@@ -683,6 +698,31 @@ func validWildcard(v string) bool {
 		}
 	}
 	return true
+}
+
+// maxSuffixLen is the longest OUTHAUL_DOMAIN_SUFFIX accepted: room for a
+// 63-character label under a 253-character name.
+const maxSuffixLen = 253 - 63 - 1
+
+// domainNameRe matches a bare, lowercase hostname (dot-separated DNS labels),
+// the shape of the store's own host checks.
+var domainNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$`)
+
+// domainSuffix reads OUTHAUL_DOMAIN_SUFFIX: the domain every generated name
+// becomes one label under, stored lower-cased with one trailing dot dropped.
+// It needs at least two labels, so that its wildcard is a name and not a
+// top-level domain. Empty keeps sslip.io names.
+func (p *parser) domainSuffix(key string) string {
+	raw := p.getenv(key)
+	if raw == "" {
+		return ""
+	}
+	v := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(raw)), ".")
+	if !strings.Contains(v, ".") || len(v) > maxSuffixLen || !domainNameRe.MatchString(v) {
+		p.reject(key, raw, "a domain such as shared.demo.example.com, at least two labels, at most 189 characters")
+		return ""
+	}
+	return v
 }
 
 // httpPort reads OUTHAUL_HTTP_PORT: "80" keeps the plain-HTTP entrypoint,

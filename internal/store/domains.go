@@ -60,6 +60,26 @@ func normalizeHost(host string) string {
 	return strings.TrimSuffix(strings.ToLower(host), ".")
 }
 
+// ErrHostOutsideSuffix means the host is not one label under the server's
+// domain suffix, so no certificate covers it and Traefik routes nothing to it.
+var ErrHostOutsideSuffix = errors.New("domain is outside the server's domain suffix")
+
+// SetDomainSuffix names the one suffix every new route must sit under: exactly
+// one label under it, which is what a wildcard certificate for *.<suffix>
+// covers. From then on no writer may add a row outside it, or move one there;
+// rows already outside stay as they are, and can be edited in place or
+// deleted. Case and a trailing dot are ignored. "" allows every host. Call it
+// once at startup.
+func (s *Store) SetDomainSuffix(suffix string) {
+	s.suffix.Store(normalizeHost(suffix))
+}
+
+// suffixOutside reports whether host is outside the suffix set.
+func (s *Store) suffixOutside(host string) bool {
+	suffix, _ := s.suffix.Load().(string)
+	return suffix != "" && !core.OneLabelUnder(host, suffix)
+}
+
 // ReservedHostDomains returns every route on the reserved host, tagged with
 // its app's name, so startup can warn about rows put there before it was
 // reserved. It is empty when nothing is reserved.
@@ -71,6 +91,23 @@ func (s *Store) ReservedHostDomains(ctx context.Context) ([]core.DomainListing, 
 	var out []core.DomainListing
 	for _, d := range all {
 		if s.isReservedHost(d.Host) {
+			out = append(out, d)
+		}
+	}
+	return out, nil
+}
+
+// DomainsOutsideSuffix returns every route outside the suffix set, tagged with
+// its app's name, so startup can warn about rows written before the rule was
+// set. It is empty when no suffix is set.
+func (s *Store) DomainsOutsideSuffix(ctx context.Context) ([]core.DomainListing, error) {
+	all, err := s.ListAllDomains(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []core.DomainListing
+	for _, d := range all {
+		if s.suffixOutside(d.Host) {
 			out = append(out, d)
 		}
 	}
@@ -122,14 +159,18 @@ func (s *Store) addDomainTx(ctx context.Context, tx *sql.Tx, d core.Domain) (cor
 }
 
 // checkRouteFreeTx returns ErrHostReserved when d's host is the reserved host,
-// on any path, and ErrDomainTaken when an app other than d.AppID already
-// routes d's host (case-insensitively) and path. The same host on a different
-// path is a legitimate split (e.g. /api served by another app). The check runs
-// in the writing transaction and the store holds a single connection, so two
+// on any path, ErrHostOutsideSuffix when it is outside the suffix set, and
+// ErrDomainTaken when an app other than d.AppID already routes d's host
+// (case-insensitively) and path. The same host on a different path is a
+// legitimate split (e.g. /api served by another app). The check runs in the
+// writing transaction and the store holds a single connection, so two
 // concurrent writes cannot both pass it.
 func (s *Store) checkRouteFreeTx(ctx context.Context, tx *sql.Tx, d core.Domain) error {
 	if s.isReservedHost(d.Host) {
 		return fmt.Errorf("%w: %s", ErrHostReserved, d.Host)
+	}
+	if s.suffixOutside(d.Host) {
+		return fmt.Errorf("%w: %s", ErrHostOutsideSuffix, d.Host)
 	}
 	taken := &DomainTakenError{Host: d.Host, Path: d.Path}
 	err := tx.QueryRowContext(ctx,

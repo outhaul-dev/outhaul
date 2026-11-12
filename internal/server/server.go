@@ -107,8 +107,9 @@ type Server struct {
 	pages      map[string]*template.Template
 	setupToken string
 	publicURL  string
-	serverIP   string          // for generated sslip.io template domains; may be empty
+	naming     core.Naming     // for generated template and preview hosts
 	tlsEnabled bool            // ACME or local CA configured: HTTPS automation is available
+	protectNew bool            // OUTHAUL_PROTECT_NEW_DOMAINS: a new row requires sign-in
 	routing    traefik.Routing // the server-wide routing settings the pages show
 
 	azureDestinationSet bool              // OUTHAUL_BACKUP_AZURE_* set: the Azure row belongs to the environment
@@ -177,7 +178,7 @@ type Server struct {
 // first-boot admin-creation flow (printed by the caller as a one-time URL).
 // publicURL is Outhaul's externally reachable base URL, used to build the
 // GitHub App manifest's callback and webhook URLs.
-func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databases, bk Backups, br *logstream.Broker, gh github.Client, reg *gitsource.Registry, previews PreviewHandler, publicURL, serverIP string, tlsEnabled bool, setupToken string) (*Server, error) {
+func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databases, bk Backups, br *logstream.Broker, gh github.Client, reg *gitsource.Registry, previews PreviewHandler, publicURL string, naming core.Naming, tlsEnabled bool, setupToken string) (*Server, error) {
 	s := &Server{
 		store:             st,
 		deployer:          d,
@@ -191,7 +192,7 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 		previews:          previews,
 		metrics:           hostmetrics.NewSampler("/"),
 		publicURL:         publicURL,
-		serverIP:          serverIP,
+		naming:            naming,
 		tlsEnabled:        tlsEnabled,
 		setupToken:        setupToken,
 		restoreEvery:      time.Minute,
@@ -273,6 +274,10 @@ func (s *Server) SetSignInBackoff(on bool) {
 	}
 	s.signIn = nil
 }
+
+// SetProtectNewDomains records OUTHAUL_PROTECT_NEW_DOMAINS: every new domain
+// row starts requiring sign-in. Call before Handler.
+func (s *Server) SetProtectNewDomains(on bool) { s.protectNew = on }
 
 // syncCerts refreshes local-CA certs after a domain change; best-effort — a
 // route reaches Traefik on the next deploy anyway, minting can lag a beat.
@@ -364,6 +369,8 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, page
 	data["IsSystemAdmin"] = me.Role.AtLeast(core.RoleSystemAdmin)
 	data["CanManage"] = me.Role.AtLeast(core.RoleProjectAdmin)
 	data["CanChange"] = s.canChange(r)
+	data["ProtectNewDomains"] = s.protectNew
+	data["DomainSuffix"] = s.naming.Suffix
 	data["HasRole"] = me.Role.AtLeast(core.RoleProjectViewer)
 	var buf bytes.Buffer
 	if err := t.ExecuteTemplate(&buf, "base", data); err != nil {

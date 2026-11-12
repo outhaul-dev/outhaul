@@ -1,7 +1,7 @@
 {{define "appform"}}
 <dialog id="app-dialog" class="modal" open{{if eq .OpenDialog "app-dialog"}} data-reopen{{end}} aria-labelledby="app-dialog-title">
   {{if .Projects}}
-  <form method="post" action="/apps">
+  <form method="post" action="/apps"{{if .DomainSuffix}} data-default-domain="{{.DomainSuffix}}"{{end}}>
     {{if .Return}}<input type="hidden" name="return" value="{{.Return}}">{{end}}
     <div class="modal-head">
       <h3 class="modal-title" id="app-dialog-title">New app</h3>
@@ -88,9 +88,16 @@
       <!-- Step 3: Expose -->
       <div class="stack" data-step>
         <label class="field">
-          <span>Domain {{template "hint" "The hostname Traefik routes to this app, e.g. web.example.com. For a Compose stack you can leave this blank to keep the stack internal-only."}}</span>
-          <input type="text" name="domain" id="domain-input" placeholder="web.example.com" value="{{with .Form}}{{.Domain}}{{end}}" required>
+          <span>Domain {{if .DomainSuffix}}{{template "hint" "The hostname Traefik routes to this app, e.g. web.example.com. Leave it blank to use this app's name under the server's domain suffix. For a Compose stack you can leave this blank to keep the stack internal-only."}}{{else}}{{template "hint" "The hostname Traefik routes to this app, e.g. web.example.com. For a Compose stack you can leave this blank to keep the stack internal-only."}}{{end}}</span>
+          <input type="text" name="domain" id="domain-input" placeholder="web.example.com" value="{{with .Form}}{{.Domain}}{{end}}"{{if not .DomainSuffix}} required{{end}}>
         </label>
+        {{if .ProtectNewDomains}}
+        <input type="hidden" name="protected_offered" value="1">
+        <label class="field-check">
+          <input type="checkbox" class="switch" role="switch" name="protected" checked>
+          <span>Require sign-in {{template "hint" "People must sign in to Outhaul before they reach this app. Everyone who can sign in gets through, and the app receives their name in the X-Outhaul-User header."}}</span>
+        </label>
+        {{end}}
         <label class="field" data-kind="compose" hidden>
           <span>Expose service {{template "hint" "Which service in the compose stack the domain should route to, e.g. web."}}</span>
           <input type="text" name="compose_service" placeholder="web" value="{{with .Form}}{{.ComposeService}}{{end}}">
@@ -134,13 +141,24 @@
 
     // ---- field toggles (moved from the old inline form) ----
     var kind = document.getElementById('kind-select');
+    var defaultDomain = dialog.querySelector('form') ? dialog.querySelector('form').getAttribute('data-default-domain') : '';
+    var domainField = document.getElementById('domain-input');
+    var domainEdited = !!(domainField && domainField.value);
+    var nameField = dialog.querySelector('input[name="name"]');
+    // The domain follows the name until it is edited by hand, so a generated
+    // name is offered but never overwrites one that was typed.
+    if (nameField) nameField.addEventListener('input', function () {
+      if (!defaultDomain || domainEdited || !domainField) return;
+      if (nameField.value) domainField.value = nameField.value + '.' + defaultDomain;
+    });
+    if (domainField) domainField.addEventListener('input', function () { domainEdited = true; });
     function applyKind() {
       if (!kind) return;
       document.querySelectorAll('[data-kind]').forEach(function (el) {
         el.hidden = el.getAttribute('data-kind') !== kind.value;
       });
       var domain = document.getElementById('domain-input');
-      if (domain) domain.required = kind.value !== 'compose';
+      if (domain) domain.required = kind.value !== 'compose' && !defaultDomain;
     }
     if (kind) kind.addEventListener('change', applyKind);
 

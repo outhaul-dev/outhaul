@@ -62,3 +62,73 @@ func TestUpdateAppKind(t *testing.T) {
 		t.Fatalf("kind not updated: %+v", got)
 	}
 }
+
+// The row seeded from app.Domain is open by default and protected when the
+// caller asks for it; the app's own Domain field is unchanged either way.
+func TestCreateAppProtectedSeedsAProtectedPrimaryRow(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	open, err := st.CreateApp(ctx, core.App{Name: "open", RepoURL: "https://example.com/o.git", Domain: "open.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := st.ListDomains(ctx, open.ID)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("open rows = %v (%v)", rows, err)
+	}
+	if rows[0].Protected {
+		t.Error("CreateApp seeded a protected row")
+	}
+
+	guarded, err := st.CreateAppProtected(ctx, core.App{Name: "guarded", RepoURL: "https://example.com/g.git", Domain: "guarded.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err = st.ListDomains(ctx, guarded.ID)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("guarded rows = %v (%v)", rows, err)
+	}
+	if !rows[0].Protected || rows[0].Host != "guarded.example.com" || rows[0].Port != primaryDomainPort {
+		t.Errorf("guarded row = %+v, want a protected row on guarded.example.com", rows[0])
+	}
+	if guarded.Domain != "guarded.example.com" {
+		t.Errorf("app.Domain = %q, want the submitted host", guarded.Domain)
+	}
+
+	// A compose app seeds no row, so the protected seed changes nothing there.
+	stack, err := st.CreateAppProtected(ctx, core.App{Name: "stack", RepoURL: "https://example.com/s.git", Kind: core.KindCompose})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows, _ := st.ListDomains(ctx, stack.ID); len(rows) != 0 {
+		t.Errorf("compose rows = %v, want none", rows)
+	}
+}
+
+// Only the row seeded from app.Domain follows the caller; an extra route keeps
+// the Protected flag it was given.
+func TestCreateAppWithDomainsKeepsEachRowsProtection(t *testing.T) {
+	st := testStore(t)
+	ctx := context.Background()
+
+	app, err := st.CreateAppWithDomains(ctx,
+		core.App{Name: "shop", RepoURL: "https://example.com/s.git", Domain: "shop.example.com"},
+		[]core.Domain{{Host: "www.shop.example.com", Port: primaryDomainPort, TLS: true, Protected: true}})
+	if err != nil {
+		t.Fatalf("CreateAppWithDomains: %v", err)
+	}
+	rows, err := st.ListDomains(ctx, app.ID)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("rows = %+v (%v), want the primary row and the extra", rows, err)
+	}
+	if rows[0].Host != "shop.example.com" || rows[1].Host != "www.shop.example.com" {
+		t.Fatalf("rows = %+v, want shop.example.com then www.shop.example.com", rows)
+	}
+	if rows[0].Protected {
+		t.Errorf("primary row = %+v, want it open", rows[0])
+	}
+	if !rows[1].Protected {
+		t.Errorf("extra row = %+v, want it protected", rows[1])
+	}
+}

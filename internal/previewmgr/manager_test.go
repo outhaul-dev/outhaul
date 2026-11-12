@@ -168,7 +168,7 @@ func newHarness(t *testing.T) *harness {
 		h.lastTokenSourceID = sourceID
 		return "tok", true, nil
 	}
-	h.mgr = New(st, h.notifier, h.dbprov, h.docker, h.gh, ts, serverIP)
+	h.mgr = New(st, h.notifier, h.dbprov, h.docker, h.gh, ts, core.Naming{ServerIP: serverIP})
 	return h
 }
 
@@ -1386,5 +1386,93 @@ func TestPreviewStartsWithNoLimits(t *testing.T) {
 	}
 	if fresh.Limits != (core.Limits{}) {
 		t.Errorf("stored child limits = %+v, want zero", fresh.Limits)
+	}
+}
+
+func TestSpawnFailedCommentNamesTheSuffixRule(t *testing.T) {
+	got := spawnFailedComment(store.ErrHostOutsideSuffix)
+	if !strings.Contains(got, "domain suffix") {
+		t.Errorf("comment = %q, want it to name the suffix", got)
+	}
+}
+
+// A preview's whole-host row requires sign-in while the server requires it on
+// new domains, whatever its parent's row says; a path row copies its parent.
+// A parent row on "/" is a whole host too, so its preview row is protected.
+func TestPreviewRowsFollowProtectNewDomains(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	h.mgr.SetProtectNewDomains(true)
+	parent := h.seedGithubApp(t, "web", "acme/site", nil) // one whole-host row, open
+	if _, err := h.st.AddDomain(ctx, core.Domain{AppID: parent.ID, Host: "web.example", Path: "/hooks", Port: 8080}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.st.AddDomain(ctx, core.Domain{AppID: parent.ID, Host: "web.example", Path: "/", Port: 8080}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := h.st.GetPreviewConfig(ctx, parent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := h.st.CreateApp(ctx, core.App{
+		Name: core.PreviewAppName(parent.Name, 1), ParentID: parent.ID, PRNumber: 1,
+		Ephemeral: true, Source: core.SourceGithub, GithubRepo: "acme/site", GitSourceID: h.sourceID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	on, err := h.mgr.mintDomains(ctx, parent, child, cfg, 1)
+	if err != nil {
+		t.Fatalf("mintDomains: %v", err)
+	}
+	if !on {
+		t.Error("mintDomains reported no protected row")
+	}
+	rows, err := h.st.ListDomains(ctx, child.ID)
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("preview rows = %v (%v), want three", rows, err)
+	}
+	for _, d := range rows {
+		switch d.Path {
+		case "", "/":
+			if !d.Protected {
+				t.Errorf("the preview's whole-host row %q is open", d.Path)
+			}
+		case "/hooks":
+			if d.Protected {
+				t.Error("a copied path row should stay as open as its parent's")
+			}
+		default:
+			t.Errorf("unexpected row %+v", d)
+		}
+	}
+}
+
+// With the setting off a preview copies its parent's rows, open ones included.
+func TestPreviewRowsCopyWithProtectNewOff(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	parent := h.seedGithubApp(t, "web", "acme/site", nil)
+	cfg, _ := h.st.GetPreviewConfig(ctx, parent.ID)
+	child, err := h.st.CreateApp(ctx, core.App{
+		Name: core.PreviewAppName(parent.Name, 1), ParentID: parent.ID, PRNumber: 1,
+		Ephemeral: true, Source: core.SourceGithub, GithubRepo: "acme/site", GitSourceID: h.sourceID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	on, err := h.mgr.mintDomains(ctx, parent, child, cfg, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if on {
+		t.Error("mintDomains reported a protected row with the setting off")
+	}
+	rows, _ := h.st.ListDomains(ctx, child.ID)
+	for _, d := range rows {
+		if d.Protected {
+			t.Errorf("row %s%s is protected with the setting off", d.Host, d.Path)
+		}
 	}
 }

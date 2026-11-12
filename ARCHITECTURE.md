@@ -397,11 +397,13 @@ domain override, `up --wait` health gating, runtime logs, metrics,
 stop/restart/delete, volume backups) is the existing compose machinery,
 unbranched. Generated domains use Dokploy's zero-DNS shape
 `<app>-<hash>-<ip-dashed>.sslip.io` (server IP from `OUTHAUL_SERVER_IP` or
-auto-detected via the outbound-UDP local-address trick); generated
-credentials land in the app's ordinary env vars, encrypted at rest and
-editable on the app page. The catalog test cross-checks each entry both
-ways: every manifest env key must be consumed by its compose file, and every
-`${VAR}` the compose file reads must be fed by the manifest. Deliberate
+auto-detected via the outbound-UDP local-address trick). The zero-DNS
+`sslip.io` shape stays the default; `OUTHAUL_DOMAIN_SUFFIX` replaces it, one
+label under the suffix, and `${domain:<label>}` is the second name a manifest
+needs. Generated credentials land in the app's ordinary env vars, encrypted at
+rest and editable on the app page. The catalog test cross-checks each entry
+both ways: every manifest env key must be consumed by its compose file, and
+every `${VAR}` the compose file reads must be fed by the manifest. Deliberate
 seams: file mounts, template upgrades, user-pasted compose, a remote
 catalog URL, and the jwt/timestamp/randomPort helpers.
 
@@ -627,6 +629,7 @@ stub in place of Outhaul (not in CI). Its `--outhaul` mode uses a running
 Outhaul instead, but hasn't been run against one yet, and the whole flow with a
 real Outhaul and a real SSO provider hasn't been run end to end.
 
+
 ### SSO from configuration, and roles from groups (opt-in)
 
 `OUTHAUL_SSO_ISSUER`, `OUTHAUL_SSO_CLIENT_ID` and
@@ -643,6 +646,20 @@ lasts until the next sign-in for someone in a mapped group. Protected-route sign
 account nor change a role, and a password account's role is never touched. This
 replaces the 2026-11-02 design's "taking roles or groups from the SSO provider"
 non-goal, opt-in. See `docs/SSO.md`.
+
+### Sign-in on new domains (opt-in)
+
+With `OUTHAUL_PROTECT_NEW_DOMAINS`, every domain row Outhaul creates starts
+protected: the dialog's switch starts on, the new-app form shows it, and a
+template deploy, a first `git push` and a preview's whole-host row get it with
+no switch to turn. The six places that write a row are named in
+`docs/PROTECTED-ROUTES.md`. A row that can't require sign-in isn't created,
+and `serve` refuses the setting where sign-in can't work (no
+`OUTHAUL_PUBLIC_URL`, or neither HTTPS nor a tunnel;
+`infraController.Disable` refuses to drop the tunnel when that would leave
+neither). While it is on, `infraController.reconcile` treats protected routes as
+present whatever the rows say, so Traefik maps the gate's host from startup.
+r11
 
 ### Behind a TLS-terminating proxy (opt-in)
 
@@ -688,6 +705,29 @@ loopback and on the host's address on its Docker network, and maps Traefik's
 `server.served` filters the containers Traefik is ignoring out of the Access
 column, the Domains page and the "other app on this host" checks; the live
 state and mismatch checks still see every container.
+
+### Default domains under one suffix (opt-in)
+
+With `OUTHAUL_DOMAIN_SUFFIX`, every name Outhaul generates is one label under
+it, the shape a wildcard for `*.<suffix>` covers: a template's `${domain}` is
+`<app>.<suffix>`, a preview `[<service>-]<app>-pr-<n>.<suffix>`, and a first
+`git push` `<app>.<suffix>`. The exception is a preview base domain an app sets
+itself, which still wins. Unset, nothing changes and `sslip.io` names are
+generated as before. The user guide is `docs/SHARED-HOST.md`.
+
+**One value for naming.** `core.Naming` carries the server's IP, the suffix and
+the "only" flag, and every minter takes it (`catalog.Render`,
+`core.Naming.PreviewHost`, the first push in `githook`, the new-app form and
+`parseDomainForm`), so no name is built from a bare server IP. A manifest that
+needs a second name writes `${domain:<label>}`.
+
+**The rule is in the writing transaction.** `store.checkRouteFreeTx` refuses a
+host outside the suffix with `ErrHostOutsideSuffix`, beside the reserved admin
+host, so `AddDomain`, `CreateAppWithDomains` and a move in `UpdateDomain` all
+check it. It refuses a system admin too, because the name is routed nowhere.
+Nothing renames a row: one already outside is left in place, still editable in
+place and deletable, and startup warns about each. The forms ask
+`core.Naming.SuffixRefusal` first, so the page says why.
 
 ### Container guard rails (opt-in)
 

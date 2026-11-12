@@ -14,6 +14,16 @@
 
       <!-- Step 1: Host -->
       <div class="stack" data-step>
+        {{if .DefaultDomain}}
+        <label class="field-check">
+          <input type="radio" name="host_kind" value="default">
+          <span>Default domain {{template "hint" "This app's name under the server's domain suffix. It resolves here already, so no DNS record is needed."}}</span>
+        </label>
+        <label class="field" data-host="default" hidden>
+          <span>Generated host</span>
+          <input type="text" value="{{.DefaultDomain}}" disabled>
+        </label>
+        {{end}}
         <label class="field-check">
           <input type="radio" name="host_kind" value="custom" checked>
           <span>Custom domain {{template "hint" "A hostname you own and have pointed at this server's IP with a DNS A record, e.g. shop.example.com."}}</span>
@@ -22,7 +32,7 @@
           <span>Host</span>
           <input type="text" name="host" id="domain-host" placeholder="shop.example.com">
         </label>
-        {{if .ServerIP}}
+        {{if and .ServerIP (not .DefaultDomain)}}
         <label class="field-check">
           <input type="radio" name="host_kind" value="sslip">
           <span>Free sslip.io domain {{template "hint" "A zero-config hostname that resolves to this server's IP via sslip.io — handy for testing without owning a domain."}}</span>
@@ -85,9 +95,12 @@
           <input type="hidden" name="exception_was" id="domain-exception-was" value="0">
           <input type="hidden" name="others_was" value="{{.OthersWas}}">
           <label class="field-check">
-            <input type="checkbox" class="switch" role="switch" name="protected" id="domain-protected"{{if not .ProtectionAvailable}} disabled{{end}}>
+            <input type="checkbox" class="switch" role="switch" name="protected" id="domain-protected"{{if .ProtectNewDomains}} checked{{end}}{{if and (not .ProtectNewDomains) (not .ProtectionAvailable)}} disabled{{end}}>
             <span>Require sign-in</span>
           </label>
+          {{if .ProtectNewDomains}}
+          <p class="muted">New addresses require sign-in. To make this one public, turn this switch off on the host's row; to leave one path open, such as a webhook, add a row for that path with the switch off.</p>
+          {{end}}
           <p class="muted">People must sign in to Outhaul before they reach this address. Everyone who can sign in gets through, and the app receives their name in the <span class="mono">X-Outhaul-User</span> header.</p>
           {{if not .ProtectionAvailable}}
           <p class="env-note" id="domain-protect-reason">{{.ProtectionReason}}</p>
@@ -98,7 +111,7 @@
             {{with .ProtectionWarning}}<strong>{{.}}</strong>{{end}}
             {{range .AlsoRedeploys}}<p class="protect-also" data-also-host="{{.Host}}">{{.Sentence}}</p>{{end}}
             {{range .PreviewRedeploys}}<p class="protect-also" data-also-preview>{{.Sentence}}</p>{{end}}
-            {{if .HasPreviews}}<p class="protect-also" id="domain-previews-stay">Existing previews stay protected. New ones will be open.</p>{{end}}
+            {{if .HasPreviews}}<p class="protect-also" id="domain-previews-stay">{{if .ProtectNewDomains}}Existing previews stay protected. A new preview's own address will require sign-in too.{{else}}Existing previews stay protected. New ones will be open.{{end}}</p>{{end}}
           </div>
         </div>
         <p class="muted env-note">Other domain changes apply on this app's next deploy.</p>
@@ -186,7 +199,9 @@
     //
     // When sign-in is unavailable the server renders the switch disabled, for
     // a new or open row; a protected row's switch is enabled, so it can be
-    // turned off, with its own reason.
+    // turned off, with its own reason — unless OUTHAUL_PROTECT_NEW_DOMAINS is
+    // on, when the switch is always enabled and a save that can't protect the
+    // row is refused instead.
     var protect = document.getElementById('domain-protected');
     var protectNote = document.getElementById('domain-protect-note');
     var reasonOff = document.getElementById('domain-protect-reason');

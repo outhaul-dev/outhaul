@@ -15,15 +15,32 @@ import (
 const appCols = `id, project_id, name, repo_url, domain, created_at, branch, auto_deploy, source, webhook_token, webhook_secret, ssh_public_key, github_repo, git_source_id, kind, compose_path, dockerfile_path, watch_paths, template_id, compose_raw, parent_id, pr_number, ephemeral, preview_status, deploy_trigger, tag_pattern, tag_prereleases, limit_cpus_milli, limit_memory_bytes, limit_pids`
 
 // CreateApp inserts an app and returns it with ID and CreatedAt populated. The
-// SSH private key (if any) is encrypted at rest.
+// SSH private key (if any) is encrypted at rest. The row seeded from
+// app.Domain is open.
 func (s *Store) CreateApp(ctx context.Context, app core.App) (core.App, error) {
-	return s.CreateAppWithDomains(ctx, app, nil)
+	return s.createApp(ctx, app, nil, false)
 }
 
 // CreateAppWithDomains is CreateApp plus extra routes (each bound to the new
 // app) in the same transaction: if any route is refused — e.g. another app
-// already serves it — no app is created, rather than one with no domain.
+// already serves it — no app is created, rather than one with no domain. The
+// row seeded from app.Domain is open, and every extra route keeps its own
+// Protected.
 func (s *Store) CreateAppWithDomains(ctx context.Context, app core.App, domains []core.Domain) (core.App, error) {
+	return s.createApp(ctx, app, domains, false)
+}
+
+// CreateAppProtected is CreateAppWithDomains for an install that requires
+// sign-in on new domains: the row seeded from app.Domain requires it too. Extra
+// routes go through CreateAppWithDomains, which keeps each one's own Protected.
+func (s *Store) CreateAppProtected(ctx context.Context, app core.App) (core.App, error) {
+	return s.createApp(ctx, app, nil, true)
+}
+
+// createApp inserts an app, its extra routes and the row seeded from
+// app.Domain in one transaction, with primaryProtected choosing whether that
+// seeded row requires sign-in.
+func (s *Store) createApp(ctx context.Context, app core.App, domains []core.Domain, primaryProtected bool) (core.App, error) {
 	app.CreatedAt = time.Now().UTC()
 	if app.Source == "" {
 		app.Source = core.SourcePublic
@@ -82,7 +99,7 @@ func (s *Store) CreateAppWithDomains(ctx context.Context, app core.App, domains 
 	// apps pass Domain="" and seed their first row explicitly through the handler.
 	if app.Domain != "" && app.Kind != core.KindCompose {
 		if _, err := s.addDomainTx(ctx, tx, core.Domain{
-			AppID: app.ID, Host: app.Domain, Port: primaryDomainPort, TLS: true,
+			AppID: app.ID, Host: app.Domain, Port: primaryDomainPort, TLS: true, Protected: primaryProtected,
 		}); err != nil {
 			return core.App{}, err
 		}

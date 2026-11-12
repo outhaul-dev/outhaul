@@ -466,7 +466,7 @@ func (s *Server) previewProtection(cfg core.PreviewConfig, parent core.App, pare
 // host's, which it minted under a base domain changed since, so the
 // service's rows aren't split over two; otherwise the host it would mint now.
 func (s *Server) mintedPreviewHost(cfg core.PreviewConfig, parent, preview core.App, service string, rows []core.Domain) string {
-	now := core.PreviewHost(cfg, parent.Name, preview.PRNumber, service, s.serverIP)
+	now := s.naming.PreviewHost(cfg, parent.Name, preview.PRNumber, service)
 	label, _, _ := strings.Cut(now, ".")
 	found := ""
 	for _, r := range rows {

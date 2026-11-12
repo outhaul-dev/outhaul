@@ -2099,7 +2099,7 @@ func previewedWeb(t *testing.T, e *testEnv, previewProtected bool) (web core.App
 	if err != nil {
 		t.Fatal(err)
 	}
-	prRow = addRow(t, e, core.Domain{AppID: pr.ID, Host: core.PreviewHost(cfg, "web", 42, "", e.srv.serverIP), TLS: true, Protected: previewProtected})
+	prRow = addRow(t, e, core.Domain{AppID: pr.ID, Host: e.srv.naming.PreviewHost(cfg, "web", 42, ""), TLS: true, Protected: previewProtected})
 	if prRow.Host != previewHost {
 		t.Fatalf("preview host = %q, want %q", prRow.Host, previewHost)
 	}
@@ -2221,7 +2221,7 @@ func TestTurningParentOffLeavesPreviews(t *testing.T) {
 		t.Errorf("preview deployments %d -> %d, want none queued", prBefore, n)
 	}
 
-	mgr := previewmgr.New(e.store, e.deployer, nil, nil, nil, nil, e.srv.serverIP)
+	mgr := previewmgr.New(e.store, e.deployer, nil, nil, nil, nil, e.srv.naming)
 	if err := mgr.Handle(ctx, web.GitSourceID, webhook.PullRequestEvent{Action: "opened", Number: 43,
 		HeadRef: "feature-y", HeadSHA: "abcdef1", BaseRepoFullName: "acme/web"}); err != nil {
 		t.Fatal(err)
@@ -2587,7 +2587,7 @@ func TestPreviewRouterOnAnotherAddressRedeploys(t *testing.T) {
 // preview manager minted for that service; when the preview has no row there,
 // it adds one, protected, on that host, never on one added by hand.
 func TestPreviewProtection(t *testing.T) {
-	s := &Server{serverIP: "203.0.113.7"}
+	s := &Server{naming: core.Naming{ServerIP: "203.0.113.7"}}
 	parent := core.App{ID: 1, Name: "shop", Kind: core.KindCompose}
 	pr := core.App{ID: 2, Name: "shop-pr-9", PRNumber: 9, Ephemeral: true, ParentID: 1}
 	cfg := core.PreviewConfig{AppID: 1, Enabled: true, BaseDomain: "new.example"}

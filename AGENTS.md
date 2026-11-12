@@ -327,11 +327,36 @@ fixed in five batches. All five are on `main`.
   that names a missing file-provider middleware is dropped and its requests fall
   to an open router. So the gate stays in each app's own labels, with
   `trustforwardheader=false`. See `docs/BEHIND-A-PROXY.md`.
+
 - **The fixed network.** `OUTHAUL_NETWORK_SUBNET` gives Docker the gateway
   (the subnet's first address) and the upper half as its dynamic range;
   `OUTHAUL_TRAEFIK_IP` must be in the lower half, after the gateway. Outhaul
   never recreates a network that exists with another subnet: startup says so
   and the docs give the move.
+
+- **Generated names sit under one suffix.** Every name Outhaul mints comes from
+  `core.Naming` (the server IP, `OUTHAUL_DOMAIN_SUFFIX` and the "only" flag),
+  never from a bare server IP: a template's `${domain}` is `<app>.<suffix>`, a
+  preview `[<service>-]<app>-pr-<n>.<suffix>`, a first `git push`
+  `<app>.<suffix>`, and a manifest that wants two names writes
+  `${domain:<label>}`, which is `<app>-<label>.<suffix>`. The suffix rule is
+  checked once, in `store.checkRouteFreeTx`, so every writer is refused a host
+  outside it, system admins included; a row already outside is kept, still
+  editable in place (only a move is checked) and deletable, and startup warns
+  about each. `OUTHAUL_DOMAIN_SUFFIX` and `OUTHAUL_TLS_WILDCARD` must name the
+  same domain. See `docs/SHARED-HOST.md`.
+- **A new row is never left open by omission.** With
+  `OUTHAUL_PROTECT_NEW_DOMAINS` on, every row Outhaul creates requires sign-in:
+  the dialog's switch starts on, the new-app form shows it, and a template
+  deploy, a first `git push` and a preview's whole-host row get it with no
+  switch. A request without `protected_offered` (a script, an old page) is
+  protected, so only an explicit off on a page that offered the switch opens a
+  row. A row that can't require sign-in isn't created, and the new-app form and
+  the template deploy delete what they made when the gate's host can't be
+  mapped. `serve` refuses the setting where sign-in can't work, and the tunnel
+  can't be turned off while it is set with no HTTPS of its own. See
+  `docs/PROTECTED-ROUTES.md`.
+r11
 
 ### Open: reliability and UX
 
@@ -369,6 +394,11 @@ listed here, because this repository is public. Ask the maintainer.
   - a crash can leave a preview's status at "building";
   - deleting a branch triggers a deploy;
   - template deploys skip the certificate sync;
+  - with `OUTHAUL_PROTECT_NEW_DOMAINS` on and `OUTHAUL_LOCAL_CA`, a new
+    preview's whole-host row is protected, so its link is `https`, but the
+    local CA mints a leaf only at boot, on a server-side save, or on its
+    12-hour ticker, so the first preview after a spawn can fail on the
+    certificate until one of those runs;
   - some forms save part of their changes before validating;
   - the "Running" count is taken from the latest deployment row;
   - temporary containers leak when they fail to start;

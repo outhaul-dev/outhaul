@@ -9,12 +9,17 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 // The variable engine is Dokploy's (packages/server/src/templates/
 // processors.ts), reduced to the helpers the curated catalog needs:
 //
-//	${domain}       generated <app>-<hash>-<ip-dashed>.sslip.io name
+//	${domain}       under a suffix, <app>.<suffix>; else a generated
+//	                <app>-<hash>-<ip-dashed>.sslip.io name
+//	${domain:<label>} under a suffix, <app>-<label>.<suffix>, for a second
+//	                name; else the same generated name ${domain} gives
 //	${password[:n]} random lowercase-alphanumeric password (default 16)
 //	${base64[:n]}   base64 of n random bytes (default 32)
 //	${hash[:n]}     random hex string (default 8)
@@ -36,18 +41,19 @@ type Rendered struct {
 }
 
 // Render expands a template's variables, domains, and env for a new app.
-// appName seeds generated domains; serverIP (may be empty) makes them
-// resolve via sslip.io without DNS setup.
-func Render(t Template, appName, serverIP string) (Rendered, error) {
+// appName seeds generated domains: under naming's suffix they become one label
+// under it, else naming's server IP (may be empty) makes them resolve via
+// sslip.io without DNS setup.
+func Render(t Template, appName string, naming core.Naming) (Rendered, error) {
 	// First pass: generate helper values inside variable definitions.
 	// Second pass: resolve variables referencing other variables — one level,
 	// like Dokploy, which is all a catalog without cycles needs.
 	vars := make(map[string]string, len(t.Variables))
 	for name, value := range t.Variables {
-		vars[name] = expand(value, nil, appName, serverIP)
+		vars[name] = expand(value, nil, appName, naming)
 	}
 	for name, value := range vars {
-		vars[name] = expand(value, vars, appName, serverIP)
+		vars[name] = expand(value, vars, appName, naming)
 	}
 
 	var r Rendered
@@ -56,24 +62,24 @@ func Render(t Template, appName, serverIP string) (Rendered, error) {
 		if host == "" {
 			host = "${domain}"
 		}
-		d.Host = expand(host, vars, appName, serverIP)
+		d.Host = expand(host, vars, appName, naming)
 		if strings.Contains(d.Host, "${") {
 			return Rendered{}, fmt.Errorf("catalog %s: domain host %q did not fully resolve", t.ID, d.Host)
 		}
 		r.Domains = append(r.Domains, d)
 	}
 	for _, e := range t.Env {
-		e.Value = expand(e.Value, vars, appName, serverIP)
+		e.Value = expand(e.Value, vars, appName, naming)
 		r.Env = append(r.Env, e)
 	}
 	return r, nil
 }
 
 // expand replaces ${helper} and ${var} placeholders in one string.
-func expand(s string, vars map[string]string, appName, serverIP string) string {
+func expand(s string, vars map[string]string, appName string, naming core.Naming) string {
 	return placeholderRe.ReplaceAllStringFunc(s, func(match string) string {
 		name := match[2 : len(match)-1]
-		if v, ok := generate(name, appName, serverIP); ok {
+		if v, ok := generate(name, appName, naming); ok {
 			return v
 		}
 		if v, ok := vars[name]; ok {
@@ -85,12 +91,19 @@ func expand(s string, vars map[string]string, appName, serverIP string) string {
 
 // generate produces a value for a helper placeholder; ok is false when the
 // name is not a helper (so it falls through to variable lookup).
-func generate(name, appName, serverIP string) (string, bool) {
+func generate(name, appName string, naming core.Naming) (string, bool) {
 	helper, arg, _ := strings.Cut(name, ":")
 	n, _ := strconv.Atoi(arg)
 	switch helper {
 	case "domain":
-		return sslipDomain(appName, serverIP), true
+		if naming.Suffix != "" {
+			label := appName
+			if arg != "" {
+				label += "-" + arg
+			}
+			return naming.HostUnderSuffix(label), true
+		}
+		return sslipDomain(appName, naming.ServerIP), true
 	case "password":
 		if n <= 0 {
 			n = 16
@@ -113,7 +126,11 @@ func generate(name, appName, serverIP string) (string, bool) {
 		h := hex.EncodeToString(b)
 		return h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:], true
 	case "email":
-		return randomString(8, "abcdefghijklmnopqrstuvwxyz") + "@" + sslipHost(appName, serverIP), true
+		host := naming.HostUnderSuffix(appName)
+		if host == "" {
+			host = sslipHost(appName, naming.ServerIP)
+		}
+		return randomString(8, "abcdefghijklmnopqrstuvwxyz") + "@" + host, true
 	case "username":
 		return randomString(10, "abcdefghijklmnopqrstuvwxyz"), true
 	}

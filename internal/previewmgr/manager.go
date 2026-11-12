@@ -75,7 +75,7 @@ type Manager struct {
 	docker   Docker
 	gh       GithubAPI
 	token    TokenSource
-	serverIP string
+	naming   core.Naming
 	events   chan prJob    // pull_request events waiting for Run (see Enqueue)
 	stopped  chan struct{} // closed when Run returns
 
@@ -85,6 +85,7 @@ type Manager struct {
 	proxy          ProxyControl               // reconciles Traefik before a preview that requires sign-in deploys; nil: none
 	protectedHTTPS func(context.Context) bool // whether protected rows are served over HTTPS; nil: no
 	httpsOnly      bool                       // the server publishes no plain HTTP; every preview link uses https
+	protectNew     bool                       // OUTHAUL_PROTECT_NEW_DOMAINS: a preview's whole-host row requires sign-in
 }
 
 // defaultGateHostWait bounds how long a spawn waits for the proxy reconcile a
@@ -98,8 +99,8 @@ type ProxyControl interface {
 	ReconcileProxy(ctx context.Context) error
 }
 
-func New(st Store, n Notifier, db DBProvisioner, dk Docker, gh GithubAPI, ts TokenSource, serverIP string) *Manager {
-	return &Manager{store: st, notifier: n, dbprov: db, docker: dk, gh: gh, token: ts, serverIP: serverIP,
+func New(st Store, n Notifier, db DBProvisioner, dk Docker, gh GithubAPI, ts TokenSource, naming core.Naming) *Manager {
+	return &Manager{store: st, notifier: n, dbprov: db, docker: dk, gh: gh, token: ts, naming: naming,
 		events: make(chan prJob, queueSize), stopped: make(chan struct{}), jobTimeout: defaultJobTimeout,
 		gateHostWait: defaultGateHostWait}
 }
@@ -116,6 +117,12 @@ func (m *Manager) SetProtectedHTTPS(f func(context.Context) bool) { m.protectedH
 // SetHTTPSOnly makes every preview link use https, whatever the row's own TLS
 // flag says: the server publishes no plain HTTP. Call it before Run.
 func (m *Manager) SetHTTPSOnly(on bool) { m.httpsOnly = on }
+
+// SetProtectNewDomains makes every preview's whole-host row require sign-in,
+// whatever its parent's does. A path row copies its parent's, so a webhook
+// path left open stays open. Call it before Run. A row on "/" is a whole host
+// too, so it requires sign-in as well.
+func (m *Manager) SetProtectNewDomains(on bool) { m.protectNew = on }
 
 // Handle routes one pull_request event to the right lifecycle action for every
 // enabled app targeting the PR's base repo *through the source that delivered
@@ -425,7 +432,8 @@ func (m *Manager) provisionDatabases(ctx context.Context, parent, child core.App
 // derived key so the second AddDomain doesn't hit UNIQUE(app_id, host, path).
 // The first such row gives the rest of the preview row, but the preview row
 // requires sign-in when any of them does: the preview of a protected route is
-// never open.
+// never open. With protectNew set, the whole-host row requires it whatever the
+// parent's rows say (SetProtectNewDomains).
 func (m *Manager) mintDomains(ctx context.Context, parent, child core.App, cfg core.PreviewConfig, pr int) (protected bool, err error) {
 	parentDomains, err := m.store.ListDomains(ctx, parent.ID)
 	if err != nil {
@@ -434,16 +442,24 @@ func (m *Manager) mintDomains(ctx context.Context, parent, child core.App, cfg c
 	var rows []core.Domain
 	at := map[string]int{} // derived key -> index in rows
 	for _, d := range parentDomains {
-		host := core.PreviewHost(cfg, parent.Name, pr, d.Service, m.serverIP)
+		host := m.naming.PreviewHost(cfg, parent.Name, pr, d.Service)
+		rowProtected := d.Protected
+		if m.protectNew && (d.Path == "" || d.Path == "/") {
+			// An empty path or "/" is the whole host: the address people
+			// reach, so requiring sign-in there is the point of the setting,
+			// whatever the parent's rows say. Any other path lets one route
+			// out of a protected host stay open.
+			rowProtected = true
+		}
 		key := host + "\x00" + d.Path
 		if i, ok := at[key]; ok {
-			rows[i].Protected = rows[i].Protected || d.Protected
+			rows[i].Protected = rows[i].Protected || rowProtected
 			continue
 		}
 		at[key] = len(rows)
 		rows = append(rows, core.Domain{
 			AppID: child.ID, Host: host, Service: d.Service, Port: d.Port,
-			Path: d.Path, InternalPath: d.InternalPath, TLS: d.TLS, Protected: d.Protected,
+			Path: d.Path, InternalPath: d.InternalPath, TLS: d.TLS, Protected: rowProtected,
 		})
 	}
 	for _, d := range rows {

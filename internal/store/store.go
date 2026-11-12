@@ -25,6 +25,7 @@ type Store struct {
 	box *secret.Box // encrypts app_env values; may be nil for non-env callers
 
 	reservedHost atomic.Value // string: the host no domain row may use; see SetReservedHost
+	suffix       atomic.Value // string: the one suffix new rows must sit under; see SetDomainSuffix
 }
 
 // Open opens (creating if needed) the SQLite database at path, applies pragmas,
