@@ -187,6 +187,43 @@ func TestStartupReservesTheAdminHost(t *testing.T) {
 	}
 }
 
+func TestStartupWarnsAboutRowsOutsideTheSuffix(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	old, err := st.CreateApp(ctx, core.App{Name: "old", RepoURL: "https://x/y.git", Domain: "old.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AddDomain(ctx, core.Domain{AppID: old.ID, Host: "OLD.example.com", Path: "/api", Port: 8080}); err != nil {
+		t.Fatal(err)
+	}
+
+	var warnings []string
+	logf := func(format string, args ...any) { warnings = append(warnings, fmt.Sprintf(format, args...)) }
+	constrainDomains(ctx, st, core.Naming{Suffix: "shared.demo.example.com", SuffixOnly: true}, logf)
+	if len(warnings) != 2 {
+		t.Fatalf("warnings = %q, want one for each of the old app's two rows", warnings)
+	}
+	for _, w := range warnings {
+		if !strings.HasPrefix(w, "WARNING:") || !strings.Contains(w, `"old"`) || !strings.Contains(strings.ToLower(w), "suffix") {
+			t.Errorf("warning %q should name the app and the suffix", w)
+		}
+	}
+	if rows, _ := st.ListDomains(ctx, old.ID); len(rows) != 2 {
+		t.Errorf("rows = %+v, want both kept", rows)
+	}
+
+	warnings = nil
+	constrainDomains(ctx, st, core.Naming{Suffix: "shared.demo.example.com"}, logf) // suffix only off
+	if len(warnings) != 0 {
+		t.Errorf("warnings with the rule off = %q", warnings)
+	}
+}
+
 // The first-boot hint is how an installer (or a person reading the journal)
 // finds the setup page. When Traefik publishes the admin UI under the public
 // URL, that is the address to open: the listen port itself is firewalled.

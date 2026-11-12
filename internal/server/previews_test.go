@@ -115,3 +115,62 @@ func TestSavePreviewConfig(t *testing.T) {
 		t.Fatalf("config not saved: %+v", cfg)
 	}
 }
+
+// Under the suffix rule a preview base domain other than the suffix is refused
+// when it is saved: the preview's name would be outside it.
+func TestPreviewBaseDomainMustBeTheSuffix(t *testing.T) {
+	e := newTestEnv(t)
+	e.srv.naming = core.Naming{Suffix: "shared.demo.example.com", SuffixOnly: true}
+	e.completeSetup(t)
+	app, err := e.store.CreateApp(context.Background(), core.App{
+		Name: "web", Source: core.SourceGithub, GithubRepo: "me/app", Kind: core.KindNixpacks, Branch: "main",
+	})
+	if err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+
+	outside := e.postForm(t, "/apps/"+itoa(app.ID)+"/previews", url.Values{
+		"enabled": {"on"}, "base_domain": {"preview.example.com"},
+	})
+	if outside.StatusCode < 400 {
+		t.Errorf("a base domain outside the suffix was accepted: %d", outside.StatusCode)
+	}
+	outside.Body.Close()
+	if cfg, err := e.store.GetPreviewConfig(context.Background(), app.ID); err == nil && cfg.BaseDomain == "preview.example.com" {
+		t.Error("the outside base domain was stored")
+	}
+
+	inside := e.postForm(t, "/apps/"+itoa(app.ID)+"/previews", url.Values{
+		"enabled": {"on"}, "base_domain": {"shared.demo.example.com"},
+	})
+	if inside.StatusCode >= 400 {
+		t.Errorf("the suffix itself was refused: %d", inside.StatusCode)
+	}
+	inside.Body.Close()
+}
+
+// An empty base domain is the default (sslip.io names), so the suffix rule
+// leaves it alone: the save works. Such a preview's host is outside the
+// suffix, so creating the preview is refused and the PR comment says why.
+func TestPreviewSettingsSaveWithoutABaseDomain(t *testing.T) {
+	e := newTestEnv(t)
+	e.srv.naming = core.Naming{Suffix: "shared.demo.example.com", SuffixOnly: true}
+	e.store.SetDomainSuffix("shared.demo.example.com")
+	e.completeSetup(t)
+	app, err := e.store.CreateApp(context.Background(), core.App{
+		Name: "web", Source: core.SourceGithub, GithubRepo: "me/app", Kind: core.KindNixpacks, Branch: "main",
+	})
+	if err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+
+	r := e.postForm(t, "/apps/"+itoa(app.ID)+"/previews", url.Values{"enabled": {"on"}})
+	if r.StatusCode >= 400 {
+		t.Fatalf("saving preview settings with no base domain: status %d, body %s", r.StatusCode, body(t, r))
+	}
+	r.Body.Close()
+	cfg, err := e.store.GetPreviewConfig(context.Background(), app.ID)
+	if err != nil || !cfg.Enabled || cfg.BaseDomain != "" {
+		t.Errorf("config = %+v (%v), want enabled with no base domain", cfg, err)
+	}
+}

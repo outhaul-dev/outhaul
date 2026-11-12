@@ -405,3 +405,58 @@ func TestDomainFormsExplainTheStoresOwnHostRefusal(t *testing.T) {
 		}
 	}
 }
+
+// Under the suffix rule the dialog says why a host wouldn't be routed.
+func TestAddDomainOutsideTheSuffixIsRefused(t *testing.T) {
+	e := newTestEnv(t)
+	e.srv.naming = core.Naming{ServerIP: "203.0.113.7", Suffix: "shared.demo.example.com", SuffixOnly: true}
+	e.store.SetDomainSuffix("shared.demo.example.com")
+	e.completeSetup(t)
+	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.shared.demo.example.com"})
+
+	r := e.postForm(t, "/apps/"+itoa(app.ID)+"/domains", url.Values{"host_kind": {"custom"}, "host": {"web.example.com"}})
+	if r.StatusCode < 400 || !strings.Contains(body(t, r), "shared.demo.example.com") {
+		t.Errorf("an outside host: status %d, want a refusal naming the suffix", r.StatusCode)
+	}
+}
+
+// A row already outside the suffix is still editable in place: only a move is
+// checked, so sign-in can be turned on for it (or it can be deleted).
+func TestOutsideSuffixRowStaysEditableInPlace(t *testing.T) {
+	e, _ := newProtectionEnv(t)
+	app, err := e.store.CreateApp(context.Background(), core.App{Name: "old", RepoURL: "https://x/y.git", Domain: "old.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := e.store.ListDomains(context.Background(), app.ID)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows = %v (%v), want one", rows, err)
+	}
+	row := rows[0]
+
+	// The rule starts after the row exists: this is a row from before it.
+	e.store.SetDomainSuffix("shared.demo.example.com")
+	e.srv.naming = core.Naming{Suffix: "shared.demo.example.com", SuffixOnly: true}
+
+	r := e.saveDomain(t, app.ID, row, domainForm(row, true))
+	if r.StatusCode >= 400 {
+		t.Fatalf("editing an outside row in place: status %d, body %s", r.StatusCode, body(t, r))
+	}
+	r.Body.Close()
+	got, err := e.store.GetDomain(context.Background(), app.ID, row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Protected {
+		t.Errorf("row = %+v, want sign-in on", got)
+	}
+
+	// Moving it is refused, because the new route would be outside too.
+	moved := row
+	moved.Host = "elsewhere.example.com"
+	moved.Protected = true // as the row is now, so the stale-page check passes
+	r = e.saveDomain(t, app.ID, row, domainForm(moved, true))
+	if r.StatusCode < 400 || !strings.Contains(body(t, r), "shared.demo.example.com") {
+		t.Errorf("moving an outside row: status %d, want a refusal naming the suffix", r.StatusCode)
+	}
+}

@@ -54,9 +54,10 @@ type Config struct {
 	AdminDirect        bool          // the admin UI listens on every interface (default); false: loopback + the Docker gateway
 	SignInBackoff      bool          // OUTHAUL_SIGNIN_BACKOFF: lock a username after repeated failed password sign-ins
 
-	PublicURL    string // externally reachable base URL of the admin UI (for GitHub callbacks/webhooks); empty disables GitHub App setup
-	ServerIP     string // public IP used in generated sslip.io template domains; empty means auto-detect
-	DomainSuffix string // OUTHAUL_DOMAIN_SUFFIX, lower-cased, one trailing dot dropped; "" keeps sslip.io names
+	PublicURL        string // externally reachable base URL of the admin UI (for GitHub callbacks/webhooks); empty disables GitHub App setup
+	ServerIP         string // public IP used in generated sslip.io template domains; empty means auto-detect
+	DomainSuffix     string // OUTHAUL_DOMAIN_SUFFIX, lower-cased, one trailing dot dropped; "" keeps sslip.io names
+	DomainSuffixOnly bool   // OUTHAUL_DOMAIN_SUFFIX_ONLY; needs OUTHAUL_DOMAIN_SUFFIX
 
 	TrustedProxies  []string // OUTHAUL_TRUSTED_PROXIES: addresses and CIDRs trimmed; nil when unset
 	TrustAllProxies bool     // OUTHAUL_TRUSTED_PROXIES=all
@@ -110,9 +111,10 @@ func Load(getenv Getenv) Config {
 		AdminDirect:        p.boolDefault("OUTHAUL_ADMIN_DIRECT", true),
 		SignInBackoff:      p.bool("OUTHAUL_SIGNIN_BACKOFF"),
 
-		PublicURL:    p.url("OUTHAUL_PUBLIC_URL"),
-		ServerIP:     p.ip("OUTHAUL_SERVER_IP"),
-		DomainSuffix: p.domainSuffix("OUTHAUL_DOMAIN_SUFFIX"),
+		PublicURL:        p.url("OUTHAUL_PUBLIC_URL"),
+		ServerIP:         p.ip("OUTHAUL_SERVER_IP"),
+		DomainSuffix:     p.domainSuffix("OUTHAUL_DOMAIN_SUFFIX"),
+		DomainSuffixOnly: p.bool("OUTHAUL_DOMAIN_SUFFIX_ONLY"),
 
 		BackupAzureAccount:   getenv("OUTHAUL_BACKUP_AZURE_ACCOUNT"),
 		BackupAzureContainer: getenv("OUTHAUL_BACKUP_AZURE_CONTAINER"),
@@ -221,6 +223,9 @@ func (c Config) Validate() error {
 	}
 	if c.TLSWildcard != "" && c.DomainSuffix != "" && !strings.EqualFold(c.TLSWildcard, "*."+c.DomainSuffix) {
 		errs = append(errs, fmt.Errorf("OUTHAUL_DOMAIN_SUFFIX=%q and OUTHAUL_TLS_WILDCARD=%q must name the same domain: the wildcard has to be *.%s", c.DomainSuffix, c.TLSWildcard, c.DomainSuffix))
+	}
+	if c.DomainSuffixOnly && c.DomainSuffix == "" {
+		errs = append(errs, errors.New("OUTHAUL_DOMAIN_SUFFIX_ONLY needs OUTHAUL_DOMAIN_SUFFIX: it refuses every name that isn't one label under one"))
 	}
 	if c.RequireHeaderName != "" && c.RequireHeaderValue == "" {
 		errs = append(errs, errors.New("OUTHAUL_REQUIRE_HEADER_NAME needs OUTHAUL_REQUIRE_HEADER_VALUE"))

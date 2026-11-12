@@ -200,6 +200,9 @@ func (b *Bridge) coldCreate(ctx context.Context, req request) (core.App, error) 
 	if host, ok := b.naming.AppHost(req.App); ok && kind != core.KindCompose {
 		app.Domain = host
 	}
+	// No suffix check here: the only host this mints comes from
+	// naming.AppHost, which is one label under the suffix by construction, and
+	// the store refuses it if the suffix is ever wrong.
 	// The app and its route are created together, so a refused route leaves
 	// no app behind.
 	created, err := b.store.CreateApp(ctx, app)

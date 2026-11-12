@@ -1357,3 +1357,10 @@ func TestLinkSchemeHTTPSOnly(t *testing.T) {
 		t.Errorf("linkScheme = %q, want http://", got)
 	}
 }
+
+func TestSpawnFailedCommentNamesTheSuffixRule(t *testing.T) {
+	got := spawnFailedComment(store.ErrHostOutsideSuffix)
+	if !strings.Contains(got, "domain suffix") {
+		t.Errorf("comment = %q, want it to name the suffix", got)
+	}
+}

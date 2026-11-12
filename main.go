@@ -181,6 +181,9 @@ func serve() error {
 	}
 	defer st.Close()
 	reserveAdminHost(context.Background(), st, cfg.AdminHost(), log.Printf)
+	// The naming value with the detected IP is built below, once the HTTP server
+	// needs it; the suffix rule only needs the suffix.
+	constrainDomains(context.Background(), st, core.Naming{Suffix: cfg.DomainSuffix, SuffixOnly: cfg.DomainSuffixOnly}, log.Printf)
 	if err := st.SyncAzureDestination(context.Background(), cfg.BackupAzureAccount, cfg.BackupAzureContainer); err != nil {
 		return fmt.Errorf("sync the Azure backup destination: %w", err)
 	}
@@ -329,7 +332,7 @@ func serve() error {
 	if serverIP == "" {
 		serverIP = catalog.DetectServerIP()
 	}
-	naming := core.Naming{ServerIP: serverIP, Suffix: cfg.DomainSuffix}
+	naming := core.Naming{ServerIP: serverIP, Suffix: cfg.DomainSuffix, SuffixOnly: cfg.DomainSuffixOnly}
 	// git-push-to-deploy: bare-repo manager, deploy bridge, and SSH server. All
 	// startup failures are non-fatal — the admin UI still comes up, and git-push
 	// is simply unavailable until the cause is fixed.
@@ -826,6 +829,28 @@ func reserveAdminHost(ctx context.Context, st *store.Store, host string, logf fu
 		logf("WARNING: app %q has the domain %s%s, which is Outhaul's own address (OUTHAUL_PUBLIC_URL). "+
 			"An app there shares the admin UI's origin and cookies. Delete that domain on the app's page; Outhaul leaves it in place.",
 			d.AppName, d.Host, d.Path)
+	}
+}
+
+// constrainDomains tells the store the one suffix new domain rows must sit
+// under, so no writer can route a name that nothing covers, whoever it is. Each
+// row already outside it gets a warning: Outhaul leaves it in place, and it can
+// still be edited in place or deleted. With the rule off, nothing is set and
+// every host is allowed.
+func constrainDomains(ctx context.Context, st *store.Store, n core.Naming, logf func(format string, args ...any)) {
+	if !n.SuffixOnly {
+		return
+	}
+	st.SetDomainSuffix(n.Suffix)
+	rows, err := st.DomainsOutsideSuffix(ctx)
+	if err != nil {
+		logf("WARNING: could not check for domains outside OUTHAUL_DOMAIN_SUFFIX: %v", err)
+		return
+	}
+	for _, d := range rows {
+		logf("WARNING: app %q has the domain %s%s, which is outside OUTHAUL_DOMAIN_SUFFIX (%s): only one label under it is covered by a certificate, so nothing routes this name. "+
+			"Outhaul leaves it in place; it can still be edited in place or deleted on the app's page.",
+			d.AppName, d.Host, d.Path, n.Suffix)
 	}
 }
 

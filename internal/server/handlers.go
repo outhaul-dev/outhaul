@@ -355,6 +355,10 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		if firstDomain != nil {
 			host = firstDomain.Host
 		}
+		if msg := s.naming.SuffixRefusal(host); msg != "" {
+			s.renderAppsWithError(w, r, msg)
+			return
+		}
 		if refused, err := s.sharedHostRefused(r, projectID, host, true, false); err != nil {
 			s.renderAppsWithError(w, r, "Could not create app: "+err.Error())
 			return
@@ -1048,6 +1052,10 @@ func (s *Server) handleAddDomain(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, verr, http.StatusBadRequest)
 		return
 	}
+	if msg := s.naming.SuffixRefusal(d.Host); msg != "" {
+		http.Error(w, msg, http.StatusBadRequest)
+		return
+	}
 	d.AppID = id
 	// An HTTPS-only server has no plain-HTTP router, so every row is served
 	// over HTTPS whatever its own box says.
@@ -1175,6 +1183,15 @@ func (s *Server) handleUpdateDomain(w http.ResponseWriter, r *http.Request) {
 	// moving a protected row, or moving an open row off a route on a host that
 	// requires sign-in, which its old container would keep serving openly.
 	moved := !strings.EqualFold(existing.Host, d.Host) || existing.Path != d.Path
+	// Only a move is checked: a row already outside the suffix keeps working
+	// until it is moved, and stays editable in place until then, which is what
+	// the store's check promises too.
+	if moved {
+		if msg := s.naming.SuffixRefusal(d.Host); msg != "" {
+			http.Error(w, msg, http.StatusBadRequest)
+			return
+		}
+	}
 	redeploy := d.Protected != existing.Protected || existing.Protected && moved
 	if !redeploy && moved {
 		leaves, err := s.leavesOpenRoute(ctx, existing)

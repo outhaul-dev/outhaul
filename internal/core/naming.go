@@ -1,6 +1,9 @@
 package core
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // Naming is where generated names get their host from: one value carries the
 // server's public IP and the shared domain suffix, so every constructor that
@@ -29,6 +32,16 @@ func OneLabelUnder(host, suffix string) bool {
 	}
 	label, ok := strings.CutSuffix(strings.TrimSuffix(strings.ToLower(host), "."), "."+suffix)
 	return ok && label != "" && !strings.Contains(label, ".")
+}
+
+// SuffixRefusal is why host can't be routed under the suffix rule, or "" when
+// it can. Only one label under the suffix is covered by a certificate for
+// *.<suffix>, so anything else reaches nothing.
+func (n Naming) SuffixRefusal(host string) string {
+	if !n.SuffixOnly || OneLabelUnder(host, n.Suffix) {
+		return ""
+	}
+	return fmt.Sprintf("Only names one label under %s reach this server, such as demo.%s. %s wouldn't be routed.", n.Suffix, n.Suffix, host)
 }
 
 // AppHost is the host an app's first row gets, and whether one can be made.

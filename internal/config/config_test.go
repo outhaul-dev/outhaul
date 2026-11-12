@@ -1160,3 +1160,36 @@ func TestDomainSuffixMustMatchTheWildcard(t *testing.T) {
 		t.Fatalf("disagreeing wildcard and suffix: %v, want one naming both", err)
 	}
 }
+
+func TestDomainSuffixOnlySetting(t *testing.T) {
+	for _, in := range []string{"", "no"} {
+		cfg := Load(func(k string) string {
+			if k == "OUTHAUL_DOMAIN_SUFFIX_ONLY" {
+				return in
+			}
+			return ""
+		})
+		if cfg.DomainSuffixOnly {
+			t.Errorf("OUTHAUL_DOMAIN_SUFFIX_ONLY=%q: DomainSuffixOnly = true", in)
+		}
+	}
+	shared := map[string]string{
+		"OUTHAUL_DOMAIN_SUFFIX_ONLY": "yes",
+		"OUTHAUL_DOMAIN_SUFFIX":      "shared.demo.example.com",
+	}
+	cfg := Load(func(k string) string { return shared[k] })
+	if !cfg.DomainSuffixOnly {
+		t.Error("OUTHAUL_DOMAIN_SUFFIX_ONLY=yes: DomainSuffixOnly = false")
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate with the suffix set: %v", err)
+	}
+
+	// It refuses every name that isn't one label under the suffix, so a
+	// suffix-less server that set it can't work.
+	delete(shared, "OUTHAUL_DOMAIN_SUFFIX")
+	err := Load(func(k string) string { return shared[k] }).Validate()
+	if err == nil || !strings.Contains(err.Error(), "OUTHAUL_DOMAIN_SUFFIX_ONLY") || !strings.Contains(err.Error(), "OUTHAUL_DOMAIN_SUFFIX") {
+		t.Errorf("Validate = %v, want one naming both settings", err)
+	}
+}
