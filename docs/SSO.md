@@ -110,9 +110,23 @@ at the provider, or one person could appear under another's name in Outhaul.
 ## Keeping a password system admin
 
 At least one system admin must be able to sign in with a password, and Outhaul won't let
-you demote, delete or reset the last one. There is no command-line way to recover access,
-and if the provider has an outage or is misconfigured, SSO accounts can't sign in at all.
-A password system admin is how you get back in.
+you demote, delete or reset the last one. If the provider has an outage or is misconfigured,
+SSO accounts can't sign in at all. A password system admin is how you get back in.
+
+There is a command-line way back in. On the host, as the account that owns the
+database:
+
+```sh
+sudo -u outhaul outhaul admin create NAME
+```
+
+If the data directory isn't `/var/lib/outhaul`, use
+`sudo -u outhaul env OUTHAUL_DATA_DIR=/path/to/data outhaul admin create NAME`,
+because `sudo` drops `OUTHAUL_DATA_DIR`.
+
+That creates a new password system admin who can sign in at once. It doesn't
+reset an existing password or clear a sign-in lock; a lock ends by itself within
+15 minutes.
 
 To make someone an SSO system admin, they sign in with SSO once, then a password
 system admin changes their role on the Users page.

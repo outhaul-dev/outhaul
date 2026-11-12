@@ -35,7 +35,8 @@ right here before writing the worker.
 - **Auth.** Several accounts, with a role per person managed in Outhaul
   (system admin, project admin, project member, project viewer, or no role).
   argon2id password hash, session cookie. The first account, a system admin, is
-  created on first boot via a printed one-time setup URL. People can also sign
+  created on first boot via a printed one-time setup URL. A system admin can
+  also be created on the host with `outhaul admin create`. People can also sign
   in through any OIDC provider (SSO), configured on Settings; see `docs/SSO.md`.
   An SSO account is keyed by the provider's issuer and subject, never linked by
   email, has no password, and starts with no role. SSO sessions last 8 hours;

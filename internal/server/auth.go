@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -159,7 +160,7 @@ func (s *Server) handleSetupSubmit(w http.ResponseWriter, r *http.Request) {
 
 	username := r.FormValue("username")
 	password := r.FormValue("password")
-	err = validateCredentials(username, password)
+	err = ValidateCredentials(username, password)
 	// A password account never takes a name that looks like an SSO account's.
 	if err == nil && hasSSOPrefix(username) {
 		err = errors.New(ssoPrefixRefusal)
@@ -230,6 +231,12 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request, status int, e
 
 func (s *Server) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
 	user, err := s.checkPassword(r.Context(), r.FormValue("username"), r.FormValue("password"))
+	var locked *signInLockedError
+	if errors.As(err, &locked) {
+		w.Header().Set("Retry-After", strconv.Itoa(locked.retryAfter()))
+		s.loginPage(w, r, http.StatusTooManyRequests, locked.Error())
+		return
+	}
 	if errors.Is(err, errHashBusy) {
 		s.loginPage(w, r, http.StatusServiceUnavailable, busyMessage)
 		return
@@ -301,8 +308,8 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 // busyMessage is shown when every password-hashing slot stayed taken.
 const busyMessage = "Too many sign-in attempts right now. Wait a moment and try again."
 
-// validateCredentials enforces minimal admin credential rules.
-func validateCredentials(username, password string) error {
+// ValidateCredentials enforces the minimal username and password rules.
+func ValidateCredentials(username, password string) error {
 	if len(username) < 3 {
 		return errors.New("username must be at least 3 characters")
 	}

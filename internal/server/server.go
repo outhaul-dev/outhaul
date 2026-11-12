@@ -152,6 +152,9 @@ type Server struct {
 	hashSlots chan struct{} // bounds concurrent argon2 work; see withHashSlot
 	hashWait  time.Duration // how long a password check waits for a slot
 
+	signIn    *signInLimiter // nil unless OUTHAUL_SIGNIN_BACKOFF=on
+	signInLog onceAMinute    // the "locked" line; see checkPassword
+
 	httpsPort string // the host port Traefik's HTTPS entrypoint is published on; see appPort
 
 	strictPolicy bool // OUTHAUL_CONTAINER_POLICY=strict: databases publish no host port
@@ -245,6 +248,16 @@ func (s *Server) SetLocalCAFile(path string) { s.caFile = path }
 // SetRouting installs the server-wide routing settings the pages show. Call
 // before Handler.
 func (s *Server) SetRouting(rt traefik.Routing) { s.routing = rt }
+
+// SetSignInBackoff turns on the per-username lock after repeated failed
+// password sign-ins. Call before Handler.
+func (s *Server) SetSignInBackoff(on bool) {
+	if on {
+		s.signIn = newSignInLimiter(time.Now)
+		return
+	}
+	s.signIn = nil
+}
 
 // syncCerts refreshes local-CA certs after a domain change; best-effort — a
 // route reaches Traefik on the next deploy anyway, minting can lag a beat.
