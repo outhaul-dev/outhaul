@@ -208,9 +208,9 @@ A preview's whole-host row requires sign-in whatever the parent's rows say, so a
 with the setting on doesn't publish every pull request. A path row it copies from the
 parent stays as open as its parent's, so a path opened for a webhook is still reached
 without signing in. A parent row that gains sign-in is also written to the app's
-running previews, as a protected row. The parent's dialog says what a new preview
-gets: "Existing previews stay protected. A new preview's own address will require
-sign-in too."
+existing previews, as a protected row, and the running ones redeployed. The parent's
+dialog says what a new preview gets: "Existing previews stay protected. A new
+preview's own address will require sign-in too."
 
 A preview's own row is opened the same way as any other, by turning its switch off.
 
@@ -233,8 +233,9 @@ on, the pages that create a row meet both rules before the app exists:
   app still serving the host doesn't stop it.
 
 If the gate's host can't be mapped when the row is made, the new app or the template
-deploy is deleted again and the page says why, rather than leaving a protected address
-nobody can get through.
+deploy is deleted again, and the page says why, rather than leaving a protected address
+nobody can get through. If that also fails, the app is kept and the page says to
+delete it.
 
 ### What only the real host can show
 
@@ -475,7 +476,7 @@ the parent's domains as they are when the preview is made.
 
 The pull-request comment marks a protected link "(requires sign-in)".
 
-With `OUTHAUL_PROTECT_NEW_DOMAINS` on, a new preview's own address requires sign-in
+With `OUTHAUL_PROTECT_NEW_DOMAINS` on, a new preview's whole-host row requires sign-in
 whatever the parent's rows say, and the parent's dialog says so: "Existing previews
 stay protected. A new preview's own address will require sign-in too." See
 [A preview's own address](#a-previews-own-address).
