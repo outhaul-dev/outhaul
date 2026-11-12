@@ -893,3 +893,54 @@ func TestNewUpdatesOff(t *testing.T) {
 		t.Fatalf("main: got (%v, %v, %v), want a Dir and a Checker", d, k, off)
 	}
 }
+
+func TestReadSSOSecret(t *testing.T) {
+	dir := t.TempDir()
+	creds := t.TempDir()
+	write := func(dir, name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	abs := write(dir, "secret", "abs-value\n")
+	write(dir, "lf-only", "\n")
+	write(dir, "empty", "")
+	write(dir, "big", strings.Repeat("x", 4097))
+	write(dir, "crlf", "crlf-value\r\n")
+	write(creds, "sso-client-secret", "cred-value\n")
+
+	got, err := readSSOSecret(abs, creds)
+	if err != nil || got != "abs-value" {
+		t.Fatalf("absolute path = %q, %v; want abs-value", got, err)
+	}
+	got, err = readSSOSecret("sso-client-secret", creds)
+	if err != nil || got != "cred-value" {
+		t.Fatalf("credential = %q, %v; want cred-value", got, err)
+	}
+	if got, err := readSSOSecret(filepath.Join(dir, "crlf"), ""); err != nil || got != "crlf-value" {
+		t.Fatalf("crlf = %q, %v", got, err)
+	}
+	if got, err := readSSOSecret("", creds); err != nil || got != "" {
+		t.Fatalf("unset = %q, %v; want empty", got, err)
+	}
+	for _, c := range []struct{ value, credDir string }{
+		{filepath.Join(dir, "missing"), ""},
+		{filepath.Join(dir, "lf-only"), ""},
+		{filepath.Join(dir, "empty"), ""},
+		{filepath.Join(dir, "big"), ""},
+		{"sso-client-secret", ""}, // a credential name with no CREDENTIALS_DIRECTORY
+		{".", creds},              // a name can't resolve to the credentials directory
+		{"..", creds},             // or above it
+	} {
+		_, err := readSSOSecret(c.value, c.credDir)
+		if err == nil || !strings.Contains(err.Error(), "OUTHAUL_SSO_CLIENT_SECRET_FILE") {
+			t.Errorf("%q: err = %v, want it to name the variable", c.value, err)
+		}
+	}
+	// The content never appears in an error, even for a refused file.
+	if _, err := readSSOSecret(filepath.Join(dir, "big"), ""); err != nil && strings.Contains(err.Error(), "xxxx") {
+		t.Errorf("error repeats the file's content: %v", err)
+	}
+}

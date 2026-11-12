@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -139,6 +140,9 @@ func runCA(args []string) int {
 func serve() error {
 	cfg := config.Load(os.Getenv)
 	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	if _, err := readSSOSecret(cfg.SSOClientSecretFile, os.Getenv("CREDENTIALS_DIRECTORY")); err != nil {
 		return err
 	}
 
@@ -424,6 +428,48 @@ func serve() error {
 	}
 
 	return shutdown(httpServer, stopWorker, workerDone, backups.Stop)
+}
+
+// maxSSOSecretBytes bounds the client secret file, so a wrong path can't read
+// a large file into memory.
+const maxSSOSecretBytes = 4096
+
+// readSSOSecret reads OUTHAUL_SSO_CLIENT_SECRET_FILE. An absolute path is read
+// as it is; any other value is a systemd credential name under
+// credentialsDir (CREDENTIALS_DIRECTORY). One trailing newline is dropped. An
+// error names the variable and the path, never the content.
+func readSSOSecret(value, credentialsDir string) (string, error) {
+	const name = "OUTHAUL_SSO_CLIENT_SECRET_FILE"
+	if value == "" {
+		return "", nil
+	}
+	path := value
+	if !filepath.IsAbs(value) {
+		if value == "." || value == ".." {
+			return "", fmt.Errorf("%s=%q is not a credential name", name, value)
+		}
+		if credentialsDir == "" {
+			return "", fmt.Errorf("%s=%q is a systemd credential, but CREDENTIALS_DIRECTORY is not set", name, value)
+		}
+		path = filepath.Join(credentialsDir, value)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", name, err)
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, maxSSOSecretBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("%s: read %s: %w", name, path, err)
+	}
+	if len(b) > maxSSOSecretBytes {
+		return "", fmt.Errorf("%s: %s is larger than %d bytes", name, path, maxSSOSecretBytes)
+	}
+	trimmed := strings.TrimSuffix(strings.TrimSuffix(string(b), "\n"), "\r")
+	if trimmed == "" {
+		return "", fmt.Errorf("%s: %s is empty", name, path)
+	}
+	return trimmed, nil
 }
 
 // newUpdates builds the Updates panel's directory, shared with the root
