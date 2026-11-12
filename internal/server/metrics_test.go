@@ -84,9 +84,9 @@ func TestMetricsSampleJSON(t *testing.T) {
 	}
 }
 
-// TestMetricsSampleSkipsUnsampledContainer exercises the out/ok two-slice
-// design: a container that fails to sample (stopped mid-poll → ContainerStats
-// error) is dropped without misaligning the surviving rows.
+// TestMetricsSampleSkipsUnsampledContainer: a container that fails to sample
+// (stopped mid-poll → ContainerStats error) is dropped without misaligning the
+// surviving rows.
 func TestMetricsSampleSkipsUnsampledContainer(t *testing.T) {
 	const mib = 1024 * 1024
 	e := newTestEnv(t)

@@ -152,15 +152,16 @@ func (s *Server) containerStats(ctx context.Context) []containerStat {
 		}
 	}
 
-	out := make([]containerStat, len(targets))
-	ok := make([]bool, len(targets))
-	var wg sync.WaitGroup
 	// One goroutine per running managed container, uncapped: fine at the current
 	// single-admin / few-containers scale. If container counts ever grow large,
-	// bound the fan-out with a worker pool / semaphore here.
-	for i, tg := range targets {
+	// bound the fan-out with a worker pool / semaphore here. The buffer holds
+	// every row, so a goroutine never blocks and a failed sample simply sends
+	// nothing.
+	ch := make(chan containerStat, len(targets))
+	var wg sync.WaitGroup
+	for _, tg := range targets {
 		wg.Add(1)
-		go func() {
+		go func(tg target) {
 			defer wg.Done()
 			st, err := s.runtime.ContainerStats(ctx, tg.id)
 			if err != nil {
@@ -178,7 +179,7 @@ func (s *Server) containerStats(ctx context.Context) []containerStat {
 			if st.PidsLimit > 0 {
 				pids = fmt.Sprintf("%d · limit %d", st.Pids, st.PidsLimit)
 			}
-			out[i] = containerStat{
+			ch <- containerStat{
 				Name: tg.name,
 				Kind: tg.kind,
 				CPU:  cpu,
@@ -186,16 +187,14 @@ func (s *Server) containerStats(ctx context.Context) []containerStat {
 				Net:  fmtBytes(st.NetRx) + " ↓ · " + fmtBytes(st.NetTx) + " ↑",
 				Pids: pids,
 			}
-			ok[i] = true
-		}()
+		}(tg)
 	}
 	wg.Wait()
+	close(ch)
 
 	rows := make([]containerStat, 0, len(targets))
-	for i := range out {
-		if ok[i] {
-			rows = append(rows, out[i])
-		}
+	for row := range ch {
+		rows = append(rows, row)
 	}
 	sort.Slice(rows, func(i, j int) bool { return rows[i].Name < rows[j].Name })
 	return rows
