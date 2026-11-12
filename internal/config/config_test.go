@@ -963,3 +963,91 @@ func TestAdminDirectSetting(t *testing.T) {
 		t.Errorf("a port-only listen address: %v", err)
 	}
 }
+
+func TestNetworkSubnetSetting(t *testing.T) {
+	load := func(v string) Config {
+		return Load(func(k string) string {
+			if k == "OUTHAUL_NETWORK_SUBNET" {
+				return v
+			}
+			return ""
+		})
+	}
+	for _, v := range []string{"", "172.30.0.0/24", "172.30.0.0/28"} {
+		cfg := load(v)
+		if cfg.NetworkSubnet != v {
+			t.Errorf("OUTHAUL_NETWORK_SUBNET=%q -> %q, want it stored as given", v, cfg.NetworkSubnet)
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("OUTHAUL_NETWORK_SUBNET=%q: Validate: %v", v, err)
+		}
+	}
+	for _, v := range []string{"fd00::/64", "172.30.0.0/29", "172.30.0.5/24", "172.30.0.0"} {
+		cfg := load(v)
+		if cfg.NetworkSubnet != "" {
+			t.Errorf("OUTHAUL_NETWORK_SUBNET=%q -> %q, want it rejected", v, cfg.NetworkSubnet)
+		}
+		err := cfg.Validate()
+		if err == nil || !strings.Contains(err.Error(), "OUTHAUL_NETWORK_SUBNET") {
+			t.Errorf("OUTHAUL_NETWORK_SUBNET=%q: error %v does not name the variable", v, err)
+		}
+	}
+}
+
+func TestTraefikIPSetting(t *testing.T) {
+	load := func(v string) Config {
+		return Load(func(k string) string {
+			switch k {
+			case "OUTHAUL_NETWORK_SUBNET":
+				return "172.30.0.0/24"
+			case "OUTHAUL_TRAEFIK_IP":
+				return v
+			}
+			return ""
+		})
+	}
+	for _, v := range []string{"172.30.0.2", "172.30.0.127"} {
+		cfg := load(v)
+		if cfg.TraefikIP != v {
+			t.Errorf("OUTHAUL_TRAEFIK_IP=%q -> %q, want it stored", v, cfg.TraefikIP)
+		}
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("OUTHAUL_TRAEFIK_IP=%q: Validate: %v", v, err)
+		}
+	}
+	for _, v := range []string{"172.30.0.0", "172.30.0.1", "172.30.0.128", "172.30.0.200", "192.168.1.2"} {
+		err := load(v).Validate()
+		if err == nil {
+			t.Errorf("OUTHAUL_TRAEFIK_IP=%q: Validate accepted it", v)
+			continue
+		}
+		for _, want := range []string{"OUTHAUL_TRAEFIK_IP", "172.30.0.2", "172.30.0.127"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("OUTHAUL_TRAEFIK_IP=%q: error %q does not contain %q", v, err, want)
+			}
+		}
+	}
+	for _, v := range []string{"fd00::2", "172.30.0"} {
+		if err := load(v).Validate(); err == nil || !strings.Contains(err.Error(), "OUTHAUL_TRAEFIK_IP") {
+			t.Errorf("OUTHAUL_TRAEFIK_IP=%q: error %v does not name the variable", v, err)
+		}
+	}
+}
+
+func TestTraefikIPNeedsTheSubnet(t *testing.T) {
+	cfg := Load(func(k string) string {
+		if k == "OUTHAUL_TRAEFIK_IP" {
+			return "172.30.0.2"
+		}
+		return ""
+	})
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("OUTHAUL_TRAEFIK_IP without OUTHAUL_NETWORK_SUBNET: Validate accepted it")
+	}
+	for _, want := range []string{"OUTHAUL_TRAEFIK_IP", "OUTHAUL_NETWORK_SUBNET"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not contain %q", err, want)
+		}
+	}
+}
