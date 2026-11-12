@@ -253,9 +253,21 @@ func (r *real) ContainerStats(ctx context.Context, id string) (Stats, error) {
 		return Stats{}, fmt.Errorf("decode stats: %w", err)
 	}
 	s := statsFromAPI(raw)
-	if info, err := r.cli.ContainerInspect(ctx, id); err == nil && info.State != nil {
-		if t, err := time.Parse(time.RFC3339Nano, info.State.StartedAt); err == nil {
-			s.StartedAt = t
+	if info, err := r.cli.ContainerInspect(ctx, id); err == nil {
+		if info.State != nil {
+			if t, err := time.Parse(time.RFC3339Nano, info.State.StartedAt); err == nil {
+				s.StartedAt = t
+			}
+		}
+		if hc := info.HostConfig; hc != nil {
+			s.CPULimit = float64(hc.NanoCPUs) / 1e9
+			if s.CPULimit == 0 && hc.CPUQuota > 0 && hc.CPUPeriod > 0 {
+				s.CPULimit = float64(hc.CPUQuota) / float64(hc.CPUPeriod)
+			}
+			s.MemLimited = hc.Memory > 0
+			if hc.PidsLimit != nil && *hc.PidsLimit > 0 {
+				s.PidsLimit = uint64(*hc.PidsLimit)
+			}
 		}
 	}
 	return s, nil
@@ -283,6 +295,7 @@ func statsFromAPI(raw container.StatsResponse) Stats {
 	}
 	s.MemUsage = mem
 	s.MemLimit = raw.MemoryStats.Limit
+	s.Pids = raw.PidsStats.Current
 	for _, n := range raw.Networks {
 		s.NetRx += n.RxBytes
 		s.NetTx += n.TxBytes
@@ -313,6 +326,16 @@ func (r *real) CreateContainer(ctx context.Context, spec ContainerSpec) (string,
 	if spec.RestartPolicy != "" {
 		host.RestartPolicy = container.RestartPolicy{
 			Name: container.RestartPolicyMode(spec.RestartPolicy),
+		}
+	}
+	if spec.NanoCPUs > 0 || spec.Memory > 0 || spec.PidsLimit > 0 {
+		host.Resources = container.Resources{
+			NanoCPUs: spec.NanoCPUs,
+			Memory:   spec.Memory,
+		}
+		if spec.PidsLimit > 0 {
+			pids := spec.PidsLimit
+			host.Resources.PidsLimit = &pids
 		}
 	}
 
