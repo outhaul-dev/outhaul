@@ -688,9 +688,11 @@ provider, and `EnsureProxy` writes `outhaul-forwarded.yml`, a middleware that
 blanks `X-Real-Ip`, `X-Forwarded-Uri`, `-Method` and `-Prefix`. No router label
 and no ingress stamp changes, so no app redeploys; Traefik is recreated once, as
 for any flag change. The file is written before Traefik is created and removed
-only once a replacement has started, so a failed image pull leaves the old
-Traefik and its file alone. `all` is paired with the required header, and
-`serve` warns when it isn't.
+only once a replacement has started, so a failed image pull leaves the file in
+place and can't take every route down. The exception is a required header: an
+old Traefik without the constraint must not keep serving, so it is replaced from
+a local image or stopped, which fails closed. `all` is paired with the required
+header, and `serve` warns when it isn't.
 
 **The gate is untouched.** Its forward-auth keeps `trustforwardheader=false`, so
 a client can't choose what it is told. The middleware sits on the entrypoint, not

@@ -168,16 +168,23 @@ header value.
 ### What an app receives
 
 With the CDN trusted, `X-Forwarded-For` is the visitor's address followed by the
-CDN's, as Traefik adds the address it saw: `203.0.113.7, 198.51.100.20`. The
+CDN's, as Traefik adds the address it saw: `203.0.113.7, 198.51.100.20`. This
+assumes the CDN appends the visitor's address to the chain, as a proxy does. If
+it forwards a `X-Forwarded-For` the client supplied without adding an entry of
+its own, the chain holds forged entries, and nothing before the CDN's own
+address can be trusted; check what your CDN does first. Where it does append, the
 entry before the last is the visitor's. Tell the app's framework there are two
 proxies in front of it (Traefik and the CDN), or it will take the CDN's address,
 or worse, the first entry, which a visitor can write. `X-Forwarded-Host` and
 `-Proto` are what the CDN sent. A visitor's own values for them reach the app
 only if the CDN passes them on, so the CDN should overwrite them.
 
-`X-Real-Ip` is never the visitor's address unless the proxy sets it, and Traefik
-passes on whatever arrives. A trusted proxy that forwards a client's own
-`X-Real-Ip` lets the client choose it, so an app should read `X-Forwarded-For`.
+`X-Real-Ip` is not the visitor's address unless the proxy sets it. Traefik keeps
+the value a trusted proxy sends, or writes the peer's address when none arrives,
+and then Outhaul's `outhaul-forwarded` middleware removes the header (see below),
+so an app never receives `X-Real-Ip` while trust is on. Even before that, a
+trusted proxy that forwards a client's own `X-Real-Ip` would let the client
+choose it, so an app should read `X-Forwarded-For`.
 
 ### The headers removed
 
@@ -192,8 +199,10 @@ the middleware and answers 404, so it fails closed. It is not the gate: the gate
 stays in each app's own labels, and the middleware is not on any router.
 
 Turning the setting off removes the file only once the replacement Traefik has
-started. If its image can't be pulled, the old Traefik keeps serving and the file
-stays, so a failed pull can't take every route down.
+started. If its image can't be pulled, the file stays and a failed pull can't take
+every route down, with one exception: while a request header is required, an old
+Traefik without the constraint must not keep serving, so it is replaced from a
+local image if there is one, and otherwise stopped, which fails closed.
 
 ### The gate is unchanged
 
@@ -299,10 +308,11 @@ These need the staging host and its CDN.
    its request headers, reached through the CDN, shows an `X-Forwarded-For`
    whose entry before the last is the visitor's address, and the CDN's address
    last.
-9. The same request with made-up `X-Forwarded-Host`, `X-Forwarded-Proto`,
-   `X-Forwarded-Port` and `X-Real-Ip` headers sent from the visitor's side shows
-   the first three overwritten by the CDN or absent, and no `X-Real-Ip`,
-   `X-Forwarded-Uri`, `X-Forwarded-Method` or `X-Forwarded-Prefix` at the app.
+9. The same request with a made-up value for each of `X-Forwarded-Host`,
+   `X-Forwarded-Proto`, `X-Forwarded-Port`, `X-Real-Ip`, `X-Forwarded-Uri`,
+   `X-Forwarded-Method` and `X-Forwarded-Prefix`, sent from the visitor's side,
+   shows the first three overwritten by the CDN or absent, and the other four
+   absent at the app.
 10. A protected app's sign-in still works through the CDN with trust on.
 
 ## Testing so far
