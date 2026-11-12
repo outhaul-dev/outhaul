@@ -260,10 +260,20 @@ each service of the stack except:
 | another service waits on it with `condition: service_completed_successfully` | it is meant to run once. Restarted, it never completes, and the deploy times out (probed) |
 
 A run-once service that nothing waits on can't be told from a server by its
-file. With the policy it runs again each time it exits. The deploy log names
-every service given the policy, and every one left alone with the reason, and
-the docs say to give such a service `restart: "no"`. This is the one way the
-setting changes what a stack does, and why it is a setting.
+file. With the policy it runs again each time it exits, and the deploy still
+succeeds. The deploy log names every service given the policy, and every one
+left alone with the reason, and the docs say to give such a service
+`restart: "no"`.
+
+The setting changes how a deploy ends too. Checked on Compose v5.6.0 with
+Outhaul's `up -d --wait` flags: today a service with no restart policy that
+exits at once fails the deploy — `container … exited (1)`, and the same for
+exit 0. Given the policy, `up` exits 0 and the service restarts in a loop; the
+same service with a healthcheck still fails `up --wait` (`is unhealthy`). So
+the setting can turn a deploy that failed into one that succeeds with a
+service crash-looping inside it. That is the second reason it is a setting, it
+is why the docs say so, and it is why no new check runs on a container after
+`up`.
 
 ### Reading the model
 
