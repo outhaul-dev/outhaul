@@ -16,6 +16,11 @@ import (
 // with the app name, copies streamed progress to stdout, and returns the exit
 // code the bridge sends. A dial/IO failure returns a non-nil error.
 func RunHook(sockPath, app string, stdin io.Reader, stdout io.Writer) (int, error) {
+	return RunHookFrom(sockPath, app, Origin{}, stdin, stdout)
+}
+
+// RunHookFrom is RunHook for a push whose origin is known (HTTPS).
+func RunHookFrom(sockPath, app string, o Origin, stdin io.Reader, stdout io.Writer) (int, error) {
 	refs, err := parseStdinRefs(stdin)
 	if err != nil {
 		return 1, err
@@ -26,7 +31,7 @@ func RunHook(sockPath, app string, stdin io.Reader, stdout io.Writer) (int, erro
 	}
 	defer conn.Close()
 
-	if err := writeRequest(conn, request{App: app, Refs: refs}); err != nil {
+	if err := writeRequest(conn, request{App: app, Refs: refs, Origin: o}); err != nil {
 		return 1, err
 	}
 

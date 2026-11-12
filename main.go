@@ -98,7 +98,7 @@ func runGitHook(args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: outhaul git-hook <app> <socket>")
 		return 2
 	}
-	code, err := githook.RunHook(args[1], args[0], os.Stdin, os.Stdout)
+	code, err := githook.RunHookFrom(args[1], args[0], githook.OriginFromEnv(os.Getenv), os.Stdin, os.Stdout)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "outhaul: %v\n", err)
 	}
@@ -1211,6 +1211,9 @@ func startGitPush(ctx context.Context, cfg config.Config, st *store.Store, worke
 		return nil
 	}
 	bridge := githook.NewBridge(st, broker, worker, repos, naming, cfg.ProtectNewDomains, cfg.HealthTimeout+5*time.Minute)
+	if cfg.GitHTTP {
+		bridge.SetPublicURL(cfg.PublicURL)
+	}
 	go bridge.Serve(ctx, hookLn)
 
 	// SSH server (public-key auth against push_keys).
