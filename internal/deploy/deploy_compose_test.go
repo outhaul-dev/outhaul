@@ -761,3 +761,33 @@ func TestComposePipelineWithoutLimitsWritesOnlyDomains(t *testing.T) {
 		}
 	}
 }
+
+// In strict mode a Compose service may not ask for more than the app's own
+// limit; the deploy fails before anything builds, and the reason says an admin
+// can raise the limit.
+func TestStrictRefusesAServiceAboveTheAppLimit(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.ContainerPolicy = "strict"
+	h.worker.cfg.DefaultLimits = core.Limits{MilliCPUs: 1000}
+	app := h.composeApp(t, "shop", "docker-compose.yml", "")
+	h.compose.ConfigJSON = []byte(`{
+		"name": "outhaul-shop",
+		"services": {"web": {"image": "nginx:1", "cpus": 2}}
+	}`)
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed {
+		t.Fatalf("status = %q, want failed", got.Status)
+	}
+	for _, want := range []string{"2", "1", "a system admin can raise the app's limit"} {
+		if !strings.Contains(got.Reason, want) {
+			t.Errorf("reason %q does not name %q", got.Reason, want)
+		}
+	}
+	if calls := h.compose.CallsFor("build"); len(calls) != 0 {
+		t.Errorf("compose build ran despite the refusal: %+v", calls)
+	}
+}

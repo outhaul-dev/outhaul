@@ -69,6 +69,7 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 	// override Outhaul writes). Read it only when a setting needs it, so an
 	// install that sets none of them runs no extra command.
 	needs := w.needsModel(ctx, app)
+	limit := w.limits(ctx, app)
 	var model compose.Model
 	if needs {
 		model, err = compose.ReadModel(ctx, w.compose, workDir, []string{app.ComposePath}, project, out)
@@ -81,6 +82,7 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 			RoutingLabels: w.cfg.StrictContainerPolicy() || w.cfg.HeaderRequired(),
 			WorkDir:       workDir,
 			Network:       w.cfg.Network,
+			Max:           limit,
 		}
 		if vs := compose.Check(model, policy); len(vs) > 0 {
 			reason, lines := policyViolationReason(vs)
@@ -99,7 +101,6 @@ func (w *Worker) runComposePipeline(ctx context.Context, dep core.Deployment, ap
 
 	// The app's limit is applied to each service for the resources it does not
 	// set itself. The reservation check happens here, before anything builds.
-	limit := w.limits(ctx, app)
 	var extra map[string]compose.Extra
 	if needs {
 		extra, err = compose.LimitExtras(model, limit)
