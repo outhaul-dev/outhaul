@@ -1367,12 +1367,16 @@ func TestSpawnFailedCommentNamesTheSuffixRule(t *testing.T) {
 
 // A preview's whole-host row requires sign-in while the server requires it on
 // new domains, whatever its parent's row says; a path row copies its parent.
+// A parent row on "/" is a whole host too, so its preview row is protected.
 func TestPreviewRowsFollowProtectNewDomains(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t)
 	h.mgr.SetProtectNewDomains(true)
 	parent := h.seedGithubApp(t, "web", "acme/site", nil) // one whole-host row, open
 	if _, err := h.st.AddDomain(ctx, core.Domain{AppID: parent.ID, Host: "web.example", Path: "/hooks", Port: 8080}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.st.AddDomain(ctx, core.Domain{AppID: parent.ID, Host: "web.example", Path: "/", Port: 8080}); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := h.st.GetPreviewConfig(ctx, parent.ID)
@@ -1395,14 +1399,14 @@ func TestPreviewRowsFollowProtectNewDomains(t *testing.T) {
 		t.Error("mintDomains reported no protected row")
 	}
 	rows, err := h.st.ListDomains(ctx, child.ID)
-	if err != nil || len(rows) != 2 {
-		t.Fatalf("preview rows = %v (%v), want two", rows, err)
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("preview rows = %v (%v), want three", rows, err)
 	}
 	for _, d := range rows {
 		switch d.Path {
-		case "":
+		case "", "/":
 			if !d.Protected {
-				t.Error("the preview's whole-host row is open")
+				t.Errorf("the preview's whole-host row %q is open", d.Path)
 			}
 		case "/hooks":
 			if d.Protected {

@@ -351,6 +351,11 @@ listed here, because this repository is public. Ask the maintainer.
   - a crash can leave a preview's status at "building";
   - deleting a branch triggers a deploy;
   - template deploys skip the certificate sync;
+  - with `OUTHAUL_PROTECT_NEW_DOMAINS` on and `OUTHAUL_LOCAL_CA`, a new
+    preview's whole-host row is protected, so its link is `https`, but the
+    local CA mints a leaf only at boot, on a server-side save, or on its
+    12-hour ticker, so the first preview after a spawn can fail on the
+    certificate until one of those runs;
   - some forms save part of their changes before validating;
   - the "Running" count is taken from the latest deployment row;
   - temporary containers leak when they fail to start;

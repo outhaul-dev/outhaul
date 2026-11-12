@@ -120,7 +120,8 @@ func (m *Manager) SetHTTPSOnly(on bool) { m.httpsOnly = on }
 
 // SetProtectNewDomains makes every preview's whole-host row require sign-in,
 // whatever its parent's does. A path row copies its parent's, so a webhook
-// path left open stays open. Call it before Run.
+// path left open stays open. Call it before Run. A row on "/" is a whole host
+// too, so it requires sign-in as well.
 func (m *Manager) SetProtectNewDomains(on bool) { m.protectNew = on }
 
 // Handle routes one pull_request event to the right lifecycle action for every
@@ -443,10 +444,11 @@ func (m *Manager) mintDomains(ctx context.Context, parent, child core.App, cfg c
 	for _, d := range parentDomains {
 		host := m.naming.PreviewHost(cfg, parent.Name, pr, d.Service)
 		rowProtected := d.Protected
-		if m.protectNew && d.Path == "" {
-			// A whole host is the address people reach; requiring sign-in
-			// there is the point of the setting, whatever the parent's rows
-			// say. A path lets one route out of a protected host stay open.
+		if m.protectNew && (d.Path == "" || d.Path == "/") {
+			// An empty path or "/" is the whole host: the address people
+			// reach, so requiring sign-in there is the point of the setting,
+			// whatever the parent's rows say. Any other path lets one route
+			// out of a protected host stay open.
 			rowProtected = true
 		}
 		key := host + "\x00" + d.Path

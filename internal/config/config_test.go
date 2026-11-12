@@ -1117,6 +1117,7 @@ func TestDomainSuffixSetting(t *testing.T) {
 		{"two labels", "example.com", "example.com", false},
 		{"189 characters", long, long, false},
 		{"190 characters", tooLong, "", true},
+		{"one label", "com", "", true},
 		{"one dot", ".", "", true},
 		{"underscore", "shared_host.example.com", "", true},
 		{"a path", "shared.demo.example.com/app", "", true},

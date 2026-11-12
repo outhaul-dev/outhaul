@@ -585,15 +585,16 @@ var domainNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-
 
 // domainSuffix reads OUTHAUL_DOMAIN_SUFFIX: the domain every generated name
 // becomes one label under, stored lower-cased with one trailing dot dropped.
-// Empty keeps sslip.io names.
+// It needs at least two labels, so that its wildcard is a name and not a
+// top-level domain. Empty keeps sslip.io names.
 func (p *parser) domainSuffix(key string) string {
 	raw := p.getenv(key)
 	if raw == "" {
 		return ""
 	}
 	v := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(raw)), ".")
-	if len(v) > maxSuffixLen || !domainNameRe.MatchString(v) {
-		p.reject(key, raw, "a domain such as shared.demo.example.com, at most 189 characters")
+	if !strings.Contains(v, ".") || len(v) > maxSuffixLen || !domainNameRe.MatchString(v) {
+		p.reject(key, raw, "a domain such as shared.demo.example.com, at least two labels, at most 189 characters")
 		return ""
 	}
 	return v
