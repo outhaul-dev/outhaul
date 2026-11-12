@@ -144,6 +144,7 @@ func TestSubnetPlanFixed(t *testing.T) {
 		{ip: "", want: false, label: "an empty address"},
 		{ip: "fd00::2", want: false, label: "an IPv6 address"},
 		{ip: "not-an-ip", want: false, label: "a malformed address"},
+		{ip: "0.0.0.0", want: false, label: "the network address is not fixed"},
 	}
 	for _, c := range cases {
 		t.Run(c.label, func(t *testing.T) {
@@ -151,6 +152,63 @@ func TestSubnetPlanFixed(t *testing.T) {
 				t.Errorf("SubnetPlan.Fixed(%q) = %v, want %v", c.ip, got, c.want)
 			}
 		})
+	}
+}
+
+func TestPlanSubnetHostBitsError(t *testing.T) {
+	cidr := "172.30.0.5/24"
+	_, err := PlanSubnet(cidr)
+	if err == nil {
+		t.Fatalf("PlanSubnet(%q) returned nil, want an error", cidr)
+	}
+	msg := err.Error()
+	if !contains(msg, "host bits") {
+		t.Errorf("error = %q, want it to contain %q", msg, "host bits")
+	}
+	if !contains(msg, "172.30.0.0/24") {
+		t.Errorf("error = %q, want it to contain %q", msg, "172.30.0.0/24")
+	}
+}
+
+func TestPlanSubnetCanonicalizesCIDR(t *testing.T) {
+	_, err := PlanSubnet("172.30.0.0/024")
+	if err != nil {
+		t.Fatalf("PlanSubnet(%q) returned %v", "172.30.0.0/024", err)
+	}
+	subnet, err := PlanSubnet("172.30.0.0/024")
+	if err != nil {
+		t.Fatalf("PlanSubnet(%q) returned %v", "172.30.0.0/024", err)
+	}
+	if subnet.Subnet != "172.30.0.0/24" {
+		t.Errorf("PlanSubnet(%q).Subnet = %q, want %q", "172.30.0.0/024", subnet.Subnet, "172.30.0.0/24")
+	}
+}
+
+func TestPlanSubnetIPVersionError(t *testing.T) {
+	_, err := PlanSubnet("fd00::/64")
+	if err == nil {
+		t.Fatalf("PlanSubnet(%q) returned nil, want an error", "fd00::/64")
+	}
+	msg := err.Error()
+	if !contains(msg, "IPv4") {
+		t.Errorf("error = %q, want it to contain %q", msg, "IPv4")
+	}
+	if !contains(msg, "IPv6") {
+		t.Errorf("error = %q, want it to contain %q", msg, "IPv6")
+	}
+}
+
+func TestPlanSubnetPrefixError(t *testing.T) {
+	_, err := PlanSubnet("172.30.0.0/29")
+	if err == nil {
+		t.Fatalf("PlanSubnet(%q) returned nil, want an error", "172.30.0.0/29")
+	}
+	msg := err.Error()
+	if !contains(msg, "/28") {
+		t.Errorf("error = %q, want it to contain %q", msg, "/28")
+	}
+	if !contains(msg, "28") {
+		t.Errorf("error = %q, want it to contain %q", msg, "28")
 	}
 }
 

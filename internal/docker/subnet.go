@@ -6,7 +6,7 @@ package docker
 
 import (
 	"encoding/binary"
-	"errors"
+	"fmt"
 	"net"
 	"strconv"
 )
@@ -26,30 +26,30 @@ type SubnetPlan struct {
 // PlanSubnet validates an IPv4 CIDR and splits it into a gateway, a fixed
 // address range in the lower half, and a dynamic range in the upper half.
 //
-// It rejects a non-IPv4 network, a prefix smaller than /28, a network address
+// It rejects a non-IPv4 network, a prefix longer than /28, a network address
 // with host bits set, and an invalid CIDR. The errors are suitable for the
 // OUTHAUL_NETWORK_SUBNET setting, which must be one of these.
 func PlanSubnet(cidr string) (SubnetPlan, error) {
 	ip, ipnet, err := net.ParseCIDR(cidr)
 	if err != nil {
-		return SubnetPlan{}, err
+		return SubnetPlan{}, fmt.Errorf("must be an IPv4 network in CIDR form, got %q", cidr)
 	}
 	if ip.To4() == nil {
-		return SubnetPlan{}, errors.New("IPv4")
+		return SubnetPlan{}, fmt.Errorf("want an IPv4 network such as 172.30.0.0/24, not IPv6")
 	}
 	ones, _ := ipnet.Mask.Size()
 	prefix := ones
 	if prefix > 28 {
-		return SubnetPlan{}, errors.New("/28")
+		return SubnetPlan{}, fmt.Errorf("want a prefix of /28 or larger, not /%d", prefix)
 	}
 	ip4 := binary.BigEndian.Uint32(ip.To4())
 	size := uint64(1) << (32 - prefix)
 	half := size / 2
 	if !ip.Equal(ipnet.IP) {
-		return SubnetPlan{}, errors.New("host bits")
+		return SubnetPlan{}, fmt.Errorf("host bits are set; did you mean %s?", ipnet.String())
 	}
 	plan := SubnetPlan{
-		Subnet:  cidr,
+		Subnet:  ipnet.String(),
 		Gateway: makeAddr(ip4 + 1),
 		First:   makeAddr(ip4 + 2),
 		Last:    makeAddr(ip4+uint32(half)-1),
