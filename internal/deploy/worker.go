@@ -95,10 +95,18 @@ func NewWorker(st *store.Store, dc docker.Client, b Builders, cp compose.Runner,
 }
 
 // limits is the app's effective limit: its stored values over the server
-// defaults, field by field. R7's store change fills in the stored part; a
-// preview reads its parent at each deploy.
-func (w *Worker) limits(_ context.Context, _ core.App) core.Limits {
-	return w.cfg.DefaultLimits
+// defaults, field by field. A preview stores none, so it reads its parent's at
+// each deploy; a parent that has gone is logged and the default applies.
+func (w *Worker) limits(ctx context.Context, app core.App) core.Limits {
+	stored := app.Limits
+	if app.ParentID != 0 {
+		if parent, err := w.store.GetApp(ctx, app.ParentID); err == nil {
+			stored = parent.Limits
+		} else {
+			log.Printf("deploy: read preview parent %d: %v", app.ParentID, err)
+		}
+	}
+	return stored.Or(w.cfg.DefaultLimits)
 }
 
 // needsModel reports whether any setting needs the normalised Compose model:

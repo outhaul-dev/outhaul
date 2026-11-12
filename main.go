@@ -418,6 +418,7 @@ func serve() error {
 		Prefix:      cfg.StateBackupPrefix,
 	})
 	srv.SetHTTPSPort(cfg.HTTPSPort)
+	srv.SetDefaultLimits(cfg.DefaultLimits)
 	srv.SetSignInBackoff(cfg.SignInBackoff)
 	go srv.RunRestorePass(workerCtx)
 	srv.SetContainerPolicy(cfg.StrictContainerPolicy())

@@ -58,6 +58,26 @@
   </div>
 </section>
 
+{{if .LimitsAvailable}}
+<section class="panel" id="limits">
+  <h2 class="panel-title">Limits</h2>
+  <p class="muted">The ceiling each container is created with. A change applies on the app's next deploy.</p>
+  <dl class="meta">
+    <div><dt>CPU</dt><dd><span class="mono">{{if .Limits.MilliCPUs}}{{fmtCPU .Limits.MilliCPUs}} CPU{{else}}no limit{{end}}</span> <span class="muted">· {{.LimitSources.CPU}}</span></dd></div>
+    <div><dt>Memory</dt><dd><span class="mono">{{fmtSize .Limits.Memory}}</span> <span class="muted">· {{.LimitSources.Memory}}</span></dd></div>
+    <div><dt>Processes</dt><dd><span class="mono">{{if .Limits.Pids}}{{.Limits.Pids}}{{else}}no limit{{end}}</span> <span class="muted">· {{.LimitSources.Pids}}</span></dd></div>
+  </dl>
+  {{if and .IsSystemAdmin (not .App.Ephemeral)}}
+  <form method="post" action="/apps/{{.App.ID}}/limits" class="grid-form">
+    <label class="field"><span>CPU {{template "hint" "Leave blank for the server default."}}</span><input type="text" name="limit_cpus" value="{{if .App.Limits.MilliCPUs}}{{fmtCPU .App.Limits.MilliCPUs}}{{end}}" placeholder="{{if .DefaultLimits.MilliCPUs}}{{fmtCPU .DefaultLimits.MilliCPUs}}{{else}}no limit{{end}}"></label>
+    <label class="field"><span>Memory {{template "hint" "Bytes or 512m, 1g, 1.5g; leave blank for the server default."}}</span><input type="text" name="limit_memory" value="{{if .App.Limits.Memory}}{{.App.Limits.Memory}}{{end}}" placeholder="{{if .DefaultLimits.Memory}}{{.DefaultLimits.Memory}}{{else}}no limit{{end}}"></label>
+    <label class="field"><span>Processes {{template "hint" "A whole number; leave blank for the server default."}}</span><input type="number" name="limit_pids" min="1" value="{{if .App.Limits.Pids}}{{.App.Limits.Pids}}{{end}}" placeholder="{{if .DefaultLimits.Pids}}{{.DefaultLimits.Pids}}{{else}}no limit{{end}}"></label>
+    <button type="submit" class="btn btn-primary">Save limits</button>
+  </form>
+  {{end}}
+</section>
+{{end}}
+
 <script>
 (function () {
   var indicator = document.getElementById('metrics-indicator');

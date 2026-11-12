@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -133,6 +135,16 @@ func (s *Server) runningContainers(ctx context.Context, app core.App) ([]docker.
 		return nil, err
 	}
 	return []docker.Container{*c}, nil
+}
+
+// fmtCPU renders thousandths of a CPU as Compose and the panel write it: 1,
+// 0.5, 1.5.
+func fmtCPU(milli int64) string {
+	whole, frac := milli/1000, milli%1000
+	if frac == 0 {
+		return strconv.FormatInt(whole, 10)
+	}
+	return strconv.FormatInt(whole, 10) + "." + strings.TrimRight(fmt.Sprintf("%03d", frac), "0")
 }
 
 // fmtBytes renders a byte count in IEC units the way docker stats does.

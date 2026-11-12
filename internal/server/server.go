@@ -114,6 +114,8 @@ type Server struct {
 	azureDestinationSet bool              // OUTHAUL_BACKUP_AZURE_* set: the Azure row belongs to the environment
 	stateBackup         *StateBackupPanel // nil or no schedule: no State backup panel
 
+	defaultLimits core.Limits // per-container server default; zero fields mean no limit
+
 	repos      *gitrepo.Manager // push-app bare repos; nil disables push-repo cleanup
 	sshControl SSHControl       // git-push SSH server; nil disables the port setting
 	tunnel     TunnelControl    // Cloudflare Tunnel management; nil disables the tunnel card
@@ -209,6 +211,13 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 	}
 	return s, nil
 }
+
+// SetDefaultLimits records the server's per-container default limits. The
+// Limits panel and its route exist only when at least one field is set.
+func (s *Server) SetDefaultLimits(l core.Limits) { s.defaultLimits = l }
+
+// hasDefaultLimits reports whether a server default is set at all.
+func (s *Server) hasDefaultLimits() bool { return s.defaultLimits != (core.Limits{}) }
 
 // CloseStreams ends every open log stream. A stream otherwise lasts until its
 // deployment finishes, its container stops or the browser goes away, so one
@@ -388,6 +397,8 @@ func templateFuncs() template.FuncMap {
 				return "state-failed"
 			}
 		},
+		// fmtCPU renders thousandths of a CPU as 1, 0.5 or 1.5.
+		"fmtCPU": fmtCPU,
 		// fmtSize renders a byte count human-readably.
 		"fmtSize": func(n int64) string {
 			if n <= 0 {

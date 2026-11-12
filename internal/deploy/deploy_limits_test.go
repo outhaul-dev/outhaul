@@ -61,3 +61,60 @@ func TestStopFirstDeployCarriesDefaultLimits(t *testing.T) {
 
 	wantLimits(t, lastCreatedNamed(t, h, "outhaul-app-data"), defaultTestLimits)
 }
+
+// A preview stores no limits of its own: it uses its parent's, read at deploy
+// time, over the server default.
+func TestPreviewCarriesItsParentsLimits(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	parent := h.app(t, "web")
+	if err := h.store.SetAppLimits(ctx, parent.ID, core.Limits{Memory: 2 << 30}); err != nil {
+		t.Fatalf("SetAppLimits: %v", err)
+	}
+	child, err := h.store.CreateApp(ctx, core.App{
+		Name: "web-pr-1", RepoURL: "https://example.com/web.git",
+		ParentID: parent.ID, PRNumber: 1, Ephemeral: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateApp preview: %v", err)
+	}
+	dep := h.claimedDeployment(t, child.ID)
+	h.worker.runPipeline(ctx, dep)
+
+	spec := lastCreatedNamed(t, h, "outhaul-app-web-pr-1")
+	wantLimits(t, spec, core.Limits{Memory: 2 << 30})
+}
+
+// A preview whose parent row is gone still deploys, with the server default.
+func TestPreviewParentLookupFailureUsesTheDefault(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.DefaultLimits = defaultTestLimits
+	ctx := context.Background()
+	child, err := h.store.CreateApp(ctx, core.App{
+		Name: "orphan-pr-1", RepoURL: "https://example.com/web.git",
+		ParentID: 99999, PRNumber: 1, Ephemeral: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateApp preview: %v", err)
+	}
+	dep := h.claimedDeployment(t, child.ID)
+	h.worker.runPipeline(ctx, dep)
+
+	wantLimits(t, lastCreatedNamed(t, h, "outhaul-app-orphan-pr-1"), defaultTestLimits)
+}
+
+// An app's own value wins over the server default, field by field.
+func TestAppLimitsOverrideTheDefault(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.DefaultLimits = defaultTestLimits
+	ctx := context.Background()
+	app := h.app(t, "web")
+	if err := h.store.SetAppLimits(ctx, app.ID, core.Limits{MilliCPUs: 500, Memory: 2 << 30}); err != nil {
+		t.Fatalf("SetAppLimits: %v", err)
+	}
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(ctx, dep)
+
+	wantLimits(t, lastCreatedNamed(t, h, "outhaul-app-web"),
+		core.Limits{MilliCPUs: 500, Memory: 2 << 30, Pids: 512})
+}
