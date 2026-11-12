@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -27,7 +29,19 @@ func postLogin(t *testing.T, e *testEnv, name, password string) (*http.Response,
 	return resp, body(t, resp)
 }
 
+// captureLog collects the log for the test, so a locked sign-in's line neither
+// reaches the test output nor goes unchecked.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var logged bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	return &logged
+}
+
 func TestLoginRefusesALockedNameWithTheRightPassword(t *testing.T) {
+	captureLog(t)
 	e, now := backoffEnv(t)
 	passwordAdmin(t, e, "admin", "supersecret")
 
@@ -57,6 +71,7 @@ func TestLoginRefusesALockedNameWithTheRightPassword(t *testing.T) {
 }
 
 func TestLoginLockShowsTheWaitInMinutes(t *testing.T) {
+	captureLog(t)
 	e, now := backoffEnv(t)
 	passwordAdmin(t, e, "admin", "supersecret")
 
@@ -165,6 +180,7 @@ func TestAccountPasswordCheckIsNotCounted(t *testing.T) {
 
 func TestStoreFailureCountsAsAnUnknownName(t *testing.T) {
 	e, _ := backoffEnv(t)
+	// With no public URL, loginPage skips ssoConnected, which would read the closed store.
 	e.srv.publicURL = ""
 	e.store.Close()
 	resp, _ := postLogin(t, e, "admin", "wrong")
@@ -199,6 +215,7 @@ func TestPasswordAccountWithoutAPasswordIsKnown(t *testing.T) {
 }
 
 func TestGateSignInIsLockedToo(t *testing.T) {
+	captureLog(t)
 	e := gateSignInEnv(t)
 	passwordAccount(t, e, "nora", core.RoleNone, "supersecret")
 	now := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
@@ -250,5 +267,45 @@ func TestSetupLinkClearsTheLock(t *testing.T) {
 	resp, _ = postLogin(t, e, "bob", "wrong")
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("after a setup link a wrong password = %d, want 401 (the lock was cleared)", resp.StatusCode)
+	}
+}
+
+// Only a name that has an account is logged, and at most once a minute: a
+// logged name must not tell a reader which names have no account.
+func TestLockedSignInLogsOnceAMinuteAndOnlyForAccounts(t *testing.T) {
+	logged := captureLog(t)
+	e, _ := backoffEnv(t)
+	passwordAdmin(t, e, "admin", "supersecret")
+
+	// The unknown name goes first: the once-a-minute limiter is shared, so a
+	// line wrongly written for it would otherwise be hidden behind admin's.
+	for i := 0; i < 5; i++ {
+		postLogin(t, e, "nobody", "wrong")
+	}
+	for i := 0; i < 2; i++ {
+		resp, _ := postLogin(t, e, "nobody", "wrong")
+		if resp.StatusCode != http.StatusTooManyRequests {
+			t.Fatalf("locked unknown name, attempt %d = %d, want 429", i+1, resp.StatusCode)
+		}
+	}
+	if strings.Contains(logged.String(), "nobody") {
+		t.Errorf("a name with no account was logged:\n%s", logged.String())
+	}
+
+	for i := 0; i < 5; i++ {
+		postLogin(t, e, "admin", "wrong")
+	}
+	for i := 0; i < 3; i++ {
+		resp, _ := postLogin(t, e, "admin", "wrong")
+		if resp.StatusCode != http.StatusTooManyRequests {
+			t.Fatalf("locked attempt %d = %d, want 429", i+1, resp.StatusCode)
+		}
+	}
+	out := logged.String()
+	if n := strings.Count(out, "is locked after repeated failures"); n != 1 {
+		t.Errorf("the lock was logged %d times for four refused attempts, want 1:\n%s", n, out)
+	}
+	if !strings.Contains(out, `"admin"`) {
+		t.Errorf("the log doesn't name the locked account:\n%s", out)
 	}
 }
