@@ -31,7 +31,7 @@
 The inputs and failures most likely to bite that no requirement spells out. Each has its test in the task named.
 
 1. A request that never came from the dialog, so `protected_offered` is absent: the row is protected, not open. The same for the new-app form. Only an explicit "off" from a page that offered the switch opens a row (Tasks 3, 4).
-2. Sign-in that can't work: `serve` refuses at startup with no HTTPS and no tunnel, the tunnel read failure is named rather than guessed, and the dialog and both form handlers refuse to create the row instead of creating an open one (Tasks 1, 3, 4, 5).
+2. Sign-in that can't work: `serve` refuses at startup with no HTTPS and no tunnel, an unreadable tunnel setting is named rather than guessed (stricter than the design's wording, on purpose), and the dialog and both form handlers refuse to create the row instead of creating an open one (Tasks 1, 3, 4, 5).
 3. Another project already has a row on the host, or another app's running container still serves an old open route there: the new-app form, the template deploy and the first push refuse before writing and leave no app behind; the dialog keeps its existing warn-and-redeploy path (Tasks 3, 4, 5, 6).
 4. `ensureGateHost` fails after the app and its rows were written: the new-app form and the template deploy delete the app they made and say why; no deployment is created (Tasks 4, 5).
 5. A preview of an app whose whole-host row is open: the preview's own address still requires sign-in, while a path row it copies stays as open as its parent's (Task 7).
@@ -169,27 +169,10 @@ func TestDisableTunnelRefusedWithProtectNewDomains(t *testing.T) {
 	}
 }
 
-// Every new row will be protected, so the gate's host is mapped from startup,
-// whatever the rows say. Model this on TestReconcileMapsTheGateHostWhileARouteIsProtected.
-func TestReconcileMapsTheGateHostForNewDomains(t *testing.T) {
-	ctx := context.Background()
-	cfg := config.Config{
-		DataDir: t.TempDir(), Network: "outhaul", TraefikImage: config.DefaultTraefikImage,
-		CloudflaredImage: config.DefaultCloudflaredImage, HTTPSPort: "443", ListenAddr: ":8080",
-		ACMEEmail: "ops@example.com", AdminDirect: true, ProtectNewDomains: true,
-	}
-	// No public URL, so no admin route, and no protected row: only the
-	// setting can map the gate's host.
-	st, err := openStore(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer st.Close()
-	dc := docker.NewFake()
-	ic := &infraController{dc: dc, st: st, cfg: cfg}
-	if err := ic.reconcile(ctx); err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
+// gateMapped reports whether the Traefik the fake created maps the gate's
+// host to the host gateway.
+func gateMapped(t *testing.T, dc *docker.Fake) bool {
+	t.Helper()
 	var spec *docker.ContainerSpec
 	for i := range dc.Created {
 		if dc.Created[i].Name == "outhaul-traefik" {
@@ -201,28 +184,58 @@ func TestReconcileMapsTheGateHostForNewDomains(t *testing.T) {
 	}
 	for _, h := range spec.ExtraHosts {
 		if h == "host.docker.internal:host-gateway" {
-			return
+			return true
 		}
 	}
-	t.Error("the gate host is not mapped although every new row will be protected")
+	return false
+}
 
-	// With the setting off the same config maps nothing: nothing changed for
-	// an install that leaves it unset.
-	cfg.ProtectNewDomains = false
-	dc2 := docker.NewFake()
-	ic.dc, ic.cfg = dc2, cfg
+// Every new row will be protected, so the gate's host is mapped from startup,
+// whatever the rows say. No public URL (so no admin route) and no protected
+// row: only the setting can map it.
+// Model this on TestReconcileMapsTheGateHostWhileARouteIsProtected.
+func TestReconcileMapsTheGateHostForNewDomains(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Config{
+		DataDir: t.TempDir(), Network: "outhaul", TraefikImage: config.DefaultTraefikImage,
+		CloudflaredImage: config.DefaultCloudflaredImage, HTTPSPort: "443", ListenAddr: ":8080",
+		ACMEEmail: "ops@example.com", AdminDirect: true, ProtectNewDomains: true,
+	}
+	st, err := openStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	dc := docker.NewFake()
+	ic := &infraController{dc: dc, st: st, cfg: cfg}
 	if err := ic.reconcile(ctx); err != nil {
 		t.Fatalf("reconcile: %v", err)
 	}
-	for i := range dc2.Created {
-		if dc2.Created[i].Name != "outhaul-traefik" {
-			continue
-		}
-		for _, h := range dc2.Created[i].ExtraHosts {
-			if h == "host.docker.internal:host-gateway" {
-				t.Error("with the setting off the gate host must stay unmapped")
-			}
-		}
+	if !gateMapped(t, dc) {
+		t.Error("the gate host is not mapped although every new row will be protected")
+	}
+}
+
+// The same config with the setting off maps nothing, as it always did.
+func TestReconcileLeavesTheGateHostUnmappedWithoutProtectNewDomains(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Config{
+		DataDir: t.TempDir(), Network: "outhaul", TraefikImage: config.DefaultTraefikImage,
+		CloudflaredImage: config.DefaultCloudflaredImage, HTTPSPort: "443", ListenAddr: ":8080",
+		ACMEEmail: "ops@example.com", AdminDirect: true,
+	}
+	st, err := openStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	dc := docker.NewFake()
+	ic := &infraController{dc: dc, st: st, cfg: cfg}
+	if err := ic.reconcile(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if gateMapped(t, dc) {
+		t.Error("with the setting off the gate host must stay unmapped")
 	}
 }
 ```
@@ -231,7 +244,7 @@ Check `main_test.go`'s existing helpers (`openStore`, `docker.NewFake`, `config`
 
 - [ ] **Step 2: Run the tests to see them fail**
 
-Run: `go test ./internal/config/ . -run 'ProtectNewDomains|DisableTunnelRefusedWithProtect'`
+Run: `go test ./internal/config/ . -run 'ProtectNewDomains|DisableTunnelRefusedWithProtect|Reconcile'`
 
 Expected: FAIL — the field, `protectNewDomainsError` and the refusals are undefined.
 
@@ -278,6 +291,8 @@ func protectNewDomainsError(cfg config.Config, tunnelOn bool, tunnelErr error) e
 	return errors.New("OUTHAUL_PROTECT_NEW_DOMAINS needs HTTPS or a Cloudflare Tunnel: set OUTHAUL_ACME_EMAIL or OUTHAUL_LOCAL_CA, or enable the tunnel in Settings")
 }
 ```
+
+Refusing on a tunnel read error is stricter than the design's wording, and deliberately so. The local CA's tunnel rule (and the two checks above) skip when the read fails; here an unreadable setting on a server with no HTTPS means nothing can be verified, and guessing "no tunnel" would let the install start and then create rows nobody could get through. With HTTPS configured the read is irrelevant and the error is ignored. Say so in the function's comment.
 
 - `infraController.Disable`, first line: `if ic.cfg.ProtectNewDomains && !ic.cfg.TLSEnabled() { return errors.New("cannot disable the Cloudflare Tunnel while OUTHAUL_PROTECT_NEW_DOMAINS is set: with no HTTPS, nobody could get through a protected row") }`.
 - `infraController.reconcile`, where `protected` is read:
@@ -459,7 +474,7 @@ func TestNewDomainIsProtectedWithoutTheFormsField(t *testing.T) {
 	}
 }
 
-// The dialog's switch starts on for a new row.
+// The dialog's switch starts on for a new row, and says how to open one.
 func TestDomainDialogOffersSignInOnByDefault(t *testing.T) {
 	e, _ := newProtectionEnv(t)
 	e.srv.protectNew = true
@@ -467,6 +482,9 @@ func TestDomainDialogOffersSignInOnByDefault(t *testing.T) {
 	page := body(t, e.get(t, "/apps/"+itoa(app.ID)))
 	if !strings.Contains(page, `id="domain-protected" checked`) {
 		t.Error("the dialog's Require sign-in switch is not on for a new row")
+	}
+	if !strings.Contains(page, "turn this switch off on the host") {
+		t.Error("the dialog doesn't say how to make an address public")
 	}
 }
 
@@ -553,9 +571,12 @@ In `internal/server/templates/domainform.tmpl`, the switch in Step 3:
             <input type="checkbox" class="switch" role="switch" name="protected" id="domain-protected"{{if .ProtectNewDomains}} checked{{end}}{{if and (not .ProtectNewDomains) (not .ProtectionAvailable)}} disabled{{end}}>
             <span>Require sign-in</span>
           </label>
+          {{if .ProtectNewDomains}}
+          <p class="muted">New addresses require sign-in. To make this one public, turn this switch off on the host's row; to leave one path open, such as a webhook, add a row for that path with the switch off.</p>
+          {{end}}
 ```
 
-With the setting on the switch is never rendered disabled: a new row has to be protected or deliberately opened, and a save that can't protect it is refused with the reason. The script's `applyLock` already leaves a new row's switch alone when it isn't disabled.
+With the setting on the switch is never rendered disabled: a new row has to be protected or deliberately opened, and a save that can't protect it is refused with the reason. The script's `applyLock` already leaves a new row's switch alone when it isn't disabled. The paragraph is the design's "Making something public", in the dialog: it names both ways to open something, so nobody has to read the docs to find them.
 
 The previews note in the same file gains the setting's wording:
 
@@ -1431,6 +1452,15 @@ In `docs/PROTECTED-ROUTES.md`, add a section "Requiring sign-in on every new dom
 - How to make something public: turn the switch off on the host's row, or add a path row with the switch off under the protected host — pointing at "Leaving a path open" in the same file. Either save redeploys a running app. The same applies to a preview's row.
 - Previews: a preview's own address requires sign-in; a path it copies stays as open as its parent's; the parent's dialog says so.
 - What a new row costs: another project's host, or an app still serving an old open route, refuses the new-app form and the template deploy; the first push refuses a host another project uses.
+- At the end of the section, a `### What only the real host can show` subsection holding the design's item 6, the one this series adds:
+
+```text
+6. Each of them — a new app, a template deploy, a preview — and a first git push
+   starts with sign-in required. A path row opened for a webhook is reached
+   without signing in.
+```
+
+  It carries the design's numbering, so the item stays recognisable as item 6; `docs/SHARED-HOST.md` has the same subsection with item 5.
 
 Update the "Previews" section's last paragraph: with the setting on, the dialog says a new preview's own address will require sign-in.
 

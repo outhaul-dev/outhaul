@@ -35,7 +35,7 @@ The inputs and failures most likely to bite that no requirement spells out. Each
 2. `OUTHAUL_DOMAIN_SUFFIX` and `OUTHAUL_TLS_WILDCARD` naming different domains: refused at startup, naming both, because every generated name would then be covered by no certificate (Task 2).
 3. A manifest that uses `${domain}` twice, or `${domain:<label>}`: two distinct rows, each one label under the suffix, so the template deploy never stops with "a domain could not be added" (Task 2).
 4. A generated `<app>.<suffix>` another app already serves, or Outhaul's own host: the creation path refuses it and leaves no app behind — template deploy and first push (Task 4), and the new-app form and domain dialog (Task 3).
-5. With `OUTHAUL_DOMAIN_SUFFIX_ONLY` on: an outside host is refused for every writer including a system admin, a row already outside is still editable in place and deletable, startup warns about each one, and a preview base domain other than the suffix is refused when saved (Task 5).
+5. With `OUTHAUL_DOMAIN_SUFFIX_ONLY` on: an outside host is refused for every writer including a system admin, a row already outside is still editable in place and deletable, startup warns about each one, and a preview base domain other than the suffix is refused when saved while an empty one is left alone (Task 5).
 6. An install that sets neither setting: the same names, the same dialog options, the same form fields, and no `default` host option (Task 3's `TestNoSuffixKeepsTodaysNamesAndForms`, plus the existing catalog, preview and githook tests).
 
 ## File map
@@ -58,7 +58,7 @@ The inputs and failures most likely to bite that no requirement spells out. Each
 | `internal/previewmgr/comment.go`, `manager_test.go` | the preview comment for a host outside the suffix | 5 |
 | `main.go`, `main_test.go` | the `Naming` value, the startup suffix rule and its warning | 2, 5 |
 | `README.md` | one row per setting | 2, 5 |
-| `docs/SHARED-HOST.md` (new), `ARCHITECTURE.md`, `AGENTS.md` | the guide and the kept decisions | 6 |
+| `docs/SHARED-HOST.md` (created by the R8 subnet plan), `ARCHITECTURE.md`, `AGENTS.md` | the guide and the kept decisions | 6 |
 
 ---
 
@@ -139,7 +139,7 @@ Extend `TestPreviewHost` in `internal/core/preview_test.go` with the suffix case
 ```go
 	// Under a suffix the label sits under it, whatever the server IP.
 	cfg.BaseDomain = ""
-	if got := (Naming{ServerIP: "1.2.3.4", Suffix: "shared.demo.example.com"}).PreviewHost(cfg, "web", 42, "", ""); got != "web-pr-42.shared.demo.example.com" {
+	if got := (Naming{ServerIP: "1.2.3.4", Suffix: "shared.demo.example.com"}).PreviewHost(cfg, "web", 42, ""); got != "web-pr-42.shared.demo.example.com" {
 		t.Errorf("preview host under a suffix = %q", got)
 	}
 ```
@@ -285,7 +285,7 @@ func TestNamesUnderASuffix(t *testing.T) {
 	if got := n.HostUnderSuffix("web-api"); got != "web-api.shared.demo.example.com" {
 		t.Errorf("HostUnderSuffix = %q", got)
 	}
-	if got := n.PreviewHost(PreviewConfig{}, "web", 42, "", ""); got != "web-pr-42.shared.demo.example.com" {
+	if got := n.PreviewHost(PreviewConfig{}, "web", 42, ""); got != "web-pr-42.shared.demo.example.com" {
 		t.Errorf("preview host = %q", got)
 	}
 }
@@ -426,7 +426,7 @@ if c.TLSWildcard != "" && c.DomainSuffix != "" && !strings.EqualFold(c.TLSWildca
 ```
 
 - `main.go`: `naming := core.Naming{ServerIP: serverIP, Suffix: cfg.DomainSuffix}`.
-- `internal/catalog/expand.go`: `${domain:<label>}` becomes `naming.HostUnderSuffix(appName + "-" + arg)` when an argument is given and a suffix is set; with no suffix it still yields `sslipDomain(appName, naming.ServerIP)` (a fresh random name, as `${domain}` does today). `${email}` uses `rand + "@" + naming.HostUnderSuffix(appName)` when a suffix is set, else today's `sslipHost`.
+- `internal/catalog/expand.go`: with a suffix set, a bare `${domain}` is `naming.HostUnderSuffix(appName)` — `<app>.<suffix>`, the same each time it appears — and `${domain:<label>}` is `naming.HostUnderSuffix(appName + "-" + arg)`, `<app>-<label>.<suffix>`. With no suffix, `${domain}` and `${domain:<label>}` both yield `sslipDomain(appName, naming.ServerIP)`, a fresh random name each time, as today. `${email}` uses `rand + "@" + naming.HostUnderSuffix(appName)` when a suffix is set, else today's `sslipHost`.
 - `internal/catalog/templates/minio/template.json`: `"api_domain": "${domain:api}"`. Nothing else in the manifest changes: `console_domain` stays `${domain}`, and both env values follow their variables.
 - `internal/githook/bridge.go`: `coldCreate` already reads `b.naming.AppHost` from Task 1, so it gains the suffix here with no further edit. Confirm the existing refusal for Outhaul's own address still names `app.Domain`.
 - `README.md`: add the row after `OUTHAUL_SERVER_IP`:
@@ -898,7 +898,7 @@ func (n Naming) SuffixRefusal(host string) string // "" when host is fine
 func constrainDomains(ctx context.Context, st *store.Store, n core.Naming, logf func(string, ...any))
 ```
 
-- [ ] **Step 1: Write the failing store tests**
+- [ ] **Step 1: Write the failing tests**
 
 Create `internal/store/domains_suffix_test.go`:
 
@@ -1035,10 +1035,52 @@ func TestAddDomainOutsideTheSuffixIsRefused(t *testing.T) {
 		t.Errorf("an outside host: status %d, want a refusal naming the suffix", r.StatusCode)
 	}
 }
+
+// A row already outside the suffix is still editable in place: only a move is
+// checked, so sign-in can be turned on for it (or it can be deleted).
+func TestOutsideSuffixRowStaysEditableInPlace(t *testing.T) {
+	e, _ := newProtectionEnv(t)
+	app, err := e.store.CreateApp(context.Background(), core.App{Name: "old", RepoURL: "https://x/y.git", Domain: "old.example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := e.store.ListDomains(context.Background(), app.ID)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("rows = %v (%v), want one", rows, err)
+	}
+	row := rows[0]
+
+	// The rule starts after the row exists: this is a row from before it.
+	e.store.SetDomainSuffix("shared.demo.example.com")
+	e.srv.naming = core.Naming{Suffix: "shared.demo.example.com", SuffixOnly: true}
+
+	r := e.saveDomain(t, app.ID, row, domainForm(row, true))
+	if r.StatusCode >= 400 {
+		t.Fatalf("editing an outside row in place: status %d, body %s", r.StatusCode, body(t, r))
+	}
+	r.Body.Close()
+	got, err := e.store.GetDomain(context.Background(), app.ID, row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Protected {
+		t.Errorf("row = %+v, want sign-in on", got)
+	}
+
+	// Moving it is refused, because the new route would be outside too.
+	moved := row
+	moved.Host = "elsewhere.example.com"
+	moved.Protected = true // as the row is now, so the stale-page check passes
+	r = e.saveDomain(t, app.ID, row, domainForm(moved, true))
+	if r.StatusCode < 400 || !strings.Contains(body(t, r), "shared.demo.example.com") {
+		t.Errorf("moving an outside row: status %d, want a refusal naming the suffix", r.StatusCode)
+	}
+}
 ```
 
-Add the preview-config test to `internal/server/previews_test.go`:
+`newProtectionEnv`, `domainForm` and `saveDomain` are `protection_test.go`'s: the first signs in, turns TLS on and installs the fake proxy the gate needs, and the other two build the dialog's fields and post the save.
 
+Add the preview-config test to `internal/server/previews_test.go`:
 ```go
 // Under the suffix rule a preview base domain other than the suffix is refused
 // when it is saved: the preview's name would be outside it.
@@ -1072,6 +1114,32 @@ func TestPreviewBaseDomainMustBeTheSuffix(t *testing.T) {
 	}
 	inside.Body.Close()
 }
+
+// An empty base domain is the default (sslip.io names), so the suffix rule
+// leaves it alone: the save works. Such a preview's host is outside the
+// suffix, so creating the preview is refused and the PR comment says why.
+func TestPreviewSettingsSaveWithoutABaseDomain(t *testing.T) {
+	e := newTestEnv(t)
+	e.srv.naming = core.Naming{Suffix: "shared.demo.example.com", SuffixOnly: true}
+	e.store.SetDomainSuffix("shared.demo.example.com")
+	e.completeSetup(t)
+	app, err := e.store.CreateApp(context.Background(), core.App{
+		Name: "web", Source: core.SourceGithub, GithubRepo: "me/app", Kind: core.KindNixpacks, Branch: "main",
+	})
+	if err != nil {
+		t.Fatalf("CreateApp: %v", err)
+	}
+
+	r := e.postForm(t, "/apps/"+itoa(app.ID)+"/previews", url.Values{"enabled": {"on"}})
+	if r.StatusCode >= 400 {
+		t.Fatalf("saving preview settings with no base domain: status %d, body %s", r.StatusCode, body(t, r))
+	}
+	r.Body.Close()
+	cfg, err := e.store.GetPreviewConfig(context.Background(), app.ID)
+	if err != nil || !cfg.Enabled || cfg.BaseDomain != "" {
+		t.Errorf("config = %+v (%v), want enabled with no base domain", cfg, err)
+	}
+}
 ```
 
 Add the comment test to `internal/previewmgr/manager_test.go`:
@@ -1087,7 +1155,7 @@ func TestSpawnFailedCommentNamesTheSuffixRule(t *testing.T) {
 
 - [ ] **Step 2: Run the tests to see them fail**
 
-Run: `go test ./internal/store/ ./internal/core/ . ./internal/server/ ./internal/previewmgr/ -run 'Suffix|OneLabelUnder|OutsideTheSuffix|PreviewBaseDomain'`
+Run: `go test ./internal/store/ ./internal/core/ . ./internal/server/ ./internal/previewmgr/ -run 'Suffix|OneLabelUnder|OutsideTheSuffix|Preview'`
 
 Expected: FAIL — `DomainSuffixOnly`, `SetDomainSuffix`, `ErrHostOutsideSuffix`, `DomainsOutsideSuffix`, `constrainDomains` and `Naming.SuffixRefusal` are undefined.
 
@@ -1110,11 +1178,14 @@ if c.DomainSuffixOnly && c.DomainSuffix == "" {
 fmt.Sprintf("Only names one label under %s reach this server, such as demo.%s. %s wouldn't be routed.", n.Suffix, n.Suffix, host)
 ```
 
-- `internal/server/handlers.go`: in `parseDomainForm`, after the `isOwnHost` check, `if msg := s.naming.SuffixRefusal(host); msg != "" { return core.Domain{}, msg }`. In `handleCreateApp`, after the primary host and any compose first row are known and before `sharedHostRefused`, check `s.naming.SuffixRefusal` for each of `app.Domain` and `firstDomain.Host` and render the apps page with the message.
-- `internal/server/previews.go`: in `handleSavePreviewConfig`, after the bare-hostname check:
+- `internal/server/handlers.go`: leave `parseDomainForm` alone. Its two callers check instead — the edit only when the row moves — so a row already outside the suffix stays editable in place.
+  - `handleAddDomain`, after `d, verr := s.parseDomainForm(r, app)` and its error check: `if msg := s.naming.SuffixRefusal(d.Host); msg != "" { http.Error(w, msg, http.StatusBadRequest); return }`.
+  - `handleUpdateDomain`: right after `moved := !strings.EqualFold(existing.Host, d.Host) || existing.Path != d.Path`, add `if moved { if msg := s.naming.SuffixRefusal(d.Host); msg != "" { http.Error(w, msg, http.StatusBadRequest); return } }`. An edit that leaves the host and path alone is never checked: that is what keeps a row already outside the suffix editable, which the store's move-only check already promises.
+  - `handleCreateApp`, after the primary host and any compose first row are known and before `sharedHostRefused`: check `s.naming.SuffixRefusal` for each of `app.Domain` and `firstDomain.Host` and render the apps page with the message.
+- `internal/server/previews.go`: in `handleSavePreviewConfig`, after the bare-hostname check. An empty base domain means `sslip.io` names, which is the default, so it is not refused here; that preview's host is outside the suffix, so creating the preview is refused by the store and the PR comment says why (below):
 
 ```go
-	if s.naming.SuffixOnly && !strings.EqualFold(cfg.BaseDomain, s.naming.Suffix) {
+	if s.naming.SuffixOnly && cfg.BaseDomain != "" && !strings.EqualFold(cfg.BaseDomain, s.naming.Suffix) {
 		http.Error(w, "Preview base domain must be "+s.naming.Suffix+": under OUTHAUL_DOMAIN_SUFFIX_ONLY every name has to be one label under it.", http.StatusBadRequest)
 		return
 	}
@@ -1147,21 +1218,28 @@ git commit -m "feat(store): OUTHAUL_DOMAIN_SUFFIX_ONLY refuses hosts outside the
 ## Task 6: Docs
 
 **Files:**
-- Create: `docs/SHARED-HOST.md` (or append if another shared-host series landed first)
-- Modify: `ARCHITECTURE.md` (the template catalog paragraph at `:380-405`, and a section after "Behind a TLS-terminating proxy"), `AGENTS.md` ("Decisions to keep")
+- Modify: `docs/SHARED-HOST.md` (created by the R8 subnet plan), `ARCHITECTURE.md` (the template catalog paragraph at `:380-405`, and a section after "Behind a TLS-terminating proxy"), `AGENTS.md` ("Decisions to keep")
 
 - [ ] **Step 1: Write the guide**
 
-`docs/SHARED-HOST.md`, titled "Running Outhaul on a shared host", with one section, "Default domains under one suffix":
+`docs/SHARED-HOST.md` already exists: the R8 subnet plan creates it, titled `# A shared host`, with an intro saying the settings are off unless set, and one section, "A fixed subnet and Traefik address". Add a `## Default domains under one suffix` section after that one, and leave the rest of the file alone. It covers:
 
 - Why: only a name one label under the host's wildcard reaches the host, so `sslip.io` names point at the server and are routed nowhere; the free-domain option generated exactly those.
 - `OUTHAUL_DOMAIN_SUFFIX=shared.demo.example.com` and what each place becomes: a template lands on `<name>.<suffix>` (`${domain}`), a second name on `<name>-<label>.<suffix>` (`${domain:<label>}`), a preview on `[<service>-]<app>-pr-<n>.<suffix>`, a first `git push` on `<app>.<suffix>`, and the new-app form offers and pre-fills `<name>.<suffix>`.
 - The domain dialog's first option becomes "Default domain", and `sslip` stops being offered (it is still accepted from an old page).
 - A preview base domain an app sets still wins over the suffix.
-- `OUTHAUL_DOMAIN_SUFFIX_ONLY=yes`: every writer is refused an outside host, including a system admin; the message says why; rows that already exist keep working and can still be edited in place and deleted; startup logs one warning per such row; a saved preview base domain other than the suffix is refused, and a preview saved earlier fails with a comment saying so.
+- `OUTHAUL_DOMAIN_SUFFIX_ONLY=yes`: every writer is refused an outside host, including a system admin; the message says why; rows that already exist keep working and can still be edited in place and deleted; startup logs one warning per such row; a saved preview base domain other than the suffix is refused, while leaving it empty is left alone — it means sslip.io names, so it is creating such a preview that fails, with a comment saying why.
 - Set it with `OUTHAUL_TLS_WILDCARD=*.<suffix>`; Outhaul refuses to start if the two disagree.
 - One warning: an app name is 2–40 characters, so `<app>-<label>` must fit in 63; that is why the suffix is capped at 189 characters.
-- If `docs/SHARED-HOST.md` already exists, add the section and leave the rest alone.
+- At the end of the section, a `### What only the real host can show` subsection holding the design's item 5, the one this series adds:
+
+```text
+5. A new app is offered <app>.<suffix>, a template lands on <name>.<suffix> and a
+   preview on <app>-pr-<n>.<suffix>, all served through the CDN with no new
+   certificate. a.b.<suffix> is refused.
+```
+
+  The R8 section above keeps its own "Checking the real host" list; this subsection carries the design's numbering, so the item stays recognisable as item 5.
 
 - [ ] **Step 2: Write the locked and kept decisions**
 
