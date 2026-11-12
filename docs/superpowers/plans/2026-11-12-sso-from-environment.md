@@ -580,6 +580,48 @@ func TestSyncSSOStartupUsesStoredSettingsAsTheFirstBaseline(t *testing.T) {
 	}
 }
 
+// A Settings-connected install passes set=false at boot: the stored settings
+// are in force and nobody may be signed out.
+func TestSyncSSOStartupWithSettingsFromThePageKeepsSessions(t *testing.T) {
+	ctx := context.Background()
+	s := openWithBox(t)
+	const iss = "https://idp.example.com"
+	if err := s.SetSSOSettings(ctx, SSOSettings{Issuer: iss, ClientID: "cid", ClientSecret: "sec"}, false); err != nil {
+		t.Fatal(err)
+	}
+	_, tok := ssoSessionUser(t, s, "sub-1")
+	if ended, err := s.SyncSSOStartup(ctx, SSOSettings{}, false); err != nil || ended {
+		t.Fatalf("SyncSSOStartup = %v, %v; want the stored settings kept", ended, err)
+	}
+	if _, err := s.GetSession(ctx, tok); err != nil {
+		t.Error("a session ended although the stored settings were unchanged")
+	}
+}
+
+// An install from before this record, connected on Settings, upgrades with no
+// record and no environment: the stored settings are both in force and the
+// baseline.
+func TestSyncSSOStartupUpgradesSettingsFromThePageWithoutSigningAnyoneOut(t *testing.T) {
+	ctx := context.Background()
+	s := openWithBox(t)
+	const iss = "https://idp.example.com"
+	for k, v := range map[string]string{"sso_issuer": iss, "sso_client_id": "cid"} {
+		if err := s.SetSetting(ctx, k, v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, tok := ssoSessionUser(t, s, "sub-1")
+	if ended, err := s.SyncSSOStartup(ctx, SSOSettings{}, false); err != nil || ended {
+		t.Fatalf("SyncSSOStartup = %v, %v; want the stored settings kept", ended, err)
+	}
+	if _, err := s.GetSession(ctx, tok); err != nil {
+		t.Error("a session ended on the upgrade")
+	}
+	if got, ok, _ := s.GetSetting(ctx, "sso_last_issuer"); !ok || got != iss {
+		t.Errorf("record = %q, %v; want the stored issuer", got, ok)
+	}
+}
+
 func TestSyncSSOStartupWithNoSettingsEndsSessionsAndForgetsTheRecord(t *testing.T) {
 	ctx := context.Background()
 	s := openWithBox(t)
@@ -666,16 +708,21 @@ ssoLastClientIDKey = "sso_last_client_id"
 ```go
 // SyncSSOStartup records the issuer and client ID this run uses and, when they
 // differ from the last run's, ends every SSO sign-in in the same transaction.
-// With no record yet, the stored settings are the baseline. set is false when
-// neither source gives a provider; the record is then removed.
+// With no record yet, the stored settings are the baseline. set is true when
+// the environment gave the provider; when it is false the stored settings are
+// the ones in force, if any. With neither, the record is removed.
 func (s *Store) SyncSSOStartup(ctx context.Context, v SSOSettings, set bool) (bool, error)
 ```
 
 Algorithm:
 
 1. Read `sso_last_issuer`/`sso_last_client_id` with `GetSetting`. `hasRecord` is whether the issuer row exists.
-2. If there is no record, read the stored issuer and client ID rows directly (not `GetSSOSettings`, so the secret is not decrypted). If the issuer row exists, the stored pair is the baseline.
-3. Open one transaction. If `set`, upsert both record rows — always, so the record names the run even when nothing changed; else delete both. If the baseline differs (`baselineSet != set`, or either value differs), call `endSSOSessions(ctx, tx)`. Commit and return whether sessions were ended.
+2. Read the stored issuer and client ID rows directly (not `GetSSOSettings`, so the secret is not decrypted). `hasStored` is whether the issuer row exists.
+3. The settings in force: `v` when `set`; when `set` is false, the stored pair if `hasStored`. `inForce` is whether either gave one.
+4. The baseline: the record if `hasRecord`, else the stored pair if `hasStored`.
+5. Open one transaction. If `inForce`, upsert both record rows — always, so the record names the run even when nothing changed; else delete both. If the baseline differs from the settings in force, call `endSSOSessions(ctx, tx)`. Commit and return whether sessions were ended.
+
+The false-`set` fallback is what keeps a Settings-connected install signed in: `serve` passes `set=false` when the environment gives no provider, but the stored settings are still in force and must not count as "removed".
 
 `SetSSOSettings` upserts the two record rows in its transaction, after the three provider rows. `ClearSSOSettings` deletes them in its transaction, with the provider rows.
 
@@ -1064,6 +1111,8 @@ if ssoSet {
 	log.Printf("sso: using the provider from the environment: %s", cfg.SSOIssuer)
 }
 ```
+
+`set` here means "the environment gave the provider". The store falls back to its stored settings when it is false, so a Settings-connected install keeps its sessions across the restart; do not compute the effective settings again in `main`.
 
 After `server.New` and the other setters, before `printSetupHint`:
 
