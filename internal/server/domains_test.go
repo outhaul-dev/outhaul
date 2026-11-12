@@ -85,7 +85,7 @@ func TestAddDomainSslipGeneratesHost(t *testing.T) {
 
 func TestAddDomainSslipRequiresServerIP(t *testing.T) {
 	e := newTestEnv(t)
-	e.srv.serverIP = ""
+	e.srv.naming.ServerIP = ""
 	e.completeSetup(t)
 	app, _ := e.store.CreateApp(context.Background(), core.App{Name: "web", RepoURL: "https://x/y.git", Domain: "web.test"})
 

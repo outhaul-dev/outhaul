@@ -168,7 +168,7 @@ func newHarness(t *testing.T) *harness {
 		h.lastTokenSourceID = sourceID
 		return "tok", true, nil
 	}
-	h.mgr = New(st, h.notifier, h.dbprov, h.docker, h.gh, ts, serverIP)
+	h.mgr = New(st, h.notifier, h.dbprov, h.docker, h.gh, ts, core.Naming{ServerIP: serverIP})
 	return h
 }
 

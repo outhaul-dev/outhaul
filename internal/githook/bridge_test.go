@@ -55,7 +55,7 @@ func bridgeEnv(t *testing.T) (*Bridge, *store.Store, *logstream.Broker) {
 	st := newBridgeStore(t)
 	br := logstream.New()
 	repos := gitrepo.New(t.TempDir(), "/bin/outhaul", "/tmp/s.sock")
-	b := NewBridge(st, br, fakeNotifier{}, repos, "203.0.113.9", 30*time.Second)
+	b := NewBridge(st, br, fakeNotifier{}, repos, core.Naming{ServerIP: "203.0.113.9"}, 30*time.Second)
 	return b, st, br
 }
 
@@ -284,7 +284,7 @@ func TestRunHookOverUnixSocketDeploys(t *testing.T) {
 	st := newBridgeStore(t)
 	br := logstream.New()
 	repos := gitrepo.New(filepath.Join(dir, "git"), "/bin/true", sock)
-	b := NewBridge(st, br, fakeNotifier{}, repos, "", 30*time.Second)
+	b := NewBridge(st, br, fakeNotifier{}, repos, core.Naming{}, 30*time.Second)
 
 	ctx := context.Background()
 	app, err := st.CreateApp(ctx, core.App{Name: "api", Source: core.SourcePush, Branch: "main", Kind: core.KindNixpacks})

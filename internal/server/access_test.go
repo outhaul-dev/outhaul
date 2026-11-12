@@ -752,7 +752,7 @@ func TestChildObjectsMustBelongToTheApp(t *testing.T) {
 	}
 	// The real manager, because that's where the parent check lives. It refuses
 	// before it touches any of its other dependencies.
-	e.srv.previews = previewmgr.New(e.store, nil, nil, nil, nil, nil, "")
+	e.srv.previews = previewmgr.New(e.store, nil, nil, nil, nil, nil, core.Naming{})
 	member := e.signInAs(t, "mina", core.RoleProjectMember, a.Project.ID)
 	onA := "/apps/" + itoa(a.App.ID)
 

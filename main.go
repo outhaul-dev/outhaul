@@ -25,6 +25,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/catalog"
 	"github.com/outhaul-dev/outhaul/internal/compose"
 	"github.com/outhaul-dev/outhaul/internal/config"
+	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/dbaas"
 	"github.com/outhaul-dev/outhaul/internal/deploy"
 	"github.com/outhaul-dev/outhaul/internal/docker"
@@ -327,6 +328,7 @@ func serve() error {
 	if serverIP == "" {
 		serverIP = catalog.DetectServerIP()
 	}
+	naming := core.Naming{ServerIP: serverIP}
 	// git-push-to-deploy: bare-repo manager, deploy bridge, and SSH server. All
 	// startup failures are non-fatal — the admin UI still comes up, and git-push
 	// is simply unavailable until the cause is fixed.
@@ -336,7 +338,7 @@ func serve() error {
 		self = ""
 	}
 	repos := gitrepo.New(cfg.GitDir(), self, cfg.GitHookSocketPath())
-	sshSrv := startGitPush(workerCtx, cfg, st, worker, broker, serverIP, repos, self)
+	sshSrv := startGitPush(workerCtx, cfg, st, worker, broker, naming, repos, self)
 
 	// Preview environments: per-PR ephemeral child apps. They post PR comments
 	// as the app's own connected account.
@@ -351,7 +353,7 @@ func serve() error {
 	previews := previewmgr.New(st, worker,
 		&previewDBProvisioner{st: st, dbm: dbm},
 		&previewDocker{st: st, runtime: dc, compose: newComposeRunner(composeEnv)},
-		ghClient, tokenSource, serverIP)
+		ghClient, tokenSource, naming)
 	worker.SetDeployHook(previews.OnDeployFinished) // update a preview's PR comment + status on deploy completion
 	// A preview of a route that requires sign-in requires it too: the spawn
 	// reconciles the proxy, as turning sign-in on does, and links it over
@@ -378,7 +380,7 @@ func serve() error {
 	setupToken := server.NewToken()
 	srv, err := server.New(st, worker, dc, newComposeRunner(composeEnv), dbm, backups, broker, ghClient,
 		sources, previews,
-		cfg.PublicURL, serverIP, cfg.TLSEnabled(), setupToken)
+		cfg.PublicURL, naming, cfg.TLSEnabled(), setupToken)
 	if err != nil {
 		stopWorker()
 		return fmt.Errorf("build server: %w", err)
@@ -992,7 +994,7 @@ func shutdown(httpServer *http.Server, stopWorker context.CancelFunc, workerDone
 // logged; it returns the SSH server (for live port rebinds from the UI) or nil
 // if the SSH server is off or could not start. The hook socket and the bare
 // repositories are set up either way.
-func startGitPush(ctx context.Context, cfg config.Config, st *store.Store, worker *deploy.Worker, broker *logstream.Broker, serverIP string, repos *gitrepo.Manager, self string) *gitssh.Server {
+func startGitPush(ctx context.Context, cfg config.Config, st *store.Store, worker *deploy.Worker, broker *logstream.Broker, naming core.Naming, repos *gitrepo.Manager, self string) *gitssh.Server {
 	if self == "" {
 		return nil
 	}
@@ -1007,7 +1009,7 @@ func startGitPush(ctx context.Context, cfg config.Config, st *store.Store, worke
 		log.Printf("WARNING: git-push disabled (hook socket): %v", err)
 		return nil
 	}
-	bridge := githook.NewBridge(st, broker, worker, repos, serverIP, cfg.HealthTimeout+5*time.Minute)
+	bridge := githook.NewBridge(st, broker, worker, repos, naming, cfg.HealthTimeout+5*time.Minute)
 	go bridge.Serve(ctx, hookLn)
 
 	// SSH server (public-key auth against push_keys).

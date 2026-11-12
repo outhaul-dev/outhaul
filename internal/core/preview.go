@@ -56,12 +56,12 @@ func PreviewAppName(parentName string, pr int) string {
 
 // PreviewHost builds a preview's public host for one service. service is "" for
 // single-container apps. The first label is "[service-]<name>-pr-<n>" — the app
-// name keeps two apps sharing one base domain from claiming the same host. With
-// a BaseDomain the label sits under it; otherwise it falls back to sslip.io.
+// name keeps two apps sharing one base domain from claiming the same host. A
+// BaseDomain wins, then the shared suffix, otherwise it falls back to sslip.io.
 // The label is made DNS-safe: the service name is lowercased with anything
 // outside [a-z0-9-] turned into "-", and a label over 63 characters is cut and
 // suffixed with a hash of the whole label so it stays valid and distinct.
-func PreviewHost(cfg PreviewConfig, appName string, pr int, service, serverIP string) string {
+func (n Naming) PreviewHost(cfg PreviewConfig, appName string, pr int, service string) string {
 	label := PreviewAppName(appName, pr)
 	if service != "" {
 		label = dnsSafe(service) + "-" + label
@@ -70,7 +70,10 @@ func PreviewHost(cfg PreviewConfig, appName string, pr int, service, serverIP st
 	if cfg.BaseDomain != "" {
 		return label + "." + cfg.BaseDomain
 	}
-	return fmt.Sprintf("%s.%s.sslip.io", label, serverIP)
+	if host := n.HostUnderSuffix(label); host != "" {
+		return host
+	}
+	return fmt.Sprintf("%s.%s.sslip.io", label, n.ServerIP)
 }
 
 // maxLabel is the longest a single DNS label may be.

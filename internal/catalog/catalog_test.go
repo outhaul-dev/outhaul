@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/outhaul-dev/outhaul/internal/core"
 )
 
 // Every embedded template must load and render cleanly — a malformed catalog
@@ -18,7 +20,7 @@ func TestCatalogLoadsAndRenders(t *testing.T) {
 		t.Fatal("embedded catalog is empty")
 	}
 	for _, tmpl := range all {
-		r, err := Render(tmpl, "demo", "203.0.113.7")
+		r, err := Render(tmpl, "demo", core.Naming{ServerIP: "203.0.113.7"})
 		if err != nil {
 			t.Errorf("%s: Render: %v", tmpl.ID, err)
 			continue
@@ -66,11 +68,11 @@ func TestRenderGeneratesFreshSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	a, err := Render(tmpl, "one", "")
+	a, err := Render(tmpl, "one", core.Naming{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := Render(tmpl, "one", "")
+	b, err := Render(tmpl, "one", core.Naming{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +96,7 @@ func TestWordPressTemplate(t *testing.T) {
 	if len(tmpl.Domains) != 1 || tmpl.Domains[0].Service != "wordpress" || tmpl.Domains[0].Port != 80 {
 		t.Errorf("domains = %+v, want the wordpress service on port 80", tmpl.Domains)
 	}
-	r, err := Render(tmpl, "blog", "")
+	r, err := Render(tmpl, "blog", core.Naming{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,31 +111,31 @@ func TestWordPressTemplate(t *testing.T) {
 }
 
 func TestExpandHelpers(t *testing.T) {
-	if v := expand("${password:20}", nil, "app", ""); len(v) != 20 || strings.ContainsAny(v, "${}") {
+	if v := expand("${password:20}", nil, "app", core.Naming{}); len(v) != 20 || strings.ContainsAny(v, "${}") {
 		t.Errorf("password:20 = %q", v)
 	}
-	if v := expand("${hash:12}", nil, "app", ""); len(v) != 12 {
+	if v := expand("${hash:12}", nil, "app", core.Naming{}); len(v) != 12 {
 		t.Errorf("hash:12 = %q, want 12 hex chars", v)
 	}
-	b64 := expand("${base64:16}", nil, "app", "")
+	b64 := expand("${base64:16}", nil, "app", core.Naming{})
 	if raw, err := base64.StdEncoding.DecodeString(b64); err != nil || len(raw) != 16 {
 		t.Errorf("base64:16 = %q (decodes to %d bytes, err %v)", b64, len(raw), err)
 	}
-	uuid := expand("${uuid}", nil, "app", "")
+	uuid := expand("${uuid}", nil, "app", core.Naming{})
 	if !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(uuid) {
 		t.Errorf("uuid = %q, not a v4 UUID", uuid)
 	}
-	if v := expand("${email}", nil, "app", "203.0.113.7"); !strings.Contains(v, "@") {
+	if v := expand("${email}", nil, "app", core.Naming{ServerIP: "203.0.113.7"}); !strings.Contains(v, "@") {
 		t.Errorf("email = %q", v)
 	}
 
 	// Domains embed app name and (dash-slugged) server IP.
-	d := expand("${domain}", nil, "blog", "203.0.113.7")
+	d := expand("${domain}", nil, "blog", core.Naming{ServerIP: "203.0.113.7"})
 	if !strings.HasPrefix(d, "blog-") || !strings.HasSuffix(d, "-203-0-113-7.sslip.io") {
 		t.Errorf("domain = %q, want blog-<hash>-203-0-113-7.sslip.io", d)
 	}
 	// Without a server IP the name is still a valid editable domain.
-	d = expand("${domain}", nil, "blog", "")
+	d = expand("${domain}", nil, "blog", core.Naming{})
 	if !strings.HasPrefix(d, "blog-") || !strings.HasSuffix(d, ".sslip.io") {
 		t.Errorf("domain without IP = %q", d)
 	}
@@ -141,10 +143,10 @@ func TestExpandHelpers(t *testing.T) {
 	// Variable references resolve; unknown placeholders pass through for
 	// compose-level interpolation.
 	vars := map[string]string{"main_domain": "x.example.com"}
-	if v := expand("https://${main_domain}", vars, "app", ""); v != "https://x.example.com" {
+	if v := expand("https://${main_domain}", vars, "app", core.Naming{}); v != "https://x.example.com" {
 		t.Errorf("var reference = %q", v)
 	}
-	if v := expand("${NOT_A_THING}", vars, "app", ""); v != "${NOT_A_THING}" {
+	if v := expand("${NOT_A_THING}", vars, "app", core.Naming{}); v != "${NOT_A_THING}" {
 		t.Errorf("unknown placeholder = %q, want passthrough", v)
 	}
 }

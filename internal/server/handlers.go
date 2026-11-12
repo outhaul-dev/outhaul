@@ -824,7 +824,7 @@ func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, status in
 		"Volumes":       volumes,
 		"Attachments":   attachRows,
 		"ProjDatabases": projDatabases,
-		"ServerIP":      s.serverIP,
+		"ServerIP":      s.naming.ServerIP,
 		"TLSAvailable":  s.tlsEnabled,
 		"LocalCA":       s.caFile != "",
 		"HTTPSOnly":     s.routing.HTTPOff,
@@ -1498,10 +1498,10 @@ func parseVolumeForm(r *http.Request, app core.App) (string, string) {
 func (s *Server) parseDomainForm(r *http.Request, app core.App) (core.Domain, string) {
 	host := strings.TrimSpace(r.FormValue("host"))
 	if r.FormValue("host_kind") == "sslip" {
-		if s.serverIP == "" {
+		if s.naming.ServerIP == "" {
 			return core.Domain{}, "This server has no public IP configured, so a sslip.io domain can't be generated. Enter a custom domain."
 		}
-		host = app.Name + "." + s.serverIP + ".sslip.io"
+		host = app.Name + "." + s.naming.ServerIP + ".sslip.io"
 	}
 	host = strings.ToLower(host)
 	if !domainHostRe.MatchString(host) {

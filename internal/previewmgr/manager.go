@@ -75,7 +75,7 @@ type Manager struct {
 	docker   Docker
 	gh       GithubAPI
 	token    TokenSource
-	serverIP string
+	naming   core.Naming
 	events   chan prJob    // pull_request events waiting for Run (see Enqueue)
 	stopped  chan struct{} // closed when Run returns
 
@@ -98,8 +98,8 @@ type ProxyControl interface {
 	ReconcileProxy(ctx context.Context) error
 }
 
-func New(st Store, n Notifier, db DBProvisioner, dk Docker, gh GithubAPI, ts TokenSource, serverIP string) *Manager {
-	return &Manager{store: st, notifier: n, dbprov: db, docker: dk, gh: gh, token: ts, serverIP: serverIP,
+func New(st Store, n Notifier, db DBProvisioner, dk Docker, gh GithubAPI, ts TokenSource, naming core.Naming) *Manager {
+	return &Manager{store: st, notifier: n, dbprov: db, docker: dk, gh: gh, token: ts, naming: naming,
 		events: make(chan prJob, queueSize), stopped: make(chan struct{}), jobTimeout: defaultJobTimeout,
 		gateHostWait: defaultGateHostWait}
 }
@@ -434,7 +434,7 @@ func (m *Manager) mintDomains(ctx context.Context, parent, child core.App, cfg c
 	var rows []core.Domain
 	at := map[string]int{} // derived key -> index in rows
 	for _, d := range parentDomains {
-		host := core.PreviewHost(cfg, parent.Name, pr, d.Service, m.serverIP)
+		host := m.naming.PreviewHost(cfg, parent.Name, pr, d.Service)
 		key := host + "\x00" + d.Path
 		if i, ok := at[key]; ok {
 			rows[i].Protected = rows[i].Protected || d.Protected

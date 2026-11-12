@@ -107,7 +107,7 @@ type Server struct {
 	pages      map[string]*template.Template
 	setupToken string
 	publicURL  string
-	serverIP   string          // for generated sslip.io template domains; may be empty
+	naming     core.Naming     // for generated template and preview hosts
 	tlsEnabled bool            // ACME or local CA configured: HTTPS automation is available
 	routing    traefik.Routing // the server-wide routing settings the pages show
 
@@ -173,7 +173,7 @@ type Server struct {
 // first-boot admin-creation flow (printed by the caller as a one-time URL).
 // publicURL is Outhaul's externally reachable base URL, used to build the
 // GitHub App manifest's callback and webhook URLs.
-func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databases, bk Backups, br *logstream.Broker, gh github.Client, reg *gitsource.Registry, previews PreviewHandler, publicURL, serverIP string, tlsEnabled bool, setupToken string) (*Server, error) {
+func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databases, bk Backups, br *logstream.Broker, gh github.Client, reg *gitsource.Registry, previews PreviewHandler, publicURL string, naming core.Naming, tlsEnabled bool, setupToken string) (*Server, error) {
 	s := &Server{
 		store:             st,
 		deployer:          d,
@@ -187,7 +187,7 @@ func New(st *store.Store, d Deployer, rt Runtime, cp compose.Runner, dbm Databas
 		previews:          previews,
 		metrics:           hostmetrics.NewSampler("/"),
 		publicURL:         publicURL,
-		serverIP:          serverIP,
+		naming:            naming,
 		tlsEnabled:        tlsEnabled,
 		setupToken:        setupToken,
 		restoreEvery:      time.Minute,
@@ -349,6 +349,7 @@ func (s *Server) render(w http.ResponseWriter, r *http.Request, status int, page
 	data["IsSystemAdmin"] = me.Role.AtLeast(core.RoleSystemAdmin)
 	data["CanManage"] = me.Role.AtLeast(core.RoleProjectAdmin)
 	data["CanChange"] = s.canChange(r)
+	data["DomainSuffix"] = s.naming.Suffix
 	data["HasRole"] = me.Role.AtLeast(core.RoleProjectViewer)
 	var buf bytes.Buffer
 	if err := t.ExecuteTemplate(&buf, "base", data); err != nil {

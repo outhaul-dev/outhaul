@@ -64,7 +64,7 @@ func (s *Server) handleDeployTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rendered, err := catalog.Render(tmpl, name, s.serverIP)
+	rendered, err := catalog.Render(tmpl, name, s.naming)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

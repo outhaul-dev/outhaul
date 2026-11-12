@@ -37,13 +37,13 @@ type Bridge struct {
 	broker   *logstream.Broker
 	notifier Notifier
 	repos    *gitrepo.Manager
-	serverIP string        // for cold-push sslip.io domains; "" disables
+	naming   core.Naming   // for cold-push generated hosts; a zero value disables them
 	timeout  time.Duration // overall per-push deadline
 }
 
 // NewBridge wires the bridge. timeout bounds a single push→deploy.
-func NewBridge(st Store, br *logstream.Broker, n Notifier, repos *gitrepo.Manager, serverIP string, timeout time.Duration) *Bridge {
-	return &Bridge{store: st, broker: br, notifier: n, repos: repos, serverIP: serverIP, timeout: timeout}
+func NewBridge(st Store, br *logstream.Broker, n Notifier, repos *gitrepo.Manager, naming core.Naming, timeout time.Duration) *Bridge {
+	return &Bridge{store: st, broker: br, notifier: n, repos: repos, naming: naming, timeout: timeout}
 }
 
 // Handle serves one hook connection: read the request, run the deploy, stream
@@ -197,8 +197,8 @@ func (b *Bridge) coldCreate(ctx context.Context, req request) (core.App, error) 
 	case core.KindDockerfile:
 		app.DockerfilePath = "Dockerfile"
 	}
-	if b.serverIP != "" && kind != core.KindCompose {
-		app.Domain = req.App + "." + b.serverIP + ".sslip.io"
+	if host, ok := b.naming.AppHost(req.App); ok && kind != core.KindCompose {
+		app.Domain = host
 	}
 	// The app and its route are created together, so a refused route leaves
 	// no app behind.
