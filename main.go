@@ -1065,7 +1065,7 @@ func startGitPush(ctx context.Context, cfg config.Config, st *store.Store, worke
 		log.Printf("WARNING: git-push disabled (hook socket): %v", err)
 		return nil
 	}
-	bridge := githook.NewBridge(st, broker, worker, repos, naming, cfg.HealthTimeout+5*time.Minute)
+	bridge := githook.NewBridge(st, broker, worker, repos, naming, cfg.ProtectNewDomains, cfg.HealthTimeout+5*time.Minute)
 	go bridge.Serve(ctx, hookLn)
 
 	// SSH server (public-key auth against push_keys).

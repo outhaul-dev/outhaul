@@ -23,6 +23,8 @@ import (
 type Store interface {
 	GetAppByName(ctx context.Context, name string) (core.App, error)
 	CreateApp(ctx context.Context, app core.App) (core.App, error)
+	CreateAppProtected(ctx context.Context, app core.App) (core.App, error)
+	OtherProjectsOnHost(ctx context.Context, host string, projectID int64) (anyRow, protected bool, err error)
 	CreateDeployment(ctx context.Context, appID int64) (core.Deployment, error)
 	EnqueueTagDeployment(ctx context.Context, appID int64, choose func(inPlay []string) (tag string, ok bool)) (core.Deployment, bool, error)
 	GetDeployment(ctx context.Context, id int64) (core.Deployment, error)
@@ -33,17 +35,18 @@ type Notifier interface{ Notify() }
 
 // Bridge turns a relayed push into an enqueued, streamed, gated deployment.
 type Bridge struct {
-	store    Store
-	broker   *logstream.Broker
-	notifier Notifier
-	repos    *gitrepo.Manager
-	naming   core.Naming   // for cold-push generated hosts; a zero value disables them
-	timeout  time.Duration // overall per-push deadline
+	store      Store
+	broker     *logstream.Broker
+	notifier   Notifier
+	repos      *gitrepo.Manager
+	naming     core.Naming   // for cold-push generated hosts; a zero value disables them
+	protectNew bool          // OUTHAUL_PROTECT_NEW_DOMAINS; see coldCreate
+	timeout    time.Duration // overall per-push deadline
 }
 
 // NewBridge wires the bridge. timeout bounds a single push→deploy.
-func NewBridge(st Store, br *logstream.Broker, n Notifier, repos *gitrepo.Manager, naming core.Naming, timeout time.Duration) *Bridge {
-	return &Bridge{store: st, broker: br, notifier: n, repos: repos, naming: naming, timeout: timeout}
+func NewBridge(st Store, br *logstream.Broker, n Notifier, repos *gitrepo.Manager, naming core.Naming, protectNew bool, timeout time.Duration) *Bridge {
+	return &Bridge{store: st, broker: br, notifier: n, repos: repos, naming: naming, protectNew: protectNew, timeout: timeout}
 }
 
 // Handle serves one hook connection: read the request, run the deploy, stream
@@ -185,6 +188,23 @@ func (b *Bridge) coldCreate(ctx context.Context, req request) (core.App, error) 
 	if err != nil {
 		return core.App{}, fmt.Errorf("detect build kind: %w", err)
 	}
+	host, hasHost := b.naming.AppHost(req.App)
+	if kind == core.KindCompose {
+		host, hasHost = "", false
+	}
+	if b.protectNew && hasHost {
+		// A sign-in holds for a whole host, so only a system admin may bring
+		// two projects together there. A push has no request to ask with, so
+		// ask the store: a cold push is always on the default project.
+		anyRow, _, err := b.store.OtherProjectsOnHost(ctx, host, core.DefaultProjectID)
+		if err != nil {
+			return core.App{}, fmt.Errorf("check who uses %s: %w", host, err)
+		}
+		if anyRow {
+			return core.App{}, fmt.Errorf("an app named '%s' would get %s, which another project already uses; ask a system admin to set it up on the app page, or push under another name",
+				req.App, host)
+		}
+	}
 	app := core.App{
 		Name:   req.App,
 		Source: core.SourcePush,
@@ -197,15 +217,21 @@ func (b *Bridge) coldCreate(ctx context.Context, req request) (core.App, error) 
 	case core.KindDockerfile:
 		app.DockerfilePath = "Dockerfile"
 	}
-	if host, ok := b.naming.AppHost(req.App); ok && kind != core.KindCompose {
+	if hasHost {
 		app.Domain = host
 	}
 	// No suffix check here: the only host this mints comes from
 	// naming.AppHost, which is one label under the suffix by construction, and
 	// the store refuses it if the suffix is ever wrong.
 	// The app and its route are created together, so a refused route leaves
-	// no app behind.
-	created, err := b.store.CreateApp(ctx, app)
+	// no app behind. This checks rows only, not what a container still serves:
+	// leftoverRoutes reads containers, which the bridge has no reason to list.
+	var created core.App
+	if b.protectNew && hasHost {
+		created, err = b.store.CreateAppProtected(ctx, app)
+	} else {
+		created, err = b.store.CreateApp(ctx, app)
+	}
 	if errors.Is(err, store.ErrHostReserved) {
 		return core.App{}, fmt.Errorf("an app named '%s' would get %s, which is Outhaul's own address; push under another name",
 			req.App, app.Domain)
