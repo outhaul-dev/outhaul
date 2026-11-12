@@ -636,7 +636,7 @@ every SSO sign-in when they change, exactly as saving on Settings does.
 `OUTHAUL_SSO_ROLE_GROUPS` maps the provider's groups to Outhaul's roles at each
 sign-in to Outhaul. The highest mapped role wins. A mapped role always applies;
 one that came from a group goes when no group maps any more; a hand-given role
-lasts until the next sign-in. Protected-route sign-ins neither create an
+lasts until the next sign-in for someone in a mapped group. Protected-route sign-ins neither create an
 account nor change a role, and a password account's role is never touched. This
 replaces the 2026-11-02 design's "taking roles or groups from the SSO provider"
 non-goal, opt-in. See `docs/SSO.md`.

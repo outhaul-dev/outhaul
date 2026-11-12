@@ -138,7 +138,9 @@ func recordSSORun(ctx context.Context, q execer, v SSOSettings) error {
 // differ from the last run's, ends every SSO sign-in in the same transaction.
 // With no record yet, the stored settings are the baseline. set is true when
 // the environment gave the provider; when it is false the stored settings are
-// the ones in force, if any. With neither, the record is removed.
+// the ones in force, if any. With neither, the record is removed. The result
+// is true when a previous run existed and its settings differ; sessions are
+// ended whenever they differ, but a first-ever run has nothing to report.
 func (s *Store) SyncSSOStartup(ctx context.Context, v SSOSettings, set bool) (bool, error) {
 	lastIssuer, hasRecord, err := s.GetSetting(ctx, ssoLastIssuerKey)
 	if err != nil {
@@ -191,5 +193,5 @@ func (s *Store) SyncSSOStartup(ctx context.Context, v SSOSettings, set bool) (bo
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}
-	return changed, nil
+	return changed && baselineSet, nil
 }

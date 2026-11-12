@@ -905,8 +905,10 @@ func TestReadSSOSecret(t *testing.T) {
 		return p
 	}
 	abs := write(dir, "secret", "abs-value\n")
+	write(dir, "spaced", "  spaced-secret  \n")
 	write(dir, "lf-only", "\n")
 	write(dir, "empty", "")
+	write(dir, "blank", " \t\n\n")
 	write(dir, "big", strings.Repeat("x", 4097))
 	write(dir, "crlf", "crlf-value\r\n")
 	write(creds, "sso-client-secret", "cred-value\n")
@@ -922,6 +924,10 @@ func TestReadSSOSecret(t *testing.T) {
 	if got, err := readSSOSecret(filepath.Join(dir, "crlf"), ""); err != nil || got != "crlf-value" {
 		t.Fatalf("crlf = %q, %v", got, err)
 	}
+	// Only the newline is dropped: a secret's own whitespace is part of it.
+	if got, err := readSSOSecret(filepath.Join(dir, "spaced"), ""); err != nil || got != "  spaced-secret  " {
+		t.Fatalf("spaced = %q, %v; want the secret untrimmed", got, err)
+	}
 	if got, err := readSSOSecret("", creds); err != nil || got != "" {
 		t.Fatalf("unset = %q, %v; want empty", got, err)
 	}
@@ -929,6 +935,7 @@ func TestReadSSOSecret(t *testing.T) {
 		{filepath.Join(dir, "missing"), ""},
 		{filepath.Join(dir, "lf-only"), ""},
 		{filepath.Join(dir, "empty"), ""},
+		{filepath.Join(dir, "blank"), ""},
 		{filepath.Join(dir, "big"), ""},
 		{"sso-client-secret", ""}, // a credential name with no CREDENTIALS_DIRECTORY
 		{".", creds},              // a name can't resolve to the credentials directory

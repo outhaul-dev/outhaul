@@ -290,6 +290,24 @@ func TestSyncSSOStartupWithNoSettingsEndsSessionsAndForgetsTheRecord(t *testing.
 	}
 }
 
+// A host that never had SSO has nothing to report ending, though the record
+// is still written for the next start.
+func TestSyncSSOStartupFirstEverEnvironmentRunReportsNothing(t *testing.T) {
+	ctx := context.Background()
+	s := openWithBox(t)
+	const iss = "https://idp.example.com"
+	ended, err := s.SyncSSOStartup(ctx, SSOSettings{Issuer: iss, ClientID: "cid"}, true)
+	if err != nil || ended {
+		t.Fatalf("SyncSSOStartup = %v, %v; want false on a first-ever run", ended, err)
+	}
+	if got, ok, _ := s.GetSetting(ctx, "sso_last_issuer"); !ok || got != iss {
+		t.Errorf("recorded issuer = %q, %v; want %q", got, ok, iss)
+	}
+	if got, ok, _ := s.GetSetting(ctx, "sso_last_client_id"); !ok || got != "cid" {
+		t.Errorf("recorded client ID = %q, %v; want cid", got, ok)
+	}
+}
+
 func TestSyncSSOStartupLeavesPasswordSessionsAlone(t *testing.T) {
 	ctx := context.Background()
 	s := openWithBox(t)

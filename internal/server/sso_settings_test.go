@@ -420,6 +420,9 @@ func TestSSOFromTheEnvironmentWins(t *testing.T) {
 	if strings.Contains(page, `action="/settings/sso"`) {
 		t.Error("the environment's settings still get an editable form")
 	}
+	if strings.Contains(page, "env-secret") {
+		t.Error("the settings page shows the environment's client secret")
+	}
 
 	*seen = nil // the save above ran its own discovery
 	p, err := e.srv.ssoProvider(context.Background())

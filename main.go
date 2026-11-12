@@ -488,7 +488,7 @@ func readSSOSecret(value, credentialsDir string) (string, error) {
 		return "", fmt.Errorf("%s: %s is larger than %d bytes", name, path, maxSSOSecretBytes)
 	}
 	trimmed := strings.TrimSuffix(strings.TrimSuffix(string(b), "\n"), "\r")
-	if trimmed == "" {
+	if strings.TrimSpace(trimmed) == "" {
 		return "", fmt.Errorf("%s: %s is empty", name, path)
 	}
 	return trimmed, nil

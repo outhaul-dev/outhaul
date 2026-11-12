@@ -53,7 +53,7 @@ func (s *Server) usersPage(w http.ResponseWriter, r *http.Request, status int, e
 			Self:       u.ID == me.ID,
 			Password:   u.SignIn == core.SignInPassword,
 			Admin:      u.Role == core.RoleSystemAdmin,
-			FromGroups: u.RoleFromGroups,
+			FromGroups: u.RoleFromGroups && len(s.ssoEnv.RoleGroups) > 0,
 		}
 		row.NoPasswordYet = row.Password && u.PasswordHash == ""
 		if u.SignIn == core.SignInSSO && u.Role == core.RoleNone {
