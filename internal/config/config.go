@@ -38,6 +38,7 @@ type Config struct {
 	TraefikImage     string      // image used for the managed Traefik container
 	CloudflaredImage string      // image used for the managed cloudflared connector
 	Network          string      // shared Docker network app containers + Traefik join
+	ComposeRestart   string      // OUTHAUL_COMPOSE_RESTART: "unless-stopped", or "" for none
 	NetworkSubnet    string      // OUTHAUL_NETWORK_SUBNET; "" lets Docker pick
 	TraefikIP        string      // OUTHAUL_TRAEFIK_IP; "" lets Docker pick
 	Updates          string      // "main" updates from main; "off" never updates
@@ -98,6 +99,7 @@ func Load(getenv Getenv) Config {
 		TraefikImage:     or(getenv("OUTHAUL_TRAEFIK_IMAGE"), DefaultTraefikImage),
 		CloudflaredImage: or(getenv("OUTHAUL_CLOUDFLARED_IMAGE"), DefaultCloudflaredImage),
 		Network:          or(getenv("OUTHAUL_NETWORK"), "outhaul"),
+		ComposeRestart:   p.word("OUTHAUL_COMPOSE_RESTART", "", "unless-stopped"),
 		NetworkSubnet:    p.subnet("OUTHAUL_NETWORK_SUBNET"),
 		TraefikIP:        p.ipv4("OUTHAUL_TRAEFIK_IP"),
 		Updates:          p.word("OUTHAUL_UPDATES", "main", "main", "off"),
