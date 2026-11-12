@@ -5,6 +5,7 @@ package sso
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -27,12 +28,19 @@ var ErrNoEmail = errors.New("sso: the provider sent no usable email or username"
 // Config is what a system admin enters on the Settings page.
 type Config struct {
 	Issuer, ClientID, ClientSecret, RedirectURL string
+	// GroupsClaim names the top-level ID token claim that lists the person's
+	// groups. Empty reads no groups.
+	GroupsClaim string
+	// Scopes are requested after openid, email and profile.
+	Scopes []string
 }
 
 // Identity is who the provider says signed in. Issuer and Subject identify the
-// account; Email is for display and for protected apps.
+// account; Email is for display and for protected apps. Groups are the names
+// in the configured claim, exactly as the provider sent them.
 type Identity struct {
 	Issuer, Subject, Email string
+	Groups                 []string
 }
 
 // Provider starts and finishes a sign-in.
@@ -46,6 +54,8 @@ type provider struct {
 	verifier *oidc.IDTokenVerifier
 	client   *http.Client
 	issuer   string
+
+	groupsClaim string
 }
 
 // Discover fetches the provider's configuration and returns a Provider.
@@ -69,12 +79,13 @@ func Discover(ctx context.Context, cfg Config) (Provider, error) {
 			ClientSecret: cfg.ClientSecret,
 			RedirectURL:  cfg.RedirectURL,
 			Endpoint:     op.Endpoint(),
-			Scopes:       []string{oidc.ScopeOpenID, "email", "profile"},
+			Scopes:       append([]string{oidc.ScopeOpenID, "email", "profile"}, cfg.Scopes...),
 		},
 		verifier: op.VerifierContext(oidc.ClientContext(context.Background(), client),
 			&oidc.Config{ClientID: cfg.ClientID}),
-		client: client,
-		issuer: cfg.Issuer,
+		client:      client,
+		issuer:      cfg.Issuer,
+		groupsClaim: cfg.GroupsClaim,
 	}, nil
 }
 
@@ -124,7 +135,36 @@ func (p *provider) Exchange(ctx context.Context, code, nonce, verifier string) (
 	if email == "" {
 		return Identity{}, ErrNoEmail
 	}
-	return Identity{Issuer: p.issuer, Subject: idt.Subject, Email: email}, nil
+	var groups []string
+	if p.groupsClaim != "" {
+		var all map[string]json.RawMessage
+		if err := idt.Claims(&all); err != nil {
+			return Identity{}, fmt.Errorf("sso: reading id_token claims: %w", err)
+		}
+		groups = groupsFrom(all[p.groupsClaim])
+	}
+	return Identity{Issuer: p.issuer, Subject: idt.Subject, Email: email, Groups: groups}, nil
+}
+
+// groupsFrom reads a groups claim: an array of strings, or one string. A
+// missing, null, mixed or other-typed value is no groups, and never an error.
+// Names are kept exactly as sent.
+func groupsFrom(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var list []string
+	if err := json.Unmarshal(raw, &list); err == nil {
+		if len(list) == 0 {
+			return nil
+		}
+		return list
+	}
+	var one string
+	if err := json.Unmarshal(raw, &one); err == nil {
+		return []string{one}
+	}
+	return nil
 }
 
 // explicitlyFalse reports whether email_verified is false, sent either as a

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -132,7 +133,7 @@ func TestExchangeReturnsIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Identity{Issuer: p.URL, Subject: "abc", Email: "dana@example.com"}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
 	if p.gotForm.Get("code") != "code-1" || p.gotForm.Get("code_verifier") != testVerif {
@@ -314,7 +315,7 @@ func TestFakeImplementsProvider(t *testing.T) {
 	if !strings.Contains(u, "st") || f.LastAuthState != "st" || f.LastNonce != "no" {
 		t.Fatalf("url=%s state=%q nonce=%q", u, f.LastAuthState, f.LastNonce)
 	}
-	if got, err := f.Exchange(context.Background(), "c", "no", "ve"); err != nil || got != f.Identity {
+	if got, err := f.Exchange(context.Background(), "c", "no", "ve"); err != nil || !reflect.DeepEqual(got, f.Identity) {
 		t.Fatalf("got %+v, %v", got, err)
 	}
 	f.ExchangeErr = errors.New("boom")
@@ -405,5 +406,89 @@ func TestValidIssuer(t *testing.T) {
 		if err := ValidIssuer(in); err == nil {
 			t.Errorf("ValidIssuer(%q) = nil, want an error", in)
 		}
+	}
+}
+
+func exchangeWith(t *testing.T, p *idp, cfg Config) (Identity, error) {
+	t.Helper()
+	prov, err := Discover(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	return prov.Exchange(context.Background(), "code-1", testNonce, testVerif)
+}
+
+func TestExchangeReadsTheGroupsClaim(t *testing.T) {
+	cases := []struct {
+		name      string
+		claimName string // the claim Config tells Exchange to read
+		groups    any    // the token's "groups"; nil leaves it out
+		teams     any    // the token's "teams"; nil leaves it out
+		want      []string
+	}{
+		{"array", "groups", []string{"eng", "admins"}, nil, []string{"eng", "admins"}},
+		{"one string", "groups", "eng", nil, []string{"eng"}},
+		{"number", "groups", 7, nil, nil},
+		{"object", "groups", map[string]any{"a": "b"}, nil, nil},
+		{"mixed array", "groups", []any{"eng", 2}, nil, nil},
+		{"absent", "groups", nil, nil, nil},
+		{"another claim", "teams", []string{"eng"}, []string{"eng"}, []string{"eng"}},
+		{"configured claim absent", "teams", []string{"eng"}, nil, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			p := newIDP(t)
+			if c.groups != nil {
+				p.claims["groups"] = c.groups
+			}
+			if c.teams != nil {
+				p.claims["teams"] = c.teams
+			}
+			cfg := p.cfg()
+			cfg.GroupsClaim = c.claimName
+			got, err := exchangeWith(t, p, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(got.Groups) != len(c.want) {
+				t.Fatalf("groups = %v, want %v", got.Groups, c.want)
+			}
+			for i := range c.want {
+				if got.Groups[i] != c.want[i] {
+					t.Errorf("groups = %v, want %v", got.Groups, c.want)
+				}
+			}
+		})
+	}
+}
+
+func TestExchangeReadsNoGroupsWithoutAClaimName(t *testing.T) {
+	p := newIDP(t)
+	p.claims["groups"] = []string{"eng"}
+	got, err := exchange(t, p) // p.cfg() has no GroupsClaim
+	if err != nil || got.Groups != nil {
+		t.Fatalf("got %+v, %v; want no groups", got.Groups, err)
+	}
+}
+
+func TestDiscoverRequestsExtraScopes(t *testing.T) {
+	p := newIDP(t)
+	cfg := p.cfg()
+	cfg.Scopes = []string{"groups", "offline_access"}
+	prov, err := Discover(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(prov.AuthURL("s", "n", "v"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Fields(u.Query().Get("scope")); strings.Join(got, " ") != "openid email profile groups offline_access" {
+		t.Fatalf("scope = %q", u.Query().Get("scope"))
+	}
+	// Without extras the request is unchanged.
+	u, _ = url.Parse(discover(t, p).AuthURL("s", "n", "v"))
+	if got := strings.Fields(u.Query().Get("scope")); strings.Join(got, " ") != "openid email profile" {
+		t.Fatalf("default scope = %q", u.Query().Get("scope"))
 	}
 }
