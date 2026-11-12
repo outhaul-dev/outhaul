@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/cron"
+	"github.com/outhaul-dev/outhaul/internal/docker"
 )
 
 // DefaultTraefikImage is the Traefik image Outhaul pulls and manages. Pinned to
@@ -35,6 +36,8 @@ type Config struct {
 	TraefikImage     string // image used for the managed Traefik container
 	CloudflaredImage string // image used for the managed cloudflared connector
 	Network          string // shared Docker network app containers + Traefik join
+	NetworkSubnet    string // OUTHAUL_NETWORK_SUBNET; "" lets Docker pick
+	TraefikIP        string // OUTHAUL_TRAEFIK_IP; "" lets Docker pick
 	Updates          string // "main" updates from main; "off" never updates
 	ContainerPolicy  string // "strict" or ""; strict refuses host-reaching Compose keys
 
@@ -90,6 +93,8 @@ func Load(getenv Getenv) Config {
 		TraefikImage:     or(getenv("OUTHAUL_TRAEFIK_IMAGE"), DefaultTraefikImage),
 		CloudflaredImage: or(getenv("OUTHAUL_CLOUDFLARED_IMAGE"), DefaultCloudflaredImage),
 		Network:          or(getenv("OUTHAUL_NETWORK"), "outhaul"),
+		NetworkSubnet:    p.subnet("OUTHAUL_NETWORK_SUBNET"),
+		TraefikIP:        p.ipv4("OUTHAUL_TRAEFIK_IP"),
 		Updates:          p.word("OUTHAUL_UPDATES", "main", "main", "off"),
 		ContainerPolicy:  p.policy("OUTHAUL_CONTAINER_POLICY"),
 
@@ -222,6 +227,13 @@ func (c Config) Validate() error {
 	}
 	if c.RequireHeaderValue != "" && c.RequireHeaderName == "" {
 		errs = append(errs, errors.New("OUTHAUL_REQUIRE_HEADER_VALUE needs OUTHAUL_REQUIRE_HEADER_NAME"))
+	}
+	if c.TraefikIP != "" {
+		if c.NetworkSubnet == "" {
+			errs = append(errs, fmt.Errorf("OUTHAUL_TRAEFIK_IP=%s needs OUTHAUL_NETWORK_SUBNET, which fixes the addresses Traefik may use", c.TraefikIP))
+		} else if plan, err := docker.PlanSubnet(c.NetworkSubnet); err == nil && !plan.Fixed(c.TraefikIP) {
+			errs = append(errs, fmt.Errorf("OUTHAUL_TRAEFIK_IP=%s: want an address from %s to %s in OUTHAUL_NETWORK_SUBNET=%s (the lower half, after the gateway)", c.TraefikIP, plan.First, plan.Last, plan.Subnet))
+		}
 	}
 	if !c.AdminDirect {
 		if !c.PublicURLSet() {
@@ -688,4 +700,36 @@ func (p *parser) ip(key string) string {
 		return ""
 	}
 	return v
+}
+
+// subnet parses OUTHAUL_NETWORK_SUBNET: an IPv4 network in CIDR form, /28 or
+// larger; empty leaves the subnet to Docker. It is stored in canonical form, so
+// the settings compare with what Docker reports.
+func (p *parser) subnet(key string) string {
+	v := p.getenv(key)
+	if v == "" {
+		return ""
+	}
+	plan, err := docker.PlanSubnet(v)
+	if err != nil {
+		p.problems = append(p.problems, fmt.Errorf("%s=%q: %v", key, v, err))
+		return ""
+	}
+	return plan.Subnet
+}
+
+// ipv4 parses an IPv4 address; empty stays empty. It is stored as four dotted
+// octets, so an IPv4-mapped IPv6 spelling compares equal to the address Docker
+// reports.
+func (p *parser) ipv4(key string) string {
+	v := p.getenv(key)
+	if v == "" {
+		return ""
+	}
+	ip := net.ParseIP(v)
+	if ip == nil || ip.To4() == nil {
+		p.reject(key, v, "an IPv4 address such as 172.30.0.2")
+		return ""
+	}
+	return ip.To4().String()
 }

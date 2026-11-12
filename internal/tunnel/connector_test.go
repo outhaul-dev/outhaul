@@ -57,6 +57,54 @@ func TestEnsureConnectorCreatesRunningContainer(t *testing.T) {
 	}
 }
 
+func TestEnsureConnectorUsesTheNetworkSpec(t *testing.T) {
+	ctx := context.Background()
+	rec := &recordingFake{Fake: docker.NewFake()}
+	cc := testConfig()
+	cc.Subnet = "172.30.0.0/24"
+
+	if err := EnsureConnector(ctx, rec, cc, nil); err != nil {
+		t.Fatalf("EnsureConnector: %v", err)
+	}
+	want := docker.NetworkSpec{
+		Name: "outhaul", Subnet: "172.30.0.0/24",
+		Gateway: "172.30.0.1", IPRange: "172.30.0.128/25",
+	}
+	if len(rec.NetworkSpecs) != 1 {
+		t.Fatalf("NetworkSpecs = %+v, want one call", rec.NetworkSpecs)
+	}
+	if rec.NetworkSpecs[0] != want {
+		t.Errorf("NetworkSpecs[0] = %+v, want %+v", rec.NetworkSpecs[0], want)
+	}
+	// The connector takes a dynamic address; only Traefik is pinned.
+	if rec.created.IPv4 != "" {
+		t.Errorf("connector IPv4 = %q, want none", rec.created.IPv4)
+	}
+}
+
+func TestEnsureConnectorFailsOnANetworkMismatch(t *testing.T) {
+	ctx := context.Background()
+	f := docker.NewFake()
+	f.NetworkDetails["outhaul"] = docker.NetworkInfo{
+		Subnet: "10.0.0.0/24", Gateway: "10.0.0.1", IPRange: "10.0.0.128/25",
+	}
+	cc := testConfig()
+	cc.Subnet = "172.30.0.0/24"
+
+	err := EnsureConnector(ctx, f, cc, nil)
+	if err == nil {
+		t.Fatal("EnsureConnector: want an error for a network with another subnet")
+	}
+	for _, subnet := range []string{"10.0.0.0/24", "172.30.0.0/24"} {
+		if !strings.Contains(err.Error(), subnet) {
+			t.Errorf("error %q should name subnet %s", err, subnet)
+		}
+	}
+	if c, _ := f.FindContainer(ctx, ContainerName); c != nil {
+		t.Errorf("connector created despite the mismatch: %+v", c)
+	}
+}
+
 func TestEnsureConnectorTokenNeverInLabels(t *testing.T) {
 	ctx := context.Background()
 	rec := &recordingFake{Fake: docker.NewFake()}

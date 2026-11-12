@@ -15,16 +15,18 @@ import (
 // the operations Outhaul performs (networks, containers, lifecycle) and mirrors
 // Docker's "duplicate name" error so replace-then-create paths are exercised.
 type Fake struct {
-	mu         sync.Mutex
-	seq        int
-	Networks   map[string]bool
-	Containers map[string]*Container // keyed by ID
-	Pulled     []string              // images pulled, in order
-	Created    []ContainerSpec       // specs passed to CreateContainer, in order
-	IPs        map[string]string     // container ID -> IP (test-settable)
-	Logs       map[string]string     // container ID -> log content (test-settable)
-	LogTails   []int                 // tail values passed to ContainerLogs, in order
-	Stats      map[string]Stats      // container ID -> stats sample (test-settable)
+	mu             sync.Mutex
+	seq            int
+	Networks       map[string]bool
+	NetworkSpecs   []NetworkSpec          // specs passed to EnsureNetwork, in order
+	NetworkDetails map[string]NetworkInfo // existing networks, by name (test-settable)
+	Containers     map[string]*Container  // keyed by ID
+	Pulled         []string               // images pulled, in order
+	Created        []ContainerSpec        // specs passed to CreateContainer, in order
+	IPs            map[string]string      // container ID -> IP (test-settable)
+	Logs           map[string]string      // container ID -> log content (test-settable)
+	LogTails       []int                  // tail values passed to ContainerLogs, in order
+	Stats          map[string]Stats       // container ID -> stats sample (test-settable)
 
 	Volumes map[string]map[string]string // volume name -> labels (test-settable)
 	Execs   []ExecCall                   // ExecContainer invocations, in order
@@ -78,13 +80,14 @@ type ExecCall struct {
 // NewFake returns an empty Fake.
 func NewFake() *Fake {
 	return &Fake{
-		Networks:   map[string]bool{},
-		Containers: map[string]*Container{},
-		IPs:        map[string]string{},
-		Logs:       map[string]string{},
-		Stats:      map[string]Stats{},
-		Volumes:    map[string]map[string]string{},
-		Images:     map[string]bool{},
+		Networks:       map[string]bool{},
+		NetworkDetails: map[string]NetworkInfo{},
+		Containers:     map[string]*Container{},
+		IPs:            map[string]string{},
+		Logs:           map[string]string{},
+		Stats:          map[string]Stats{},
+		Volumes:        map[string]map[string]string{},
+		Images:         map[string]bool{},
 	}
 }
 
@@ -97,11 +100,15 @@ func (f *Fake) ServerAPIVersion(context.Context) string { return "1.44" }
 func (f *Fake) NetworkGateway(_ context.Context, name string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if !f.Networks[name] {
+	details, detailed := f.NetworkDetails[name]
+	if !f.Networks[name] && !detailed {
 		return "", fmt.Errorf("network %q not found", name)
 	}
 	if gw := f.Gateways[name]; gw != "" {
 		return gw, nil
+	}
+	if detailed && details.Gateway != "" {
+		return details.Gateway, nil
 	}
 	return "172.30.0.1", nil
 }
@@ -121,11 +128,49 @@ func (f *Fake) PullImage(_ context.Context, ref string, out io.Writer) error {
 	return nil
 }
 
-func (f *Fake) EnsureNetwork(_ context.Context, name string) error {
+func (f *Fake) EnsureNetwork(_ context.Context, spec NetworkSpec) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.Networks[name] = true
+	f.NetworkSpecs = append(f.NetworkSpecs, spec)
+	info, detailed := f.NetworkDetails[spec.Name]
+	exists := detailed || f.Networks[spec.Name]
+	if !exists {
+		f.Networks[spec.Name] = true
+		f.NetworkDetails[spec.Name] = NetworkInfo{
+			Subnet:  spec.Subnet,
+			Gateway: spec.Gateway,
+			IPRange: spec.IPRange,
+			IPv4s:   map[string]string{},
+		}
+		return nil
+	}
+	f.Networks[spec.Name] = true
+	if !detailed {
+		// Docker knows the name. Give it the shape a real inspect returns, so
+		// a later InspectNetwork hands back an address map, never nil.
+		info = NetworkInfo{IPv4s: map[string]string{}}
+		f.NetworkDetails[spec.Name] = info
+	}
+	if spec.Subnet == "" {
+		return nil
+	}
+	if info.Subnet != spec.Subnet || info.Gateway != spec.Gateway || info.IPRange != spec.IPRange {
+		return &NetworkMismatchError{Name: spec.Name, Have: info, Want: spec}
+	}
 	return nil
+}
+
+func (f *Fake) InspectNetwork(_ context.Context, name string) (NetworkInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	info, detailed := f.NetworkDetails[name]
+	if !detailed && !f.Networks[name] {
+		return NetworkInfo{}, fmt.Errorf("network %q not found", name)
+	}
+	if info.IPv4s == nil {
+		info.IPv4s = map[string]string{}
+	}
+	return info, nil
 }
 
 func (f *Fake) FindContainer(_ context.Context, name string) (*Container, error) {
@@ -179,6 +224,17 @@ func (f *Fake) CreateContainer(_ context.Context, spec ContainerSpec) (string, e
 		Labels: spec.Labels,
 	}
 	f.IPs[id] = fmt.Sprintf("10.88.0.%d", f.seq)
+	if len(spec.Networks) > 0 && spec.IPv4 != "" {
+		name := spec.Networks[0]
+		info, detailed := f.NetworkDetails[name]
+		if detailed || f.Networks[name] {
+			if info.IPv4s == nil {
+				info.IPv4s = map[string]string{}
+			}
+			info.IPv4s[spec.Name] = spec.IPv4
+			f.NetworkDetails[name] = info
+		}
+	}
 	return id, nil
 }
 
@@ -223,6 +279,7 @@ func (f *Fake) RemoveContainer(_ context.Context, id string, _ bool) error {
 	if _, ok := f.Containers[id]; !ok {
 		return fmt.Errorf("no such container: %s", id)
 	}
+	f.forgetAddresses(f.Containers[id].Name)
 	delete(f.Containers, id)
 	return nil
 }
@@ -237,8 +294,28 @@ func (f *Fake) RenameContainer(_ context.Context, id, name string) error {
 	if f.byName(name) != nil {
 		return fmt.Errorf("container name %q already in use", name)
 	}
+	old := c.Name
 	c.Name = name
+	for net, info := range f.NetworkDetails {
+		if addr, held := info.IPv4s[old]; held {
+			delete(info.IPv4s, old)
+			info.IPv4s[name] = addr
+			f.NetworkDetails[net] = info
+		}
+	}
 	return nil
+}
+
+// forgetAddresses drops a container's fixed addresses from every network's
+// bookkeeping (caller holds the lock).
+func (f *Fake) forgetAddresses(name string) {
+	for net, info := range f.NetworkDetails {
+		if _, held := info.IPv4s[name]; !held {
+			continue
+		}
+		delete(info.IPv4s, name)
+		f.NetworkDetails[net] = info
+	}
 }
 
 func (f *Fake) ContainerLogs(_ context.Context, id string, tail int) (io.ReadCloser, error) {

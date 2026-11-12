@@ -255,6 +255,8 @@ No config files — defaults with `OUTHAUL_*` environment overrides:
 | `OUTHAUL_TRAEFIK_IMAGE` | `traefik:v3.3`       | Managed Traefik image                     |
 | `OUTHAUL_NETWORK`       | `outhaul`            | Shared Docker network for app containers  |
 | `OUTHAUL_CONTAINER_POLICY` | unset (off)       | Refuse Compose files that reach the host or another app — see [docs/GUARD-RAILS.md](docs/GUARD-RAILS.md) |
+| `OUTHAUL_NETWORK_SUBNET` | (unset: Docker picks) | Fixed IPv4 subnet for the shared network, `/28` or larger — see docs/SHARED-HOST.md |
+| `OUTHAUL_TRAEFIK_IP`    | (unset: Docker picks) | Traefik's fixed address in the subnet's lower half — see docs/SHARED-HOST.md |
 | `OUTHAUL_ACME_EMAIL`    | (empty)              | Let's Encrypt email; set to enable HTTPS   |
 | `OUTHAUL_ACME_STAGING`  | `false`              | Use the LE staging CA (testing)            |
 | `OUTHAUL_ACME_DNS_PROVIDER` | (empty)          | A [lego DNS provider](https://go-acme.github.io/lego/dns/) code, such as `azuredns`; empty uses the HTTP-01 challenge, which needs port 80 |

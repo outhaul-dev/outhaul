@@ -758,6 +758,44 @@ route (see `AGENTS.md`).
 
 `deploy/test/integration_gate.sh` checks the headers, the removed four, the gate
 and the fail-closed case on a real Traefik (not in CI).
+### A fixed network and Traefik address (opt-in)
+
+An install can fix the shared network's subnet and Traefik's address
+(`OUTHAUL_NETWORK_SUBNET`, `OUTHAUL_TRAEFIK_IP`) so a firewall rule can name
+Traefik as the only container allowed to reach the host's metadata service.
+Neither is set by default; the user guide is `docs/SHARED-HOST.md`.
+
+**One rule for the subnet.** `docker.PlanSubnet` validates the CIDR (IPv4, `/28`
+or larger, no host bits) and derives the gateway (the subnet's first address),
+the fixed range (the rest of the lower half) and the dynamic range (the upper
+half, as `IPRange`). `docker.NetworkFor` turns that into a `NetworkSpec`. The
+gateway is given explicitly because Docker otherwise takes it from the range,
+and the range keeps Docker from handing out a fixed address, for example while
+Traefik is being replaced.
+
+**Creating or refusing.** `real.EnsureNetwork` inspects the network first. With
+no subnet in the spec an existing network is left alone, as before; a matching
+subnet, gateway and range is nothing to do; any other values are a
+`NetworkMismatchError` naming both. A missing network is created with the
+subnet, gateway and range. Outhaul never removes or reconfigures a network that
+containers are on, so a mismatch stops startup and the docs give the manual
+move.
+
+**Traefik's address.** `ContainerSpec.IPv4` sets `IPAMConfig.IPv4Address` on
+the spec's first network, which for Traefik is the shared one.
+`traefik.ProxyConfig` and `tunnel.ConnectorConfig` carry the subnet, and both
+reach `EnsureNetwork` through `NetworkFor`. Before replacing Traefik,
+`EnsureProxy` reads who is on the network and refuses with the holder's name if
+another container has the address, so the old Traefik keeps running.
+`hashConfig` includes the address only when one is set: an install that sets
+neither sees no change and an upgrade recreates nothing, while setting the
+address recreates Traefik once.
+
+**Startup.** With a subnet set, `serve` runs `ensureFixedNetwork` before
+anything else touches Docker. It refuses to start on an unreachable daemon, a
+mismatching network or a create failure, and logs one line with the configured
+and derived values (`fixedNetworkLine`). With no subnet set, startup warns and
+carries on as before.
 
 ---
 

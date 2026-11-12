@@ -212,13 +212,23 @@ func serve() error {
 		log.Printf("recovered %d interrupted database provision(s) as failed", n)
 	}
 
-	// Docker client. Not fatal if unreachable: the admin UI (and first-boot
-	// setup) should still come up so the operator can see what's wrong.
+	// Docker client. Not fatal if unreachable, so the admin UI (and first-boot
+	// setup) should still come up so the operator can see what's wrong; with a
+	// fixed subnet, ensureFixedNetwork checks the daemon before that.
 	dc, err := docker.New(cfg.DockerHost)
 	if err != nil {
 		return fmt.Errorf("docker client: %w", err)
 	}
 	defer dc.Close()
+
+	// A fixed subnet is settled before anything else touches Docker, so a
+	// network that can't be used stops startup instead of surfacing later.
+	netCtx, cancelNet := context.WithTimeout(context.Background(), 60*time.Second)
+	err = ensureFixedNetwork(netCtx, dc, cfg)
+	cancelNet()
+	if err != nil {
+		return err
+	}
 
 	// Local CA: refuse to run against an enabled tunnel (mutually exclusive
 	// ingress postures), then mint certs before Traefik comes up so the file
@@ -522,6 +532,47 @@ func (ic *infraController) Gateway() string {
 // It is a variable so tests can shorten it.
 var reconcileRetryInterval = 30 * time.Second
 
+// ensureFixedNetwork applies OUTHAUL_NETWORK_SUBNET before anything else runs.
+// It returns nil at once when the setting is unset, leaving the network wholly
+// to Docker.
+func ensureFixedNetwork(ctx context.Context, dc docker.Client, cfg config.Config) error {
+	if cfg.NetworkSubnet == "" {
+		return nil
+	}
+	plan, err := docker.PlanSubnet(cfg.NetworkSubnet)
+	if err != nil {
+		return fmt.Errorf("OUTHAUL_NETWORK_SUBNET=%s: %w", cfg.NetworkSubnet, err)
+	}
+	if err := dc.Ping(ctx); err != nil {
+		return fmt.Errorf("OUTHAUL_NETWORK_SUBNET=%s: network %q can't be checked because Docker can't be reached: %w", cfg.NetworkSubnet, cfg.Network, err)
+	}
+	spec := docker.NetworkSpec{Name: cfg.Network, Subnet: plan.Subnet, Gateway: plan.Gateway, IPRange: plan.IPRange}
+	if err := dc.EnsureNetwork(ctx, spec); err != nil {
+		var mismatch *docker.NetworkMismatchError
+		if errors.As(err, &mismatch) {
+			return fmt.Errorf("%w; Outhaul won't change a network while containers are on it: see docs/SHARED-HOST.md for the steps to move it", err)
+		}
+		return fmt.Errorf("OUTHAUL_NETWORK_SUBNET=%s: ensure network %q: %w", cfg.NetworkSubnet, cfg.Network, err)
+	}
+	log.Print(fixedNetworkLine(cfg, plan))
+	return nil
+}
+
+// fixedNetworkLine is the one-line summary serve logs after the network is
+// ready: the configured values and what was derived from them.
+func fixedNetworkLine(cfg config.Config, plan docker.SubnetPlan) string {
+	traefik := "Traefik at an address Docker picks"
+	if cfg.TraefikIP != "" {
+		traefik = "Traefik at " + cfg.TraefikIP
+	}
+	bridge := "host bridge named by Docker (the network name is longer than 15 bytes)"
+	if len(cfg.Network) <= 15 {
+		bridge = fmt.Sprintf("host bridge %q", cfg.Network)
+	}
+	return fmt.Sprintf("network %q: subnet %s, gateway %s, dynamic range %s, %s, %s",
+		cfg.Network, plan.Subnet, plan.Gateway, plan.IPRange, traefik, bridge)
+}
+
 func ensureInfra(ctx context.Context, dc docker.Client, cfg config.Config, st *store.Store) *infraController {
 	ic := &infraController{dc: dc, st: st, cfg: cfg}
 	pingCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -589,7 +640,11 @@ func (ic *infraController) reconcile(ctx context.Context) error {
 	if !ic.cfg.AdminDirect {
 		// The admin UI will listen only on loopback and this address, and
 		// Traefik maps host.docker.internal to it instead of host-gateway.
-		if err := ic.dc.EnsureNetwork(ctx, ic.cfg.Network); err != nil {
+		network, err := docker.NetworkFor(ic.cfg.Network, ic.cfg.NetworkSubnet)
+		if err != nil {
+			return fmt.Errorf("network settings: %w", err)
+		}
+		if err := ic.dc.EnsureNetwork(ctx, network); err != nil {
 			return fmt.Errorf("ensure network %q: %w", ic.cfg.Network, err)
 		}
 		gw, err := ic.dc.NetworkGateway(ctx, ic.cfg.Network)
@@ -602,7 +657,7 @@ func (ic *infraController) reconcile(ctx context.Context) error {
 		// Bring the tunnel up before flipping Traefik to its portless posture,
 		// so the current Traefik keeps serving until the connector is live.
 		// cloudflared reaches Traefik's :80 web entrypoint in either posture.
-		cc := tunnel.ConnectorConfig{Image: ic.cfg.CloudflaredImage, Network: ic.cfg.Network, Token: token}
+		cc := tunnel.ConnectorConfig{Image: ic.cfg.CloudflaredImage, Network: ic.cfg.Network, Subnet: ic.cfg.NetworkSubnet, Token: token}
 		if err := tunnel.EnsureConnector(ctx, ic.dc, cc, os.Stdout); err != nil {
 			return fmt.Errorf("start the tunnel connector: %w", err)
 		}
@@ -656,6 +711,8 @@ func (ic *infraController) proxyConfig(ctx context.Context, tunnelOn, protectedR
 		ContainerName:    "outhaul-traefik",
 		Image:            ic.cfg.TraefikImage,
 		Network:          ic.cfg.Network,
+		Subnet:           ic.cfg.NetworkSubnet,
+		IPv4:             ic.cfg.TraefikIP,
 		HTTPPort:         "80",
 		DockerAPIVersion: ic.dc.ServerAPIVersion(ctx),
 		AdminHost:        ic.cfg.AdminHost(),

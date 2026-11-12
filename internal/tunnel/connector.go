@@ -25,6 +25,7 @@ const connectorStopTimeout = 10 * time.Second
 type ConnectorConfig struct {
 	Image   string // e.g. "cloudflare/cloudflared:2025.7.0"
 	Network string // shared network the connector and Traefik both join
+	Subnet  string // the shared network's fixed subnet; "" lets Docker choose
 	Token   string // Cloudflare connector token (passed via TUNNEL_TOKEN env)
 }
 
@@ -33,7 +34,11 @@ type ConnectorConfig struct {
 // starts it if stopped, or pulls the image and (re)creates it otherwise. A
 // changed token yields a new hash and triggers a recreate.
 func EnsureConnector(ctx context.Context, dc docker.Client, cc ConnectorConfig, logOut io.Writer) error {
-	if err := dc.EnsureNetwork(ctx, cc.Network); err != nil {
+	network, err := docker.NetworkFor(cc.Network, cc.Subnet)
+	if err != nil {
+		return fmt.Errorf("network settings: %w", err)
+	}
+	if err := dc.EnsureNetwork(ctx, network); err != nil {
 		return fmt.Errorf("ensure network %q: %w", cc.Network, err)
 	}
 	spec := connectorSpec(cc)

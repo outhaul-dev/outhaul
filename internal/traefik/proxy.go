@@ -44,6 +44,8 @@ type ProxyConfig struct {
 	ContainerName string // e.g. "outhaul-traefik"
 	Image         string // e.g. "traefik:v3.3"
 	Network       string // shared network app containers also join
+	Subnet        string // OUTHAUL_NETWORK_SUBNET; "" lets Docker choose
+	IPv4          string // Traefik's fixed address; "" lets Docker choose
 	HTTPPort      string // host port for the web entrypoint, e.g. "80"
 	DockerSocket  string // host docker socket path; defaults to DefaultDockerSocket
 
@@ -128,6 +130,14 @@ func (pc ProxyConfig) adminRoutingEnabled() bool {
 // (e.g. TLS was just enabled), it is stopped, removed, and recreated so the
 // new flags actually take effect.
 func EnsureProxy(ctx context.Context, dc docker.Client, pc ProxyConfig, logOut io.Writer) error {
+	// A fixed address is reserved by the network's fixed range, which only
+	// exists with a fixed subnet. Docker would accept the address on a network
+	// whose subnet it chose, and Traefik would come up outside the range the
+	// firewall names. Validate refuses this too; a ProxyConfig built elsewhere
+	// must not slip past.
+	if pc.IPv4 != "" && pc.Subnet == "" {
+		return fmt.Errorf("OUTHAUL_TRAEFIK_IP=%s needs OUTHAUL_NETWORK_SUBNET, which fixes the addresses Traefik may use", pc.IPv4)
+	}
 	if pc.DockerSocket == "" {
 		pc.DockerSocket = DefaultDockerSocket
 	}
@@ -146,7 +156,11 @@ func EnsureProxy(ctx context.Context, dc docker.Client, pc ProxyConfig, logOut i
 	if err := writeForwardedDynamicConfig(pc); err != nil {
 		return fmt.Errorf("write forwarded-headers config: %w", err)
 	}
-	if err := dc.EnsureNetwork(ctx, pc.Network); err != nil {
+	networkSpec, err := docker.NetworkFor(pc.Network, pc.Subnet)
+	if err != nil {
+		return fmt.Errorf("network settings: %w", err)
+	}
+	if err := dc.EnsureNetwork(ctx, networkSpec); err != nil {
 		return fmt.Errorf("ensure network %q: %w", pc.Network, err)
 	}
 
@@ -174,6 +188,22 @@ func EnsureProxy(ctx context.Context, dc docker.Client, pc ProxyConfig, logOut i
 			}
 		}
 		return finish()
+	}
+
+	// A fixed address is only usable if nothing else on the network holds it.
+	// Check before the pull, so a taken address leaves the old Traefik running
+	// rather than stopped or half-replaced.
+	if pc.IPv4 != "" {
+		info, err := dc.InspectNetwork(ctx, pc.Network)
+		if err != nil {
+			return fmt.Errorf("check who holds Traefik's address %s: %w", pc.IPv4, err)
+		}
+		for name, addr := range info.IPv4s {
+			if addr != pc.IPv4 || name == pc.ContainerName {
+				continue
+			}
+			return fmt.Errorf("Traefik's address %s on network %s is held by container %s; stop or remove it, or set OUTHAUL_TRAEFIK_IP to another address", pc.IPv4, pc.Network, name)
+		}
 	}
 
 	// (Re)create needed. Pull FIRST so a pull failure never leaves us with no proxy.
@@ -371,7 +401,7 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 	labels := map[string]string{
 		"outhaul.managed":     "true",
 		"outhaul.role":        "proxy",
-		"outhaul.config-hash": hashConfig(pc.Image, cmd, ports, mounts, env, extraHosts, pc.TunnelMode),
+		"outhaul.config-hash": hashConfig(pc.Image, cmd, ports, mounts, env, extraHosts, pc.TunnelMode, pc.IPv4),
 	}
 	return docker.ContainerSpec{
 		Name:          pc.ContainerName,
@@ -382,6 +412,7 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 		Ports:         ports,
 		Mounts:        mounts,
 		Networks:      []string{pc.Network},
+		IPv4:          pc.IPv4,
 		RestartPolicy: "unless-stopped",
 		Labels:        labels,
 	}
@@ -389,14 +420,20 @@ func proxySpec(pc ProxyConfig) docker.ContainerSpec {
 
 // hashConfig fingerprints the fields that define the desired Traefik container.
 // IMPORTANT: include every ProxyConfig-derived field that should trigger a
-// recreate when it changes (image, cmd, ports, mounts, env, extra hosts). Add
-// new fields here. The admin router's host/port live in the file-provider
-// config instead, which Traefik hot-reloads — so they need not be hashed.
-func hashConfig(image string, cmd []string, ports []docker.PortMapping, mounts []docker.Mount, env, extraHosts []string, tunnelMode bool) string {
+// recreate when it changes (image, cmd, ports, mounts, env, extra hosts, and
+// the fixed address). Add new fields here. The admin router's host/port live
+// in the file-provider config instead, which Traefik hot-reloads — so they
+// need not be hashed.
+func hashConfig(image string, cmd []string, ports []docker.PortMapping, mounts []docker.Mount, env, extraHosts []string, tunnelMode bool, ipv4 string) string {
 	var sb strings.Builder
 	sb.WriteString(image)
 	sb.WriteByte('\n')
 	fmt.Fprintf(&sb, "tunnel=%v\n", tunnelMode)
+	// Only an address changes the container; without one the hash is exactly
+	// what it was before fixed addresses existed, so upgrades don't recreate.
+	if ipv4 != "" {
+		fmt.Fprintf(&sb, "|ip4=%s", ipv4)
+	}
 	sb.WriteString(strings.Join(cmd, " "))
 	for _, p := range ports {
 		fmt.Fprintf(&sb, "|%s:%s/%s", p.HostPort, p.ContainerPort, p.Proto)

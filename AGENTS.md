@@ -292,6 +292,11 @@ fixed in five batches. All five are on `main`.
   that names a missing file-provider middleware is dropped and its requests fall
   to an open router. So the gate stays in each app's own labels, with
   `trustforwardheader=false`. See `docs/BEHIND-A-PROXY.md`.
+- **The fixed network.** `OUTHAUL_NETWORK_SUBNET` gives Docker the gateway
+  (the subnet's first address) and the upper half as its dynamic range;
+  `OUTHAUL_TRAEFIK_IP` must be in the lower half, after the gateway. Outhaul
+  never recreates a network that exists with another subnet: startup says so
+  and the docs give the move.
 
 ### Open: reliability and UX
 

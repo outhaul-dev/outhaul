@@ -60,16 +60,14 @@ func (r *real) ServerAPIVersion(ctx context.Context) string {
 
 // NetworkGateway returns the first IPv4 gateway in the network's IPAM config.
 func (r *real) NetworkGateway(ctx context.Context, name string) (string, error) {
-	n, err := r.cli.NetworkInspect(ctx, name, network.InspectOptions{})
+	info, err := r.InspectNetwork(ctx, name)
 	if err != nil {
 		return "", err
 	}
-	for _, cfg := range n.IPAM.Config {
-		if cfg.Gateway != "" && !strings.Contains(cfg.Gateway, ":") {
-			return cfg.Gateway, nil
-		}
+	if info.Gateway == "" {
+		return "", fmt.Errorf("network %q has no IPv4 gateway", name)
 	}
-	return "", fmt.Errorf("network %q has no IPv4 gateway", name)
+	return info.Gateway, nil
 }
 
 func (r *real) PullImage(ctx context.Context, ref string, out io.Writer) error {
@@ -118,20 +116,65 @@ func drainPull(stream io.Reader, out io.Writer) error {
 	}
 }
 
-func (r *real) EnsureNetwork(ctx context.Context, name string) error {
-	nets, err := r.cli.NetworkList(ctx, network.ListOptions{
-		Filters: filters.NewArgs(filters.Arg("name", name)),
-	})
-	if err != nil {
+func (r *real) EnsureNetwork(ctx context.Context, spec NetworkSpec) error {
+	info, err := r.InspectNetwork(ctx, spec.Name)
+	if err == nil {
+		// An install that sets no subnet leaves the network exactly as it
+		// is, including one Docker created with its own addressing.
+		if spec.Subnet == "" {
+			return nil
+		}
+		if info.Subnet == spec.Subnet && info.Gateway == spec.Gateway && info.IPRange == spec.IPRange {
+			return nil
+		}
+		return &NetworkMismatchError{Name: spec.Name, Have: info, Want: spec}
+	}
+	if !client.IsErrNotFound(err) {
 		return err
 	}
-	for _, n := range nets {
-		if n.Name == name {
-			return nil // already exists
+	opts := network.CreateOptions{Driver: "bridge", Options: bridgeOptions(spec.Name)}
+	if spec.Subnet != "" {
+		opts.IPAM = &network.IPAM{
+			Driver: "default",
+			Config: []network.IPAMConfig{{
+				Subnet:  spec.Subnet,
+				Gateway: spec.Gateway,
+				IPRange: spec.IPRange,
+			}},
 		}
 	}
-	_, err = r.cli.NetworkCreate(ctx, name, network.CreateOptions{Driver: "bridge", Options: bridgeOptions(name)})
+	_, err = r.cli.NetworkCreate(ctx, spec.Name, opts)
 	return err
+}
+
+// InspectNetwork returns the network's first IPv4 IPAM entry and the addresses
+// of the containers attached to it. An IPv6 entry, and one with no subnet,
+// are skipped so a dual-stack network reports its IPv4 side.
+func (r *real) InspectNetwork(ctx context.Context, name string) (NetworkInfo, error) {
+	n, err := r.cli.NetworkInspect(ctx, name, network.InspectOptions{})
+	if err != nil {
+		return NetworkInfo{}, err
+	}
+	info := NetworkInfo{IPv4s: map[string]string{}}
+	for _, cfg := range n.IPAM.Config {
+		if cfg.Subnet != "" && !strings.Contains(cfg.Subnet, ":") {
+			info.Subnet = cfg.Subnet
+			info.Gateway = cfg.Gateway
+			info.IPRange = cfg.IPRange
+			break
+		}
+	}
+	for _, c := range n.Containers {
+		addr, _, _ := strings.Cut(c.IPv4Address, "/")
+		if addr == "" {
+			// Attached IPv6-only, or not fully attached yet: no IPv4
+			// address to record, and an empty one must not look like a
+			// holder of a fixed address.
+			continue
+		}
+		info.IPv4s[c.Name] = addr
+	}
+	return info, nil
 }
 
 // bridgeOptions names the host bridge interface after the network, so a
@@ -319,8 +362,12 @@ func (r *real) CreateContainer(ctx context.Context, spec ContainerSpec) (string,
 	var netCfg *network.NetworkingConfig
 	if len(spec.Networks) > 0 {
 		endpoints := make(map[string]*network.EndpointSettings, len(spec.Networks))
-		for _, n := range spec.Networks {
-			endpoints[n] = &network.EndpointSettings{}
+		for i, n := range spec.Networks {
+			ep := &network.EndpointSettings{}
+			if i == 0 && spec.IPv4 != "" {
+				ep.IPAMConfig = &network.EndpointIPAMConfig{IPv4Address: spec.IPv4}
+			}
+			endpoints[n] = ep
 		}
 		netCfg = &network.NetworkingConfig{EndpointsConfig: endpoints}
 	}

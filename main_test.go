@@ -588,9 +588,29 @@ type countingNetwork struct {
 	calls atomic.Int64
 }
 
-func (c *countingNetwork) EnsureNetwork(context.Context, string) error {
+func (c *countingNetwork) EnsureNetwork(context.Context, docker.NetworkSpec) error {
 	c.calls.Add(1)
 	return errors.New("docker unreachable")
+}
+
+// pingFails makes the daemon unreachable, so a startup check that needs it
+// before anything else can show what it says then.
+type pingFails struct {
+	*docker.Fake
+	msg string
+}
+
+func (p *pingFails) Ping(context.Context) error { return errors.New(p.msg) }
+
+// networkFails makes creating the network fail with the daemon's own words,
+// such as an address pool that another network already uses.
+type networkFails struct {
+	*docker.Fake
+	msg string
+}
+
+func (n *networkFails) EnsureNetwork(context.Context, docker.NetworkSpec) error {
+	return errors.New(n.msg)
 }
 
 func TestReconcileIsRetriedWhileAHeaderIsRequired(t *testing.T) {
@@ -650,6 +670,182 @@ func TestStartupDoesNotRetryWithoutAHeader(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if f.calls.Load() != 1 {
 		t.Errorf("EnsureNetwork calls = %d, want 1 (no retry without a header)", f.calls.Load())
+	}
+}
+
+func TestStartupCreatesTheFixedNetwork(t *testing.T) {
+	f := docker.NewFake()
+	cfg := config.Config{Network: "outhaul", NetworkSubnet: "172.30.0.0/24", TraefikIP: "172.30.0.2"}
+	if err := ensureFixedNetwork(context.Background(), f, cfg); err != nil {
+		t.Fatalf("ensureFixedNetwork: %v", err)
+	}
+	want := docker.NetworkSpec{Name: "outhaul", Subnet: "172.30.0.0/24", Gateway: "172.30.0.1", IPRange: "172.30.0.128/25"}
+	if len(f.NetworkSpecs) != 1 || f.NetworkSpecs[0] != want {
+		t.Errorf("NetworkSpecs = %+v, want [%+v]", f.NetworkSpecs, want)
+	}
+	if !f.Networks["outhaul"] {
+		t.Error("the network was not created")
+	}
+}
+
+func TestStartupRefusesADifferentNetwork(t *testing.T) {
+	f := docker.NewFake()
+	f.Networks["outhaul"] = true
+	f.NetworkDetails["outhaul"] = docker.NetworkInfo{
+		Subnet: "10.0.0.0/24", Gateway: "10.0.0.1", IPRange: "10.0.0.128/25",
+	}
+	cfg := config.Config{Network: "outhaul", NetworkSubnet: "172.30.0.0/24", TraefikIP: "172.30.0.2"}
+	err := ensureFixedNetwork(context.Background(), f, cfg)
+	if err == nil {
+		t.Fatal("ensureFixedNetwork adopted a network with a different subnet")
+	}
+	for _, want := range []string{"172.30.0.0/24", "10.0.0.0/24", "Outhaul won't change a network", "docs/SHARED-HOST.md"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to contain %q", err, want)
+		}
+	}
+}
+
+func TestStartupFailsWhenDockerIsUnreachable(t *testing.T) {
+	f := &pingFails{Fake: docker.NewFake(), msg: "docker daemon is down"}
+	cfg := config.Config{Network: "outhaul", NetworkSubnet: "172.30.0.0/24", TraefikIP: "172.30.0.2"}
+	err := ensureFixedNetwork(context.Background(), f, cfg)
+	if err == nil {
+		t.Fatal("ensureFixedNetwork passed with the daemon unreachable")
+	}
+	for _, want := range []string{"can't be checked", "docker daemon is down"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to contain %q", err, want)
+		}
+	}
+}
+
+func TestStartupFailsWhenTheNetworkCannotBeCreated(t *testing.T) {
+	f := &networkFails{Fake: docker.NewFake(), msg: "Pool overlaps with other one on this address space"}
+	cfg := config.Config{Network: "outhaul", NetworkSubnet: "172.30.0.0/24", TraefikIP: "172.30.0.2"}
+	err := ensureFixedNetwork(context.Background(), f, cfg)
+	if err == nil {
+		t.Fatal("ensureFixedNetwork passed when the network could not be created")
+	}
+	for _, want := range []string{"OUTHAUL_NETWORK_SUBNET", "172.30.0.0/24", "Pool overlaps with other one on this address space"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to contain %q", err, want)
+		}
+	}
+}
+
+func TestNoSubnetLeavesTheNetworkToDocker(t *testing.T) {
+	fake := docker.NewFake()
+	fake.Networks["outhaul"] = true
+	fake.NetworkDetails["outhaul"] = docker.NetworkInfo{
+		Subnet: "10.0.0.0/24", Gateway: "10.0.0.1", IPRange: "10.0.0.128/25",
+	}
+	// With no subnet, startup must return before it talks to Docker at all, so
+	// an unreachable daemon changes nothing.
+	f := &pingFails{Fake: fake, msg: "docker daemon is down"}
+	cfg := config.Config{Network: "outhaul"}
+	if err := ensureFixedNetwork(context.Background(), f, cfg); err != nil {
+		t.Fatalf("ensureFixedNetwork with no subnet: %v", err)
+	}
+	if len(f.NetworkSpecs) != 0 {
+		t.Errorf("NetworkSpecs = %+v, want none: Docker owns the network", f.NetworkSpecs)
+	}
+}
+
+func TestFixedNetworkLine(t *testing.T) {
+	plan, err := docker.PlanSubnet("172.30.0.0/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name, network, traefikIP, want string
+	}{
+		{
+			name: "fixed address", network: "outhaul", traefikIP: "172.30.0.2",
+			want: `network "outhaul": subnet 172.30.0.0/24, gateway 172.30.0.1, dynamic range 172.30.0.128/25, Traefik at 172.30.0.2, host bridge "outhaul"`,
+		},
+		{
+			name: "Docker picks Traefik", network: "outhaul",
+			want: `network "outhaul": subnet 172.30.0.0/24, gateway 172.30.0.1, dynamic range 172.30.0.128/25, Traefik at an address Docker picks, host bridge "outhaul"`,
+		},
+		{
+			name: "long network name", network: "outhaul-networks", traefikIP: "172.30.0.2",
+			want: `network "outhaul-networks": subnet 172.30.0.0/24, gateway 172.30.0.1, dynamic range 172.30.0.128/25, Traefik at 172.30.0.2, host bridge named by Docker (the network name is longer than 15 bytes)`,
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := config.Config{Network: c.network, TraefikIP: c.traefikIP}
+			if got := fixedNetworkLine(cfg, plan); got != c.want {
+				t.Errorf("fixedNetworkLine = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestProxyConfigCarriesTheFixedNetwork(t *testing.T) {
+	cfg := config.Config{Network: "outhaul", NetworkSubnet: "172.30.0.0/24", TraefikIP: "172.30.0.2"}
+	ic := &infraController{dc: docker.NewFake(), cfg: cfg}
+	pc := ic.proxyConfig(context.Background(), false, false)
+	if pc.Subnet != cfg.NetworkSubnet || pc.IPv4 != cfg.TraefikIP {
+		t.Errorf("proxyConfig Subnet/IPv4 = %q/%q, want %q/%q", pc.Subnet, pc.IPv4, cfg.NetworkSubnet, cfg.TraefikIP)
+	}
+}
+
+func TestReconcileCarriesTheFixedNetwork(t *testing.T) {
+	cfg := config.Config{
+		DataDir: t.TempDir(), Network: "outhaul", NetworkSubnet: "172.30.0.0/24", TraefikIP: "172.30.0.2",
+		TraefikImage: config.DefaultTraefikImage, CloudflaredImage: config.DefaultCloudflaredImage,
+		ListenAddr: ":8080", AdminDirect: false, PublicURL: "https://outhaul.example.com",
+		ACMEEmail: "ops@example.com",
+	}
+	st, err := openStore(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	if err := st.SetCloudflareToken(ctx, "tok"); err != nil {
+		t.Fatal(err)
+	}
+	f := docker.NewFake()
+	ic := &infraController{dc: f, st: st, cfg: cfg}
+	if err := ic.reconcile(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if len(f.NetworkSpecs) == 0 {
+		t.Fatal("reconcile asked for no network")
+	}
+	matched := 0
+	for _, spec := range f.NetworkSpecs {
+		if spec.Name == "outhaul" {
+			matched++
+			if spec.Gateway != "172.30.0.1" || spec.IPRange != "172.30.0.128/25" {
+				t.Errorf("network spec = %+v, want the fixed gateway and range", spec)
+			}
+		}
+	}
+	if matched == 0 {
+		t.Fatal("reconcile asked for no network named outhaul")
+	}
+	var traefikIPv4, connectorIPv4 string
+	sawConnector := false
+	for _, spec := range f.Created {
+		switch spec.Name {
+		case "outhaul-traefik":
+			traefikIPv4 = spec.IPv4
+		case tunnel.ContainerName:
+			sawConnector = true
+			connectorIPv4 = spec.IPv4
+		}
+	}
+	if traefikIPv4 != "172.30.0.2" {
+		t.Errorf("Traefik IPv4 = %q, want 172.30.0.2", traefikIPv4)
+	}
+	if !sawConnector {
+		t.Fatalf("reconcile created no connector %q: %+v", tunnel.ContainerName, f.Created)
+	}
+	if connectorIPv4 != "" {
+		t.Errorf("connector IPv4 = %q, want Docker to pick it", connectorIPv4)
 	}
 }
 

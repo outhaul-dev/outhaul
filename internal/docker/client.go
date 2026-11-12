@@ -6,6 +6,7 @@ package docker
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"time"
 )
@@ -27,6 +28,51 @@ type Mount struct {
 	Volume   bool
 }
 
+// NetworkSpec describes the network EnsureNetwork creates when it is missing.
+type NetworkSpec struct {
+	Name    string // network name
+	Subnet  string // IPv4 CIDR; "" lets Docker choose
+	Gateway string // the bridge's address; "" unless Subnet is set
+	IPRange string // the addresses Docker hands out; "" unless Subnet is set
+}
+
+// NetworkInfo describes an existing network's IPv4 configuration and the
+// containers attached to it.
+type NetworkInfo struct {
+	Subnet  string            // first IPv4 IPAM subnet, "" when there is none
+	Gateway string            // its gateway
+	IPRange string            // its dynamic range
+	IPv4s   map[string]string // attached container name -> IPv4 address
+}
+
+// NetworkMismatchError reports an existing network whose subnet, gateway or
+// dynamic range differs from what the settings ask for. Outhaul never
+// reconfigures a network that already exists, so this stops startup instead.
+type NetworkMismatchError struct {
+	Name string
+	Have NetworkInfo
+	Want NetworkSpec
+}
+
+// Error names both sets of values, saying when Docker chose the subnet.
+func (e *NetworkMismatchError) Error() string {
+	return fmt.Sprintf("network %q has %s; the settings ask for %s",
+		e.Name,
+		describeNetwork(e.Have.Subnet, e.Have.Gateway, e.Have.IPRange),
+		describeNetwork(e.Want.Subnet, e.Want.Gateway, e.Want.IPRange))
+}
+
+func describeNetwork(subnet, gateway, ipRange string) string {
+	switch {
+	case subnet == "":
+		return "a subnet Docker chose"
+	case ipRange == "":
+		return fmt.Sprintf("subnet %s and gateway %s, with no dynamic range", subnet, gateway)
+	default:
+		return fmt.Sprintf("subnet %s, gateway %s and range %s", subnet, gateway, ipRange)
+	}
+}
+
 // ContainerSpec describes a container to create.
 type ContainerSpec struct {
 	Name          string
@@ -34,6 +80,7 @@ type ContainerSpec struct {
 	Labels        map[string]string
 	Env           []string
 	Networks      []string
+	IPv4          string // fixed address on the spec's first network
 	Ports         []PortMapping
 	Mounts        []Mount
 	Cmd           []string
@@ -93,9 +140,15 @@ type Client interface {
 	// PullImage pulls ref, streaming progress to out (may be nil).
 	PullImage(ctx context.Context, ref string, out io.Writer) error
 
-	// EnsureNetwork creates the named bridge network if it does not exist.
-	// A network it creates gets a host bridge interface of the same name.
-	EnsureNetwork(ctx context.Context, name string) error
+	// EnsureNetwork creates the network described by spec if it does not
+	// exist. A network it creates gets a host bridge interface of the same
+	// name. When spec.Subnet is set, an existing network whose subnet,
+	// gateway or dynamic range differs is a *NetworkMismatchError.
+	EnsureNetwork(ctx context.Context, spec NetworkSpec) error
+
+	// InspectNetwork returns the named network's first IPv4 subnet, gateway
+	// and dynamic range, and the IPv4 addresses of its attached containers.
+	InspectNetwork(ctx context.Context, name string) (NetworkInfo, error)
 
 	// FindContainer returns the container with the given name, or nil if none.
 	FindContainer(ctx context.Context, name string) (*Container, error)
