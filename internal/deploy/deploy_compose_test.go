@@ -651,3 +651,113 @@ func TestComposePolicyReportsAPullFailure(t *testing.T) {
 		t.Errorf("up calls = %d, want 0", n)
 	}
 }
+
+// Every service gets the app's limit for the resources it does not set
+// itself; a service that sets its own CPU keeps it.
+func TestComposePipelineAddsLimitsToEveryService(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.DefaultLimits = defaultTestLimits
+	app := h.composeApp(t, "shop", "docker-compose.yml", "")
+	h.compose.ConfigJSON = []byte(`{
+		"name": "outhaul-shop",
+		"services": {
+			"web": {"image": "nginx:1"},
+			"worker": {"image": "nginx:1", "cpus": 2}
+		}
+	}`)
+
+	var override string
+	h.compose.Hook = func(c compose.Call) {
+		if c.Verb != "up" {
+			return
+		}
+		if b, err := os.ReadFile(filepath.Join(c.Dir, compose.OverrideFile)); err == nil {
+			override = string(b)
+		}
+	}
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	if got := h.status(t, dep.ID); got.Status != core.StatusRunning {
+		t.Fatalf("status = %q (%q), want running", got.Status, got.Reason)
+	}
+	webAt, workerAt := strings.Index(override, "  \"web\":\n"), strings.Index(override, "  \"worker\":\n")
+	if webAt < 0 || workerAt < 0 {
+		t.Fatalf("override missing a service; got:\n%s", override)
+	}
+	web, worker := override[webAt:workerAt], override[workerAt:]
+	for _, want := range []string{"    cpus: 1\n", "    mem_limit: 1073741824\n", "    pids_limit: 512\n"} {
+		if !strings.Contains(web, want) {
+			t.Errorf("web block missing %q; got:\n%s", want, web)
+		}
+	}
+	for _, want := range []string{"    mem_limit: 1073741824\n", "    pids_limit: 512\n"} {
+		if !strings.Contains(worker, want) {
+			t.Errorf("worker block missing %q; got:\n%s", want, worker)
+		}
+	}
+	if strings.Contains(worker, "    cpus:") {
+		t.Errorf("worker sets cpus itself and got another; got:\n%s", worker)
+	}
+}
+
+// A service that reserves more memory than the limit Outhaul would add fails
+// before anything is built, naming both figures.
+func TestComposePipelineReservationAboveTheLimitFails(t *testing.T) {
+	h := newHarness(t)
+	h.worker.cfg.DefaultLimits = core.Limits{Memory: 1 << 30}
+	app := h.composeApp(t, "shop", "docker-compose.yml", "")
+	h.compose.ConfigJSON = []byte(`{
+		"name": "outhaul-shop",
+		"services": {"web": {"image": "nginx:1", "mem_reservation": "2147483648"}}
+	}`)
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	got := h.status(t, dep.ID)
+	if got.Status != core.StatusFailed {
+		t.Fatalf("status = %q, want failed", got.Status)
+	}
+	for _, want := range []string{"2147483648", "1073741824"} {
+		if !strings.Contains(got.Reason, want) {
+			t.Errorf("reason %q does not name %s", got.Reason, want)
+		}
+	}
+	if calls := h.compose.CallsFor("build"); len(calls) != 0 {
+		t.Errorf("compose build ran despite the refusal: %+v", calls)
+	}
+}
+
+// With no default and no app limit the override is written only for domains,
+// exactly as before limits existed.
+func TestComposePipelineWithoutLimitsWritesOnlyDomains(t *testing.T) {
+	h := newHarness(t)
+	app := h.composeApp(t, "shop", "docker-compose.yml", "shop.example.com")
+
+	var override string
+	h.compose.Hook = func(c compose.Call) {
+		if c.Verb != "up" {
+			return
+		}
+		if b, err := os.ReadFile(filepath.Join(c.Dir, compose.OverrideFile)); err == nil {
+			override = string(b)
+		}
+	}
+
+	dep := h.claimedDeployment(t, app.ID)
+	h.worker.runPipeline(context.Background(), dep)
+
+	if got := h.status(t, dep.ID); got.Status != core.StatusRunning {
+		t.Fatalf("status = %q (%q), want running", got.Status, got.Reason)
+	}
+	if !strings.Contains(override, "Host(`shop.example.com`)") {
+		t.Errorf("override missing the domain rule; got:\n%s", override)
+	}
+	for _, unwanted := range []string{"cpus:", "mem_limit:", "pids_limit:"} {
+		if strings.Contains(override, unwanted) {
+			t.Errorf("override carries %q with no limit set; got:\n%s", unwanted, override)
+		}
+	}
+}

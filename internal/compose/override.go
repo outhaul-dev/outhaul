@@ -3,6 +3,7 @@ package compose
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
@@ -31,7 +32,7 @@ const OverrideFile = "outhaul.override.yml"
 //
 // The structure is three fixed levels deep, so it is rendered directly — no
 // YAML dependency. All user-influenced values go through quoteYAML.
-func Override(app core.App, domains []core.Domain, network string, rt traefik.Routing) []byte {
+func Override(app core.App, domains []core.Domain, network string, rt traefik.Routing, extra map[string]Extra) []byte {
 	byService := map[string][]core.Domain{}
 	var services []string
 	for _, d := range domains {
@@ -40,6 +41,11 @@ func Override(app core.App, domains []core.Domain, network string, rt traefik.Ro
 		}
 		byService[d.Service] = append(byService[d.Service], d)
 	}
+	for name := range extra {
+		if _, seen := byService[name]; !seen {
+			services = append(services, name)
+		}
+	}
 	sort.Strings(services)
 
 	var b strings.Builder
@@ -47,39 +53,83 @@ func Override(app core.App, domains []core.Domain, network string, rt traefik.Ro
 	b.WriteString("# Publishes stack services on their domains via the shared Traefik network.\n")
 	b.WriteString("services:\n")
 	for _, svc := range services {
-		labels := map[string]string{
-			"traefik.enable":         "true",
-			"outhaul.managed":        "true",
-			"outhaul.app":            app.Name,
-			"traefik.docker.network": network,
-		}
-		if stamp := rt.Stamp(); stamp != "" {
-			labels[traefik.IngressLabel] = stamp
-		}
-		for _, d := range byService[svc] {
-			for k, v := range traefik.RouteLabels(traefik.RouterName(app.Name, d.ID), d, d.Port, rt) {
-				labels[k] = v
+		fmt.Fprintf(&b, "  %s:\n", quoteYAML(svc))
+		if ds := byService[svc]; len(ds) > 0 {
+			labels := map[string]string{
+				"traefik.enable":         "true",
+				"outhaul.managed":        "true",
+				"outhaul.app":            app.Name,
+				"traefik.docker.network": network,
+			}
+			if stamp := rt.Stamp(); stamp != "" {
+				labels[traefik.IngressLabel] = stamp
+			}
+			for _, d := range ds {
+				for k, v := range traefik.RouteLabels(traefik.RouterName(app.Name, d.ID), d, d.Port, rt) {
+					labels[k] = v
+				}
+			}
+			keys := make([]string, 0, len(labels))
+			for k := range labels {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+
+			b.WriteString("    networks:\n")
+			b.WriteString("      default: {}\n")
+			fmt.Fprintf(&b, "      %s: {}\n", quoteYAML(network))
+			b.WriteString("    labels:\n")
+			for _, k := range keys {
+				fmt.Fprintf(&b, "      %s: %s\n", quoteYAML(k), quoteYAML(labels[k]))
 			}
 		}
-		keys := make([]string, 0, len(labels))
-		for k := range labels {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-
-		fmt.Fprintf(&b, "  %s:\n", quoteYAML(svc))
-		b.WriteString("    networks:\n")
-		b.WriteString("      default: {}\n")
-		fmt.Fprintf(&b, "      %s: {}\n", quoteYAML(network))
-		b.WriteString("    labels:\n")
-		for _, k := range keys {
-			fmt.Fprintf(&b, "      %s: %s\n", quoteYAML(k), quoteYAML(labels[k]))
+		if e, ok := extra[svc]; ok {
+			writeExtra(&b, e)
 		}
 	}
-	b.WriteString("networks:\n")
-	fmt.Fprintf(&b, "  %s:\n", quoteYAML(network))
-	b.WriteString("    external: true\n")
+	if len(domains) > 0 {
+		b.WriteString("networks:\n")
+		fmt.Fprintf(&b, "  %s:\n", quoteYAML(network))
+		b.WriteString("    external: true\n")
+	}
 	return []byte(b.String())
+}
+
+// writeExtra renders one service's limits. A service with an existing
+// deploy.resources.limits block gets its missing keys there, because Compose
+// refuses a service whose own key and deploy limits disagree.
+func writeExtra(b *strings.Builder, e Extra) {
+	if e.InDeploy {
+		b.WriteString("    deploy:\n      resources:\n        limits:\n")
+		if e.Limits.MilliCPUs > 0 {
+			fmt.Fprintf(b, "          cpus: %s\n", milliCPUs(e.Limits.MilliCPUs))
+		}
+		if e.Limits.Memory > 0 {
+			fmt.Fprintf(b, "          memory: %s\n", quoteYAML(strconv.FormatInt(e.Limits.Memory, 10)))
+		}
+		if e.Limits.Pids > 0 {
+			fmt.Fprintf(b, "          pids: %d\n", e.Limits.Pids)
+		}
+		return
+	}
+	if e.Limits.MilliCPUs > 0 {
+		fmt.Fprintf(b, "    cpus: %s\n", milliCPUs(e.Limits.MilliCPUs))
+	}
+	if e.Limits.Memory > 0 {
+		fmt.Fprintf(b, "    mem_limit: %d\n", e.Limits.Memory)
+	}
+	if e.Limits.Pids > 0 {
+		fmt.Fprintf(b, "    pids_limit: %d\n", e.Limits.Pids)
+	}
+}
+
+// milliCPUs renders thousandths of a CPU as Compose writes it: 0.5, 1, 1.5.
+func milliCPUs(milli int64) string {
+	whole, frac := milli/1000, milli%1000
+	if frac == 0 {
+		return strconv.FormatInt(whole, 10)
+	}
+	return strconv.FormatInt(whole, 10) + "." + strings.TrimRight(fmt.Sprintf("%03d", frac), "0")
 }
 
 // quoteYAML renders s as a double-quoted YAML scalar. Backslash and double

@@ -104,8 +104,8 @@ func (w *Worker) limits(_ context.Context, _ core.App) core.Limits {
 // needsModel reports whether any setting needs the normalised Compose model:
 // the strict container policy or a required request header. R7 adds the app's
 // effective limit; R10 adds its restart setting.
-func (w *Worker) needsModel(app core.App) bool {
-	return w.cfg.StrictContainerPolicy() || w.cfg.HeaderRequired()
+func (w *Worker) needsModel(ctx context.Context, app core.App) bool {
+	return w.cfg.StrictContainerPolicy() || w.cfg.HeaderRequired() || w.limits(ctx, app) != (core.Limits{})
 }
 
 // routing builds the server-wide routing settings for a deploy. A Cloudflare
