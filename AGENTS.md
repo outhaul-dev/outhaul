@@ -303,6 +303,17 @@ fixed in five batches. All five are on `main`.
   editable in place (only a move is checked) and deletable, and startup warns
   about each. `OUTHAUL_DOMAIN_SUFFIX` and `OUTHAUL_TLS_WILDCARD` must name the
   same domain. See `docs/SHARED-HOST.md`.
+- **A new row is never left open by omission.** With
+  `OUTHAUL_PROTECT_NEW_DOMAINS` on, every row Outhaul creates requires sign-in:
+  the dialog's switch starts on, the new-app form shows it, and a template
+  deploy, a first `git push` and a preview's whole-host row get it with no
+  switch. A request without `protected_offered` (a script, an old page) is
+  protected, so only an explicit off on a page that offered the switch opens a
+  row. A row that can't require sign-in isn't created, and the new-app form and
+  the template deploy delete what they made when the gate's host can't be
+  mapped. `serve` refuses the setting where sign-in can't work, and the tunnel
+  can't be turned off while it is set with no HTTPS of its own. See
+  `docs/PROTECTED-ROUTES.md`.
 
 ### Open: reliability and UX
 

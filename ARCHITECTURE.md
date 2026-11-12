@@ -626,6 +626,19 @@ stub in place of Outhaul (not in CI). Its `--outhaul` mode uses a running
 Outhaul instead, but hasn't been run against one yet, and the whole flow with a
 real Outhaul and a real SSO provider hasn't been run end to end.
 
+### Sign-in on new domains (opt-in)
+
+With `OUTHAUL_PROTECT_NEW_DOMAINS`, every domain row Outhaul creates starts
+protected: the dialog's switch starts on, the new-app form shows it, and a
+template deploy, a first `git push` and a preview's whole-host row get it with
+no switch to turn. The six places that write a row are named in
+`docs/PROTECTED-ROUTES.md`. A row that can't require sign-in isn't created,
+and `serve` refuses the setting where sign-in can't work (no
+`OUTHAUL_PUBLIC_URL`, or neither HTTPS nor a tunnel;
+`infraController.Disable` refuses to drop the tunnel when that would leave
+neither). While it is on, `infraController.reconcile` treats protected routes as
+present whatever the rows say, so Traefik maps the gate's host from startup.
+
 ### Behind a TLS-terminating proxy (opt-in)
 
 An install reached only through a CDN can turn on DNS-01 certificates and one

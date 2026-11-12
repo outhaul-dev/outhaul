@@ -88,3 +88,23 @@ keeps its number here:
    preview on <app>-pr-<n>.<suffix>, all served through the CDN with no new
    certificate. a.b.<suffix> is refused.
 ```
+
+## A new row is never left open
+
+A host that hands out names to people who don't know each other shouldn't publish
+an app because nobody said otherwise. `OUTHAUL_PROTECT_NEW_DOMAINS=yes` closes
+that: every domain row Outhaul creates starts with sign-in required — a row added
+in the dialog, the new-app form's first row, every row of a template deploy, a
+first `git push`, and a preview's own address — and opening an address is a
+deliberate choice: turn the switch off on the host's row, or add a path row with
+it off, such as a webhook's.
+
+The guide, with what a new row needs, the refusals and how to open one, is
+[PROTECTED-ROUTES.md](PROTECTED-ROUTES.md#requiring-sign-in-on-every-new-domain).
+Editing a row changes nothing on its own, so a host that turns the setting on
+still decides about the rows it already has.
+
+It is the last of the six settings a first shared host sets, the two naming ones
+above among them; the table of all six, with what each needs, is in the
+[design](superpowers/specs/2026-11-11-shared-host-defaults-design.md#settings),
+and README has a row for each.
