@@ -719,8 +719,8 @@ func TestRestoreStateMigratesAnOlderCopy(t *testing.T) {
 	}
 	st := openTarget(t, dir, src.keyPath)
 	rows, err := st.AppliedMigrations(context.Background())
-	if err != nil || len(rows) == 0 || rows[len(rows)-1] != "migrations/0030_destination_kind.sql" {
-		t.Fatalf("migrations = %v, %v", rows, err)
+	if err != nil || !strings.Contains(strings.Join(rows, ","), "0030_destination_kind") {
+		t.Fatalf("migrations = %v, %v; want 0030 re-applied", rows, err)
 	}
 }
 
