@@ -351,19 +351,58 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		s.renderAppsWithError(w, r, ownHostRefusal)
 		return
 	}
-	if host := app.Domain; host != "" || firstDomain != nil {
-		if firstDomain != nil {
-			host = firstDomain.Host
+	host := app.Domain
+	if firstDomain != nil {
+		host = firstDomain.Host
+	}
+	// A row created while the server requires sign-in on new domains is
+	// protected, unless the form turned it off. A request without the form's
+	// protected_offered (a script, an old page) didn't choose: protect it. A
+	// compose app with no domain has no row to protect.
+	protect := s.protectNew && host != "" &&
+		(r.FormValue("protected_offered") == "" || r.FormValue("protected") != "")
+	if protect {
+		if ok, reason := s.protectionAvailability(r.Context(), core.Domain{Host: host}); !ok {
+			s.renderAppsWithError(w, r, reason)
+			return
 		}
+		if firstDomain != nil {
+			firstDomain.Protected = true
+		}
+	}
+	if host != "" {
 		if msg := s.naming.SuffixRefusal(host); msg != "" {
 			s.renderAppsWithError(w, r, msg)
 			return
 		}
-		if refused, err := s.sharedHostRefused(r, projectID, host, true, false); err != nil {
+		if refused, err := s.sharedHostRefused(r, projectID, host, true, protect); err != nil {
 			s.renderAppsWithError(w, r, "Could not create app: "+err.Error())
 			return
 		} else if refused {
 			s.renderAppsWithError(w, r, sharedHostRefusal)
+			return
+		}
+	}
+	if protect {
+		// The row requires sign-in, so an app whose running container still
+		// serves an old open route on the host would stay reachable openly
+		// until it redeploys. Refuse and say which app: this form doesn't
+		// redeploy another app.
+		scope, err := s.scopeFor(r)
+		if err != nil {
+			log.Printf("create app: read the person's projects: %v", err)
+			scope = projectScope{}
+		}
+		others, err := s.leftoverRoutes(r.Context(), core.App{Name: name, ProjectID: projectID},
+			map[string]bool{strings.ToLower(host): true}, scope)
+		if err != nil {
+			s.renderAppsWithError(w, r, fmt.Sprintf("The app wasn't created: Outhaul couldn't tell which other apps still serve old routes on %s (%v).", host, err))
+			return
+		}
+		if len(others) > 0 {
+			s.renderAppsWithError(w, r, fmt.Sprintf(
+				"The app wasn't created: %s still serves an old route on %s with no sign-in. Deploy it from its page, then try again.",
+				others[0].label(), host))
 			return
 		}
 	}
@@ -383,7 +422,14 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 	if firstDomain != nil {
 		extra = []core.Domain{*firstDomain}
 	}
-	if _, err := s.store.CreateAppWithDomains(r.Context(), app, extra); err != nil {
+	var created core.App
+	var err error
+	if protect && firstDomain == nil {
+		created, err = s.store.CreateAppProtected(r.Context(), app)
+	} else {
+		created, err = s.store.CreateAppWithDomains(r.Context(), app, extra)
+	}
+	if err != nil {
 		if errors.Is(err, store.ErrHostReserved) {
 			s.renderAppsWithError(w, r, ownHostRefusal)
 			return
@@ -391,6 +437,17 @@ func (s *Server) handleCreateApp(w http.ResponseWriter, r *http.Request) {
 		// Most likely a duplicate name (UNIQUE constraint) or a taken host.
 		s.renderAppsWithError(w, r, "Could not create app: "+s.takenText(r, err))
 		return
+	}
+	if protect {
+		ctx := context.WithoutCancel(r.Context())
+		if err := s.ensureGateHost(ctx); err != nil {
+			if undo := s.store.DeleteApp(ctx, created.ID); undo != nil {
+				log.Printf("create app: remove %q after the proxy failed: %v", app.Name, undo)
+			}
+			s.renderAppsWithError(w, r, fmt.Sprintf(
+				"The app wasn't created: Outhaul couldn't map the sign-in gate before it deploys (%v).", err))
+			return
+		}
 	}
 	// CreateApp itself seeds a primary domain row for non-compose apps (see
 	// store.CreateApp); compose apps seed one just above via firstDomain. Either

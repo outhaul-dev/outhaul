@@ -91,6 +91,13 @@
           <span>Domain {{if .DomainSuffix}}{{template "hint" "The hostname Traefik routes to this app, e.g. web.example.com. Leave it blank to use this app's name under the server's domain suffix. For a Compose stack you can leave this blank to keep the stack internal-only."}}{{else}}{{template "hint" "The hostname Traefik routes to this app, e.g. web.example.com. For a Compose stack you can leave this blank to keep the stack internal-only."}}{{end}}</span>
           <input type="text" name="domain" id="domain-input" placeholder="web.example.com" value="{{with .Form}}{{.Domain}}{{end}}"{{if not .DomainSuffix}} required{{end}}>
         </label>
+        {{if .ProtectNewDomains}}
+        <input type="hidden" name="protected_offered" value="1">
+        <label class="field-check">
+          <input type="checkbox" class="switch" role="switch" name="protected" checked>
+          <span>Require sign-in {{template "hint" "People must sign in to Outhaul before they reach this app. Everyone who can sign in gets through, and the app receives their name in the X-Outhaul-User header."}}</span>
+        </label>
+        {{end}}
         <label class="field" data-kind="compose" hidden>
           <span>Expose service {{template "hint" "Which service in the compose stack the domain should route to, e.g. web."}}</span>
           <input type="text" name="compose_service" placeholder="web" value="{{with .Form}}{{.ComposeService}}{{end}}">
