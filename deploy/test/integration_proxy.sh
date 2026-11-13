@@ -112,7 +112,8 @@ set -eu
 value=$1
 # Outhaul keeps its port while it drains a deploy in flight (up to 20s), so
 # wait for it to exit: otherwise the new one can't bind and dies, and the old
-# one answers /healthz until it goes.
+# one answers /healthz until it goes. One that outlives the wait stops the
+# restart, so the checks after it don't run against the old process.
 if [ -f /work/outhaul.pid ]; then
 	old=$(cat /work/outhaul.pid)
 	kill "$old" >/dev/null 2>&1 || true
@@ -121,6 +122,10 @@ if [ -f /work/outhaul.pid ]; then
 		sleep 1
 		i=$((i + 1))
 	done
+	if kill -0 "$old" 2>/dev/null; then
+		echo "the old Outhaul (pid $old) is still running 45 seconds after SIGTERM" >&2
+		exit 1
+	fi
 fi
 OUTHAUL_DATA_DIR=/var/lib/outhaul \
 OUTHAUL_LISTEN_ADDR=:8080 \
@@ -425,9 +430,15 @@ if [ "$code:$shown" = 200:1 ]; then
 else
 	fail "the Account page makes a push token and shows it once, through the stand-in" "status=$code tokens on the page=$shown"
 fi
-ce sh -c 'umask 077 && t=$(grep -oE "ohp_[0-9a-f]{64}" /work/gitclient/token.html) &&
-	printf "https://proxytest:%s@outhaul.shared.demo.example.com\n" "$t" >/work/gitclient/.git-credentials
-	rm -f /work/gitclient/token.html'
+# The page is removed whether or not the write works, and the command's status
+# is the write's.
+ce sh -c '
+	umask 077
+	t=$(grep -oE "ohp_[0-9a-f]{64}" /work/gitclient/token.html)
+	rm -f /work/gitclient/token.html
+	[ -n "$t" ] || exit 1
+	printf "https://proxytest:%s@outhaul.shared.demo.example.com\n" "$t" >/work/gitclient/.git-credentials' ||
+	die "write the push token to the credential helper's file"
 
 ce sh -c 'cd /work/repo && echo "pushed over HTTPS" >pushed.txt && git add pushed.txt && git commit -qm "push over HTTPS"' ||
 	die "commit in /work/repo"

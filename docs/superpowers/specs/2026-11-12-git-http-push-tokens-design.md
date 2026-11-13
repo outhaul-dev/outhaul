@@ -303,8 +303,10 @@ After a restore everyone signs in again, as today, and creates a new token.
   `OUTHAUL_PUSH_TOKEN_SSO_MAX_AGE`. Password accounts' tokens stay. Push keys
   stay, as today.
 - **Turning `OUTHAUL_GIT_HTTP` off** hides the panels and removes the routes.
-  The rows stay and age out; a token that hasn't expired works again if the
-  setting comes back.
+  The rows stay and still expire on their dates, but nothing removes expired
+  ones until the setting is on again: they are pruned only when tokens are
+  listed or made. A token that hasn't expired works again if the setting comes
+  back.
 
 ### Last use
 

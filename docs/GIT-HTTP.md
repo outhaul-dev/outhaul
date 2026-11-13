@@ -151,6 +151,7 @@ as a `remote:` line. `<url>` is `OUTHAUL_PUBLIC_URL`.
 
 | Status | The line | What to do |
 |---|---|---|
+| 404 | None from Outhaul: the body is `404 page not found` | The remote's host isn't the public URL's: it points at the admin port, an IP address or another name. Change it to `<url>/git/<app>.git` |
 | 403 | `outhaul: this remote uses http://. Change it to <url>/git/<app>.git` | Change the remote to `https://`. See [Plain HTTP](#plain-http) |
 | 401 | `outhaul: sign in with any username and a push token as the password. Create one at <url>/account` | Git's first request never has credentials, so you see this only when git has none to send |
 | 401 | `outhaul: that push token isn't valid. Create one at <url>/account` | The password is not a push token, or the token was revoked. An account password never works |
@@ -160,7 +161,7 @@ as a `remote:` line. `<url>` is `OUTHAUL_PUBLIC_URL`.
 | 403 | `outhaul: you don't have permission to use '<app>'` | Your role can't change that app's project. The same rule as SSH |
 | 404 | `outhaul: app '<app>' is not push-deployable` | The app takes its code from somewhere else |
 | 404 | `outhaul: there is no app called '<app>'` | A fetch or clone of a name with no app |
-| 404 | `outhaul: that isn't a valid app name` | |
+| 404 | `outhaul: that isn't a valid app name` | Check the name in the remote. An app name is 2 to 40 lowercase letters, digits and hyphens, and doesn't start or end with a hyphen |
 | 415 | `outhaul: a git request must have Content-Type …` | Not a git client |
 | 503 | `outhaul: git push is not available; see the server log` | The hook bridge didn't start; the log says why |
 
@@ -198,8 +199,9 @@ account is bound by each token's expiry only.
   copy holds, as it does sessions. After a restore, make new ones. See
   [docs/STATE-BACKUP.md](STATE-BACKUP.md).
 - With `OUTHAUL_GIT_HTTP=off` the panels and routes go away. The tokens stay in
-  the database and age out; one that has not expired works again if the setting
-  comes back.
+  the database and still expire on their dates, but nothing removes expired ones
+  until the setting is on again. One that has not expired works again if the
+  setting comes back.
 
 ## Failed attempts
 
@@ -332,9 +334,18 @@ Not checked yet. For the staging host and its CDN.
 9. For an SSO account whose last sign-in is past the limit: the push prints the
    message, and works after signing in, with the same stored token.
 
-Also not checked: git older than 2.53, other git clients, a gzip-compressed
-request body, and a pack still arriving when git starts to answer. What was
-checked, with git 2.53.0 and `traefik:v3.7.6`: a push, clone and fetch; the
-hook's lines arriving as written; git's five-second keep-alive; what git does
-with a 401, a 403 and a 429; and that Traefik's default cuts a long upload at 60
-seconds.
+Also not checked: git older than 2.47, other git clients, and a pack still
+arriving when git starts to answer. A gzip-compressed request body is
+unit-tested only (`TestGzipRequestBody`); no real git client sent one in these
+checks.
+
+What was checked:
+
+- With git 2.53.0, in the unit tests and the design's own checks: a push,
+  clone and fetch; the hook's lines arriving as written; git's five-second
+  keep-alive; and what git does with a 401, a 403 and a 429.
+- With git 2.47.3, end to end (`deploy/test/integration_proxy.sh`): a token
+  made on the Account page, kept in git's `store` helper, pushes and deploys,
+  and a clone gets the pushed commit, through `traefik:v3.7.6` and a stand-in
+  CDN; a wrong token is refused, and git prints why.
+- With `traefik:v3.7.6`: its default cuts a long upload at 60 seconds.
