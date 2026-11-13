@@ -713,7 +713,24 @@ func TestFirstPushCreatesTheApp(t *testing.T) {
 	}
 }
 
+// pointBareHead makes app's bare HEAD name ref, as `git init --bare` leaves it
+// naming the host's default branch.
+func (h *harness) pointBareHead(app, ref string) string {
+	h.t.Helper()
+	dir, err := h.repos.Path(app)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	mustGit(h.t, h.t.TempDir(), "", "--git-dir", dir, "symbolic-ref", "HEAD", ref)
+	return dir
+}
+
 func TestCloneAndFetch(t *testing.T) {
+	logged := &lockedBuffer{}
+	prev := log.Writer()
+	log.SetOutput(logged)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
 	h := newHarness(t)
 	tok := h.liveToken(h.account("root", core.RoleSystemAdmin))
 	h.pushApp("api")
@@ -723,13 +740,20 @@ func TestCloneAndFetch(t *testing.T) {
 
 	var clone string
 	for _, v := range []string{"2", "0"} {
+		// Whatever the host's git names by default, HEAD names a branch
+		// that doesn't exist; a plain clone still checks out the app's.
+		h.pointBareHead("api", "refs/heads/nonesuch")
 		parent := t.TempDir()
-		mustGit(t, parent, tok, "-c", "protocol.version="+v, "clone", "-q", h.remote("api"), "c")
+		out := mustGit(t, parent, tok, "-c", "protocol.version="+v, "clone", "-q", h.remote("api"), "c")
+		if strings.Contains(out, "nonexistent ref") {
+			t.Errorf("protocol %s: the clone warned:\n%s", v, out)
+		}
 		clone = filepath.Join(parent, "c")
-		// Not HEAD: the bare repository's HEAD names the host's default
-		// branch, which needn't be the one pushed.
-		if got := mustGit(t, clone, "", "rev-parse", "origin/main"); got != first {
-			t.Errorf("protocol %s: the clone is at %s, want %s", v, got, first)
+		if got, err := git(t, clone, "", "rev-parse", "HEAD"); err != nil || strings.TrimSpace(got) != first {
+			t.Errorf("protocol %s: the clone's HEAD is %q (%v), want %s", v, strings.TrimSpace(got), err, first)
+		}
+		if data, err := os.ReadFile(filepath.Join(clone, "README")); err != nil || string(data) != "hello\n" {
+			t.Errorf("protocol %s: the clone's README = %q, %v; want the pushed file", v, data, err)
 		}
 	}
 
@@ -746,6 +770,19 @@ func TestCloneAndFetch(t *testing.T) {
 	}
 	if h.repos.Exists("nothing") {
 		t.Error("a clone of a name with no app created a repository")
+	}
+
+	// An app whose branch has no commits yet: HEAD is left alone, and the
+	// clone isn't refused.
+	h.pushApp("web")
+	mustGit(t, work, tok, "push", h.remote("web"), "main:dev")
+	dir := h.pointBareHead("web", "refs/heads/nonesuch")
+	mustGit(t, t.TempDir(), tok, "clone", "-q", h.remote("web"), "w")
+	if got := mustGit(t, t.TempDir(), "", "--git-dir", dir, "symbolic-ref", "HEAD"); got != "refs/heads/nonesuch" {
+		t.Errorf("web's HEAD = %s, want it left at refs/heads/nonesuch", got)
+	}
+	if strings.Contains(logged.String(), "HEAD") {
+		t.Errorf("the log names HEAD:\n%s", logged.String())
 	}
 }
 

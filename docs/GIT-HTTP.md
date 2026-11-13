@@ -83,7 +83,9 @@ Git asks for a username and a password. Type any username (Outhaul ignores it),
 and the token as the password.
 
 A first push to a name that has no app creates the app, as over SSH. A fetch or
-clone of a name with no app answers 404 and creates nothing.
+clone of a name with no app answers 404 and creates nothing. A clone over HTTPS
+checks out the app's branch; over SSH, pass `-b <branch>` to `git clone` if the
+host's git names another default branch.
 
 ### Keeping the token in a credential helper
 

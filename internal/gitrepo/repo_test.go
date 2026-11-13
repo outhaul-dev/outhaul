@@ -205,6 +205,127 @@ func TestInitNeverShowsHalfAHook(t *testing.T) {
 	checkHook(t, b, "api")
 }
 
+// isolateGit keeps git in this test off the developer's own configuration.
+func isolateGit(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(home, ".gitconfig"))
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+}
+
+// bare runs git on the bare repository dir and returns its trimmed output.
+func bare(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"--git-dir", dir, "-c", "user.name=Test", "-c", "user.email=test@example.com"}, args...)...)
+	cmd.Stdin = strings.NewReader("")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// commitOn makes a commit on ref in dir and returns its id.
+func commitOn(t *testing.T, dir, ref string) string {
+	t.Helper()
+	tree := bare(t, dir, "mktree")
+	c := bare(t, dir, "commit-tree", tree, "-m", "on "+ref)
+	bare(t, dir, "update-ref", ref, c)
+	return c
+}
+
+// headOf is the ref HEAD names, or "detached".
+func headOf(t *testing.T, dir string) string {
+	t.Helper()
+	out, err := exec.Command("git", "--git-dir", dir, "symbolic-ref", "-q", "HEAD").Output()
+	if err != nil {
+		return "detached"
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func TestPointHead(t *testing.T) {
+	isolateGit(t)
+	cases := []struct {
+		name   string
+		branch string
+		setup  func(t *testing.T, dir string) // makes refs and sets HEAD
+		want   string                         // HEAD afterwards
+	}{
+		{"HEAD names a missing branch and the app's exists", "main", func(t *testing.T, dir string) {
+			commitOn(t, dir, "refs/heads/main")
+			bare(t, dir, "symbolic-ref", "HEAD", "refs/heads/nonesuch")
+		}, "refs/heads/main"},
+		{"a branch in a folder", "feature/x", func(t *testing.T, dir string) {
+			commitOn(t, dir, "refs/heads/feature/x")
+			bare(t, dir, "symbolic-ref", "HEAD", "refs/heads/nonesuch")
+		}, "refs/heads/feature/x"},
+		{"HEAD's branch exists", "main", func(t *testing.T, dir string) {
+			commitOn(t, dir, "refs/heads/main")
+			commitOn(t, dir, "refs/heads/dev")
+			bare(t, dir, "symbolic-ref", "HEAD", "refs/heads/dev")
+		}, "refs/heads/dev"},
+		{"no branch", "", func(t *testing.T, dir string) {
+			commitOn(t, dir, "refs/heads/main")
+			bare(t, dir, "symbolic-ref", "HEAD", "refs/heads/nonesuch")
+		}, "refs/heads/nonesuch"},
+		{"the app's branch has no commits", "main", func(t *testing.T, dir string) {
+			commitOn(t, dir, "refs/heads/dev")
+			bare(t, dir, "symbolic-ref", "HEAD", "refs/heads/nonesuch")
+		}, "refs/heads/nonesuch"},
+		{"an empty repository", "main", func(t *testing.T, dir string) {
+			bare(t, dir, "symbolic-ref", "HEAD", "refs/heads/nonesuch")
+		}, "refs/heads/nonesuch"},
+		{"HEAD detached", "main", func(t *testing.T, dir string) {
+			c := commitOn(t, dir, "refs/heads/main")
+			bare(t, dir, "update-ref", "--no-deref", "HEAD", c)
+		}, "detached"},
+		// git keeps a ref named refs/heads/-x, but -x isn't a branch name.
+		{"a branch that starts with a dash", "-x", func(t *testing.T, dir string) {
+			commitOn(t, dir, "refs/heads/-x")
+			bare(t, dir, "symbolic-ref", "HEAD", "refs/heads/nonesuch")
+		}, "refs/heads/nonesuch"},
+		{"a branch git wouldn't name", "@{-1}", func(t *testing.T, dir string) {
+			commitOn(t, dir, "refs/heads/main")
+			bare(t, dir, "symbolic-ref", "HEAD", "refs/heads/nonesuch")
+		}, "refs/heads/nonesuch"},
+		{"a branch named HEAD", "HEAD", func(t *testing.T, dir string) {
+			commitOn(t, dir, "refs/heads/HEAD")
+			bare(t, dir, "symbolic-ref", "HEAD", "refs/heads/nonesuch")
+		}, "refs/heads/nonesuch"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := New(t.TempDir(), "/usr/local/bin/outhaul", "/var/lib/outhaul/git-hook.sock")
+			if err := m.Init("api"); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			dir, err := m.Path("api")
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.setup(t, dir)
+			if err := m.PointHead("api", c.branch); err != nil {
+				t.Fatalf("PointHead(%q): %v", c.branch, err)
+			}
+			if got := headOf(t, dir); got != c.want {
+				t.Errorf("HEAD = %s, want %s", got, c.want)
+			}
+		})
+	}
+}
+
+func TestPointHeadRefusesABadName(t *testing.T) {
+	m := New(t.TempDir(), "/bin/outhaul", "/tmp/s.sock")
+	if err := m.PointHead("../etc", "main"); err == nil {
+		t.Error("PointHead(../etc) = nil, want an error")
+	}
+}
+
 func TestExists(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")

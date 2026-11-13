@@ -255,6 +255,14 @@ func (h *Handler) serve(c *gitCall, advertise bool) {
 		h.failWith(c, "prepare the repository for "+c.name, err, "outhaul: could not prepare the repository for '"+c.name+"'")
 		return
 	}
+	// A bare repository's HEAD names the host git's default branch, so a
+	// plain clone of an app on another branch would check out nothing. A
+	// clone that needs -b beats a 500, so a failure here is only logged.
+	if c.service == serviceUpload {
+		if err := h.o.Repos.PointHead(c.name, app.Branch); err != nil {
+			log.Printf("githttp: point the HEAD of %s at its branch: %v", c.name, err)
+		}
+	}
 
 	args := gitArgs(c.service, h.o.KeepAlive, advertise, dir)
 	env := gitEnv(c.r, c.service, tok.ID, c.addr)
