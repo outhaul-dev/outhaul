@@ -343,9 +343,11 @@ fixed in five batches. All five are on `main`.
   token answers 401, so git forgets it; the SSO rule and the role answer 403,
   so git keeps it. A live token is never held back by the failed-attempt limit,
   because many clients arrive as one address; only bad tokens are told to wait.
-  Tokens are left out of a state backup (`restore-state` strips them), and are
-  deleted with the SSO sign-ins they rested on. Outhaul believes
-  `X-Forwarded-For` only from its own Traefik, and only `githttp` reads it. A
+  Tokens are left out of a state backup (`restore-state` strips them). SSO
+  accounts' tokens are deleted when SSO is removed or its issuer or client ID
+  changes, with the sign-ins that end then; password accounts' tokens stay.
+  Outhaul believes `X-Forwarded-For` only from its own Traefik, and only
+  `githttp` reads it. A
   request on any host but the public URL's, or known to be plain HTTP, is never
   asked for a token. See `docs/GIT-HTTP.md`.
 

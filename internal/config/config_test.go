@@ -1670,6 +1670,7 @@ func TestUploadTimeout(t *testing.T) {
 	}{
 		{"", 0, false},
 		{"10m", 10 * time.Minute, false},
+		{" 10m ", 10 * time.Minute, false},
 		{"600s", 600 * time.Second, false},
 		{"1s", time.Second, false},
 		{"500ms", 0, true},

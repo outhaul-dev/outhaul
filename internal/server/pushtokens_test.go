@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -10,6 +12,7 @@ import (
 	"time"
 
 	"github.com/outhaul-dev/outhaul/internal/core"
+	"github.com/outhaul-dev/outhaul/internal/sso"
 )
 
 var pushTokenRE = regexp.MustCompile(`ohp_[0-9a-f]{64}`)
@@ -155,11 +158,10 @@ func TestAccountPagePushTokens(t *testing.T) {
 	if _, _, err := e.store.CreatePushToken(ctx, uid, "old", now.Add(-48*time.Hour), now.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	raw, used, err := e.store.CreatePushToken(ctx, uid, "busy", now, now.Add(time.Hour))
+	_, used, err := e.store.CreatePushToken(ctx, uid, "busy", now, now.Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = raw
 	if err := e.store.TouchPushToken(ctx, used.ID, now, "198.51.100.9"); err != nil {
 		t.Fatal(err)
 	}
@@ -220,6 +222,96 @@ func TestUsersPagePushTokens(t *testing.T) {
 	}
 }
 
+// ssoTextEnv is a signed-in system admin with SSO saved, and git over HTTPS on
+// or off.
+func ssoTextEnv(t *testing.T, on bool) *testEnv {
+	t.Helper()
+	e := newTestEnvWith(t, func(s *Server) {
+		if on {
+			s.SetGitHTTP(GitHTTPOptions{DefaultDays: 7, MaxDays: 30, SSOMaxAge: 7 * 24 * time.Hour})
+		}
+	})
+	e.completeSetup(t)
+	e.srv.discover = func(context.Context, sso.Config) (sso.Provider, error) { return &sso.Fake{}, nil }
+	saveSSO(t, e, "https://idp.example.com", "cid", "sec").Body.Close()
+	return e
+}
+
+// Ending every SSO sign-in deletes SSO accounts' push tokens, so with git over
+// HTTPS on the Settings page says so wherever it says sign-ins end. Off, every
+// text is as it was.
+func TestSSOTextsSayPushTokensAreDeleted(t *testing.T) {
+	const (
+		removeOff = "Remove single sign-on? Everyone signed in with SSO is signed out. Password sign-in keeps working."
+		removeOn  = "Remove single sign-on? Everyone signed in with SSO is signed out and their push tokens are deleted. Password sign-in keeps working."
+		changeOff = "Changing the issuer or client ID ends every SSO sign-in; replacing only the secret does not.</p>"
+		changeOn  = "Changing the issuer or client ID ends every SSO sign-in and deletes SSO accounts' push tokens; replacing only the secret does not.</p>"
+		issuerOff = "The old accounts keep their roles and push keys until they are removed.</div>"
+		issuerOn  = "The old accounts keep their roles and push keys until they are removed. Their push tokens are deleted.</div>"
+	)
+	for _, on := range []bool{false, true} {
+		e := ssoTextEnv(t, on)
+		panel := body(t, e.get(t, "/settings"))
+		issuer := body(t, saveSSO(t, e, "https://other.example.com", "cid", ""))
+		e.srv.publicURL = ""
+		noURL := body(t, e.get(t, "/settings"))
+		pages := []struct {
+			name, page, off, on string
+		}{
+			{"the remove confirm", panel, removeOff, removeOn},
+			{"the client ID note", panel, changeOff, changeOn},
+			{"the issuer warning", issuer, issuerOff, issuerOn},
+			{"the remove confirm without a public URL", noURL, removeOff, removeOn},
+		}
+		for _, p := range pages {
+			want, not := p.off, p.on
+			if on {
+				want, not = p.on, p.off
+			}
+			if !strings.Contains(p.page, want) || strings.Contains(p.page, not) {
+				t.Errorf("git over HTTPS on=%v: %s isn't %q", on, p.name, want)
+			}
+		}
+		if !on {
+			for _, page := range []string{panel, issuer, noURL} {
+				if strings.Contains(page, "push token") {
+					t.Error("a Settings page names push tokens with git over HTTPS off")
+				}
+			}
+		}
+	}
+}
+
+// A reset is often for a suspected compromise, and leaves tokens alone, so
+// with git over HTTPS on its confirm says so. Off, the Users page is as it
+// was, blank lines included.
+func TestUsersPageResetConfirmNamesPushTokens(t *testing.T) {
+	const (
+		resetOff = "Their password stops working and they are signed out now. You will get a new setup link to send them.')"
+		resetOn  = "Their password stops working and they are signed out now. You will get a new setup link to send them. Their push tokens keep working until you revoke them below.')"
+	)
+	for _, on := range []bool{false, true} {
+		e := newTestEnvWith(t, func(s *Server) {
+			if on {
+				s.SetGitHTTP(GitHTTPOptions{DefaultDays: 7, MaxDays: 30, SSOMaxAge: 7 * 24 * time.Hour})
+			}
+		})
+		admin := e.signInAs(t, "root", core.RoleSystemAdmin)
+		e.signInAs(t, "carol", core.RoleProjectMember)
+		page := body(t, e.getAs(t, admin, "/users"))
+		want, not := resetOff, resetOn
+		if on {
+			want, not = resetOn, resetOff
+		}
+		if !strings.Contains(page, want) || strings.Contains(page, not) {
+			t.Errorf("git over HTTPS on=%v: the reset confirm isn't %q", on, want)
+		}
+		if !on && !strings.Contains(page, "</section>\n\n<dialog id=\"user-dialog\"") {
+			t.Error("with git over HTTPS off, the users table's section isn't followed by one blank line and the dialog")
+		}
+	}
+}
+
 func TestViewerSeesNoTokenValueElsewhere(t *testing.T) {
 	e := newGitHTTPEnv(t)
 	tok := e.signInAs(t, "root", core.RoleSystemAdmin)
@@ -228,11 +320,22 @@ func TestViewerSeesNoTokenValueElsewhere(t *testing.T) {
 	if raw == "" {
 		t.Fatal("no token shown")
 	}
-	hash := regexp.MustCompile(`[0-9a-f]{64}`)
+	sum := sha256.Sum256([]byte(raw))
+	hash := hex.EncodeToString(sum[:])
+	var stored string
+	if err := e.rawDB(t).QueryRow(`SELECT token_hash FROM push_tokens WHERE label = 'laptop'`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != hash {
+		t.Fatal("the stored hash isn't the SHA-256 this test looks for, so the test would show nothing")
+	}
 	for _, p := range []string{"/account", "/users", "/"} {
 		page := body(t, e.getAs(t, tok, p))
-		if strings.Contains(page, raw) || hash.MatchString(page) {
-			t.Errorf("%s shows a token value or a hash", p)
+		if strings.Contains(page, raw) {
+			t.Errorf("%s shows the token", p)
+		}
+		if strings.Contains(page, hash) {
+			t.Errorf("%s shows the token's hash", p)
 		}
 	}
 }

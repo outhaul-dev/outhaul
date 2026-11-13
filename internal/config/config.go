@@ -863,7 +863,7 @@ func (p *parser) keyPrefix(key string) string {
 // uploadTimeout reads OUTHAUL_UPLOAD_TIMEOUT: a duration of at least one
 // second and a whole number of seconds. Unset gives 0.
 func (p *parser) uploadTimeout(key string) time.Duration {
-	v := p.getenv(key)
+	v := strings.TrimSpace(p.getenv(key))
 	if v == "" {
 		return 0
 	}

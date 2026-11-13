@@ -226,7 +226,7 @@
   <p class="muted env-note">Single sign-on is set from the environment, but nobody can sign in with SSO until <code>OUTHAUL_PUBLIC_URL</code> is set.</p>
   {{else if .SSO.Configured}}
   <p class="muted env-note">Single sign-on settings are still saved, but nobody can sign in with SSO until <code>OUTHAUL_PUBLIC_URL</code> is set again.</p>
-  <form method="post" action="/settings/sso/delete" class="grid-form" onsubmit="return confirm('Remove single sign-on? Everyone signed in with SSO is signed out. Password sign-in keeps working.');">
+  <form method="post" action="/settings/sso/delete" class="grid-form" onsubmit="return confirm('Remove single sign-on? Everyone signed in with SSO is signed out{{if $.GitHTTP}} and their push tokens are deleted{{end}}. Password sign-in keeps working.');">
     <button type="submit" class="btn btn-danger">Remove SSO</button>
   </form>
   {{end}}
@@ -245,7 +245,7 @@
   {{if .StoredAlso}}<p class="muted env-note">Settings saved here are kept, but not used while the environment sets them.</p>{{end}}
   {{else}}
   {{if .NeedsConfirm}}
-  <div class="alert alert-warn">Changing the issuer ends every SSO sign-in, and everyone will come back as a new account with no role. The old accounts keep their roles and push keys until they are removed.</div>
+  <div class="alert alert-warn">Changing the issuer ends every SSO sign-in, and everyone will come back as a new account with no role. The old accounts keep their roles and push keys until they are removed.{{if $.GitHTTP}} Their push tokens are deleted.{{end}}</div>
   {{end}}
   <form method="post" action="/settings/sso" class="grid-form">
     <label class="field"><span>Issuer URL</span><input type="text" name="issuer" value="{{.Issuer}}" placeholder="https://idp.example.com" required></label>
@@ -257,9 +257,9 @@
     {{end}}
     <button type="submit" class="btn btn-primary">{{if .Configured}}Save and check{{else}}Connect{{end}}</button>
   </form>
-  <p class="muted env-note">Saving checks the settings with the provider and refuses any that fail. Changing the issuer or client ID ends every SSO sign-in; replacing only the secret does not.</p>
+  <p class="muted env-note">Saving checks the settings with the provider and refuses any that fail. Changing the issuer or client ID ends every SSO sign-in{{if $.GitHTTP}} and deletes SSO accounts' push tokens{{end}}; replacing only the secret does not.</p>
   {{if .Configured}}
-  <form method="post" action="/settings/sso/delete" class="grid-form" onsubmit="return confirm('Remove single sign-on? Everyone signed in with SSO is signed out. Password sign-in keeps working.');">
+  <form method="post" action="/settings/sso/delete" class="grid-form" onsubmit="return confirm('Remove single sign-on? Everyone signed in with SSO is signed out{{if $.GitHTTP}} and their push tokens are deleted{{end}}. Password sign-in keeps working.');">
     <button type="submit" class="btn btn-danger">Remove SSO</button>
   </form>
   {{end}}

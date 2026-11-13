@@ -162,6 +162,17 @@ func uploadTimeoutHint(gitHTTP bool, uploadTimeout time.Duration) string {
 	return "A push over HTTPS that takes more than 60 seconds to upload is cut off by Traefik; set OUTHAUL_UPLOAD_TIMEOUT, such as 10m, to lift that."
 }
 
+// ssoEndedLine is the startup line for an issuer or client ID that changed
+// since the last run. Ending every SSO sign-in deletes SSO accounts' push
+// tokens too, which it says while git over HTTPS is on.
+func ssoEndedLine(gitHTTP bool) string {
+	line := "sso: the issuer or client ID changed since the last run, so every SSO sign-in has ended; if the issuer changed, everyone returns as a new account"
+	if gitHTTP {
+		line += "; SSO accounts' push tokens were deleted"
+	}
+	return line
+}
+
 func serve() error {
 	cfg := config.Load(os.Getenv)
 	if err := cfg.Validate(); err != nil {
@@ -206,7 +217,7 @@ func serve() error {
 		return fmt.Errorf("record the SSO settings this run uses: %w", err)
 	}
 	if ended {
-		log.Printf("sso: the issuer or client ID changed since the last run, so every SSO sign-in has ended; if the issuer changed, everyone returns as a new account")
+		log.Print(ssoEndedLine(cfg.GitHTTP))
 	}
 	if ssoSet {
 		log.Printf("sso: using the provider from the environment: %s", cfg.SSOIssuer)

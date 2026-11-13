@@ -74,6 +74,9 @@ func (s *Server) renderSettingsWith(w http.ResponseWriter, r *http.Request, stat
 	if _, ok := extra["SSO"]; !ok {
 		data["SSO"] = s.ssoPanel(r)
 	}
+	if s.gitHTTPOn() {
+		data["GitHTTP"] = true
+	}
 	for k, v := range extra {
 		data[k] = v
 	}

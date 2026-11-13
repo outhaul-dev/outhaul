@@ -247,8 +247,9 @@ func publicRoutes(s *Server) []string {
 	return out
 }
 
-// TestPublicRoutesAreExactlyThese keeps the list with git over HTTPS off; on,
-// exactly the three git routes are added, each signing itself in.
+// With git over HTTPS on, exactly the three git routes are added to the public
+// routes it has off (TestPublicRoutesAreExactlyThese pins those), each signing
+// itself in.
 func TestGitRoutesArePublic(t *testing.T) {
 	off := publicRoutes(newTestEnv(t).srv)
 	e, _ := gitRoutesEnv(t)

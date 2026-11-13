@@ -42,7 +42,8 @@ type tokenView struct {
 	Expired bool
 }
 
-func (s *Server) tokenView(t core.PushToken, owner string, now time.Time) tokenView {
+// viewToken is t as a page shows it, with owner's name.
+func (s *Server) viewToken(t core.PushToken, owner string, now time.Time) tokenView {
 	return tokenView{PushToken: t, Owner: owner, Ends: t.EndsAt(s.gitHTTP.MaxDays), Expired: t.Expired(now, s.gitHTTP.MaxDays)}
 }
 
@@ -50,7 +51,7 @@ func (s *Server) tokenRows(rows []core.PushTokenRow) []tokenView {
 	now := time.Now()
 	out := make([]tokenView, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, s.tokenView(r.PushToken, r.Owner, now))
+		out = append(out, s.viewToken(r.PushToken, r.Owner, now))
 	}
 	return out
 }
@@ -66,7 +67,7 @@ func (s *Server) addPushTokenData(w http.ResponseWriter, r *http.Request, me cor
 	}
 	views := make([]tokenView, 0, len(list))
 	for _, t := range list {
-		views = append(views, s.tokenView(t, "", now))
+		views = append(views, s.viewToken(t, "", now))
 	}
 	data["GitHTTP"] = true
 	data["GitHTTPRemoteBase"] = strings.TrimRight(s.publicURL, "/")

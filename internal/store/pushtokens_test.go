@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -51,8 +53,9 @@ func TestCreatePushTokenStoresOnlyTheHash(t *testing.T) {
 	if err := s.db.QueryRow(`SELECT token_hash FROM push_tokens WHERE id = ?`, tok.ID).Scan(&hash); err != nil {
 		t.Fatal(err)
 	}
-	if hash != hashToken(raw) {
-		t.Errorf("token_hash = %q, want the SHA-256 of the value", hash)
+	sum := sha256.Sum256([]byte(raw))
+	if hash != hex.EncodeToString(sum[:]) {
+		t.Errorf("token_hash = %q, want the SHA-256 of the value, in hex", hash)
 	}
 	rows, err := s.db.Query(`SELECT id, user_id, label, token_hash, created_at, expires_at, COALESCE(last_used_at, ''), last_used_ip FROM push_tokens`)
 	if err != nil {

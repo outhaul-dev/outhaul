@@ -1484,6 +1484,18 @@ func TestProxyConfigCarriesUploadTimeout(t *testing.T) {
 	}
 }
 
+// With git over HTTPS on, the startup line for a changed issuer or client ID
+// says SSO accounts' push tokens went with their sign-ins. Off, it is as it was.
+func TestSSOEndedLine(t *testing.T) {
+	const off = "sso: the issuer or client ID changed since the last run, so every SSO sign-in has ended; if the issuer changed, everyone returns as a new account"
+	if got := ssoEndedLine(false); got != off {
+		t.Errorf("off: %q, want %q", got, off)
+	}
+	if got, want := ssoEndedLine(true), off+"; SSO accounts' push tokens were deleted"; got != want {
+		t.Errorf("on: %q, want %q", got, want)
+	}
+}
+
 func TestUploadTimeoutHint(t *testing.T) {
 	got := uploadTimeoutHint(true, 0)
 	if !strings.Contains(got, "OUTHAUL_UPLOAD_TIMEOUT") || !strings.Contains(got, "60 seconds") {

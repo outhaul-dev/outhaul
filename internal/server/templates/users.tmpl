@@ -41,7 +41,7 @@
         <td>
           {{if and .Password (not .Self)}}
           <form method="post" action="/users/{{.ID}}/reset" class="inline"
-                onsubmit="return confirm('Reset the password for {{.Name}}? Their password stops working and they are signed out now. You will get a new setup link to send them.')">
+                onsubmit="return confirm('Reset the password for {{.Name}}? Their password stops working and they are signed out now. You will get a new setup link to send them.{{if $.GitHTTP}} Their push tokens keep working until you revoke them below.{{end}}')">
             <button type="submit" class="linkbtn">Reset password</button>
           </form>
           {{end}}
@@ -58,7 +58,7 @@
   <p class="muted">Removing someone signs them out at once and deletes their push keys{{if .GitHTTP}} and push tokens{{end}}.</p>
 </section>
 
-{{if .GitHTTP}}
+{{if .GitHTTP -}}
 <section class="panel">
   <h2 class="panel-title">Push tokens</h2>
   <p class="muted env-note">Credentials for <code>git push</code> over HTTPS. Their values are never shown here. Revoke one to stop it working at once.</p>
@@ -84,9 +84,8 @@
   <p class="empty">No push tokens.</p>
   {{end}}
 </section>
-{{end}}
 
-
+{{end -}}
 <dialog id="user-dialog" class="modal" open{{if eq .OpenDialog "user-dialog"}} data-reopen{{end}} aria-labelledby="user-dialog-title">
   <form method="post" action="/users">
     <div class="modal-head">
