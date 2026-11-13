@@ -89,12 +89,17 @@ func (b *Bridge) serve(ctx context.Context, conn io.ReadWriter) int {
 
 	app, err := b.resolveOrCreate(ctx, req)
 	if err != nil {
+		// The refs are stored already, so who pushed them is still logged.
+		// Both are quoted: the error can carry git's own lines.
+		if req.Origin.HTTPS() {
+			b.logHTTPSPush(ctx, fmt.Sprintf("app %q (not deployed: %q)", req.App, err.Error()), req)
+		}
 		fmt.Fprintf(conn, "✗ %v\n", err)
 		return 1
 	}
 
 	if req.Origin.HTTPS() {
-		b.logHTTPSPush(ctx, app, req)
+		b.logHTTPSPush(ctx, "app "+app.Name, req)
 	}
 
 	if app.DeployTrigger == core.TriggerTag {
@@ -122,9 +127,9 @@ func (b *Bridge) serve(ctx context.Context, conn io.ReadWriter) int {
 }
 
 // logHTTPSPush records who pushed over HTTPS: the account, the token's id and
-// label (never its value), the client address, the app and each ref's new
+// label (never its value), the client address, the app (to) and each ref's new
 // commit. A token or account deleted since the push began is named as removed.
-func (b *Bridge) logHTTPSPush(ctx context.Context, app core.App, req request) {
+func (b *Bridge) logHTTPSPush(ctx context.Context, to string, req request) {
 	id := req.Origin.TokenID
 	who, token := "an account that has been removed", fmt.Sprintf("token %d (removed)", id)
 	if tok, err := b.store.GetPushToken(ctx, id); err == nil {
@@ -141,7 +146,7 @@ func (b *Bridge) logHTTPSPush(ctx context.Context, app core.App, req request) {
 	for _, u := range req.Refs {
 		refs = append(refs, fmt.Sprintf("%q", u.Ref+" "+u.New))
 	}
-	log.Printf("git push over HTTPS: %s, %s, from %s, to app %s: %s", who, token, addr, app.Name, strings.Join(refs, ", "))
+	log.Printf("git push over HTTPS: %s, %s, from %s, to %s: %s", who, token, addr, to, strings.Join(refs, ", "))
 }
 
 // serveTagPush handles a push to a tag-mode app: branches are only stored, and

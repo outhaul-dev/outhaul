@@ -197,6 +197,40 @@ func TestBridgeLogsAPushWhoseTokenIsGone(t *testing.T) {
 	}
 }
 
+// A first push over HTTPS whose app can't be made has already stored its refs,
+// so it is logged too, once, naming the app by the name it was pushed to.
+func TestBridgeLogsAnHTTPSPushWhoseAppCantBeMade(t *testing.T) {
+	b, _, _, tokID := httpsFixture(t)
+	logs := captureLog(t)
+	out := runHandle(t, b, request{App: "brand-new", Refs: []RefUpdate{{"0", "abc123", "refs/tags/v1"}},
+		Origin: Origin{TokenID: tokID, Addr: "203.0.113.9"}})
+	if !strings.Contains(out, "must target a branch") || !strings.Contains(out, "exit 1") {
+		t.Fatalf("output:\n%s", out)
+	}
+	line := logs.String()
+	if n := strings.Count(line, "\n"); n != 1 {
+		t.Fatalf("%d log lines:\n%s", n, line)
+	}
+	for _, want := range []string{"git push over HTTPS: ", `"alice"`, fmt.Sprintf("token %d %q", tokID, "laptop"),
+		"from 203.0.113.9", `app "brand-new"`, `"refs/tags/v1 abc123"`} {
+		if !strings.Contains(line, want) {
+			t.Errorf("log lacks %q:\n%s", want, line)
+		}
+	}
+}
+
+func TestBridgeSSHPushWhoseAppCantBeMadeLogsNothing(t *testing.T) {
+	b, _, _, _ := httpsFixture(t)
+	logs := captureLog(t)
+	out := runHandle(t, b, request{App: "brand-new", Refs: []RefUpdate{{"0", "abc123", "refs/tags/v1"}}})
+	if !strings.Contains(out, "must target a branch") || !strings.Contains(out, "exit 1") {
+		t.Fatalf("output:\n%s", out)
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("SSH push logged: %s", logs.String())
+	}
+}
+
 func TestBridgeLogsAnHTTPSPushWithNoAddress(t *testing.T) {
 	b, _, _, tokID := httpsFixture(t)
 	logs := captureLog(t)
