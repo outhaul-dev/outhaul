@@ -13,13 +13,14 @@ import (
 // X-Forwarded-Proto: http mean that: Traefik never writes http there of its
 // own accord then, so a trusted proxy in front said so. Anywhere else (the
 // tunnel says http for people on HTTPS) it can't be told, and a setting that
-// can't be read counts as can't be told.
+// can't be read counts as can't be told. A chain of proxies may send a list;
+// its first entry is the hop nearest the client, and only http there counts.
 func (s *Server) gitPlainHTTP(r *http.Request) bool {
 	if !s.tlsEnabled {
 		return false
 	}
-	proto := r.Header.Get("X-Forwarded-Proto")
-	if proto == "" || strings.EqualFold(proto, "https") {
+	first, _, _ := strings.Cut(r.Header.Get("X-Forwarded-Proto"), ",")
+	if !strings.EqualFold(strings.TrimSpace(first), "http") {
 		return false
 	}
 	tunnel, err := s.store.TunnelEnabled(r.Context())

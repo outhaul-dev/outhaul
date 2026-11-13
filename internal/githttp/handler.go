@@ -1,7 +1,6 @@
 package githttp
 
 import (
-	"compress/gzip"
 	"context"
 	"database/sql"
 	"errors"
@@ -92,11 +91,14 @@ func New(o Options) *Handler {
 
 // gitCall is one request on its way through the checks.
 type gitCall struct {
-	w       http.ResponseWriter
-	r       *http.Request
-	name    string // {repo} with one trailing .git removed; not yet checked
-	addr    netip.Addr
-	service string // serviceReceive or serviceUpload, once known
+	w    http.ResponseWriter
+	r    *http.Request
+	name string // {repo} with one trailing .git removed; not yet checked
+	// addr is the client's address, learnt at the end of open, or by refuse
+	// to log a refusal made before that (see clientAddr).
+	addr      netip.Addr
+	addrKnown bool
+	service   string // serviceReceive or serviceUpload, once known
 }
 
 // InfoRefs answers GET /git/{repo}/info/refs, the first request of every push,
@@ -135,24 +137,26 @@ func (h *Handler) Service(w http.ResponseWriter, r *http.Request) {
 }
 
 // open sets the no-cache headers every answer carries and makes the checks
-// that come before any credential is asked for: the bridge is up, the request
-// is on the public URL's host, and it isn't known to be plain HTTP.
+// that come before any credential is asked for, in this order: the request is
+// on the public URL's host, the bridge is up, and it isn't known to be plain
+// HTTP. Only then is the client's address learnt, which can mean asking
+// Docker.
 func (h *Handler) open(w http.ResponseWriter, r *http.Request) (*gitCall, bool) {
 	hd := w.Header()
 	hd.Set("Expires", "Fri, 01 Jan 1980 00:00:00 GMT")
 	hd.Set("Pragma", "no-cache")
 	hd.Set("Cache-Control", "no-cache, max-age=0, must-revalidate")
-	c := &gitCall{w: w, r: r, name: strings.TrimSuffix(r.PathValue("repo"), ".git"), addr: h.o.ClientAddr(r)}
+	c := &gitCall{w: w, r: r, name: strings.TrimSuffix(r.PathValue("repo"), ".git")}
 
+	// No challenge anywhere else, so a remote that points at the admin port
+	// is never asked for a token, and learns nothing else either.
+	if h.o.OnPublicHost == nil || !h.o.OnPublicHost(r) {
+		h.refuse(c, http.StatusNotFound, "host", "refused a git request on a host other than the public URL's", "404 page not found")
+		return nil, false
+	}
 	if h.o.Store == nil || h.o.Repos == nil || (h.o.Ready != nil && !h.o.Ready()) {
 		h.refuse(c, http.StatusServiceUnavailable, "ready", "git over HTTPS is unavailable: the hook bridge isn't listening",
 			"outhaul: git push is not available; see the server log")
-		return nil, false
-	}
-	// No challenge anywhere else, so a remote that points at the admin port
-	// is never asked for a token.
-	if h.o.OnPublicHost == nil || !h.o.OnPublicHost(r) {
-		h.refuse(c, http.StatusNotFound, "host", "refused a git request on a host other than the public URL's", "404 page not found")
 		return nil, false
 	}
 	if h.o.PlainHTTP != nil && h.o.PlainHTTP(r) {
@@ -164,7 +168,16 @@ func (h *Handler) open(w http.ResponseWriter, r *http.Request) (*gitCall, bool) 
 			"outhaul: this remote uses http://. Change it to "+to)
 		return nil, false
 	}
+	h.clientAddr(c)
 	return c, true
+}
+
+// clientAddr is c's client address, learnt the first time it is asked for.
+func (h *Handler) clientAddr(c *gitCall) netip.Addr {
+	if !c.addrKnown {
+		c.addr, c.addrKnown = h.o.ClientAddr(c.r), true
+	}
+	return c.addr
 }
 
 // serve signs the request in, checks what it may do, and runs git.
@@ -274,18 +287,7 @@ func (h *Handler) serve(c *gitCall, advertise bool) {
 		h.run(c, args, env, nil, "application/x-"+c.service+"-advertisement", first)
 		return
 	}
-	var body io.Reader = c.r.Body
-	if strings.EqualFold(c.r.Header.Get("Content-Encoding"), "gzip") {
-		zr, err := gzip.NewReader(c.r.Body)
-		if err != nil {
-			h.refuse(c, http.StatusBadRequest, "gzip", "refused a git POST whose body says it is gzip and isn't",
-				"outhaul: the request body says it is gzip, and it isn't")
-			return
-		}
-		defer zr.Close()
-		body = zr
-	}
-	h.run(c, args, env, body, "application/x-"+c.service+"-result", nil)
+	h.run(c, args, env, c.r.Body, "application/x-"+c.service+"-result", nil)
 }
 
 // signIn finds the live push token the password holds: the right shape (a
@@ -333,7 +335,7 @@ func (h *Handler) invalidToken() string {
 // with the client's address. A 401 carries the challenge; nothing else does.
 func (h *Handler) refuse(c *gitCall, status int, kind, why, msg string) {
 	if h.refused.allow(kind, h.o.Now()) {
-		log.Printf("githttp: %s, from %s (refusals like it are logged once a minute)", why, logAddr(c.addr))
+		log.Printf("githttp: %s, from %s (refusals like it are logged once a minute)", why, logAddr(h.clientAddr(c)))
 	}
 	answer(c.w, status, msg)
 }

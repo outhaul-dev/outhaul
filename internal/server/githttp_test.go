@@ -216,7 +216,13 @@ func TestGitPlainHTTP(t *testing.T) {
 		broken, plain bool
 	}{
 		{"TLS, no tunnel, X-Forwarded-Proto http", true, false, "http", false, true},
+		{"X-Forwarded-Proto HTTP", true, false, "HTTP", false, true},
+		// The first entry is the hop nearest the client.
+		{"X-Forwarded-Proto http, https", true, false, "http, https", false, true},
 		{"X-Forwarded-Proto https", true, false, "https", false, false},
+		{"X-Forwarded-Proto https, http", true, false, "https, http", false, false},
+		{"X-Forwarded-Proto with spaces around https", true, false, " https ", false, false},
+		{"X-Forwarded-Proto wss", true, false, "wss", false, false},
 		{"no X-Forwarded-Proto", true, false, "", false, false},
 		{"the tunnel on", true, true, "http", false, false},
 		{"no TLS of Traefik's own", false, false, "http", false, false},

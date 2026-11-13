@@ -2,6 +2,8 @@ package githttp
 
 import (
 	"bytes"
+	"compress/gzip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -101,13 +103,22 @@ func serviceAnnouncement(service string) []byte {
 }
 
 // run runs git for c with stdin (nil for none) as its standard input and the
-// response as its standard output. The response starts with first. It returns
-// once git has exited and been waited for; when the request's stream context
-// ends (the client went away, or shutdown began) git is killed.
+// response as its standard output. The response starts with first. A body
+// that says Content-Encoding: gzip is unpacked first. It returns once git has
+// exited and been waited for; when the request's stream context ends (the
+// client went away, or shutdown began) git is killed.
 func (h *Handler) run(c *gitCall, args, env []string, stdin io.Reader, contentType string, first []byte) {
 	ctx, cancel := h.o.StreamContext(c.r)
 	defer cancel()
 	rc := http.NewResponseController(c.w)
+	if stdin != nil && strings.EqualFold(c.r.Header.Get("Content-Encoding"), "gzip") {
+		zr, ok := h.gunzip(ctx, c, rc, stdin)
+		if !ok {
+			return
+		}
+		defer zr.Close()
+		stdin = zr
+	}
 	out := &flushWriter{w: c.w, rc: rc, first: first}
 	errLog := &stderrLog{prefix: fmt.Sprintf("githttp: git %s for %s: ", strings.TrimPrefix(c.service, "git-"), c.name)}
 
@@ -170,6 +181,24 @@ func (h *Handler) run(c *gitCall, args, env []string, stdin io.Reader, contentTy
 	if !wrote {
 		answer(c.w, http.StatusInternalServerError, "outhaul: git failed; see the server log")
 	}
+}
+
+// gunzip reads the gzip header of body under ctx, the request's stream
+// context, so a client that says gzip and then sends nothing holds the handler
+// only until the client goes away or shutdown begins. A body that isn't gzip
+// is refused with 400 before git starts.
+func (h *Handler) gunzip(ctx context.Context, c *gitCall, rc *http.ResponseController, body io.Reader) (*gzip.Reader, bool) {
+	stop := context.AfterFunc(ctx, func() { _ = rc.SetReadDeadline(time.Now()) })
+	zr, err := gzip.NewReader(body)
+	stop()
+	if err == nil {
+		return zr, true
+	}
+	if ctx.Err() == nil {
+		h.refuse(c, http.StatusBadRequest, "gzip", "refused a git POST whose body says it is gzip and isn't",
+			"outhaul: the request body says it is gzip, and it isn't")
+	}
+	return nil, false
 }
 
 // errResponseClosed is what flushWriter returns once the handler is done.

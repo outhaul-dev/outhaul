@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -33,6 +35,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/gitrepo"
 	"github.com/outhaul-dev/outhaul/internal/logstream"
 	"github.com/outhaul-dev/outhaul/internal/store"
+	"golang.org/x/crypto/argon2"
 )
 
 const (
@@ -40,16 +43,29 @@ const (
 	otherAddr = "198.51.100.4" // another client
 )
 
-// countingStore counts FindPushToken calls, so a test can show a password
-// was never looked up.
+// countingStore wraps the real store. It counts FindPushToken calls, so a test
+// can show a password was never looked up, and can be told to fail a lookup or
+// to lose an account.
 type countingStore struct {
 	*store.Store
-	finds atomic.Int64
+	finds    atomic.Int64
+	findFail atomic.Bool  // FindPushToken answers an error
+	gone     atomic.Int64 // GetUser of this account answers no rows
 }
 
 func (c *countingStore) FindPushToken(ctx context.Context, raw string) (core.PushToken, bool, error) {
 	c.finds.Add(1)
+	if c.findFail.Load() {
+		return core.PushToken{}, false, errors.New("database is locked")
+	}
 	return c.Store.FindPushToken(ctx, raw)
+}
+
+func (c *countingStore) GetUser(ctx context.Context, id int64) (core.User, error) {
+	if id != 0 && c.gone.Load() == id {
+		return core.User{}, sql.ErrNoRows
+	}
+	return c.Store.GetUser(ctx, id)
 }
 
 // fakeWorker stands in for the deploy worker: told a deployment is queued, it
@@ -116,8 +132,9 @@ type harness struct {
 	url    string
 	clock  *fakeClock
 
-	plain    atomic.Bool // PlainHTTP's answer
-	notReady atomic.Bool // Ready's answer, negated
+	plain     atomic.Bool  // PlainHTTP's answer
+	notReady  atomic.Bool  // Ready's answer, negated
+	addrCalls atomic.Int64 // how often the client's address was asked for
 
 	streams     context.Context // ends every StreamContext, as shutdown does
 	stopStreams context.CancelFunc
@@ -191,6 +208,7 @@ func newHarness(t *testing.T, opts ...func(*harnessConfig)) *harness {
 		SSOMaxAge: 7 * 24 * time.Hour,
 		Limiter:   NewLimiter(h.clock.now),
 		ClientAddr: func(r *http.Request) netip.Addr {
+			h.addrCalls.Add(1)
 			if v := r.Header.Get("X-Test-Addr"); v != "" {
 				a, _ := netip.ParseAddr(v)
 				return a
@@ -305,6 +323,21 @@ func (h *harness) rawDB() *sql.DB {
 	return db
 }
 
+// serverHash is a password hash made as internal/server's HashPassword makes
+// one: argon2id with its parameters, in the same format. This package can't
+// import the server, which imports it.
+func serverHash(t *testing.T, password string) string {
+	t.Helper()
+	const memory, passes, threads = 64 * 1024, 3, 2
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		t.Fatal(err)
+	}
+	key := argon2.IDKey([]byte(password), salt, passes, memory, threads, 32)
+	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s", argon2.Version, memory, passes, threads,
+		base64.RawStdEncoding.EncodeToString(salt), base64.RawStdEncoding.EncodeToString(key))
+}
+
 // ssoAccount makes an SSO system admin; signedIn, when set, is its last sign-in.
 func (h *harness) ssoAccount(subject string, signedIn *time.Time) core.User {
 	h.t.Helper()
@@ -323,9 +356,12 @@ func (h *harness) ssoAccount(subject string, signedIn *time.Time) core.User {
 
 type reqOpt func(*http.Request)
 
-func basic(password string) reqOpt { return func(r *http.Request) { r.SetBasicAuth("x", password) } }
-func fromAddr(a string) reqOpt     { return func(r *http.Request) { r.Header.Set("X-Test-Addr", a) } }
-func onHost(host string) reqOpt    { return func(r *http.Request) { r.Host = host } }
+func basic(password string) reqOpt { return basicAs("x", password) }
+func basicAs(user, password string) reqOpt {
+	return func(r *http.Request) { r.SetBasicAuth(user, password) }
+}
+func fromAddr(a string) reqOpt  { return func(r *http.Request) { r.Header.Set("X-Test-Addr", a) } }
+func onHost(host string) reqOpt { return func(r *http.Request) { r.Host = host } }
 func withHeader(k, v string) reqOpt {
 	return func(r *http.Request) { r.Header.Set(k, v) }
 }
@@ -530,7 +566,8 @@ func refusalCases(t *testing.T, h *harness) ([]refusal, refusalFixture) {
 
 	admin := h.account("root", core.RoleSystemAdmin)
 	good := h.liveToken(admin)
-	if _, err := h.st.CreateUser(ctx, "pat", "$argon2id$v=19$m=65536,t=1,p=4$c2FsdHNhbHQ$aGFzaGhhc2g"); err != nil {
+	const patPassword = "correct horse battery staple"
+	if _, err := h.st.CreateUser(ctx, "pat", serverHash(t, patPassword)); err != nil {
 		t.Fatal(err)
 	}
 	expired, _ := h.token(admin, "expired", now.Add(-48*time.Hour), now.Add(-24*time.Hour))
@@ -555,7 +592,7 @@ func refusalCases(t *testing.T, h *harness) ([]refusal, refusalFixture) {
 	cases := []refusal{
 		{name: "no credentials", path: receiveRefs, status: 401, challenge: true,
 			exact: "outhaul: sign in with any username and a push token as the password. Create one at " + h.url + "/account\n"},
-		{name: "the account's own password", path: receiveRefs, opts: []reqOpt{basic("correct horse battery staple")},
+		{name: "the account's own password", path: receiveRefs, opts: []reqOpt{basicAs("pat", patPassword)},
 			status: 401, challenge: true, exact: "outhaul: that push token isn't valid. Create one at " + h.url + "/account\n", noLookup: true},
 		{name: "an unknown token", path: receiveRefs, opts: []reqOpt{basic(unknown)}, status: 401, challenge: true, contains: "that push token isn't valid"},
 		{name: "an expired token", path: receiveRefs, opts: []reqOpt{basic(expired)}, status: 401, challenge: true,
@@ -586,6 +623,9 @@ func refusalCases(t *testing.T, h *harness) ([]refusal, refusalFixture) {
 		{name: "the bridge isn't listening", path: receiveRefs, opts: []reqOpt{basic(good)}, status: 503,
 			before: func() { h.notReady.Store(true) }, after: func() { h.notReady.Store(false) },
 			exact: "outhaul: git push is not available; see the server log\n"},
+		{name: "another host while the bridge isn't listening", path: receiveRefs, opts: []reqOpt{basic(good), onHost("elsewhere.example.com")}, status: 404,
+			before: func() { h.notReady.Store(true) }, after: func() { h.notReady.Store(false) },
+			exact: "404 page not found\n"},
 		{name: "info/refs with no service", path: "/git/api.git/info/refs", opts: []reqOpt{basic(good)}, status: 404},
 		{name: "a POST that isn't git's", method: http.MethodPost, path: "/git/api.git/git-receive-pack",
 			opts: []reqOpt{basic(good), withHeader("Content-Type", "text/plain")}, status: 415},
@@ -667,6 +707,141 @@ func TestRefused(t *testing.T) {
 	}
 }
 
+// The refusals made before any credential is asked for come first, host
+// first, and the client's address is asked for only to log one of them (at
+// most once a minute for each kind), not for every request refused.
+func TestOpenRefusesBeforeLearningTheAddress(t *testing.T) {
+	logged := captureLog(t)
+	h := newHarness(t)
+	h.pushApp("api")
+	tok := h.liveToken(h.account("root", core.RoleSystemAdmin))
+	h.notReady.Store(true)
+	h.plain.Store(true)
+	for i := 0; i < 3; i++ {
+		resp, body := h.request("", receiveRefs, nil, basic(tok), onHost("elsewhere.example.com"))
+		if resp.StatusCode != http.StatusNotFound || body != "404 page not found\n" {
+			t.Errorf("another host, the bridge down and plain HTTP: %d %q, want the 404", resp.StatusCode, body)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		if resp, body := h.request("", receiveRefs, nil, basic(tok)); resp.StatusCode != http.StatusServiceUnavailable {
+			t.Errorf("the bridge down and plain HTTP: %d %q, want 503", resp.StatusCode, body)
+		}
+	}
+	h.notReady.Store(false)
+	for i := 0; i < 3; i++ {
+		if resp, body := h.request("", receiveRefs, nil, basic(tok)); resp.StatusCode != http.StatusForbidden {
+			t.Errorf("plain HTTP: %d %q, want 403", resp.StatusCode, body)
+		}
+	}
+	if n := h.addrCalls.Load(); n > 3 {
+		t.Errorf("the client's address was asked for %d times for nine requests refused before sign-in; want at most once for each kind's log line", n)
+	}
+	// Each kind is still logged once, with the address.
+	lines := strings.Split(strings.TrimSpace(logged.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("%d log lines, want one for each kind:\n%s", len(lines), logged.String())
+	}
+	for _, l := range lines {
+		if !strings.Contains(l, "from "+testAddr) {
+			t.Errorf("a refusal's log line lacks the client's address: %s", l)
+		}
+	}
+}
+
+// Nothing about a token, its owner or a role is remembered between requests:
+// a request that was let in is refused the next time once something changed.
+func TestAChangeStopsTheNextRequest(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name      string
+		change    func(h *harness, u core.User, tok core.PushToken)
+		status    int
+		challenge bool
+		want      string
+	}{
+		{"the token is revoked", func(h *harness, u core.User, tok core.PushToken) {
+			if err := h.st.DeletePushTokenForUser(ctx, u.ID, tok.ID); err != nil {
+				h.t.Fatal(err)
+			}
+		}, http.StatusUnauthorized, true, "outhaul: that push token isn't valid. Create one at "},
+		{"the owner is demoted", func(h *harness, u core.User, _ core.PushToken) {
+			if err := h.st.SetUserRole(ctx, u.ID, core.RoleProjectViewer); err != nil {
+				h.t.Fatal(err)
+			}
+		}, http.StatusForbidden, false, "outhaul: you don't have permission to use 'api'\n"},
+		// Deleting an account deletes its tokens, so the lookup refuses it.
+		{"the owner's account is deleted", func(h *harness, u core.User, _ core.PushToken) {
+			if err := h.st.DeleteUser(ctx, u.ID); err != nil {
+				h.t.Fatal(err)
+			}
+		}, http.StatusUnauthorized, true, "outhaul: that push token isn't valid. Create one at "},
+		// The account goes between the token's lookup and the owner's read.
+		{"the owner goes after the token is found", func(h *harness, u core.User, _ core.PushToken) {
+			h.cs.gone.Store(u.ID)
+		}, http.StatusUnauthorized, true, "outhaul: that push token isn't valid. Create one at "},
+		{"the token expires", func(h *harness, _ core.User, tok core.PushToken) {
+			h.clock.advance(tok.ExpiresAt.Sub(h.clock.now()) + time.Minute)
+		}, http.StatusUnauthorized, true, "outhaul: that push token expired on "},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			captureLog(t)
+			h := newHarness(t)
+			h.pushApp("api")
+			u := h.account("mo", core.RoleProjectMember, core.DefaultProjectID)
+			now := time.Now()
+			raw, tok := h.token(u, "ci", now, now.Add(24*time.Hour))
+
+			if resp, body := h.request("", receiveRefs, nil, basic(raw)); resp.StatusCode != http.StatusOK {
+				t.Fatalf("before the change: %d %q, want 200", resp.StatusCode, body)
+			}
+			c.change(h, u, tok)
+			resp, body := h.request("", receiveRefs, nil, basic(raw))
+			if resp.StatusCode != c.status || !strings.HasPrefix(body, c.want) {
+				t.Errorf("after the change: %d %q, want %d %q", resp.StatusCode, body, c.status, c.want)
+			}
+			if got := resp.Header.Get("WWW-Authenticate") != ""; got != c.challenge {
+				t.Errorf("challenge = %v, want %v", got, c.challenge)
+			}
+		})
+	}
+}
+
+// A store that fails answers 500 with nothing secret in the log line.
+func TestAStoreFailureIsA500(t *testing.T) {
+	logged := captureLog(t)
+	h := newHarness(t)
+	h.pushApp("api")
+	tok := h.liveToken(h.account("root", core.RoleSystemAdmin))
+	if resp, body := h.request("", receiveRefs, nil, basic(tok)); resp.StatusCode != http.StatusOK {
+		t.Fatalf("before the failure: %d %q, want 200", resp.StatusCode, body)
+	}
+	h.cs.findFail.Store(true)
+	resp, body := h.request("", receiveRefs, nil, basic(tok))
+	if resp.StatusCode != http.StatusInternalServerError || body != "outhaul: something went wrong on the server; see its log\n" {
+		t.Errorf("%d %q, want 500 and the generic line", resp.StatusCode, body)
+	}
+	if resp.Header.Get("WWW-Authenticate") != "" {
+		t.Error("a 500 carries the challenge")
+	}
+	out := logged.String()
+	if !strings.Contains(out, "githttp: look up a push token: database is locked") {
+		t.Errorf("the log lacks the failure:\n%s", out)
+	}
+	sum := sha256.Sum256([]byte(tok))
+	for what, v := range map[string]string{
+		"the token":            tok,
+		"its last 64":          tok[len(tok)-64:],
+		"its SHA-256":          hex.EncodeToString(sum[:]),
+		"the Basic credential": base64.StdEncoding.EncodeToString([]byte("x:" + tok)),
+	} {
+		if strings.Contains(out, v) {
+			t.Errorf("the log holds %s", what)
+		}
+	}
+}
+
 func TestRefusalsHaveNoCacheHeaders(t *testing.T) {
 	h := newHarness(t)
 	h.pushApp("api")
@@ -726,11 +901,7 @@ func (h *harness) pointBareHead(app, ref string) string {
 }
 
 func TestCloneAndFetch(t *testing.T) {
-	logged := &lockedBuffer{}
-	prev := log.Writer()
-	log.SetOutput(logged)
-	t.Cleanup(func() { log.SetOutput(prev) })
-
+	logged := captureLog(t)
 	h := newHarness(t)
 	tok := h.liveToken(h.account("root", core.RoleSystemAdmin))
 	h.pushApp("api")
@@ -901,12 +1072,18 @@ func (b *lockedBuffer) String() string {
 	return b.buf.String()
 }
 
-func TestNoTokenInAnyLogLine(t *testing.T) {
+// captureLog sends the standard logger to a buffer until the test ends.
+func captureLog(t *testing.T) *lockedBuffer {
+	t.Helper()
 	logged := &lockedBuffer{}
 	prev := log.Writer()
 	log.SetOutput(logged)
 	t.Cleanup(func() { log.SetOutput(prev) })
+	return logged
+}
 
+func TestNoTokenInAnyLogLine(t *testing.T) {
+	logged := captureLog(t)
 	h := newHarness(t)
 	cases, fx := refusalCases(t, h)
 
@@ -1072,6 +1249,55 @@ func TestGzipRequestBody(t *testing.T) {
 	}
 	if resp, body := post([]byte(lsRefs), "gzip"); resp.StatusCode != http.StatusBadRequest {
 		t.Errorf("a body that says gzip and isn't: %d %q, want 400", resp.StatusCode, body)
+	}
+}
+
+// A body that says it is gzip and then sends nothing holds its handler only
+// until the stream context ends: shutdown ends it at once, as it ends git.
+func TestGzipBodyThatNeverComesEndsAtShutdown(t *testing.T) {
+	started := make(chan struct{}, 1)
+	returned := make(chan struct{}, 1)
+	h := newHarness(t, func(c *harnessConfig) {
+		c.stamp = func(path, event string) {
+			if event == "start" && strings.HasSuffix(path, "/git-upload-pack") {
+				started <- struct{}{}
+			}
+		}
+		c.after = func(r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/git-upload-pack") {
+				returned <- struct{}{}
+			}
+		}
+	})
+	tok := h.liveToken(h.account("root", core.RoleSystemAdmin))
+	h.pushApp("api")
+
+	body, feed := io.Pipe()
+	t.Cleanup(func() { feed.Close() })
+	req, err := http.NewRequest(http.MethodPost, h.url+"/git/api.git/git-upload-pack", body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/x-git-upload-pack-request")
+	req.Header.Set("Content-Encoding", "gzip")
+	req.SetBasicAuth("x", tok)
+	go func() {
+		if resp, err := testClient.Do(req); err == nil {
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}
+	}()
+	select {
+	case <-started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the request never reached the handler")
+	}
+	time.Sleep(200 * time.Millisecond) // let it reach the body
+	h.stopStreams()
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the handler didn't return within two seconds of shutdown")
 	}
 }
 
