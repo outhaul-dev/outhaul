@@ -167,3 +167,53 @@ func TestSnapshotRefusesAnExistingTarget(t *testing.T) {
 		t.Errorf("existing file changed: %q", data)
 	}
 }
+
+func TestSnapshotHoldsNoPushTokens(t *testing.T) {
+	s := openWithBox(t)
+	ctx := context.Background()
+	u, err := s.CreateUser(ctx, "admin", "hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _, err := s.CreatePushToken(ctx, u.ID, "ci", tokenNow, tokenNow.AddDate(0, 0, 7))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "copy.db")
+	if err := s.Snapshot(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := openCopy(t, path).QueryRow(`SELECT COUNT(*) FROM push_tokens`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("the copy holds %d push tokens", n)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte(hashToken(raw))) {
+		t.Error("the copy still contains the token's hash")
+	}
+}
+
+func TestStripSessionsRemovesPushTokens(t *testing.T) {
+	s := openWithBox(t)
+	ctx := context.Background()
+	u, err := s.CreateUser(ctx, "admin", "hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _, err := s.CreatePushToken(ctx, u.ID, "ci", tokenNow, tokenNow.AddDate(0, 0, 7))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StripSessions(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.FindPushToken(ctx, raw); ok || err != nil {
+		t.Errorf("FindPushToken after StripSessions = %v, %v", ok, err)
+	}
+}

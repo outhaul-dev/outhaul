@@ -285,9 +285,19 @@ seconds, not on every attempt.
 - Changing the issuer or the client ID, or removing the SSO settings, ends every SSO
   sign-in, protected routes included, and ones in progress. Password sessions are not
   affected.
+- Changing the issuer or the client ID, or removing the SSO settings, also deletes
+  SSO accounts' push tokens (the tokens for `git push` over HTTPS), in the same step.
+  Password accounts' tokens and every push key stay.
 - Replacing only the client secret does not end any sign-in.
 - The same holds for the environment: a changed issuer or client ID at startup ends every
   SSO sign-in. See [Connecting SSO from the environment](#connecting-sso-from-the-environment).
+
+With `OUTHAUL_GIT_HTTP=on`, an SSO account can make push tokens on its Account page.
+A token stops working when the account's last SSO sign-in to Outhaul is older than
+`OUTHAUL_PUSH_TOKEN_SSO_MAX_AGE` (`7d` by default), and works again after the person
+signs in with SSO. Someone removed at the provider therefore loses push access within
+that time. A sign-in to a protected route doesn't count. Removing the person on the
+Users page deletes their tokens. See [GIT-HTTP.md](GIT-HTTP.md).
 
 To turn SSO off, press "Remove SSO" in the panel. If SSO is connected from the
 environment, remove the three variables instead and restart; any settings stored earlier

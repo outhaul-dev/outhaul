@@ -58,7 +58,8 @@ containers, on loopback ports, and removes them when it ends.
 `deploy/test/integration_proxy.sh` builds a privileged Debian container with
 its own Docker daemon (`deploy/test/Dockerfile.proxytest`), runs a real Outhaul
 and Traefik inside it, and puts a stand-in CDN (nginx) and OIDC provider
-(`deploy/test/oidcstub`) in front. It starts only `outhaul-proxytest-*`
+(`deploy/test/oidcstub`) in front; it also pushes and clones over HTTPS with a
+push token through the stand-in. It starts only `outhaul-proxytest-*`
 containers and removes them when it ends. It has found real defects (an admin
 route the YAML parser rejected), so run it after changing how a router or the
 admin route is written.
@@ -242,7 +243,9 @@ fixed in five batches. All five are on `main`.
   `OUTHAUL_SIGNIN_BACKOFF=on`. It is in memory, and a lock ends by itself
   within 15 minutes. Someone who keeps guessing at a name can hold that name
   locked, so the way back in is a new account: `outhaul admin create`, run on
-  the host. The two-at-a-time limit on hashing always applies.
+  the host. The two-at-a-time limit on hashing always applies. Failed push
+  tokens are counted per address, not per name (see "Push tokens"); password
+  sign-ins stay per username.
 - **Strict container policy is an allow-list.** A service key that isn't in
   `internal/compose/policy.go` is refused, including a key a newer Compose
   adds, so allowing a new key is a deliberate change with a test.
@@ -327,6 +330,25 @@ fixed in five batches. All five are on `main`.
   that names a missing file-provider middleware is dropped and its requests fall
   to an open router. So the gate stays in each app's own labels, with
   `trustforwardheader=false`. See `docs/BEHIND-A-PROXY.md`.
+- **Upload timeout.** `OUTHAUL_UPLOAD_TIMEOUT` sets Traefik's read timeout on
+  every entrypoint, for every app. It sits beside the trusted proxies in
+  `ProxyConfig`, changes a flag and so the hash (Traefik is recreated once),
+  never a label, and unset leaves the spec as it was. It is its own setting
+  because it changes every app's uploads, not only git's.
+- **Push tokens.** `OUTHAUL_GIT_HTTP=on` serves git over HTTPS under `/git/`
+  (`internal/githttp`), signed in only by a push token in HTTP Basic: never a
+  session cookie, an account password or a push key, and the username is
+  ignored. A token is `ohp_` and 64 hex characters, stored as its SHA-256, and
+  always expires; it is shown once and never logged. A bad, expired or revoked
+  token answers 401, so git forgets it; the SSO rule and the role answer 403,
+  so git keeps it. A live token is never held back by the failed-attempt limit,
+  because many clients arrive as one address; only bad tokens are told to wait.
+  Tokens are left out of a state backup (`restore-state` strips them). SSO
+  accounts' tokens are deleted when SSO is removed or its issuer or client ID
+  changes, with the sign-ins that end then; password accounts' tokens stay.
+  Outhaul believes `X-Forwarded-For` only from its own Traefik, and only
+  `githttp` reads it. A request on any host but the public URL's, or known to
+  be plain HTTP, is never asked for a token. See `docs/GIT-HTTP.md`.
 
 - **The fixed network.** `OUTHAUL_NETWORK_SUBNET` gives Docker the gateway
   (the subnet's first address) and the upper half as its dynamic range;

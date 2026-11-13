@@ -229,6 +229,29 @@ Traefik writes for that call, and never the client's `X-Real-Ip` or
 `X-Forwarded-Prefix`. No label and no ingress stamp changes with this setting, so
 no app redeploys when it does; changing it recreates Traefik once.
 
+## Uploads that take over a minute
+
+Checked on `traefik:v3.7.6`: with its default settings, Traefik cut a request
+whose body took 90 seconds to arrive at 60 seconds. That is its entrypoint read
+timeout (`respondingTimeouts.readTimeout`), which covers the whole request, body
+included. It applies to every app's uploads, not only to a push of code.
+
+`OUTHAUL_UPLOAD_TIMEOUT` sets it, in whole seconds (`600s`, `10m`). Each
+entrypoint Outhaul declares gets:
+
+```
+--entrypoints.<name>.transport.respondingtimeouts.readtimeout=<value>
+```
+
+The flag is part of Traefik's config hash, so changing the setting recreates
+Traefik once. With the setting unset, nothing changes. Like
+`OUTHAUL_TRUSTED_PROXIES`, it changes no label, so no app redeploys. A CDN or
+proxy in front of Traefik has timeouts of its own, and they apply as well.
+For `git push` over HTTPS through a CDN, see [GIT-HTTP.md](GIT-HTTP.md).
+
+Outhaul's own server has no read timeout past the headers, so nothing else on
+the host is in the way.
+
 ## When a setting changes
 
 Settings are read at startup. A change that alters Traefik's flags or

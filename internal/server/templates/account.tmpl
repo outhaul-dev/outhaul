@@ -17,7 +17,7 @@
 
 <section class="panel">
   <h2 class="panel-title">Push keys</h2>
-  <p class="muted env-note">SSH public keys that are yours and allowed to <code>git push</code> to deploy. Add your laptop or CI key, then push to a push-to-deploy app's <code>ssh://git@…</code> remote.</p>
+  <p class="muted env-note">SSH public keys that are yours and allowed to <code>git push</code> to deploy. Add your laptop or CI key, then push to a push-to-deploy app's <code>ssh://git@…</code> remote.{{if .GitHTTPRemoteBase}} Over HTTPS, a push token below signs <code>git</code> in to <code>{{.GitHTTPRemoteBase}}/git/&lt;app&gt;.git</code> instead.{{end}}</p>
   {{if .PushKeys}}
   <table class="table">
     <thead><tr><th>Label</th><th>Fingerprint</th><th>Added</th><th>Last used</th><th></th></tr></thead>
@@ -44,4 +44,43 @@
     <button type="submit" class="btn btn-primary">Add key</button>
   </form>
 </section>
+
+{{if .GitHTTP}}
+<section class="panel">
+  <h2 class="panel-title">Push tokens</h2>
+  <p class="muted env-note">Tokens for <code>git push</code> over HTTPS. Use one as the password, with any username. Each expires on its own.</p>
+  {{if .NewPushToken}}
+  <div class="alert alert-success">
+    <p>Your new token <strong>{{.NewPushTokenLabel}}</strong>. Copy it now. It won't be shown again.</p>
+    <div class="copywrap"><div class="cmd"><code>{{.NewPushToken}}</code></div>{{template "copybtn" .}}</div>
+  </div>
+  {{end}}
+  {{if .SSOTokensUntil}}<p class="muted">Your tokens work until {{fmtTime .SSOTokensUntil}}. Sign in with SSO again to move that on.</p>{{end}}
+  {{if .PushTokens}}
+  <table class="table">
+    <thead><tr><th>Label</th><th>Created</th><th>Expires</th><th>Last used</th><th></th></tr></thead>
+    <tbody>
+      {{range .PushTokens}}
+      <tr>
+        <td>{{.Label}}</td>
+        <td class="muted">{{.CreatedAt.Format "2006-01-02"}}</td>
+        <td class="muted">{{if .Expired}}expired{{else}}{{.Ends.Format "2006-01-02"}}{{end}}</td>
+        <td class="muted">{{if .LastUsedAt}}{{fmtTimePtr .LastUsedAt}}{{if .LastUsedIP}} from {{.LastUsedIP}}{{end}}{{else}}never{{end}}</td>
+        <td class="row-actions">
+          <form method="post" action="/account/push-tokens/{{.ID}}/delete" class="inline"><button type="submit" class="linkbtn">revoke</button></form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No push tokens yet.</p>
+  {{end}}
+  <form method="post" action="/account/push-tokens" class="grid-form env-add">
+    <label class="field"><span>Label</span><input type="text" name="label" placeholder="ci" maxlength="64" required></label>
+    <label class="field"><span>Expires in <em>(days, at most {{.TokenMaxDays}})</em></span><input type="number" name="days" min="1" max="{{.TokenMaxDays}}" value="{{.TokenDefaultDays}}" required></label>
+    <button type="submit" class="btn btn-primary">Create token</button>
+  </form>
+</section>
+{{end}}
 {{end}}

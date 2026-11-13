@@ -75,6 +75,17 @@ type Config struct {
 	TrustedProxies  []string // OUTHAUL_TRUSTED_PROXIES: addresses and CIDRs trimmed; nil when unset
 	TrustAllProxies bool     // OUTHAUL_TRUSTED_PROXIES=all
 
+	// UploadTimeout is OUTHAUL_UPLOAD_TIMEOUT, whole seconds: Traefik's read
+	// timeout on every entrypoint. 0 leaves Traefik's own 60 seconds.
+	UploadTimeout time.Duration
+
+	// Git over HTTPS. GitHTTP is OUTHAUL_GIT_HTTP. The other three are read
+	// only while it is on, and a token setting without it is refused.
+	GitHTTP              bool          // OUTHAUL_GIT_HTTP
+	PushTokenDefaultDays int           // OUTHAUL_PUSH_TOKEN_DEFAULT_DAYS; 7, or the maximum when that is lower
+	PushTokenMaxDays     int           // OUTHAUL_PUSH_TOKEN_MAX_DAYS; 1 to 365, default 30
+	PushTokenSSOMaxAge   time.Duration // OUTHAUL_PUSH_TOKEN_SSO_MAX_AGE; at least an hour, default 7 days
+
 	BackupAzureAccount   string // OUTHAUL_BACKUP_AZURE_ACCOUNT; the storage account for the Azure destination
 	BackupAzureContainer string // OUTHAUL_BACKUP_AZURE_CONTAINER; its private container
 	AzureClientID        string // AZURE_CLIENT_ID; the managed identity, when the VM has more than one
@@ -171,6 +182,26 @@ func Load(getenv Getenv) Config {
 	}
 	c.stateBackupKeepSet = getenv("OUTHAUL_STATE_BACKUP_KEEP") != ""
 	c.TrustedProxies, c.TrustAllProxies = p.trustedProxies("OUTHAUL_TRUSTED_PROXIES")
+	c.UploadTimeout = p.uploadTimeout("OUTHAUL_UPLOAD_TIMEOUT")
+	c.GitHTTP = p.bool("OUTHAUL_GIT_HTTP")
+	if c.GitHTTP {
+		c.PushTokenMaxDays = p.days("OUTHAUL_PUSH_TOKEN_MAX_DAYS", 30, 365)
+		def := 7
+		if c.PushTokenMaxDays < def {
+			def = c.PushTokenMaxDays
+		}
+		c.PushTokenDefaultDays = p.days("OUTHAUL_PUSH_TOKEN_DEFAULT_DAYS", def, 365)
+		if c.PushTokenDefaultDays > c.PushTokenMaxDays {
+			p.problems = append(p.problems, fmt.Errorf("OUTHAUL_PUSH_TOKEN_DEFAULT_DAYS=%d: want at most OUTHAUL_PUSH_TOKEN_MAX_DAYS (%d)", c.PushTokenDefaultDays, c.PushTokenMaxDays))
+		}
+		c.PushTokenSSOMaxAge = p.tokenAge("OUTHAUL_PUSH_TOKEN_SSO_MAX_AGE", 7*24*time.Hour)
+	} else {
+		for _, k := range []string{"OUTHAUL_PUSH_TOKEN_DEFAULT_DAYS", "OUTHAUL_PUSH_TOKEN_MAX_DAYS", "OUTHAUL_PUSH_TOKEN_SSO_MAX_AGE"} {
+			if getenv(k) != "" {
+				p.problems = append(p.problems, fmt.Errorf("%s needs OUTHAUL_GIT_HTTP=on", k))
+			}
+		}
+	}
 	c.problems = p.problems
 	return c
 }
@@ -285,6 +316,13 @@ func (c Config) Validate() error {
 			errs = append(errs, fmt.Errorf("OUTHAUL_TRAEFIK_IP=%s needs OUTHAUL_NETWORK_SUBNET, which fixes the addresses Traefik may use", c.TraefikIP))
 		} else if plan, err := docker.PlanSubnet(c.NetworkSubnet); err == nil && !plan.Fixed(c.TraefikIP) {
 			errs = append(errs, fmt.Errorf("OUTHAUL_TRAEFIK_IP=%s: want an address from %s to %s in OUTHAUL_NETWORK_SUBNET=%s (the lower half, after the gateway)", c.TraefikIP, plan.First, plan.Last, plan.Subnet))
+		}
+	}
+	if c.GitHTTP {
+		if !c.PublicURLSet() {
+			errs = append(errs, errors.New("OUTHAUL_GIT_HTTP needs OUTHAUL_PUBLIC_URL, the address people push to"))
+		} else if !strings.HasPrefix(c.PublicURL, "https://") {
+			errs = append(errs, errors.New("OUTHAUL_GIT_HTTP needs OUTHAUL_PUBLIC_URL to be an https:// URL: a push token must never cross the network in the clear"))
 		}
 	}
 	if c.ProtectNewDomains && !c.PublicURLSet() {
@@ -820,6 +858,58 @@ func (p *parser) keyPrefix(key string) string {
 		p.reject(key, v, "letters, digits, '-', '_', '.' and '/', with no '/' at either end")
 	}
 	return v
+}
+
+// uploadTimeout reads OUTHAUL_UPLOAD_TIMEOUT: a duration of at least one
+// second and a whole number of seconds. Unset gives 0.
+func (p *parser) uploadTimeout(key string) time.Duration {
+	v := strings.TrimSpace(p.getenv(key))
+	if v == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < time.Second || d%time.Second != 0 {
+		p.reject(key, v, "a duration of whole seconds, such as 10m")
+		return 0
+	}
+	return d
+}
+
+// days reads a whole number of days from 1 to max; unset takes the fallback.
+func (p *parser) days(key string, fallback, max int) int {
+	v := strings.TrimSpace(p.getenv(key))
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 || n > max {
+		p.reject(key, v, fmt.Sprintf("a whole number of days from 1 to %d", max))
+		return fallback
+	}
+	return n
+}
+
+// tokenAge reads a push token age: whole days as "7d", or a duration such as
+// "36h". At least one hour; unset takes the fallback.
+func (p *parser) tokenAge(key string, fallback time.Duration) time.Duration {
+	v := strings.TrimSpace(p.getenv(key))
+	if v == "" {
+		return fallback
+	}
+	if n, ok := strings.CutSuffix(v, "d"); ok {
+		days, err := strconv.Atoi(n)
+		if err != nil || days < 1 || days > 3650 {
+			p.reject(key, v, "days such as 7d, or a duration of at least an hour such as 36h")
+			return fallback
+		}
+		return time.Duration(days) * 24 * time.Hour
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < time.Hour {
+		p.reject(key, v, "days such as 7d, or a duration of at least an hour such as 36h")
+		return fallback
+	}
+	return d
 }
 
 // trustedProxies reads OUTHAUL_TRUSTED_PROXIES: comma-separated IP addresses

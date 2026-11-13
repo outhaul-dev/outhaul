@@ -56,6 +56,7 @@ one-time setup URL. Developers with a local checkout can run
 - **Shared environment variables** — project-level values apps reference as `${{project.KEY}}`.
 - **Secrets encrypted at rest** — env vars and generated credentials are sealed on disk.
 - **App lifecycle** — stop, restart, and delete from the UI.
+- **Push to deploy over HTTPS** — with `OUTHAUL_GIT_HTTP=on`, `git push`, fetch and clone also work over HTTPS, signed in with a push token that expires, for a host that accepts nothing but HTTPS. Checked so far with throwaway servers, not yet through a real CDN; see [docs/GIT-HTTP.md](docs/GIT-HTTP.md).
 - **Single sign-on** — let people sign in through an OpenID Connect provider next to passwords. It has been tested so far only against a test provider, not a real one; see [docs/SSO.md](docs/SSO.md).
 - **Protected routes** — any domain of an app can require sign-in to Outhaul, with a password or SSO, and the app receives the person's name in the `X-Outhaul-User` header, so an internal tool needs no login of its own. Checked so far against a real Traefik with a stand-in for Outhaul, not yet end to end; see [docs/PROTECTED-ROUTES.md](docs/PROTECTED-ROUTES.md).
 
@@ -270,6 +271,7 @@ No config files — defaults with `OUTHAUL_*` environment overrides:
 | `OUTHAUL_REQUIRE_HEADER_NAME` | (empty)        | A request header every route requires, such as `X-Azure-FDID`; set with its value — see docs/BEHIND-A-PROXY.md |
 | `OUTHAUL_REQUIRE_HEADER_VALUE` | (empty)       | The required header's value: letters, digits and `-._~+/=:`, at most 256 characters |
 | `OUTHAUL_TRUSTED_PROXIES` | (empty)            | IPs/CIDRs Traefik trusts to supply forwarded headers, comma-separated, or `all`; pair `all` with a required header |
+| `OUTHAUL_UPLOAD_TIMEOUT` | (unset: 60 seconds) | How long Traefik waits for a whole request, body included. Set it when uploads through Outhaul take more than a minute, for every app and for git over HTTPS; changing it recreates Traefik once |
 | `OUTHAUL_LOCAL_CA`      | `false`              | serve HTTPS from the built-in local CA (LAN installs; excludes OUTHAUL_ACME_EMAIL) — see docs/LOCAL-CA.md |
 | `OUTHAUL_HTTPS_PORT`    | `443`                | Host port for HTTPS                        |
 | `OUTHAUL_HTTP_PORT`     | `80`                 | `80`, or `off` for HTTPS only (no plain-HTTP entrypoint); `off` needs HTTPS and can't be combined with a Cloudflare Tunnel — see docs/BEHIND-A-PROXY.md |
@@ -294,6 +296,10 @@ r11
 | `OUTHAUL_DOMAIN_SUFFIX_ONLY` | `no`            | `yes` refuses any domain that isn't exactly one label under `OUTHAUL_DOMAIN_SUFFIX`, whoever writes it — see docs/SHARED-HOST.md |
 | `OUTHAUL_UPDATES`       | `main`               | `main` follows the newest commit on `main`; `off` stops the panel's update actions, the background check and the root updater (`releases` is not built) |
 | `OUTHAUL_SSH_ADDR`      | `:2222`              | git-push SSH listen address; `off` opens no listener (the repositories and hook socket stay) |
+| `OUTHAUL_GIT_HTTP`      | `off`                | `on` serves `git push`, fetch and clone over HTTPS at `<public URL>/git/<app>.git`, signed in with a push token; needs an `https://` `OUTHAUL_PUBLIC_URL` — see docs/GIT-HTTP.md |
+| `OUTHAUL_PUSH_TOKEN_DEFAULT_DAYS` | `7`        | The lifetime a new push token starts at, in days; at most the maximum; needs `OUTHAUL_GIT_HTTP=on` |
+| `OUTHAUL_PUSH_TOKEN_MAX_DAYS` | `30`           | The longest a push token may live, 1 to 365 days; applies to existing tokens too |
+| `OUTHAUL_PUSH_TOKEN_SSO_MAX_AGE` | `7d`        | How long after an SSO account's last SSO sign-in its push tokens work: days as `7d`, or a duration such as `36h`, at least one hour |
 | `OUTHAUL_BACKUP_AZURE_ACCOUNT` | (empty)      | Storage account for the Azure Blob backup destination; set with `OUTHAUL_BACKUP_AZURE_CONTAINER` — see docs/STATE-BACKUP.md |
 | `OUTHAUL_BACKUP_AZURE_CONTAINER` | (empty)    | Private container for that destination; the host's managed identity needs "Storage Blob Data Contributor" on it |
 | `OUTHAUL_STATE_BACKUP_SCHEDULE` | (empty)     | Five-field cron for a copy of Outhaul's own database; unset disables it — see docs/STATE-BACKUP.md |

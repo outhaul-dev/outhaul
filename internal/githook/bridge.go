@@ -28,6 +28,8 @@ type Store interface {
 	CreateDeployment(ctx context.Context, appID int64) (core.Deployment, error)
 	EnqueueTagDeployment(ctx context.Context, appID int64, choose func(inPlay []string) (tag string, ok bool)) (core.Deployment, bool, error)
 	GetDeployment(ctx context.Context, id int64) (core.Deployment, error)
+	GetPushToken(ctx context.Context, id int64) (core.PushToken, error)
+	GetUser(ctx context.Context, id int64) (core.User, error)
 }
 
 // Notifier wakes the deploy worker (the worker's Notify satisfies it).
@@ -42,12 +44,17 @@ type Bridge struct {
 	naming     core.Naming   // for cold-push generated hosts; a zero value disables them
 	protectNew bool          // OUTHAUL_PROTECT_NEW_DOMAINS; see coldCreate
 	timeout    time.Duration // overall per-push deadline
+	publicURL  string        // for an HTTPS push's build-log line; "" prints none
 }
 
 // NewBridge wires the bridge. timeout bounds a single push→deploy.
 func NewBridge(st Store, br *logstream.Broker, n Notifier, repos *gitrepo.Manager, naming core.Naming, protectNew bool, timeout time.Duration) *Bridge {
 	return &Bridge{store: st, broker: br, notifier: n, repos: repos, naming: naming, protectNew: protectNew, timeout: timeout}
 }
+
+// SetPublicURL sets the address an HTTPS push's build-log line points at. Call
+// it before Serve; "" prints no such line.
+func (b *Bridge) SetPublicURL(u string) { b.publicURL = strings.TrimRight(u, "/") }
 
 // Handle serves one hook connection: read the request, run the deploy, stream
 // output back, and write the trailing `exit <code>` line. The terminal line is
@@ -82,8 +89,17 @@ func (b *Bridge) serve(ctx context.Context, conn io.ReadWriter) int {
 
 	app, err := b.resolveOrCreate(ctx, req)
 	if err != nil {
+		// The refs are stored already, so who pushed them is still logged.
+		// Both are quoted: the error can carry git's own lines.
+		if req.Origin.HTTPS() {
+			b.logHTTPSPush(ctx, fmt.Sprintf("app %q (not deployed: %q)", req.App, err.Error()), req)
+		}
 		fmt.Fprintf(conn, "✗ %v\n", err)
 		return 1
+	}
+
+	if req.Origin.HTTPS() {
+		b.logHTTPSPush(ctx, "app "+app.Name, req)
 	}
 
 	if app.DeployTrigger == core.TriggerTag {
@@ -107,7 +123,30 @@ func (b *Bridge) serve(ctx context.Context, conn io.ReadWriter) int {
 		fmt.Fprintf(conn, "✗ enqueue failed: %v\n", err)
 		return 1
 	}
-	return b.runDeploy(ctx, conn, app, dep)
+	return b.runDeploy(ctx, conn, app, dep, req.Origin)
+}
+
+// logHTTPSPush records who pushed over HTTPS: the account, the token's id and
+// label (never its value), the client address, the app (to) and each ref's new
+// commit. A token or account deleted since the push began is named as removed.
+func (b *Bridge) logHTTPSPush(ctx context.Context, to string, req request) {
+	id := req.Origin.TokenID
+	who, token := "an account that has been removed", fmt.Sprintf("token %d (removed)", id)
+	if tok, err := b.store.GetPushToken(ctx, id); err == nil {
+		token = fmt.Sprintf("token %d %q", id, tok.Label)
+		if u, err := b.store.GetUser(ctx, tok.UserID); err == nil {
+			who = fmt.Sprintf("%q (user %d)", u.Display(), u.ID)
+		}
+	}
+	addr := req.Origin.Addr
+	if addr == "" {
+		addr = "an unknown address"
+	}
+	refs := make([]string, 0, len(req.Refs))
+	for _, u := range req.Refs {
+		refs = append(refs, fmt.Sprintf("%q", u.Ref+" "+u.New))
+	}
+	log.Printf("git push over HTTPS: %s, %s, from %s, to %s: %s", who, token, addr, to, strings.Join(refs, ", "))
 }
 
 // serveTagPush handles a push to a tag-mode app: branches are only stored, and
@@ -134,7 +173,7 @@ func (b *Bridge) serveTagPush(ctx context.Context, conn io.ReadWriter, app core.
 		return 0
 	}
 	fmt.Fprintf(conn, "→ deploying tag %s\n", dep.Tag)
-	return b.runDeploy(ctx, conn, app, dep)
+	return b.runDeploy(ctx, conn, app, dep, req.Origin)
 }
 
 // tagRefs returns the names of the refs/tags/* updates in push order,
@@ -248,12 +287,15 @@ func (b *Bridge) coldCreate(ctx context.Context, req request) (core.App, error) 
 }
 
 // runDeploy streams the enqueued deployment's log to conn and returns the
-// gated exit code.
-func (b *Bridge) runDeploy(ctx context.Context, conn io.ReadWriter, app core.App, dep core.Deployment) int {
+// gated exit code. An HTTPS push first gets the address of its build log.
+func (b *Bridge) runDeploy(ctx context.Context, conn io.ReadWriter, app core.App, dep core.Deployment, o Origin) int {
 	history, lines, cancel := b.broker.Subscribe(dep.ID)
 	defer cancel()
 	b.notifier.Notify()
 
+	if o.HTTPS() && b.publicURL != "" {
+		fmt.Fprintf(conn, "→ build log: %s/deployments/%d\n", b.publicURL, dep.ID)
+	}
 	for _, l := range history {
 		fmt.Fprintln(conn, l)
 	}

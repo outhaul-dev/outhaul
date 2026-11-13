@@ -1661,3 +1661,110 @@ func TestProtectNewDomainsSetting(t *testing.T) {
 		})
 	}
 }
+
+func TestUploadTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  time.Duration
+		bad   bool
+	}{
+		{"", 0, false},
+		{"10m", 10 * time.Minute, false},
+		{" 10m ", 10 * time.Minute, false},
+		{"600s", 600 * time.Second, false},
+		{"1s", time.Second, false},
+		{"500ms", 0, true},
+		{"1500ms", 0, true}, // not whole seconds
+		{"0", 0, true},
+		{"-5s", 0, true},
+		{"ten", 0, true},
+	} {
+		c := Load(func(k string) string {
+			if k == "OUTHAUL_UPLOAD_TIMEOUT" {
+				return tc.value
+			}
+			return ""
+		})
+		err := c.Validate()
+		if tc.bad {
+			if err == nil || !strings.Contains(err.Error(), "OUTHAUL_UPLOAD_TIMEOUT") {
+				t.Errorf("%q: want a refusal naming the variable, got %v", tc.value, err)
+			}
+			continue
+		}
+		if err != nil || c.UploadTimeout != tc.want {
+			t.Errorf("%q: UploadTimeout=%v err=%v, want %v", tc.value, c.UploadTimeout, err, tc.want)
+		}
+	}
+}
+
+func TestGitHTTPSettings(t *testing.T) {
+	const pub = "https://outhaul.example.com"
+	on := map[string]string{"OUTHAUL_GIT_HTTP": "on", "OUTHAUL_PUBLIC_URL": pub}
+	with := func(extra map[string]string) map[string]string {
+		m := map[string]string{}
+		for k, v := range on {
+			m[k] = v
+		}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+	for _, tc := range []struct {
+		name    string
+		env     map[string]string
+		wantErr string // empty: no error
+		on      bool
+		def     int
+		max     int
+		age     time.Duration
+	}{
+		{name: "nothing", env: nil},
+		{name: "on", env: on, on: true, def: 7, max: 30, age: 168 * time.Hour},
+		{name: "On", env: with(map[string]string{"OUTHAUL_GIT_HTTP": "On"}), on: true, def: 7, max: 30, age: 168 * time.Hour},
+		{name: "no url", env: map[string]string{"OUTHAUL_GIT_HTTP": "on"}, wantErr: "OUTHAUL_PUBLIC_URL"},
+		{name: "http url", env: map[string]string{"OUTHAUL_GIT_HTTP": "on", "OUTHAUL_PUBLIC_URL": "http://outhaul.example.com"}, wantErr: "https"},
+		{name: "max 3", env: with(map[string]string{"OUTHAUL_PUSH_TOKEN_MAX_DAYS": "3"}), on: true, def: 3, max: 3, age: 168 * time.Hour},
+		{name: "max 0", env: with(map[string]string{"OUTHAUL_PUSH_TOKEN_MAX_DAYS": "0"}), wantErr: "OUTHAUL_PUSH_TOKEN_MAX_DAYS"},
+		{name: "max 366", env: with(map[string]string{"OUTHAUL_PUSH_TOKEN_MAX_DAYS": "366"}), wantErr: "OUTHAUL_PUSH_TOKEN_MAX_DAYS"},
+		{name: "max x", env: with(map[string]string{"OUTHAUL_PUSH_TOKEN_MAX_DAYS": "x"}), wantErr: "OUTHAUL_PUSH_TOKEN_MAX_DAYS"},
+		{name: "default over max", env: with(map[string]string{"OUTHAUL_PUSH_TOKEN_DEFAULT_DAYS": "14", "OUTHAUL_PUSH_TOKEN_MAX_DAYS": "10"}), wantErr: "OUTHAUL_PUSH_TOKEN_DEFAULT_DAYS"},
+		{name: "default 14", env: with(map[string]string{"OUTHAUL_PUSH_TOKEN_DEFAULT_DAYS": "14"}), on: true, def: 14, max: 30, age: 168 * time.Hour},
+		{name: "default 0", env: with(map[string]string{"OUTHAUL_PUSH_TOKEN_DEFAULT_DAYS": "0"}), wantErr: "OUTHAUL_PUSH_TOKEN_DEFAULT_DAYS"},
+		{name: "default x", env: with(map[string]string{"OUTHAUL_PUSH_TOKEN_DEFAULT_DAYS": "x"}), wantErr: "OUTHAUL_PUSH_TOKEN_DEFAULT_DAYS"},
+		{name: "age 2d", env: with(map[string]string{"OUTHAUL_PUSH_TOKEN_SSO_MAX_AGE": "2d"}), on: true, def: 7, max: 30, age: 48 * time.Hour},
+		{name: "age 36h", env: with(map[string]string{"OUTHAUL_PUSH_TOKEN_SSO_MAX_AGE": "36h"}), on: true, def: 7, max: 30, age: 36 * time.Hour},
+		{name: "age 30m", env: with(map[string]string{"OUTHAUL_PUSH_TOKEN_SSO_MAX_AGE": "30m"}), wantErr: "OUTHAUL_PUSH_TOKEN_SSO_MAX_AGE"},
+		{name: "age 0d", env: with(map[string]string{"OUTHAUL_PUSH_TOKEN_SSO_MAX_AGE": "0d"}), wantErr: "OUTHAUL_PUSH_TOKEN_SSO_MAX_AGE"},
+		{name: "age 1.5d", env: with(map[string]string{"OUTHAUL_PUSH_TOKEN_SSO_MAX_AGE": "1.5d"}), wantErr: "OUTHAUL_PUSH_TOKEN_SSO_MAX_AGE"},
+		{name: "age week", env: with(map[string]string{"OUTHAUL_PUSH_TOKEN_SSO_MAX_AGE": "week"}), wantErr: "OUTHAUL_PUSH_TOKEN_SSO_MAX_AGE"},
+		{name: "off default days", env: map[string]string{"OUTHAUL_PUSH_TOKEN_DEFAULT_DAYS": "7"}, wantErr: "OUTHAUL_PUSH_TOKEN_DEFAULT_DAYS needs OUTHAUL_GIT_HTTP=on"},
+		{name: "off max days", env: map[string]string{"OUTHAUL_PUSH_TOKEN_MAX_DAYS": "7"}, wantErr: "OUTHAUL_PUSH_TOKEN_MAX_DAYS needs OUTHAUL_GIT_HTTP=on"},
+		{name: "off sso age", env: map[string]string{"OUTHAUL_PUSH_TOKEN_SSO_MAX_AGE": "7d"}, wantErr: "OUTHAUL_PUSH_TOKEN_SSO_MAX_AGE needs OUTHAUL_GIT_HTTP=on"},
+	} {
+		c := Load(func(k string) string { return tc.env[k] })
+		err := c.Validate()
+		if tc.wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("%s: want a refusal containing %q, got %v", tc.name, tc.wantErr, err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: unexpected error %v", tc.name, err)
+			continue
+		}
+		if c.GitHTTP != tc.on || c.PushTokenDefaultDays != tc.def || c.PushTokenMaxDays != tc.max || c.PushTokenSSOMaxAge != tc.age {
+			t.Errorf("%s: got on=%v def=%d max=%d age=%v, want on=%v def=%d max=%d age=%v",
+				tc.name, c.GitHTTP, c.PushTokenDefaultDays, c.PushTokenMaxDays, c.PushTokenSSOMaxAge, tc.on, tc.def, tc.max, tc.age)
+		}
+	}
+	// A refusal for http names https.
+	c := Load(func(k string) string {
+		return map[string]string{"OUTHAUL_GIT_HTTP": "on", "OUTHAUL_PUBLIC_URL": "http://outhaul.example.com"}[k]
+	})
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "OUTHAUL_GIT_HTTP") {
+		t.Errorf("http url: %v", err)
+	}
+}

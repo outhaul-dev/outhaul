@@ -2,7 +2,9 @@ package server
 
 import (
 	"net"
+	"strings"
 
+	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/gitrepo"
 )
 
@@ -43,4 +45,13 @@ func (s *Server) pushRemote(app string) string {
 		}
 	}
 	return "ssh://git@" + host + port + "/" + app
+}
+
+// pushHTTPSRemote is the HTTPS remote shown on a push app's page,
+// <public URL>/git/<name>.git, or "" while git over HTTPS is off.
+func (s *Server) pushHTTPSRemote(app core.App) string {
+	if !s.gitHTTPOn() || s.publicURL == "" {
+		return ""
+	}
+	return strings.TrimRight(s.publicURL, "/") + "/git/" + app.Name + ".git"
 }

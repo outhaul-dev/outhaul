@@ -169,6 +169,16 @@ func (s *Server) routes() []route {
 	for _, p := range placeholderPages {
 		routes = append(routes, route{"GET /" + p.active, levelSystemAdmin, nil, s.handlePlaceholder(p)})
 	}
+	if s.gitHTTPOn() {
+		routes = append(routes,
+			route{"POST /account/push-tokens", levelAccount, nil, s.accountPage(s.handleAddPushToken)},
+			route{"POST /account/push-tokens/{id}/delete", levelAccount, nil, s.accountPage(s.handleDeletePushToken)},
+			route{"POST /users/{id}/push-tokens/{tokenID}/delete", levelSystemAdmin, nil, s.handleAdminDeletePushToken},
+		)
+		// git push, fetch and clone over HTTPS: each request signs itself in
+		// with a push token, never a session.
+		routes = append(routes, s.gitRoutes()...)
+	}
 	return routes
 }
 

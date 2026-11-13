@@ -276,6 +276,13 @@ type testEnv struct {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
+	return newTestEnvWith(t)
+}
+
+// newTestEnvWith is newTestEnv with each setup called on the server before its
+// handler is built.
+func newTestEnvWith(t *testing.T, setups ...func(*Server)) *testEnv {
+	t.Helper()
 	box, err := secret.Load(filepath.Join(t.TempDir(), "key"))
 	if err != nil {
 		t.Fatalf("secret.Load: %v", err)
@@ -299,6 +306,9 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Fatalf("New: %v", err)
 	}
 
+	for _, f := range setups {
+		f(srv)
+	}
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 

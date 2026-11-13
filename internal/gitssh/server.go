@@ -20,6 +20,7 @@ import (
 
 	"github.com/outhaul-dev/outhaul/internal/core"
 	"github.com/outhaul-dev/outhaul/internal/gitrepo"
+	"github.com/outhaul-dev/outhaul/internal/pushauth"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -49,24 +50,11 @@ func (s *Server) authorize(ctx context.Context, fp string, projectID int64) erro
 	if !ok || pk.UserID == 0 {
 		return errPushDenied
 	}
-	u, err := s.keyring.GetUser(ctx, pk.UserID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return errPushDenied
-	}
+	ok, err = pushauth.Allowed(ctx, s.keyring, pk.UserID, projectID)
 	if err != nil {
 		return err
 	}
-	if u.Role == core.RoleSystemAdmin {
-		return nil
-	}
-	if !u.Role.AtLeast(core.RoleProjectMember) {
-		return errPushDenied
-	}
-	on, err := s.keyring.IsProjectMember(ctx, projectID, u.ID)
-	if err != nil {
-		return err
-	}
-	if !on {
+	if !ok {
 		return errPushDenied
 	}
 	return nil

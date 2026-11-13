@@ -41,7 +41,7 @@
         <td>
           {{if and .Password (not .Self)}}
           <form method="post" action="/users/{{.ID}}/reset" class="inline"
-                onsubmit="return confirm('Reset the password for {{.Name}}? Their password stops working and they are signed out now. You will get a new setup link to send them.')">
+                onsubmit="return confirm('Reset the password for {{.Name}}? Their password stops working and they are signed out now. You will get a new setup link to send them.{{if $.GitHTTP}} Their push tokens keep working until you revoke them below.{{end}}')">
             <button type="submit" class="linkbtn">Reset password</button>
           </form>
           {{end}}
@@ -49,15 +49,43 @@
                 onsubmit="return confirm('Remove {{.Name}}? They are signed out at once.{{if not .Password}} They would come back with no role if they sign in again, so also remove them at your SSO provider.{{end}}')">
             <button type="submit" class="linkbtn">Remove</button>
           </form>
-          {{if not .Password}}<p class="muted row-note">Also remove them at your SSO provider, or they could sign in again and come back with no role. Their push keys stay until you remove them here.</p>{{end}}
+          {{if not .Password}}<p class="muted row-note">Also remove them at your SSO provider, or they could sign in again and come back with no role. Their push keys{{if $.GitHTTP}} and push tokens{{end}} stay until you remove them here.</p>{{end}}
         </td>
       </tr>
       {{end}}
     </tbody>
   </table>
-  <p class="muted">Removing someone signs them out at once and deletes their push keys.</p>
+  <p class="muted">Removing someone signs them out at once and deletes their push keys{{if .GitHTTP}} and push tokens{{end}}.</p>
 </section>
 
+{{if .GitHTTP -}}
+<section class="panel">
+  <h2 class="panel-title">Push tokens</h2>
+  <p class="muted env-note">Credentials for <code>git push</code> over HTTPS. Their values are never shown here. Revoke one to stop it working at once.</p>
+  {{if .PushTokens}}
+  <table class="table">
+    <thead><tr><th>Owner</th><th>Label</th><th>Created</th><th>Expires</th><th>Last used</th><th></th></tr></thead>
+    <tbody>
+      {{range .PushTokens}}
+      <tr>
+        <td>{{.Owner}}</td>
+        <td>{{.Label}}</td>
+        <td class="muted">{{.CreatedAt.Format "2006-01-02"}}</td>
+        <td class="muted">{{if .Expired}}expired{{else}}{{.Ends.Format "2006-01-02"}}{{end}}</td>
+        <td class="muted">{{if .LastUsedAt}}{{fmtTimePtr .LastUsedAt}}{{if .LastUsedIP}} from {{.LastUsedIP}}{{end}}{{else}}never{{end}}</td>
+        <td class="row-actions">
+          <form method="post" action="/users/{{.UserID}}/push-tokens/{{.ID}}/delete" class="inline"><button type="submit" class="linkbtn">revoke</button></form>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No push tokens.</p>
+  {{end}}
+</section>
+
+{{end -}}
 <dialog id="user-dialog" class="modal" open{{if eq .OpenDialog "user-dialog"}} data-reopen{{end}} aria-labelledby="user-dialog-title">
   <form method="post" action="/users">
     <div class="modal-head">

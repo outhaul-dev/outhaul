@@ -39,7 +39,8 @@ right here before writing the worker.
   created on first boot via a printed one-time setup URL. A system admin can
   also be created on the host with `outhaul admin create`. People can also sign
   in through any OIDC provider (SSO), configured on Settings or in the
-  environment; see `docs/SSO.md`.
+  environment; see `docs/SSO.md`. A push token signs `git` in over HTTPS and
+  nothing else (opt-in).
   An SSO account is keyed by the provider's issuer and subject, never linked by
   email, has no password, and starts with no role unless one of its provider
   groups is mapped to one. SSO sessions last 8 hours;
@@ -497,9 +498,15 @@ deploy worker so the build streams back into the pusher's terminal exactly
 like a browser-triggered deploy; a cold push to a name with no existing app
 auto-creates one first, detecting the build kind (nixpacks/Dockerfile/compose)
 from the pushed tree and minting a `sslip.io` domain when the server IP is
-known. An app's page
-shows its `ssh://git@<server>:<port>/<app>` remote and the `git remote add` /
-`git push` incantation once it exists.
+known. With
+`OUTHAUL_GIT_HTTP=on`, `internal/githttp` serves the same push, fetch and clone
+over HTTPS on the admin host (`/git/<app>.git`), running `git receive-pack` and
+`upload-pack` with `--stateless-rpc` and flushing each write so the build streams
+into the terminal. It signs in with a **push token** only (HTTP Basic, hashed at
+rest, always expiring; `docs/GIT-HTTP.md`), and `internal/pushauth` is the role
+check both transports share. An app's page
+shows its `ssh://git@<server>:<port>/<app>` remote, and the HTTPS remote when it
+is on, with the `git remote add` / `git push` incantation once it exists.
 
 ### Tag deploys (done)
 
@@ -949,6 +956,8 @@ outhaul/
 
   internal/
     sso/                      # OIDC sign-in: discovery, authorization code flow with PKCE, ID token verification (go-oidc)
+    githttp/                  # git push, fetch and clone over HTTPS: the handler, the client address, the failed-attempt limiter
+    pushauth/                 # the role check a push, fetch or clone needs, shared by the SSH and HTTPS transports
     config/                   # data dir resolution, env-var overrides, defaults
         config.go
 

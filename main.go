@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
@@ -31,6 +32,7 @@ import (
 	"github.com/outhaul-dev/outhaul/internal/deploy"
 	"github.com/outhaul-dev/outhaul/internal/docker"
 	"github.com/outhaul-dev/outhaul/internal/githook"
+	"github.com/outhaul-dev/outhaul/internal/githttp"
 	"github.com/outhaul-dev/outhaul/internal/github"
 	"github.com/outhaul-dev/outhaul/internal/gitrepo"
 	"github.com/outhaul-dev/outhaul/internal/gitsource"
@@ -98,7 +100,7 @@ func runGitHook(args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: outhaul git-hook <app> <socket>")
 		return 2
 	}
-	code, err := githook.RunHook(args[1], args[0], os.Stdin, os.Stdout)
+	code, err := githook.RunHookFrom(args[1], args[0], githook.OriginFromEnv(os.Getenv), os.Stdin, os.Stdout)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "outhaul: %v\n", err)
 	}
@@ -151,6 +153,26 @@ func trustedAllWarning(cfg config.Config) string {
 	return "WARNING: OUTHAUL_TRUSTED_PROXIES=all trusts any peer that can connect; set OUTHAUL_REQUIRE_HEADER_NAME and OUTHAUL_REQUIRE_HEADER_VALUE so a request without the header matches no router."
 }
 
+// uploadTimeoutHint says what lifts Traefik's 60-second read timeout when git
+// over HTTPS is on and OUTHAUL_UPLOAD_TIMEOUT isn't set; "" otherwise.
+func uploadTimeoutHint(gitHTTP bool, uploadTimeout time.Duration) string {
+	if !gitHTTP || uploadTimeout > 0 {
+		return ""
+	}
+	return "A push over HTTPS that takes more than 60 seconds to upload is cut off by Traefik; set OUTHAUL_UPLOAD_TIMEOUT, such as 10m, to lift that."
+}
+
+// ssoEndedLine is the startup line for an issuer or client ID that changed
+// since the last run. Ending every SSO sign-in deletes SSO accounts' push
+// tokens too, which it says while git over HTTPS is on.
+func ssoEndedLine(gitHTTP bool) string {
+	line := "sso: the issuer or client ID changed since the last run, so every SSO sign-in has ended; if the issuer changed, everyone returns as a new account"
+	if gitHTTP {
+		line += "; SSO accounts' push tokens were deleted"
+	}
+	return line
+}
+
 func serve() error {
 	cfg := config.Load(os.Getenv)
 	if err := cfg.Validate(); err != nil {
@@ -158,6 +180,9 @@ func serve() error {
 	}
 	if w := trustedAllWarning(cfg); w != "" {
 		log.Printf("%s", w)
+	}
+	if hint := uploadTimeoutHint(cfg.GitHTTP, cfg.UploadTimeout); hint != "" {
+		log.Printf("%s", hint)
 	}
 
 	// A strict container policy or a required request header hides Outhaul's
@@ -192,7 +217,7 @@ func serve() error {
 		return fmt.Errorf("record the SSO settings this run uses: %w", err)
 	}
 	if ended {
-		log.Printf("sso: the issuer or client ID changed since the last run, so every SSO sign-in has ended; if the issuer changed, everyone returns as a new account")
+		log.Print(ssoEndedLine(cfg.GitHTTP))
 	}
 	if ssoSet {
 		log.Printf("sso: using the provider from the environment: %s", cfg.SSOIssuer)
@@ -375,7 +400,7 @@ func serve() error {
 		self = ""
 	}
 	repos := gitrepo.New(cfg.GitDir(), self, cfg.GitHookSocketPath())
-	sshSrv := startGitPush(workerCtx, cfg, st, worker, broker, naming, repos, self)
+	sshSrv, bridgeUp := startGitPush(workerCtx, cfg, st, worker, broker, naming, repos, self)
 
 	// Preview environments: per-PR ephemeral child apps. They post PR comments
 	// as the app's own connected account.
@@ -424,6 +449,22 @@ func serve() error {
 		return fmt.Errorf("build server: %w", err)
 	}
 	srv.SetRepos(repos)
+	if cfg.GitHTTP {
+		// Validate has refused a bad entry already.
+		trusted, err := githttp.ParseTrusted(cfg.TrustedProxies)
+		if err != nil {
+			log.Printf("WARNING: git over HTTPS reads client addresses as if OUTHAUL_TRUSTED_PROXIES were unset: %v", err)
+			trusted = nil
+		}
+		proxies := githttp.Proxies{Trusted: trusted, TrustAll: cfg.TrustAllProxies, Traefik: traefikAddr(cfg, dc)}
+		srv.SetGitHTTP(server.GitHTTPOptions{
+			DefaultDays: cfg.PushTokenDefaultDays,
+			MaxDays:     cfg.PushTokenMaxDays,
+			SSOMaxAge:   cfg.PushTokenSSOMaxAge,
+			ClientAddr:  proxies.ClientAddr,
+			BridgeReady: func() bool { return bridgeUp },
+		})
+	}
 	srv.SetRouting(traefik.RoutingFrom(cfg, false))
 	go func() {
 		for {
@@ -794,12 +835,15 @@ func (ic *infraController) gatedContainersRemain(ctx context.Context, tunnelOn b
 	return false
 }
 
+// traefikContainer is the name of Outhaul's own Traefik container.
+const traefikContainer = "outhaul-traefik"
+
 // proxyConfig builds the Traefik config for the current ingress posture. Tunnel
 // mode forces plain HTTP (Cloudflare does TLS); otherwise ACME/ports apply.
 // protectedRoutes keeps the gate's host mapped to the host gateway.
 func (ic *infraController) proxyConfig(ctx context.Context, tunnelOn, protectedRoutes bool) traefik.ProxyConfig {
 	pc := traefik.ProxyConfig{
-		ContainerName:    "outhaul-traefik",
+		ContainerName:    traefikContainer,
 		Image:            ic.cfg.TraefikImage,
 		Network:          ic.cfg.Network,
 		Subnet:           ic.cfg.NetworkSubnet,
@@ -813,6 +857,7 @@ func (ic *infraController) proxyConfig(ctx context.Context, tunnelOn, protectedR
 		Routing:          traefik.RoutingFrom(ic.cfg, false),
 		TrustedProxies:   ic.cfg.TrustedProxies,
 		TrustAllProxies:  ic.cfg.TrustAllProxies,
+		UploadTimeout:    ic.cfg.UploadTimeout,
 	}
 	if !ic.cfg.AdminDirect {
 		pc.GateHost = ic.gateway
@@ -1180,41 +1225,45 @@ func shutdown(httpServer *http.Server, stopWorker context.CancelFunc, workerDone
 // startGitPush brings up the deploy bridge (unix socket) and, unless
 // OUTHAUL_SSH_ADDR=off, the git-push SSH server. Every failure is non-fatal and
 // logged; it returns the SSH server (for live port rebinds from the UI) or nil
-// if the SSH server is off or could not start. The hook socket and the bare
-// repositories are set up either way.
-func startGitPush(ctx context.Context, cfg config.Config, st *store.Store, worker *deploy.Worker, broker *logstream.Broker, naming core.Naming, repos *gitrepo.Manager, self string) *gitssh.Server {
+// if the SSH server is off or could not start, and whether the bridge is
+// listening, without which no push over HTTPS can deploy. The hook socket and
+// the bare repositories are set up either way.
+func startGitPush(ctx context.Context, cfg config.Config, st *store.Store, worker *deploy.Worker, broker *logstream.Broker, naming core.Naming, repos *gitrepo.Manager, self string) (*gitssh.Server, bool) {
 	if self == "" {
-		return nil
+		return nil, false
 	}
 	if err := os.MkdirAll(cfg.GitDir(), 0o700); err != nil {
 		log.Printf("WARNING: git-push disabled (create git dir): %v", err)
-		return nil
+		return nil, false
 	}
 	// Deploy bridge on the local unix socket the post-receive hook relays to.
 	_ = os.Remove(cfg.GitHookSocketPath()) // clear a stale socket from a crash
 	hookLn, err := net.Listen("unix", cfg.GitHookSocketPath())
 	if err != nil {
 		log.Printf("WARNING: git-push disabled (hook socket): %v", err)
-		return nil
+		return nil, false
 	}
 	bridge := githook.NewBridge(st, broker, worker, repos, naming, cfg.ProtectNewDomains, cfg.HealthTimeout+5*time.Minute)
+	if cfg.GitHTTP {
+		bridge.SetPublicURL(cfg.PublicURL)
+	}
 	go bridge.Serve(ctx, hookLn)
 
 	// SSH server (public-key auth against push_keys).
 	addr, on := sshListenAddr(st, cfg)
 	if !on {
 		log.Printf("git-push SSH server is off (OUTHAUL_SSH_ADDR=off)")
-		return nil
+		return nil, true
 	}
 	hostKey, err := gitssh.LoadOrCreateHostKey(cfg.SSHHostKeyPath())
 	if err != nil {
 		log.Printf("WARNING: git-push SSH server disabled (host key): %v", err)
-		return nil
+		return nil, true
 	}
 	sshSrv := gitssh.New(hostKey, st, repos)
 	if err := sshSrv.Listen(addr); err != nil {
 		log.Printf("WARNING: git-push SSH server disabled (bind %s): %v", addr, err)
-		return nil
+		return nil, true
 	}
 	go func() {
 		if err := sshSrv.Serve(ctx); err != nil {
@@ -1222,7 +1271,48 @@ func startGitPush(ctx context.Context, cfg config.Config, st *store.Store, worke
 		}
 	}()
 	log.Printf("git-push SSH server listening on %s", addr)
-	return sshSrv
+	return sshSrv, true
+}
+
+// traefikAddr is Outhaul's own Traefik's address on the shared network, the
+// one peer whose X-Forwarded-For git over HTTPS believes: OUTHAUL_TRAEFIK_IP
+// when set, otherwise Docker's answer, remembered for a minute. A failure is
+// remembered as long, and while it lasts ok is false.
+func traefikAddr(cfg config.Config, dc docker.Client) func(context.Context) (netip.Addr, bool) {
+	return traefikAddrAt(cfg, dc, time.Now)
+}
+
+func traefikAddrAt(cfg config.Config, dc docker.Client, now func() time.Time) func(context.Context) (netip.Addr, bool) {
+	if cfg.TraefikIP != "" {
+		a, err := netip.ParseAddr(cfg.TraefikIP)
+		ok := err == nil
+		return func(context.Context) (netip.Addr, bool) { return a, ok }
+	}
+	var (
+		mu    sync.Mutex
+		asked time.Time
+		addr  netip.Addr
+		ok    bool
+	)
+	return func(ctx context.Context) (netip.Addr, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !asked.IsZero() && now().Sub(asked) < time.Minute {
+			return addr, ok
+		}
+		// Not the request's own context: a client that goes away mustn't
+		// leave a failure remembered for everyone.
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		addr, ok = netip.Addr{}, false
+		if ip, err := dc.ContainerIP(ctx, traefikContainer, cfg.Network); err != nil {
+			log.Printf("git over HTTPS: find Traefik's address on %s (retried in a minute): %v", cfg.Network, err)
+		} else if a, err := netip.ParseAddr(ip); err == nil {
+			addr, ok = a.Unmap(), true
+		}
+		asked = now()
+		return addr, ok
+	}
 }
 
 // sshListenAddr returns the address the git-push SSH server should listen on

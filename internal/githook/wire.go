@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 )
 
@@ -19,8 +20,9 @@ type RefUpdate struct {
 
 // request is what the hook sends: the app name and the pushed refs.
 type request struct {
-	App  string
-	Refs []RefUpdate
+	App    string
+	Refs   []RefUpdate
+	Origin Origin
 }
 
 // readRequest parses the hook's request framing from r.
@@ -38,6 +40,18 @@ func readRequest(r *bufio.Reader) (request, error) {
 		switch {
 		case strings.HasPrefix(line, "app "):
 			req.App = strings.TrimPrefix(line, "app ")
+		case strings.HasPrefix(line, "token "):
+			id, err := strconv.ParseInt(strings.TrimPrefix(line, "token "), 10, 64)
+			if err != nil || id <= 0 {
+				return req, fmt.Errorf("bad token line %q", line)
+			}
+			req.Origin.TokenID = id
+		case strings.HasPrefix(line, "addr "):
+			a, ok := parseClientAddr(strings.TrimPrefix(line, "addr "))
+			if !ok {
+				return req, fmt.Errorf("bad addr line %q", line)
+			}
+			req.Origin.Addr = a
 		case strings.HasPrefix(line, "ref "):
 			f := strings.Fields(strings.TrimPrefix(line, "ref "))
 			if len(f) != 3 {
@@ -54,6 +68,16 @@ func readRequest(r *bufio.Reader) (request, error) {
 func writeRequest(w io.Writer, req request) error {
 	if _, err := fmt.Fprintf(w, "app %s\n", req.App); err != nil {
 		return err
+	}
+	if req.Origin.HTTPS() {
+		if _, err := fmt.Fprintf(w, "token %d\n", req.Origin.TokenID); err != nil {
+			return err
+		}
+		if req.Origin.Addr != "" {
+			if _, err := fmt.Fprintf(w, "addr %s\n", req.Origin.Addr); err != nil {
+				return err
+			}
+		}
 	}
 	for _, u := range req.Refs {
 		if _, err := fmt.Fprintf(w, "ref %s %s %s\n", u.Old, u.New, u.Ref); err != nil {

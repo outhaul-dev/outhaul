@@ -948,7 +948,12 @@ func (s *Server) renderAppPage(w http.ResponseWriter, r *http.Request, status in
 	data["WebhookEnable"] = canChange && s.publicURL != "" && app.WebhookToken == "" &&
 		(app.Source == core.SourcePublic || app.Source == core.SourceSSH)
 	if canChange && app.Source == core.SourcePush {
-		data["PushRemote"] = s.pushRemote(app.Name)
+		data["PushHTTPSRemote"] = s.pushHTTPSRemote(app)
+		// With git over HTTPS on, the SSH lines show only while the SSH
+		// server runs; with it off the panel is as it always was.
+		if !s.gitHTTPOn() || s.sshAddr() != "" {
+			data["PushRemote"] = s.pushRemote(app.Name)
+		}
 		data["PushBranch"] = app.Branch
 	}
 	// Volume backups apply to compose stacks and to single-container apps that

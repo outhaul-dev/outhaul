@@ -61,14 +61,14 @@ func (s *Store) Snapshot(ctx context.Context, path string) error {
 	return nil
 }
 
-// StripSessions removes sessions, gate_sessions, route_sessions and gate_codes,
-// then VACUUMs so their bytes leave the file.
+// StripSessions removes sessions, gate_sessions, route_sessions, gate_codes
+// and push_tokens, then VACUUMs so their bytes leave the file.
 func (s *Store) StripSessions(ctx context.Context) error {
 	return stripSessions(ctx, s.db)
 }
 
 func stripSessions(ctx context.Context, db *sql.DB) error {
-	for _, table := range []string{"gate_codes", "route_sessions", "gate_sessions", "sessions"} {
+	for _, table := range []string{"gate_codes", "route_sessions", "gate_sessions", "sessions", "push_tokens"} {
 		if _, err := db.ExecContext(ctx, `DELETE FROM `+table); err != nil {
 			return fmt.Errorf("strip %s: %w", table, err)
 		}

@@ -350,3 +350,60 @@ func TestSetAndClearSSOSettingsMaintainTheRunRecord(t *testing.T) {
 		t.Error("clearing SSO kept the run record")
 	}
 }
+
+func TestEndingSSOSignInsDeletesSSOPushTokens(t *testing.T) {
+	ctx := context.Background()
+	const iss = "https://idp.example.com"
+	exp := tokenNow.AddDate(0, 0, 7)
+	setup := func(t *testing.T) (s *Store, ssoRaw, pwRaw string) {
+		t.Helper()
+		s = openWithBox(t)
+		if err := s.SetSSOSettings(ctx, SSOSettings{Issuer: iss, ClientID: "cid", ClientSecret: "sec"}, false); err != nil {
+			t.Fatal(err)
+		}
+		sso, _ := ssoSessionUser(t, s, "sub-1")
+		pw := tokenAccount(t, s, "pat")
+		ssoRaw, _ = mustToken(t, s, sso, "ci", tokenNow, exp)
+		pwRaw, _ = mustToken(t, s, pw.ID, "ci", tokenNow, exp)
+		return s, ssoRaw, pwRaw
+	}
+	check := func(t *testing.T, s *Store, ssoRaw, pwRaw string, ssoGone bool) {
+		t.Helper()
+		if _, ok, _ := s.FindPushToken(ctx, ssoRaw); ok == ssoGone {
+			t.Errorf("SSO token present = %v, want %v", ok, !ssoGone)
+		}
+		if _, ok, _ := s.FindPushToken(ctx, pwRaw); !ok {
+			t.Error("the password account's token was deleted")
+		}
+	}
+
+	t.Run("clear", func(t *testing.T) {
+		s, a, b := setup(t)
+		if err := s.ClearSSOSettings(ctx); err != nil {
+			t.Fatal(err)
+		}
+		check(t, s, a, b, true)
+	})
+	t.Run("set ending sessions", func(t *testing.T) {
+		s, a, b := setup(t)
+		if err := s.SetSSOSettings(ctx, SSOSettings{Issuer: "https://other.example.com", ClientID: "cid", ClientSecret: "sec"}, true); err != nil {
+			t.Fatal(err)
+		}
+		check(t, s, a, b, true)
+	})
+	t.Run("set keeping sessions", func(t *testing.T) {
+		s, a, b := setup(t)
+		if err := s.SetSSOSettings(ctx, SSOSettings{Issuer: iss, ClientID: "cid", ClientSecret: "sec2"}, false); err != nil {
+			t.Fatal(err)
+		}
+		check(t, s, a, b, false)
+	})
+	t.Run("startup sync with a change", func(t *testing.T) {
+		s, a, b := setup(t)
+		ended, err := s.SyncSSOStartup(ctx, SSOSettings{Issuer: "https://new.example.com", ClientID: "cid"}, true)
+		if err != nil || !ended {
+			t.Fatalf("SyncSSOStartup = %v, %v", ended, err)
+		}
+		check(t, s, a, b, true)
+	})
+}

@@ -70,6 +70,15 @@ func (s *Server) usersPage(w http.ResponseWriter, r *http.Request, status int, e
 		"AllRoles":  append([]core.Role{core.RoleNone}, core.AssignableRoles...),
 		"SetupDays": int(setupLinkTTL / (24 * time.Hour)),
 	}
+	if s.gitHTTPOn() {
+		tokens, err := s.store.ListPushTokens(r.Context(), time.Now())
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		data["GitHTTP"] = true
+		data["PushTokens"] = s.tokenRows(tokens)
+	}
 	for k, v := range extra {
 		data[k] = v
 	}

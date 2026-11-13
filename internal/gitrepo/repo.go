@@ -4,7 +4,9 @@
 package gitrepo
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,6 +68,10 @@ func (m *Manager) Init(app string) error {
 }
 
 // writeHook installs hooks/post-receive as a shell relay into `outhaul git-hook`.
+// A hook that already holds the script and is executable is left alone.
+// Otherwise the script is written to a temporary file beside it and renamed
+// over it, so a push whose hook starts meanwhile runs the whole old script or
+// the whole new one, never an empty or half-written file.
 func (m *Manager) writeHook(app, dir string) error {
 	hooksDir := filepath.Join(dir, "hooks")
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
@@ -74,7 +80,117 @@ func (m *Manager) writeHook(app, dir string) error {
 	// The hook passes app name and socket path explicitly so it needs no env.
 	script := fmt.Sprintf("#!/bin/sh\nexec %s git-hook %s %s\n",
 		shellQuote(m.binPath), shellQuote(app), shellQuote(m.sockPath))
-	return os.WriteFile(filepath.Join(hooksDir, "post-receive"), []byte(script), 0o755)
+	hook := filepath.Join(hooksDir, "post-receive")
+	if hookIsCurrent(hook, script) {
+		return nil
+	}
+	f, err := os.CreateTemp(hooksDir, "post-receive.*")
+	if err != nil {
+		return fmt.Errorf("write the post-receive hook: %w", err)
+	}
+	tmp := f.Name()
+	_, err = f.WriteString(script)
+	if err == nil {
+		err = f.Chmod(0o755)
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp, hook)
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("write the post-receive hook: %w", err)
+	}
+	return nil
+}
+
+// hookIsCurrent reports whether hook holds exactly script and is executable.
+func hookIsCurrent(hook, script string) bool {
+	f, err := os.Open(hook)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o755 || fi.Size() != int64(len(script)) {
+		return false
+	}
+	data := make([]byte, len(script)+1)
+	n, _ := io.ReadFull(f, data)
+	return n == len(script) && string(data[:n]) == script
+}
+
+// PointHead points app's HEAD at refs/heads/<branch> when HEAD names a branch
+// that doesn't exist and branch does, so a plain clone checks out the app's
+// branch. `git init --bare` leaves HEAD naming the host git's default branch,
+// which needn't be the one pushed. In every other case (HEAD's branch exists,
+// HEAD is detached, branch is empty, isn't a name git would give a branch, or
+// has no commits) it changes nothing and returns nil.
+func (m *Manager) PointHead(app, branch string) error {
+	dir, err := m.Path(app)
+	if err != nil {
+		return err
+	}
+	if branch == "" || strings.HasPrefix(branch, "-") {
+		return nil
+	}
+	// It prints the name it accepts; @{-1} would come back as another.
+	if out, _, err := gitDir(dir, "check-ref-format", "--branch", branch); err != nil || out != branch {
+		return nil
+	}
+	head, code, err := gitDir(dir, "symbolic-ref", "-q", "HEAD")
+	if code == 1 {
+		return nil // detached
+	}
+	if err != nil {
+		return fmt.Errorf("read HEAD: %w", err)
+	}
+	if ok, err := refExists(dir, head); err != nil || ok {
+		return err
+	}
+	want := "refs/heads/" + branch
+	if ok, err := refExists(dir, want); err != nil || !ok {
+		return err
+	}
+	if _, _, err := gitDir(dir, "symbolic-ref", "HEAD", want); err != nil {
+		return fmt.Errorf("point HEAD at %s: %w", want, err)
+	}
+	return nil
+}
+
+// refExists reports whether the bare repository dir has ref.
+func refExists(dir, ref string) (bool, error) {
+	_, code, err := gitDir(dir, "show-ref", "--verify", "--quiet", ref)
+	if code == 1 {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("look up %s: %w", ref, err)
+	}
+	return true, nil
+}
+
+// gitDir runs git on the bare repository dir, in the environment `git init`
+// gets, and returns its trimmed standard output and its exit code (-1 when it
+// didn't run). The error carries git's standard error.
+func gitDir(dir string, args ...string) (string, int, error) {
+	cmd := exec.Command("git", append([]string{"--git-dir", dir}, args...)...)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	code := 0
+	if err != nil {
+		code = -1
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			code = exit.ExitCode()
+		}
+		err = fmt.Errorf("git %s: %v: %s", args[0], err, strings.TrimSpace(stderr.String()))
+	}
+	return strings.TrimSpace(stdout.String()), code, err
 }
 
 // Remove deletes the bare repo for app. Removing an absent repo is a no-op.

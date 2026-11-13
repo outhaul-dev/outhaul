@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1467,4 +1468,102 @@ func TestReadSSOSecret(t *testing.T) {
 	if _, err := readSSOSecret(filepath.Join(dir, "big"), ""); err != nil && strings.Contains(err.Error(), "xxxx") {
 		t.Errorf("error repeats the file's content: %v", err)
 	}
+}
+
+func TestProxyConfigCarriesUploadTimeout(t *testing.T) {
+	cfg := config.Config{
+		Network: "outhaul", TraefikImage: config.DefaultTraefikImage,
+		UploadTimeout: 10 * time.Minute,
+	}
+	ic := &infraController{dc: docker.NewFake(), cfg: cfg}
+	for _, tunnelOn := range []bool{false, true} {
+		pc := ic.proxyConfig(context.Background(), tunnelOn, false)
+		if pc.UploadTimeout != cfg.UploadTimeout {
+			t.Errorf("tunnelOn=%v: UploadTimeout=%v, want %v", tunnelOn, pc.UploadTimeout, cfg.UploadTimeout)
+		}
+	}
+}
+
+// With git over HTTPS on, the startup line for a changed issuer or client ID
+// says SSO accounts' push tokens went with their sign-ins. Off, it is as it was.
+func TestSSOEndedLine(t *testing.T) {
+	const off = "sso: the issuer or client ID changed since the last run, so every SSO sign-in has ended; if the issuer changed, everyone returns as a new account"
+	if got := ssoEndedLine(false); got != off {
+		t.Errorf("off: %q, want %q", got, off)
+	}
+	if got, want := ssoEndedLine(true), off+"; SSO accounts' push tokens were deleted"; got != want {
+		t.Errorf("on: %q, want %q", got, want)
+	}
+}
+
+func TestUploadTimeoutHint(t *testing.T) {
+	got := uploadTimeoutHint(true, 0)
+	if !strings.Contains(got, "OUTHAUL_UPLOAD_TIMEOUT") || !strings.Contains(got, "60 seconds") {
+		t.Errorf("hint %q should name OUTHAUL_UPLOAD_TIMEOUT and 60 seconds", got)
+	}
+	if got := uploadTimeoutHint(true, time.Minute); got != "" {
+		t.Errorf("with a timeout set: %q", got)
+	}
+	if got := uploadTimeoutHint(false, 0); got != "" {
+		t.Errorf("with HTTPS pushes off: %q", got)
+	}
+}
+
+// traefikIPs answers ContainerIP from the test and counts the calls.
+type traefikIPs struct {
+	*docker.Fake
+	ip    string
+	err   error
+	asked []string // "<container> on <network>", one per call
+}
+
+func (f *traefikIPs) ContainerIP(_ context.Context, id, network string) (string, error) {
+	f.asked = append(f.asked, id+" on "+network)
+	return f.ip, f.err
+}
+
+func TestTraefikAddr(t *testing.T) {
+	ctx := context.Background()
+	t.Run("the configured address wins", func(t *testing.T) {
+		f := &traefikIPs{Fake: docker.NewFake(), ip: "172.30.0.9"}
+		got, ok := traefikAddr(config.Config{TraefikIP: "172.30.0.2", Network: "outhaul"}, f)(ctx)
+		if !ok || got != netip.MustParseAddr("172.30.0.2") {
+			t.Errorf("got %v %v, want 172.30.0.2", got, ok)
+		}
+		if len(f.asked) != 0 {
+			t.Errorf("Docker was asked %q", f.asked)
+		}
+	})
+	t.Run("Docker's answer, asked once a minute", func(t *testing.T) {
+		f := &traefikIPs{Fake: docker.NewFake(), ip: "172.30.0.9"}
+		now := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
+		addr := traefikAddrAt(config.Config{Network: "outhaul"}, f, func() time.Time { return now })
+		for i := 0; i < 3; i++ {
+			if got, ok := addr(ctx); !ok || got != netip.MustParseAddr("172.30.0.9") {
+				t.Fatalf("call %d: %v %v, want 172.30.0.9", i, got, ok)
+			}
+			now = now.Add(10 * time.Second)
+		}
+		if want := []string{"outhaul-traefik on outhaul"}; !slices.Equal(f.asked, want) {
+			t.Errorf("asked %q, want %q", f.asked, want)
+		}
+		now = now.Add(time.Minute)
+		addr(ctx)
+		if len(f.asked) != 2 {
+			t.Errorf("after a minute Docker was asked %d times in all, want 2", len(f.asked))
+		}
+	})
+	t.Run("an error gives ok false, and is remembered too", func(t *testing.T) {
+		f := &traefikIPs{Fake: docker.NewFake(), err: errors.New("no such container: outhaul-traefik")}
+		now := time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC)
+		addr := traefikAddrAt(config.Config{Network: "outhaul"}, f, func() time.Time { return now })
+		for i := 0; i < 2; i++ {
+			if got, ok := addr(ctx); ok {
+				t.Errorf("call %d: %v, want ok false", i, got)
+			}
+		}
+		if len(f.asked) != 1 {
+			t.Errorf("Docker was asked %d times, want once", len(f.asked))
+		}
+	})
 }
