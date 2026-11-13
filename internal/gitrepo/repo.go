@@ -5,6 +5,7 @@ package gitrepo
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,6 +67,10 @@ func (m *Manager) Init(app string) error {
 }
 
 // writeHook installs hooks/post-receive as a shell relay into `outhaul git-hook`.
+// A hook that already holds the script and is executable is left alone.
+// Otherwise the script is written to a temporary file beside it and renamed
+// over it, so a push whose hook starts meanwhile runs the whole old script or
+// the whole new one, never an empty or half-written file.
 func (m *Manager) writeHook(app, dir string) error {
 	hooksDir := filepath.Join(dir, "hooks")
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
@@ -74,7 +79,46 @@ func (m *Manager) writeHook(app, dir string) error {
 	// The hook passes app name and socket path explicitly so it needs no env.
 	script := fmt.Sprintf("#!/bin/sh\nexec %s git-hook %s %s\n",
 		shellQuote(m.binPath), shellQuote(app), shellQuote(m.sockPath))
-	return os.WriteFile(filepath.Join(hooksDir, "post-receive"), []byte(script), 0o755)
+	hook := filepath.Join(hooksDir, "post-receive")
+	if hookIsCurrent(hook, script) {
+		return nil
+	}
+	f, err := os.CreateTemp(hooksDir, "post-receive.*")
+	if err != nil {
+		return fmt.Errorf("write the post-receive hook: %w", err)
+	}
+	tmp := f.Name()
+	_, err = f.WriteString(script)
+	if err == nil {
+		err = f.Chmod(0o755)
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp, hook)
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("write the post-receive hook: %w", err)
+	}
+	return nil
+}
+
+// hookIsCurrent reports whether hook holds exactly script and is executable.
+func hookIsCurrent(hook, script string) bool {
+	f, err := os.Open(hook)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || !fi.Mode().IsRegular() || fi.Mode().Perm() != 0o755 || fi.Size() != int64(len(script)) {
+		return false
+	}
+	data := make([]byte, len(script)+1)
+	n, _ := io.ReadFull(f, data)
+	return n == len(script) && string(data[:n]) == script
 }
 
 // Remove deletes the bare repo for app. Removing an absent repo is a no-op.
