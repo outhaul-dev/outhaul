@@ -347,9 +347,8 @@ fixed in five batches. All five are on `main`.
   accounts' tokens are deleted when SSO is removed or its issuer or client ID
   changes, with the sign-ins that end then; password accounts' tokens stay.
   Outhaul believes `X-Forwarded-For` only from its own Traefik, and only
-  `githttp` reads it. A
-  request on any host but the public URL's, or known to be plain HTTP, is never
-  asked for a token. See `docs/GIT-HTTP.md`.
+  `githttp` reads it. A request on any host but the public URL's, or known to
+  be plain HTTP, is never asked for a token. See `docs/GIT-HTTP.md`.
 
 - **The fixed network.** `OUTHAUL_NETWORK_SUBNET` gives Docker the gateway
   (the subnet's first address) and the upper half as its dynamic range;

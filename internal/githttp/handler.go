@@ -273,7 +273,8 @@ func (h *Handler) serve(c *gitCall, advertise bool) {
 	// clone that needs -b beats a 500, so a failure here is only logged.
 	if c.service == serviceUpload {
 		if err := h.o.Repos.PointHead(c.name, app.Branch); err != nil {
-			log.Printf("githttp: point the HEAD of %s at its branch: %v", c.name, err)
+			// %q: git's own message can run over several lines.
+			log.Printf("githttp: point the HEAD of %s at its branch: %q", c.name, err.Error())
 		}
 	}
 
